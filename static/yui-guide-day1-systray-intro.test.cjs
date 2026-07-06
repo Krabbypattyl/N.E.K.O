@@ -54,17 +54,42 @@ test('Day1 tutorial end schedules the system tray intro for complete, skip and a
   assert.match(scheduleBlock, /showDay1SystrayIntroModal\(endMeta, avatarFloatingEndState\)/);
 });
 
-test('Day1 system tray intro modal uses the existing systray copy and image resource', () => {
+test('Day1 system tray intro modal combines the tray location and menu guidance', () => {
   assert.match(universalManagerSource, /showDay1SystrayIntroModal\(endMeta, avatarFloatingEndState\)/);
   assert.match(universalManagerSource, /tutorial\.systray\.location\.title/);
-  assert.doesNotMatch(universalManagerSource, /tutorial\.systray\.menu\./);
-  assert.match(universalManagerSource, /\/static\/icons\/489d10e622b89904a6441a3df869eff7\.png/);
+  assert.match(universalManagerSource, /tutorial\.systray\.menu\.title/);
+  assert.match(universalManagerSource, /tutorial\.systray\.menu\.desc/);
+  assert.match(universalManagerSource, /tutorial\.systray\.resetPosition/);
+  assert.match(universalManagerSource, /tutorial\.systray\.openChat/);
+  assert.match(universalManagerSource, /tutorial\.systray\.hotkey/);
+  assert.match(universalManagerSource, /tutorial\.systray\.exit/);
+  assert.match(universalManagerSource, /\/static\/assets\/tutorial\/systray\/stray_intro\.png/);
+  assert.doesNotMatch(universalManagerSource, /\/static\/icons\/489d10e622b89904a6441a3df869eff7\.png/);
   assert.match(universalManagerSource, /neko-day1-systray-intro-modal/);
+  assert.match(
+    universalManagerSource,
+    /class="neko-day1-systray-media"[\s\S]*tutorial\.systray\.location\.title[\s\S]*class="neko-day1-systray-content"[\s\S]*tutorial\.systray\.menu\.title/
+  );
+  assert.match(
+    universalManagerSource,
+    /class="neko-day1-systray-location-copy"[\s\S]*tutorial\.systray\.location\.title[\s\S]*\/static\/assets\/tutorial\/systray\/stray_intro\.png/
+  );
+  assert.match(universalManagerSource, /t\('common\.confirm', '确认'\)/);
+  assert.doesNotMatch(universalManagerSource, /neko-day1-systray-primary" type="button">\$\{this\.safeEscapeHtml\(t\('common\.ok'/);
+  assert.match(
+    universalManagerSource,
+    /<\/div>\s*<\/div>\s*<div class="neko-day1-systray-actions">[\s\S]*neko-day1-systray-primary/
+  );
 
   assert.match(yuiGuideCssSource, /\.neko-day1-systray-intro-modal/);
   assert.match(yuiGuideCssSource, /\.neko-day1-systray-card/);
+  assert.match(yuiGuideCssSource, /\.neko-day1-systray-layout/);
+  assert.match(yuiGuideCssSource, /\.neko-day1-systray-location-copy/);
+  assert.match(yuiGuideCssSource, /\.neko-day1-systray-menu-panel/);
 
   const zhCn = JSON.parse(zhCnLocaleSource);
   assert.equal(zhCn.tutorial.systray.location.title, '📍 托盘图标位置');
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
+  assert.equal(zhCn.tutorial.systray.menu.title, '📋 托盘菜单');
+  assert.equal(zhCn.tutorial.systray.resetPosition, '重置角色位置');
 });
