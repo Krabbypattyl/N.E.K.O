@@ -37,7 +37,12 @@ CHARACTER_MANAGER_VOICE_KEYS = (
     "voice.nativeVoice.wenrounansheng",
 )
 
-CHARACTER_MANAGER_JS = REPO_ROOT / "static" / "js" / "character_card_manager.js"
+VOICE_DESIGN_ERROR_KEYS = (
+    "errors.VOICE_DESIGN_PROMPT_TOO_SHORT",
+    "errors.VOICE_DESIGN_PROMPT_TOO_LONG",
+)
+
+CHARACTER_MANAGER_JS_DIR = REPO_ROOT / "static" / "js" / "character_card_manager"
 
 PNG_TUBER_PREVIEW_LABELS = {
     "zh-CN.json": ("测试说话", "状态预览"),
@@ -135,6 +140,27 @@ def _has_nested_key(data: dict, dotted_key: str) -> bool:
 
 
 @pytest.mark.unit
+def test_locale_json_objects_do_not_contain_duplicate_keys():
+    duplicates: list[str] = []
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        def reject_duplicates(pairs, *, locale_name=locale_path.name):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    duplicates.append(f"{locale_name}: {key}")
+                result[key] = value
+            return result
+
+        json.loads(
+            locale_path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicates,
+        )
+
+    assert duplicates == []
+
+
+@pytest.mark.unit
 def test_tutorial_prompt_locale_keys_exist_in_all_locales():
     missing_by_locale: dict[str, list[str]] = {}
 
@@ -161,8 +187,24 @@ def test_character_manager_voice_source_labels_exist_in_all_locales():
 
 
 @pytest.mark.unit
+def test_voice_design_constraint_errors_exist_in_all_locales():
+    missing_by_locale: dict[str, list[str]] = {}
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        missing = [key for key in VOICE_DESIGN_ERROR_KEYS if not _has_nested_key(data, key)]
+        if missing:
+            missing_by_locale[locale_path.name] = missing
+
+    assert missing_by_locale == {}
+
+
+@pytest.mark.unit
 def test_character_manager_voice_source_labels_do_not_use_cjk_fallbacks():
-    source = CHARACTER_MANAGER_JS.read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(CHARACTER_MANAGER_JS_DIR.glob("*.js"))
+    )
     relevant_start = source.index("function _panelVoiceProviderShortName(provider)")
     relevant_end = source.index("function _panelCreateVoiceSelectUi(selectEl)", relevant_start)
     relevant_source = source[relevant_start:relevant_end]

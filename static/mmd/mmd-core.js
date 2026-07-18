@@ -3,6 +3,14 @@
  * 基于 @moeru/three-mmd 框架，参考 hime-display MmdManager 和 vrm-core.js 结构
  */
 
+// 空闲低频 tick 模式常量（对齐 live2d-core.js 的同名机制）：
+// 无活动时把 rAF 驱动的渲染链切到 setInterval，避免 120Hz 屏上 rAF 请求
+// 让 Blink 以显示器刷新率空跑主帧生命周期。物理安全性：Bullet 以固定 1/60
+// 子步积分（motion-state 插值余量），33ms 步长等价于已上线的 low 档路径。
+const MMD_IDLE_FPS = 30;
+const MMD_INTERACTIVE_FPS_HOLD_MS = 900;
+const MMD_IDLE_GOVERNOR_INTERVAL_MS = 300;
+
 class MMDCore {
     constructor(manager) {
         this.manager = manager;
@@ -427,7 +435,7 @@ class MMDCore {
 
     // ═══════════════════ 模型加载 ═══════════════════
 
-    async loadModel(modelUrl, options = {}) {
+    async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
         if (!THREE) {
             throw new Error('Three.js 库未加载，无法加载 MMD 模型');
@@ -437,9 +445,27 @@ class MMDCore {
             throw new Error(`MMD 模型路径无效: ${modelUrl}`);
         }
 
+        // 加载令牌由 mmd-manager.js 分配并传入；未传时回退读当前值（等价旧行为）。
+        // 必须在首个 await 之前确定：旧实现在模块导入 await 之后才读当前值，悬挂期间
+        // 若有新调用进入会误拿新调用的 token，使下方的取代检查失效（幽灵模型叠加）。
+        const loadToken = managerLoadToken !== null ? managerLoadToken : this.manager._activeLoadToken;
+
+        // 已被更新的加载取代（如失败回退路径迟到）：在触碰 currentModel 之前退出，
+        // 避免把新调用刚装好的模型 _clearModel 掉
+        if (this.manager._activeLoadToken !== loadToken) {
+            console.log('[MMD Core] 模型加载已被取代（进入时），跳过');
+            return null;
+        }
+
         const mmdModule = await this._getMMDModule();
         if (!mmdModule) {
             throw new Error('three-mmd 模块加载失败');
+        }
+
+        // 模块导入悬挂期间同样可能被取代：同上，先于 _clearModel 检查
+        if (this.manager._activeLoadToken !== loadToken) {
+            console.log('[MMD Core] 模型加载已被取代（模块导入后），跳过');
+            return null;
         }
 
         const { MMDLoader } = mmdModule;
@@ -476,9 +502,6 @@ class MMDCore {
         if (this.manager.currentModel) {
             this._clearModel();
         }
-
-        // 加载令牌由 mmd-manager.js 管理，此处仅读取当前值用于竞态检查
-        const loadToken = this.manager._activeLoadToken;
 
         try {
             // MMDLoader.load 返回 MMD 对象
@@ -923,10 +946,136 @@ class MMDCore {
     // ═══════════════════ 渲染循环 ═══════════════════
 
     _startRenderLoop() {
+        // 退出空闲低频模式但不让它复跑 rAF（下面自建新链），避免双驱动
+        this._exitIdleTickMode(false);
         if (this.manager._animationFrameId) {
             cancelAnimationFrame(this.manager._animationFrameId);
         }
         this._render();
+        this._startIdleGovernor();
+    }
+
+    // ═══════════════════ 空闲低频 tick 模式（对齐 live2d-core.js round-1 模式）═══════════════════
+
+    _enterIdleTickMode() {
+        if (this._idleTickMode) return;
+        const manager = this.manager;
+        if (!manager || !manager._shouldRender || manager._isDisposed || !manager.renderer) return;
+        this._idleTickMode = true;
+        if (manager._animationFrameId) {
+            cancelAnimationFrame(manager._animationFrameId);
+            manager._animationFrameId = null;
+        }
+        const idleFps = Math.min(MMD_IDLE_FPS, this.targetFPS || MMD_IDLE_FPS);
+        const intervalMs = Math.max(16, Math.round(1000 / Math.max(1, idleFps)));
+        this._idleTickTimer = setInterval(() => {
+            if (!this._idleTickMode) return;
+            const m = this.manager;
+            if (!m || !m._shouldRender || m._isDisposed || !m.renderer) { this._exitIdleTickMode(false); return; }
+            // 外部代码绕过 _startRenderLoop 直接拉起了 rAF 链：让位
+            if (m._animationFrameId) { this._exitIdleTickMode(false); return; }
+            // 纯浏览器隐藏标签页对齐 rAF 暂停语义（Electron 宠物窗关了节流，不受影响）
+            if (typeof document !== 'undefined' && document.hidden) return;
+            try {
+                this._renderFrame(performance.now());
+            } catch (e) {
+                if (!this._idleTickErrorLogged) {
+                    this._idleTickErrorLogged = true;
+                    console.warn('[MMD Core] 空闲低频 tick 渲染异常（同类后续不再打印）:', e);
+                }
+            }
+        }, intervalMs);
+    }
+
+    _exitIdleTickMode(restartRaf = true) {
+        if (!this._idleTickMode) return;
+        this._idleTickMode = false;
+        if (this._idleTickTimer) {
+            clearInterval(this._idleTickTimer);
+            this._idleTickTimer = null;
+        }
+        const manager = this.manager;
+        if (restartRaf && manager && manager._shouldRender && !manager._isDisposed && !manager._animationFrameId) {
+            this.lastFrameTime = 0;
+            manager._animationFrameId = requestAnimationFrame(() => this._render());
+        }
+    }
+
+    // 有交互/活动时升回 rAF 满帧，并安排在 durationMs 后无活动则回落空闲模式
+    _boostInteractiveFPS(durationMs = MMD_INTERACTIVE_FPS_HOLD_MS) {
+        this._exitIdleTickMode();
+        if (this._idleDecayTimer) clearTimeout(this._idleDecayTimer);
+        // 豁免页：只升频、不安排衰减——衰减会在 governor 缺席时把渲染拖回空闲模式
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            this._idleDecayTimer = null;
+            return;
+        }
+        this._idleDecayTimer = setTimeout(() => {
+            this._idleDecayTimer = null;
+            const m = this.manager;
+            if (m && m._shouldRender && !m._isDisposed && !this._hasRenderActivity()) {
+                this._enterIdleTickMode();
+            }
+        }, Math.max(100, Number(durationMs) || MMD_INTERACTIVE_FPS_HOLD_MS));
+    }
+
+    // 需要满帧的活动：非 idle 动画播放、口型同步、拖拽、光标跟踪进行中、滚轮缩放余温
+    _hasRenderActivity() {
+        const m = this.manager;
+        if (!m) return false;
+        try {
+            if (m.animationModule && m.animationModule.isPlaying && m._currentAnimationMode !== 'idle') return true;
+        } catch (_) {}
+        try { if (m.animationModule && m.animationModule._lipSyncActive) return true; } catch (_) {}
+        try { if (window.appState && window.appState.lipSyncActive) return true; } catch (_) {}
+        try { if (m.interaction && m.interaction.isDragging) return true; } catch (_) {}
+        try {
+            const cf = m.cursorFollow;
+            if (cf && cf.enabled) {
+                if (cf._lastPointerMoveTs && (performance.now() - cf._lastPointerMoveTs) < MMD_INTERACTIVE_FPS_HOLD_MS) return true;
+                // 头部朝向还没收敛完：保持满帧到位
+                if (Math.abs((cf._targetYaw || 0) - (cf._currentYaw || 0)) > 0.02 ||
+                    Math.abs((cf._targetPitch || 0) - (cf._currentPitch || 0)) > 0.02) return true;
+            }
+        } catch (_) {}
+        try {
+            if (m._lastInteractionBoostTs && (performance.now() - m._lastInteractionBoostTs) < MMD_INTERACTIVE_FPS_HOLD_MS) return true;
+        } catch (_) {}
+        return false;
+    }
+
+    _startIdleGovernor() {
+        this._stopIdleGovernor();
+        // 页面级豁免：小游戏 demo 等用自有 rAF 循环驱动骨骼姿态的页面，
+        // 活动探测看不见它们的动画，节流会造成可见卡顿——由页面声明退出
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
+        // 启动/加载视为活动：先满帧，随后自动衰减
+        this._boostInteractiveFPS();
+        this._idleGovernorTimer = setInterval(() => {
+            const m = this.manager;
+            // 自终止：dispose / renderer 销毁后自动停摆并释放闭包引用
+            if (!m || m._isDisposed || !m.renderer) { this._stopIdleGovernor(); return; }
+            // 外部暂停（pauseRendering）：不接管；resume 走 _startRenderLoop 会重启本 governor
+            if (!m._shouldRender) return;
+            if (this._hasRenderActivity()) {
+                this._boostInteractiveFPS();
+            } else if (!this._idleTickMode && !this._idleDecayTimer) {
+                // 自愈：外部直接重启 rAF 链（resumeRendering 等）后无人再带我们回空闲模式
+                this._enterIdleTickMode();
+            }
+        }, MMD_IDLE_GOVERNOR_INTERVAL_MS);
+    }
+
+    _stopIdleGovernor() {
+        if (this._idleGovernorTimer) {
+            clearInterval(this._idleGovernorTimer);
+            this._idleGovernorTimer = null;
+        }
+        if (this._idleDecayTimer) {
+            clearTimeout(this._idleDecayTimer);
+            this._idleDecayTimer = null;
+        }
+        this._exitIdleTickMode(false);
     }
 
     _flushRenderWaiters() {
@@ -968,12 +1117,17 @@ class MMDCore {
 
         this.manager._animationFrameId = requestAnimationFrame(() => this._render());
 
-        // 帧率限制
+        // 帧率限制（仅 rAF 驱动路径；空闲低频模式下 interval 周期本身就是节流器，
+        // 由 interval 直接调用 _renderFrame，不经过这里）
         const now = performance.now();
         const elapsed = now - this.lastFrameTime;
         if (elapsed < this.frameTime) return;
         this.lastFrameTime = now - (elapsed % this.frameTime);
 
+        this._renderFrame(now);
+    }
+
+    _renderFrame(_now) {
         const delta = this.manager.clock ? this.manager.clock.getDelta() : 0;
         // 限制 delta 以防止长时间切页后的突变
         const clampedDelta = Math.min(delta, 0.1);
@@ -1421,6 +1575,8 @@ class MMDCore {
     // ═══════════════════ 资源清理 ═══════════════════
 
     dispose() {
+        // 先停 governor（内部一并清衰减计时器并退出空闲低频模式，不复跑）
+        this._stopIdleGovernor();
         this.manager._shouldRender = false;
 
         if (this.manager._animationFrameId) {

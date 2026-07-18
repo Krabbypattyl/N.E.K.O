@@ -18,11 +18,12 @@
 voice_storage.json access, per-provider storage-key resolution, voice_id
 validation/normalization and the invalid voice_id cleanup pass.
 """
+import asyncio
 from copy import deepcopy
 
 from config import DEFAULT_CONFIG_DATA
 from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
-from utils.native_voice_registry import (
+from utils.tts.native_voice_registry import (
     is_free_lanlan_app_route,
     is_saveable_native_voice,
 )
@@ -574,6 +575,15 @@ class VoiceStorageMixin:
         voice_storage[api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    async def asave_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
+        """Persist a registered voice without blocking an async request handler."""
+        return await asyncio.to_thread(
+            self.save_voice_for_api_key,
+            api_key,
+            voice_id,
+            voice_data,
+        )
+
     def voice_id_exists_in_any_storage(self, voice_id: str) -> bool:
         """Whether voice_id appears under any bucket of voice_storage.json.
 
@@ -715,8 +725,8 @@ class VoiceStorageMixin:
         than breaking validation.
         """
         try:
-            from utils import tts_provider_registry
-            return tts_provider_registry.is_selected_preset_voice(
+            from utils.tts import provider_registry
+            return provider_registry.is_selected_preset_voice(
                 self.get_core_config() or {}, self, voice_id
             )
         except Exception:
@@ -823,7 +833,7 @@ class VoiceStorageMixin:
         dropped); callers treat it as "leave the value as-is".
         """
         from utils.voice_config import normalize_voice_id
-        from utils.native_voice_registry import (
+        from utils.tts.native_voice_registry import (
             get_active_realtime_native_provider,
             is_saveable_native_voice,
         )
@@ -854,8 +864,8 @@ class VoiceStorageMixin:
             main_logic.tts_client at startup. Degrades to None on error.
             """
             try:
-                from utils import tts_provider_registry
-                return tts_provider_registry.selected_preset_provider_key(
+                from utils.tts import provider_registry
+                return provider_registry.selected_preset_provider_key(
                     self.get_core_config() or {}, self, ref
                 )
             except Exception:

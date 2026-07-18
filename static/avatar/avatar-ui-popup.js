@@ -124,6 +124,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-popup.is-positioning {
             pointer-events: none !important;
         }
+        /* 移动端宽度兜底：弹窗自然宽度超窄屏时贴边收敛（Electron Pet 小窗同受益，无副作用） */
+        @media (max-width: 768px) {
+            .${prefix}-popup {
+                max-width: calc(100vw - 32px);
+            }
+        }
         .${prefix}-popup.${prefix}-popup-settings {
             max-height: 70vh;
         }
@@ -629,8 +635,9 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
-        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true, dependsOnToggleId: 'auto-cat' },
+        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -1302,6 +1309,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     // 全屏/局部跟踪复选框（右半部分）
+    const supportsTrackingModeToggle = prefix === 'live2d' || prefix === 'vrm' || prefix === 'mmd';
     const modeCheckbox = document.createElement('input');
     modeCheckbox.type = 'checkbox';
     modeCheckbox.style.display = 'none';
@@ -1310,6 +1318,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
     const updateTrackingModeToggleState = () => {
+        if (!modeClickArea || !supportsTrackingModeToggle) return;
         const isEnabled = checkbox.checked;
         modeClickArea.style.opacity = isEnabled ? '1' : '0.4';
         modeClickArea.style.pointerEvents = isEnabled ? 'auto' : 'none';
@@ -1394,7 +1403,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     trackingRow.appendChild(trackingClickArea);
-    trackingRow.appendChild(modeClickArea);
+    if (supportsTrackingModeToggle) {
+        trackingRow.appendChild(modeClickArea);
+    }
     container.appendChild(trackingRow);
 
     // ── 取消隐藏（锁定悬停淡化）开关 ──
@@ -1880,7 +1891,20 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.max = '120';
     slider.step = '5';
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
-    if (currentValue > 120) currentValue = 120;
+    // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
+    // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
+    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
+    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) {
+        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
+        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
+        // 契约接受任意 1..3600 整数，值不在 5s 步进格点上（如 121、47）时浏览器
+        // 会把 slider.value 吸附到最近格点，显示与滑块再度分叉；此时改用 1s 步进
+        // 让该值可被精确表示。按格点值正常保持 5s 拖动手感。
+        const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
+        if ((sliderShownValue - Number(slider.min)) % 5 !== 0) slider.step = '1';
+    }
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
@@ -2206,6 +2230,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
         checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
+        checkbox.checked = window.slopFilterEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2332,6 +2358,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
             // 思考气泡随之不再出现；master 情绪读不受影响。
             window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'slop-filter') {
+            // 自然表达（slop reduction）总开关。关掉后端 _params 不再改写历史
+            // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
+            // 不影响用户看到的原文。
+            window.slopFilterEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
@@ -2668,6 +2702,16 @@ const AvatarPopupMixin = {
             return menuItem;
         };
 
+        // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+        // （showPopup 切换关闭与 closePopupById 两条路径共用）
+        function isTutorialGuardedSettingsClose(buttonId) {
+            if (window.isInTutorial === true && buttonId === 'settings') {
+                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                return true;
+            }
+            return false;
+        }
+
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
             const isVisible = popup.style.display === 'flex';
@@ -2679,6 +2723,8 @@ const AvatarPopupMixin = {
             }
 
             if (isVisible) {
+                if (isTutorialGuardedSettingsClose(buttonId)) return;
+
                 // 关闭弹窗
                 popup._showToken += 1;
                 dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closing', buttonId, popup, prefix);
@@ -2722,6 +2768,9 @@ const AvatarPopupMixin = {
                 }
 
                 this.closeAllPopupsExcept(buttonId);
+                // goodbye 隐藏路径（app-ui）会给弹窗 inline pointer-events:none!important，
+                // 返回路径负责成对清除；此处自愈兜底，与 display/opacity/visibility 的覆盖行为对齐
+                popup.style.removeProperty('pointer-events');
                 popup.style.display = 'flex';
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
@@ -2752,7 +2801,10 @@ const AvatarPopupMixin = {
                                 bottomMargin: 60,
                                 topMargin: 8,
                                 gap: 8,
-                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+                                // 移动端不为侧面板预留宽度：侧面板此时向下展开（goDown），
+                                // 右侧预留 320px 会让 opensLeft 误判把弹窗推出屏幕左缘
+                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent')
+                                    && !(typeof window.isMobileWidth === 'function' && window.isMobileWidth()) ? 320 : 0
                             });
                             popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                             popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -2781,6 +2833,8 @@ const AvatarPopupMixin = {
 
         ManagerProto.closePopupById = function (buttonId) {
             if (!buttonId) return false;
+            if (isTutorialGuardedSettingsClose(buttonId)) return false;
+
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 

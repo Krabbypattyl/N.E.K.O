@@ -90,6 +90,13 @@ class Modules:
     # (mirrors computer-use exclusivity, implemented as a lock instead of a
     # scheduler loop). Lazily created on the running event loop.
     browser_use_dispatch_lock: Optional[asyncio.Lock] = None
+    # BrowserUse imports a sizeable dependency graph and may own a Chromium
+    # subprocess.  Keep construction/teardown serialized so on-demand callers
+    # cannot create duplicate adapters or race a disable/shutdown close.
+    browser_use_init_lock: Optional[asyncio.Lock] = None
+    # Monotonic intent generation. A background close may finish after a quick
+    # re-enable, but must not overwrite the newer ready capability state.
+    browser_use_lifecycle_seq: int = 0
     # OpenClaw/QwenPaw is an external service. Enabling keeps the user's intent
     # while a bounded background probe waits for the external health endpoint.
     openclaw_enable_task: Optional[asyncio.Task] = None
@@ -112,6 +119,11 @@ class Modules:
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
+    # Proactive-analyze throttle state (opt-in feature, see AGENT_PROACTIVE_ANALYZE_*).
+    # Per-lanlan count of proactive analyses run this session (reset on greeting_check)
+    # and the last proactive assistant-turn fingerprint already consumed (dedupe).
+    proactive_analyze_count: ClassVar[Dict[str, int]] = {}
+    last_proactive_assistant_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
