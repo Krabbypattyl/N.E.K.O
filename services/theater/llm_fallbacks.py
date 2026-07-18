@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .llm_performance_guard import _exposes_internal_runtime_detail
 from .llm_response_contracts import _FORBIDDEN_OUTPUT_TERMS
 
 
@@ -60,7 +59,6 @@ def fallback_turn(
     has_scene_notes: bool = False,
     recent_turns: list[dict[str, Any]] | None = None,
     choice_options: list[dict[str, Any]] | None = None,
-    completed_branch_recall: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """使用作者文本生成离线演绎，确保模型故障时仍能继续游戏。"""  # noqa: DOCSTRING_CJK
     name = str(lanlan_name or "Lan").strip() or "Lan"
@@ -70,9 +68,7 @@ def fallback_turn(
             dialogue = f"{name}还在这里喵。"
         else:
             scene_prefix = _fallback_scene_prefix(scene)
-            if completed_branch_recall:
-                continuity = "刚才已经发生的事我记得，不会把它抹掉；"
-            elif choice_options:
+            if choice_options:
                 continuity = "眼前的下一步还没有替你决定；"
             elif recent_turns or has_scene_notes:
                 continuity = "我没有忘记我们刚才说到哪里；"
@@ -92,82 +88,5 @@ def fallback_turn(
     return {
         "narration": narration,
         "dialogue": dialogue,
-        "choice_rewrites": [],
-    }
-
-
-def fallback_branch_turn(
-    *,
-    lanlan_name: str,
-    scene: dict[str, Any],
-    user_message: str,
-    activity_summary: str = "",
-    has_committed_progress: bool = False,
-    private_identifiers: set[str] | None = None,
-) -> dict[str, Any]:
-    """返回不提交事实的技术降级回应；内部标记只供事务层选择无预算路径。"""  # noqa: DOCSTRING_CJK
-    scene_prefix = _fallback_scene_prefix(scene)
-    activity = _bounded_public_fallback_anchor(activity_summary)
-    if _exposes_internal_runtime_detail(activity, private_identifiers or set()):
-        activity = ""
-    activity_prefix = f"关于“{activity}”这件事，" if activity else ""
-    continuity = (
-        "刚才已经发生的进展都还算数，下一步也没有替你决定；"
-        if has_committed_progress
-        else "下一步还没有替你完成；"
-    )
-    # 模型或合同失败时绝不猜测动作结果；技术故障不能冒充玩家没有推进并消耗作者预算。
-    return {
-        "narration": "",
-        "dialogue": scene_prefix
-        + activity_prefix
-        + continuity
-        + "先让我理清楚，再继续回应你喵。",
-        "fact_candidates": [],
-        "turn_delivery": "technical_degraded",
-    }
-
-
-def fallback_branch_entry(
-    *,
-    scene_title: str = "",
-    activity_summary: str = "",
-    private_identifiers: set[str] | None = None,
-) -> dict[str, Any]:
-    """只用公开场景与行动方向返回无新增事实的通用支线安全演出。"""  # noqa: DOCSTRING_CJK
-    scene_prefix = _fallback_scene_prefix(scene_title=scene_title)
-    activity = _bounded_public_fallback_anchor(activity_summary)
-    if _exposes_internal_runtime_detail(activity, private_identifiers or set()):
-        activity = ""
-    activity_prefix = f"你想做的“{activity}”已经确认从这里开始；" if activity else ""
-    # 固定对白只确认入口方向，不代做动作、不补充物件，也不依赖任何当前剧本题材。
-    return {
-        "narration": "",
-        "dialogue": scene_prefix
-        + activity_prefix
-        + "后面的事还没有发生，我们只从眼前这一步继续喵。",
-        "choice_rewrites": [],
-    }
-
-
-def fallback_branch_handoff(
-    *,
-    scene_title: str = "",
-    activity_summary: str = "",
-    private_identifiers: set[str] | None = None,
-) -> dict[str, Any]:
-    """为显式转交回合返回不抢跑新行动的固定安全演出。"""  # noqa: DOCSTRING_CJK
-    scene_prefix = _fallback_scene_prefix(scene_title=scene_title)
-    activity = _bounded_public_fallback_anchor(activity_summary)
-    if _exposes_internal_runtime_detail(activity, private_identifiers or set()):
-        activity = ""
-    activity_text = (
-        f"“{activity}”先停在这里。" if activity else "刚才那件事先停在这里。"
-    )
-    return {
-        "narration": "",
-        "dialogue": scene_prefix
-        + activity_text
-        + "你的新想法还没有开始，我会先和你确认清楚再行动喵。",
         "choice_rewrites": [],
     }

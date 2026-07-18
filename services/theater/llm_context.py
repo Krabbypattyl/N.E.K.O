@@ -6,14 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from config import (
-    THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS,
-    THEATER_BRANCH_RECALL_MAX_FACTS,
-    THEATER_BRANCH_RECALL_MAX_HISTORIES,
-)
 from utils.tokenize import truncate_to_tokens
-
-from . import fact_view
 
 
 def _complete_model_text(value: Any, max_tokens: int) -> str | None:
@@ -21,50 +14,6 @@ def _complete_model_text(value: Any, max_tokens: int) -> str | None:
     text = str(value or "")
     bounded = truncate_to_tokens(text, max_tokens)
     return text if bounded == text else None
-
-def _bounded_completed_branch_recall(value: Any) -> list[dict[str, Any]]:
-    """把 History 投影压缩到普通 Actor 的固定事实数与逐字段 token 预算。"""  # noqa: DOCSTRING_CJK
-    if not isinstance(value, list):
-        return []
-    result: list[dict[str, Any]] = []
-    fact_count = 0
-    for record in value[-THEATER_BRANCH_RECALL_MAX_HISTORIES:]:
-        if not isinstance(record, dict):
-            continue
-        summaries = [
-            truncate_to_tokens(str(item), THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS)
-            for item in (record.get("completed_goal_summaries") or [])[:4]
-            if isinstance(item, str) and item.strip()
-        ]
-        facts: list[dict[str, Any]] = []
-        for fact in record.get("facts") or []:
-            if fact_count >= THEATER_BRANCH_RECALL_MAX_FACTS:
-                # 投影函数已经按近期优先排列，达到总预算后无需继续扫描更旧事实。
-                break
-            if not isinstance(fact, dict):
-                continue
-            projected = {
-                key: truncate_to_tokens(
-                    str(fact.get(key) or ""), THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS
-                )
-                for key in ("subject", "predicate", "object")
-            }
-            entity = fact.get("public_entity")
-            if isinstance(entity, dict):
-                # kind/status 是固定枚举，label 仍按同一用户文本预算截断。
-                projected["public_entity"] = {
-                    "kind": str(entity.get("kind") or ""),
-                    "label": truncate_to_tokens(
-                        str(entity.get("label") or ""),
-                        THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS,
-                    ),
-                    "status": str(entity.get("status") or ""),
-                }
-            facts.append(projected)
-            fact_count += 1
-        if summaries or facts:
-            result.append({"completed_goal_summaries": summaries, "facts": facts})
-    return result
 
 def _public_state(
     story: dict[str, Any],
@@ -76,7 +25,7 @@ def _public_state(
     result = {
         "已发现线索": list(state.get("clue_ids") or []),
         "已使用道具": list(state.get("used_prop_ids") or []),
-        "已确认事实": fact_view.authoritative_facts(story, state)[-8:],
+        "已确认事实": list(state.get("narrative_facts") or [])[-8:],
     }
     if include_scene_notes:
         result["场景笔记"] = list(state.get("scene_notes") or [])[-4:]

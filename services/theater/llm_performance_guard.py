@@ -6,7 +6,6 @@ from difflib import SequenceMatcher
 import re
 from typing import Any
 
-from . import fact_view
 from .llm_response_contracts import _FORBIDDEN_OUTPUT_TERMS
 
 
@@ -249,7 +248,7 @@ def _active_story_forbidden_phrases(
         if isinstance(story, dict) and isinstance(story.get("runtime_guardrails"), dict)
         else {}
     )
-    facts = fact_view.authoritative_facts(story or {}, state or {})
+    facts = list((state or {}).get("narrative_facts") or [])
     phrases: list[str] = []
     for guard in guardrails.get("conditional_output_guards") or []:
         if not isinstance(guard, dict):
@@ -258,7 +257,10 @@ def _active_story_forbidden_phrases(
             guard.get("until_fact") if isinstance(guard.get("until_fact"), dict) else {}
         )
         # until_fact 一旦由作者节点提交，说明这条阶段性限制已经完成使命，不再继续拦截后续互动。
-        if until_fact and any(_same_narrative_fact(item, until_fact) for item in facts):
+        if until_fact and any(
+            isinstance(item, dict) and _same_narrative_fact(item, until_fact)
+            for item in facts
+        ):
             continue
         phrases.extend(
             str(item).strip()

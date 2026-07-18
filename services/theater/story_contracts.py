@@ -6,7 +6,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from . import story_dynamic_contracts
 
 
 class StoryRootNotObjectError(ValueError):
@@ -80,8 +79,6 @@ def validate_story_package(story: dict[str, Any], path: Path) -> dict[str, Any]:
         raise ValueError(f"Theater story {path} has invalid or duplicate node ids")
     _validate_public_story_contract(story, path)
     _validate_static_node_contract(nodes, path, scene_phases)
-    # 动态协议只依赖作者稳定 ID；先完成节点收集，再校验 v2.5 的全部交叉引用。
-    story_dynamic_contracts.validate_dynamic_story_contract(story, path, nodes)
     raw_edges = story.get("edges")
     if not isinstance(raw_edges, list):
         raise ValueError(f"Theater story {path} has invalid edges")
@@ -104,9 +101,8 @@ def validate_story_package(story: dict[str, Any], path: Path) -> dict[str, Any]:
             )
         if visibility != "latent":
             continue
-        # 隐藏语义边必须完全由作者声明。模型只能返回 intent_id，不能补写目标、阈值或事实。
+        # 隐藏语义边也是作者静态图的一部分；模型只能从当前白名单返回 intent_id。
         transition_id = str(edge.get("transition_id") or "").strip()
-        goal_id = str(edge.get("goal_id") or "").strip()
         intent_id = str(edge.get("intent_id") or "").strip()
         intent_summary = str(edge.get("intent_summary") or "").strip()
         examples = [
@@ -114,24 +110,14 @@ def validate_story_package(story: dict[str, Any], path: Path) -> dict[str, Any]:
             for item in edge.get("intent_examples") or []
             if str(item).strip()
         ]
-        pullbacks = edge.get("pullbacks_before_transition")
         if (
             not transition_id
-            or not goal_id
             or not intent_id
             or not intent_summary
             or not examples
         ):
             raise ValueError(
                 f"Theater story {path} latent edge is missing routing metadata"
-            )
-        if (
-            isinstance(pullbacks, bool)
-            or not isinstance(pullbacks, int)
-            or pullbacks < 0
-        ):
-            raise ValueError(
-                f"Theater story {path} latent edge has invalid pullback threshold"
             )
         if transition_id in transition_ids:
             raise ValueError(

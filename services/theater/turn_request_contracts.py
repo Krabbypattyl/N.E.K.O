@@ -42,8 +42,6 @@ def _turn_execution_surface(
     *,
     request: dict[str, Any],
     response: dict[str, Any],
-    candidate: dict[str, Any],
-    before_active_branch: bool,
 ) -> str:
     """从候选提交结果派生固定执行场景，不把节点、Choice 或剧情文本写进指标。"""  # noqa: DOCSTRING_CJK
     if request.get("input_kind") == "user_exit":
@@ -51,26 +49,7 @@ def _turn_execution_surface(
     trace = response.get("scenario_trace")
     if isinstance(trace, dict) and trace.get("progress_kind") == "graph_progress":
         return "graph_progress"
-    if before_active_branch:
-        return "branch_turn"
-    state = candidate.get("story_state")
-    after_active_branch = bool(
-        isinstance(state, dict)
-        and isinstance(state.get("active_runtime_branch"), dict)
-        and state.get("active_runtime_branch")
-    )
-    return "branch_entry" if after_active_branch else "roleplay_response"
-
-
-def _verified_residual_evidence_excerpt(
-    user_message: Any, evidence_excerpt: Any
-) -> str:
-    """只接受能在本轮玩家原话中逐字找到的规范化摘录，拒绝模型改写或虚构证据。"""  # noqa: DOCSTRING_CJK
-    normalized_message = " ".join(str(user_message or "").strip().split())
-    normalized_excerpt = " ".join(str(evidence_excerpt or "").strip().split())
-    if not normalized_excerpt or normalized_excerpt not in normalized_message:
-        return ""
-    return normalized_excerpt
+    return "roleplay_response"
 
 def _normalize_request(
     *,

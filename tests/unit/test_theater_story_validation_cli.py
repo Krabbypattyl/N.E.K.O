@@ -183,101 +183,10 @@ def test_cli_warns_when_legacy_edge_uses_default_visibility(
     assert story_path.read_bytes() == original_bytes
 
 
-def test_cli_valid_story_warns_for_declarative_slot_without_network_or_default_writes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-):
-    """合法开放槽位允许通过，但必须警告其 traits 仍只是声明，且全程不联网。"""  # noqa: DOCSTRING_CJK
-    story_path = tmp_path / "story.json"
-    _write_json(story_path, _story_payload(with_slot=True))
-    original_bytes = story_path.read_bytes()
-
-    def _unexpected_network(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("作者校验工具不得建立网络连接")
-
-    async def _unexpected_async_network(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("作者校验工具不得建立异步网络连接")
-
-    monkeypatch.setattr(socket, "create_connection", _unexpected_network)
-    monkeypatch.setattr(asyncio, "open_connection", _unexpected_async_network)
-
-    exit_code = validate_theater_story.main(
-        ["--story", str(story_path), "--explain-slots"]
-    )
-    report = _stdout_report(capsys)
-
-    assert exit_code == 0
-    assert report["valid"] is True
-    assert report["code"] == "valid"
-    assert report["warnings"] == [
-        {
-            "code": "slot_traits_declarative_only",
-            "slot_id": "slot_synthetic_item",
-        }
-    ]
-    assert report["slots"] == [
-        {
-            "slot_id": "slot_synthetic_item",
-            "allowed_fact_type": "synthetic_item",
-            "required_traits": ["safe"],
-            "forbidden_traits": ["dangerous"],
-            "enforcement": "declarative_only",
-        }
-    ]
-    assert story_path.read_bytes() == original_bytes
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["story.json"]
 
 
-def test_cli_marks_loader_validated_catalog_as_verified(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-):
-    """只有先通过 Loader 精确目录合同的 Story，才会报告目录槽位已确定性校验。"""  # noqa: DOCSTRING_CJK
-    story_path = tmp_path / "catalog-story.json"
-    _write_json(
-        story_path,
-        _story_payload(with_slot=True, with_catalog=True),
-    )
-
-    exit_code = validate_theater_story.main(
-        ["--story", str(story_path), "--explain-slots"]
-    )
-    report = _stdout_report(capsys)
-
-    assert exit_code == 0
-    assert report["warnings"] == []
-    assert report["slots"] == [
-        {
-            "slot_id": "slot_synthetic_item",
-            "allowed_fact_type": "synthetic_item",
-            "required_traits": ["safe"],
-            "forbidden_traits": ["dangerous"],
-            "enforcement": "catalog_verified",
-        }
-    ]
 
 
-def test_cli_does_not_mark_runtime_invalid_catalog_label_as_verified(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-):
-    """机器式 Board 标签必须在 Loader 阶段失败，不能被作者工具误报为严格目录。"""  # noqa: DOCSTRING_CJK
-    story_path = tmp_path / "invalid-catalog-label.json"
-    payload = _story_payload(with_slot=True, with_catalog=True)
-    payload["world_contract"]["dynamic_content_slots"][0]["catalog_items"][0][
-        "label"
-    ] = "safe_item"
-    _write_json(story_path, payload)
-
-    exit_code = validate_theater_story.main(
-        ["--story", str(story_path), "--explain-slots"]
-    )
-    report = _stdout_report(capsys)
-
-    assert exit_code == 1
-    assert report["code"] == "story_contract_invalid"
-    assert "slots" not in report
 
 
 @pytest.mark.parametrize(

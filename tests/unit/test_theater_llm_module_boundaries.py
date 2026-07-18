@@ -28,10 +28,6 @@ def test_llm_model_orchestration_remains_in_original_module():
     """模型入口和统一发送器必须继续使用原模块的可替换全局变量。"""  # noqa: DOCSTRING_CJK
     public_surfaces = (
         "route_free_input_async",
-        "classify_active_branch_handoff_async",
-        "plan_runtime_branch_async",
-        "generate_branch_entry_async",
-        "generate_branch_turn_async",
         "generate_turn_async",
     )
     for name in public_surfaces:
@@ -45,28 +41,13 @@ def test_llm_model_orchestration_remains_in_original_module():
 def test_llm_reexports_moved_objects_by_identity():
     """原常量和辅助函数路径必须直接指向职责模块中的同一对象。"""  # noqa: DOCSTRING_CJK
     response_names = (
-        "THEATER_BRANCH_FACT_CANDIDATE_MAX_ITEMS",
-        "THEATER_BRANCH_HANDOFF_MIN_CONFIDENCE",
-        "THEATER_BRANCH_HANDOFF_CONTINUE_MIN_CONFIDENCE",
-        "THEATER_BRANCH_HANDOFF_SUMMARY_MAX_CHARS",
-        "THEATER_BRANCH_HANDOFF_EVIDENCE_MAX_CHARS",
-        "THEATER_BRANCH_HANDOFF_CLASSIFICATIONS",
-        "THEATER_FREE_INTENT_MIN_CONFIDENCE",
-        "THEATER_FREE_INTENT_RELATIONS",
-        "THEATER_RESIDUAL_SUMMARY_MAX_CHARS",
-        "THEATER_RESIDUAL_EVIDENCE_MAX_CHARS",
         "THEATER_RESPONSE_FOCUS_TYPES",
         "THEATER_RESPONSE_FOCUS_EVIDENCE_MAX_CHARS",
         "_FORBIDDEN_OUTPUT_TERMS",
-        "_parse_planner_output",
-        "_parse_branch_turn_output",
-        "_parse_branch_handoff_output",
         "_parse_route_output",
         "verify_response_focus",
-        "_parse_residual_intent",
         "_empty_route_result",
         "_technical_route_fallback",
-        "_technical_branch_handoff_fallback",
         "_parse_output",
         "_load_unique_model_json_object",
         "_balanced_json_object_fragments",
@@ -96,19 +77,10 @@ def test_llm_reexports_moved_objects_by_identity():
     )
     fallback_names = (
         "_authored_performance_fallback",
-        "_bounded_public_fallback_anchor",
-        "_fallback_scene_prefix",
         "fallback_turn",
-        "fallback_branch_turn",
-        "fallback_branch_entry",
-        "fallback_branch_handoff",
     )
     context_names = (
-        "THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS",
-        "THEATER_BRANCH_RECALL_MAX_FACTS",
-        "THEATER_BRANCH_RECALL_MAX_HISTORIES",
         "_complete_model_text",
-        "_bounded_completed_branch_recall",
         "_public_state",
         "_recent_public_turns",
         "_load_character_profile",
@@ -134,10 +106,7 @@ def test_llm_submodules_keep_one_way_dependencies():
     for module in modules:
         assert "llm" not in _relative_imports(module)
     assert "llm_response_contracts" in _relative_imports(llm_performance_guard)
-    assert {
-        "llm_response_contracts",
-        "llm_performance_guard",
-    }.issubset(_relative_imports(llm_fallbacks))
+    assert "llm_response_contracts" in _relative_imports(llm_fallbacks)
 
 
 def test_llm_contract_results_remain_independent_and_strict():

@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from . import (
-    branch_contracts,
-    branch_lifecycle,
     projector,
     rules,
     session_store,
@@ -324,8 +322,6 @@ async def get_state(
             "reason": restore_error,
             "session_id": str(session_id or ""),
         }
-    # 恢复只保留仍位于目标节点和 revision 窗口内的 Pending；私有清理不改变公开 revision。
-    session = await _clear_invalid_pending_on_restore(root, session_id, session)
     snapshot = session.get("public_snapshot")
     if not isinstance(snapshot, dict):
         # 所有保留型恢复错误都带回原 Session ID，前端才能维持同一份本地恢复指针。
@@ -352,12 +348,12 @@ async def _reconcile_session_on_restore(
     session: dict[str, Any],
     story: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    """在 Session 锁内迁移中性默认值、重验活动支线并同步公开快照。"""  # noqa: DOCSTRING_CJK
+    """在 Session 锁内补齐中性字段并同步公开快照。"""  # noqa: DOCSTRING_CJK
     candidate, changed, error = _restored_session_candidate(session, story)
     if error or not changed:
         return candidate, error
     async with session_store.session_guard(session_id):
-        # 锁外判断后必须重读并重新计算，避免覆盖刚提交的新回合或支线状态。
+        # 锁外判断后必须重读并重新计算，避免覆盖刚提交的新回合。
         latest = await session_store.load_session(root, session_id)
         if latest is None:
             return session, "session_not_found"
@@ -399,177 +395,8 @@ def _restored_session_candidate(
         # 同 schema 的早期存档只补当前已成功加载 Story 的 revision，不迁移作者节点或剧情事实。
         candidate["story_revision"] = current_story_revision
         changed = True
-    neutral_defaults: tuple[tuple[str, object, type], ...] = (
-        ("dynamic_intent", {}, dict),
-        ("pending_intent", {}, dict),
-        ("active_runtime_branch", {}, dict),
-        ("branch_facts", [], list),
-        ("completed_goal_ids", [], list),
-        ("branch_history", [], list),
-    )
-    for field, default, expected_type in neutral_defaults:
-        if field not in state:
-            state[field] = deepcopy(default)
-            changed = True
-        elif not isinstance(state.get(field), expected_type):
-            # 权威事实和历史类型损坏时不能用空值覆盖；完整保留文件交给明确修复流程。
-            return candidate, False, "session_state_invalid"
-
-    goal_ids = {
-        str(item.get("goal_id") or "")
-        for item in story.get("narrative_goals") or []
-        if isinstance(item, dict)
-    }
-    if any(
-        not isinstance(item, str) or item not in goal_ids
-        for item in state["completed_goal_ids"]
-    ):
-        return candidate, False, "session_state_invalid"
-    if len(state["completed_goal_ids"]) != len(set(state["completed_goal_ids"])):
-        return candidate, False, "session_state_invalid"
-    try:
-        for fact in state["branch_facts"]:
-            validated_fact = branch_contracts.validate_committed_branch_fact_structure(
-                fact,
-                story=story,
-            )
-            if int(validated_fact["source_revision"]) > session_store.state_revision(
-                candidate
-            ):
-                raise ValueError("Committed Branch Fact is newer than Session")
-        for history in state["branch_history"]:
-            validated_history = branch_contracts.validate_branch_history_entry(
-                history,
-                story=story,
-                branch_facts=state["branch_facts"],
-            )
-            if int(validated_history["ended_revision"]) > session_store.state_revision(
-                candidate
-            ):
-                raise ValueError("Branch History is newer than Session")
-    except ValueError:
-        # 已提交事实和 History 属于权威用户进度；结构损坏时保留原文件，绝不丢弃或猜测改写。
-        return candidate, False, "session_state_invalid"
-    active_branch = state.get("active_runtime_branch")
-    if isinstance(active_branch, dict) and active_branch:
-        valid, repairable = _restored_active_branch_status(
-            active_branch,
-            state=state,
-            story=story,
-            session_revision=session_store.state_revision(candidate),
-        )
-        if not valid:
-            if not repairable:
-                return candidate, False, "session_state_invalid"
-            if not _close_invalid_restored_branch(
-                state,
-                story,
-                active_branch,
-                session_store.state_revision(candidate),
-            ):
-                return candidate, False, "session_state_invalid"
-            changed = True
     candidate["story_state"] = state
     return candidate, changed, ""
-
-
-def _restored_active_branch_status(
-    active_branch: dict[str, Any],
-    *,
-    state: dict[str, Any],
-    story: dict[str, Any],
-    session_revision: int,
-) -> tuple[bool, bool]:
-    """区分合法活动支线、可回锚点关闭的损坏支线和不可安全处理的状态。"""  # noqa: DOCSTRING_CJK
-    branch_id = str(active_branch.get("branch_id") or "").strip()
-    anchor = active_branch.get("return_anchor")
-    anchor_id = (
-        str(anchor.get("node_id") or "").strip() if isinstance(anchor, dict) else ""
-    )
-    repairable = bool(
-        branch_id and anchor_id and story_graph.node_by_id(story, anchor_id)
-    )
-    if not branch_lifecycle.active_runtime_branch_is_valid(active_branch):
-        return False, repairable
-    if int(active_branch.get("created_revision") or 0) > session_revision:
-        return False, repairable
-    try:
-        validated_patch = branch_contracts.validate_runtime_branch_patch(
-            active_branch.get("patch"),
-            story=story,
-            current_node_id=str(state.get("current_node_id") or ""),
-            # 恢复时重用激活校验，旧 Patch 若指向已完成 Goal 就按损坏活动状态安全关闭。
-            completed_goal_ids=list(state.get("completed_goal_ids") or []),
-        )
-    except ValueError:
-        return False, repairable
-    for fact in state.get("branch_facts") or []:
-        if not isinstance(fact, dict) or str(fact.get("branch_id") or "") != branch_id:
-            continue
-        source_revision = fact.get("source_revision")
-        if (
-            not str(fact.get("fact_id") or "").strip()
-            or type(source_revision) is not int
-            or source_revision < int(active_branch.get("created_revision") or 0)
-            or source_revision > session_revision
-        ):
-            return False, repairable
-        try:
-            # 活动支线仍保存原 Patch；恢复时必须防止事实被改绑到同槽另一个合法目录成员。
-            branch_contracts.validate_committed_branch_fact_against_patch(
-                fact,
-                story=story,
-                patch=validated_patch,
-            )
-        except ValueError:
-            # 事实与原 Patch 分叉时不能安全保留并自动回锚，原文件留给玩家明确处理。
-            return False, False
-    return True, repairable
-
-
-def _close_invalid_restored_branch(
-    state: dict[str, Any],
-    story: dict[str, Any],
-    active_branch: dict[str, Any],
-    session_revision: int,
-) -> bool:
-    """保留已提交事实，以明确恢复原因记录 History，并回到服务端保存的作者锚点。"""  # noqa: DOCSTRING_CJK
-    branch_id = str(active_branch.get("branch_id") or "").strip()
-    anchor = (
-        active_branch.get("return_anchor")
-        if isinstance(active_branch.get("return_anchor"), dict)
-        else {}
-    )
-    anchor_id = str(anchor.get("node_id") or "").strip()
-    facts = [item for item in state.get("branch_facts") or [] if isinstance(item, dict)]
-    key_fact_ids = [
-        str(item.get("fact_id") or "")
-        for item in facts
-        if str(item.get("branch_id") or "") == branch_id
-        and str(item.get("fact_id") or "")
-    ]
-    try:
-        history = branch_contracts.validate_branch_history_entry(
-            {
-                "branch_id": branch_id,
-                "completed_goal_ids": [],
-                "key_fact_ids": key_fact_ids,
-                "exit_kind": "restore_invalid",
-                "ended_revision": session_revision,
-            },
-            story=story,
-            branch_facts=facts,
-        )
-    except ValueError:
-        return False
-    state["current_node_id"] = anchor_id
-    state["branch_history"] = [
-        *[item for item in state.get("branch_history") or [] if isinstance(item, dict)],
-        history,
-    ]
-    state["active_runtime_branch"] = {}
-    state["dynamic_intent"] = {}
-    return True
 
 
 def _rebuild_restored_snapshot(
@@ -605,63 +432,6 @@ def _rebuild_restored_snapshot(
         ending=deepcopy(ending),
         can_resume=not bool(session.get("ended_at")),
     )
-
-
-async def _clear_invalid_pending_on_restore(
-    root: Path,
-    session_id: str,
-    session: dict[str, Any],
-) -> dict[str, Any]:
-    """在 Session 锁内清除过期、坏结构或已离开目标节点的 Pending Intent。"""  # noqa: DOCSTRING_CJK
-    if _pending_restore_decision(session) in {"", "revalidate"}:
-        return session
-    async with session_store.session_guard(session_id):
-        # 锁外判断后重新读盘，避免覆盖并发回合刚提交的新 revision 或新 Pending。
-        latest = await session_store.load_session(root, session_id)
-        if latest is None:
-            return session
-        if _pending_restore_decision(latest) in {"", "revalidate"}:
-            return latest
-        state = (
-            latest.get("story_state")
-            if isinstance(latest.get("story_state"), dict)
-            else {}
-        )
-        state["pending_intent"] = {}
-        latest["story_state"] = state
-        await session_store.save_session(root, latest)
-        return latest
-
-
-def _pending_restore_decision(session: dict[str, Any]) -> str:
-    """按已提交公开 Scene 与私有节点计算恢复时的 Pending 状态。"""  # noqa: DOCSTRING_CJK
-    state = (
-        session.get("story_state")
-        if isinstance(session.get("story_state"), dict)
-        else {}
-    )
-    pending = state.get("pending_intent")
-    if not isinstance(pending, dict) or not pending:
-        return ""
-    snapshot = (
-        session.get("public_snapshot")
-        if isinstance(session.get("public_snapshot"), dict)
-        else {}
-    )
-    scene = snapshot.get("scene") if isinstance(snapshot.get("scene"), dict) else {}
-    try:
-        return branch_lifecycle.evaluate_pending_intent(
-            pending,
-            current_node_id=str(state.get("current_node_id") or ""),
-            current_scene_id=str(scene.get("scene_id") or ""),
-            current_revision=session_store.state_revision(session),
-            # 恢复没有新的玩家输入；否定和语义兼容仍留到下一次 Router 重验。
-            player_denied=False,
-            scene_compatible=True,
-        )
-    except ValueError:
-        # 损坏的私有辅助字段不能阻断公开快照恢复。
-        return "discard_invalid"
 
 
 async def claim_dialogue_speech(

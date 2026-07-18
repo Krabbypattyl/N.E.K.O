@@ -2,26 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
-from config import THEATER_BRANCH_FACT_CANDIDATE_MAX_ITEMS
 from utils.file_utils import robust_json_loads
 
 
-THEATER_BRANCH_HANDOFF_MIN_CONFIDENCE = 0.85
-THEATER_BRANCH_HANDOFF_CONTINUE_MIN_CONFIDENCE = 0.65
-THEATER_BRANCH_HANDOFF_SUMMARY_MAX_CHARS = 160
-THEATER_BRANCH_HANDOFF_EVIDENCE_MAX_CHARS = 240
-THEATER_BRANCH_HANDOFF_CLASSIFICATIONS = frozenset(
-    {"continue_branch", "intent_handoff", "uncertain"}
-)
-# 置信度只用于拒绝含糊的自由意图；连续两次阈值仍由 intent_tracker 独立判断。
-THEATER_FREE_INTENT_MIN_CONFIDENCE = 0.65
-THEATER_FREE_INTENT_RELATIONS = frozenset({"new", "continue", "refine", "replace"})
-# 复合输入的剩余意图只保存短语义与原话摘录，不能放大 Session 和 Router 上下文。
-THEATER_RESIDUAL_SUMMARY_MAX_CHARS = 160
-THEATER_RESIDUAL_EVIDENCE_MAX_CHARS = 240
 # 回应焦点只描述本轮应先承接的公开语义，不承担路由或事实提交权。
 THEATER_RESPONSE_FOCUS_TYPES = frozenset(
     {"question", "object", "action", "attitude"}
@@ -47,148 +32,6 @@ _FORBIDDEN_OUTPUT_TERMS = (
 )
 
 
-def _parse_planner_output(raw: Any) -> dict[str, Any] | None:
-    """只解析 Planner 的 JSON 对象；字段合同与稳定引用由 branch_contracts 统一裁决。"""  # noqa: DOCSTRING_CJK
-    try:
-        payload = _load_unique_model_json_object(raw)
-    except Exception:
-        return None
-    # 列表、字符串或 null 都不是 Patch；服务层只会继续处理独立对象。
-    return payload if isinstance(payload, dict) else None
-
-
-def _parse_branch_turn_output(raw: Any) -> dict[str, Any] | None:
-    """解析活动支线 Actor 的公开演出和无权威事实候选，合同校验留给 branch_runtime。"""  # noqa: DOCSTRING_CJK
-    try:
-        payload = _load_unique_model_json_object(raw)
-    except Exception:
-        return None
-    if not isinstance(payload, dict) or set(payload) != {
-        "narration",
-        "dialogue",
-        "fact_candidates",
-    }:
-        return None
-    narration = str(payload.get("narration") or "").strip()
-    dialogue = str(payload.get("dialogue") or "").strip()
-    combined = narration + dialogue
-    if not dialogue or any(
-        term.lower() in combined.lower() for term in _FORBIDDEN_OUTPUT_TERMS
-    ):
-        return None
-    fact_candidates = payload.get("fact_candidates")
-    if (
-        not isinstance(fact_candidates, list)
-        or len(fact_candidates) > THEATER_BRANCH_FACT_CANDIDATE_MAX_ITEMS
-        or any(not isinstance(item, dict) for item in fact_candidates)
-    ):
-        return None
-    # 候选只做隔离复制，不在模型解析层补字段、改 ID 或静默修正合同错误。
-    return {
-        "narration": narration,
-        "dialogue": dialogue,
-        "fact_candidates": [dict(item) for item in fact_candidates],
-    }
-
-
-def _parse_branch_handoff_output(
-    raw: Any, *, user_message: str
-) -> dict[str, Any] | None:
-    """解析无权威转交候选，并用本轮玩家原话复核两段证据。"""  # noqa: DOCSTRING_CJK
-    try:
-        payload = _load_unique_model_json_object(raw)
-    except Exception:
-        return None
-    required_fields = {
-        "classification",
-        "intent_summary",
-        "exit_evidence_excerpt",
-        "next_evidence_excerpt",
-        "confidence",
-        "response_focus",
-    }
-    if not isinstance(payload, dict) or set(payload) != required_fields:
-        return None
-    classification = str(payload.get("classification") or "").strip()
-    intent_summary = " ".join(str(payload.get("intent_summary") or "").strip().split())
-    exit_excerpt = " ".join(
-        str(payload.get("exit_evidence_excerpt") or "").strip().split()
-    )
-    next_excerpt = " ".join(
-        str(payload.get("next_evidence_excerpt") or "").strip().split()
-    )
-    confidence = payload.get("confidence")
-    raw_response_focus = payload.get("response_focus")
-    if (
-        classification not in THEATER_BRANCH_HANDOFF_CLASSIFICATIONS
-        or isinstance(confidence, bool)
-        or not isinstance(confidence, (int, float))
-        or not math.isfinite(float(confidence))
-        or not 0.0 <= float(confidence) <= 1.0
-    ):
-        return None
-
-    if raw_response_focus == {}:
-        response_focus: dict[str, Any] = {}
-    else:
-        response_focus = verify_response_focus(
-            raw_response_focus,
-            user_message=user_message,
-        )
-        # 非空焦点若不能由玩家本轮原话证明，则拒绝整份分类结果，不能静默降级后继续采用。
-        if not response_focus:
-            return None
-    # 只有继续当前支线时才会调用当前支线 Actor；转交或不确定分类不得夹带回应义务。
-    if classification != "continue_branch" and response_focus:
-        return None
-
-    if classification != "intent_handoff":
-        # 普通继续与语义不确定都不能夹带下一意图，避免调用方误把附加文本当成状态候选。
-        if (
-            intent_summary
-            or exit_excerpt
-            or next_excerpt
-            or (
-                classification == "continue_branch"
-                and float(confidence) < THEATER_BRANCH_HANDOFF_CONTINUE_MIN_CONFIDENCE
-            )
-        ):
-            return None
-        return {
-            "classification": classification,
-            "intent_summary": "",
-            "exit_evidence_excerpt": "",
-            "next_evidence_excerpt": "",
-            "confidence": float(confidence),
-            "response_focus": response_focus,
-        }
-
-    normalized_message = " ".join(str(user_message or "").strip().split())
-    if (
-        float(confidence) < THEATER_BRANCH_HANDOFF_MIN_CONFIDENCE
-        or not 2 <= len(intent_summary) <= THEATER_BRANCH_HANDOFF_SUMMARY_MAX_CHARS
-        or not 1 <= len(exit_excerpt) <= THEATER_BRANCH_HANDOFF_EVIDENCE_MAX_CHARS
-        or not 1 <= len(next_excerpt) <= THEATER_BRANCH_HANDOFF_EVIDENCE_MAX_CHARS
-        or exit_excerpt not in normalized_message
-        or next_excerpt not in normalized_message
-        or exit_excerpt == next_excerpt
-        or exit_excerpt in next_excerpt
-        or next_excerpt in exit_excerpt
-        or any(
-            term.lower() in intent_summary.lower() for term in _FORBIDDEN_OUTPUT_TERMS
-        )
-    ):
-        return None
-    return {
-        "classification": "intent_handoff",
-        "intent_summary": intent_summary,
-        "exit_evidence_excerpt": exit_excerpt,
-        "next_evidence_excerpt": next_excerpt,
-        "confidence": float(confidence),
-        "response_focus": {},
-    }
-
-
 def _parse_route_output(
     raw: Any,
     *,
@@ -196,85 +39,49 @@ def _parse_route_output(
     allowed_intent_ids: set[str],
     user_message: str = "",
 ) -> dict[str, Any] | None:
-    """解析作者白名单 ID 或自由意图语义；模型永远不能提交身份与次数。"""  # noqa: DOCSTRING_CJK
+    """只接受作者白名单入口或保守停留。"""  # noqa: DOCSTRING_CJK
     try:
         payload = _load_unique_model_json_object(raw)
     except Exception:
         return None
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or set(payload) != {
+        "route_kind",
+        "matched_choice_id",
+        "authored_intent_id",
+        "response_focus",
+    }:
         return None
+    route_kind = str(payload.get("route_kind") or "").strip()
     candidate_choice = str(payload.get("matched_choice_id") or "").strip()
-    matched_choice_id = (
-        candidate_choice if candidate_choice in allowed_choice_ids else ""
-    )
-    # v2.5 对外字段改名为 authored_intent_id；旧名只为平滑读取过渡期模型输出。
-    candidate_intent = str(
-        payload.get("authored_intent_id") or payload.get("observed_intent_id") or ""
-    ).strip()
-    authored_intent_id = (
-        candidate_intent
-        if not matched_choice_id and candidate_intent in allowed_intent_ids
-        else ""
-    )
-    residual_intent = _parse_residual_intent(payload.get("residual_intent"))
+    candidate_intent = str(payload.get("authored_intent_id") or "").strip()
     response_focus = verify_response_focus(
         payload.get("response_focus"),
         user_message=user_message,
     )
-    if matched_choice_id:
-        # 推荐 Choice 是最高优先级；只有严格合法的后半句摘要可以随该 Choice 进入待重验状态。
+    if route_kind == "authored_choice":
+        if candidate_choice not in allowed_choice_ids or candidate_intent:
+            return None
         return {
-            "route_kind": "authored_choice",
-            "matched_choice_id": matched_choice_id,
+            "route_kind": route_kind,
+            "matched_choice_id": candidate_choice,
             "authored_intent_id": "",
-            "free_intent": {},
-            "residual_intent": residual_intent,
             "response_focus": response_focus,
         }
-    if authored_intent_id:
+    if route_kind == "authored_intent":
+        if candidate_intent not in allowed_intent_ids or candidate_choice:
+            return None
         return {
-            "route_kind": "authored_intent",
+            "route_kind": route_kind,
             "matched_choice_id": "",
-            "authored_intent_id": authored_intent_id,
-            "free_intent": {},
-            "residual_intent": {},
+            "authored_intent_id": candidate_intent,
             "response_focus": response_focus,
         }
-
-    fallback = _empty_route_result()
-    if str(payload.get("route_kind") or "").strip() != "free_intent":
-        # 普通同节点互动本来就落在 idle；合法焦点仍可独立帮助 Actor 回应，但不获得任何状态权威。
-        fallback["response_focus"] = response_focus
-        return fallback
-    free_intent = payload.get("free_intent")
-    # 精确字段集会直接拒绝 intent_key、streak 等模型越权字段，也避免未来字段被静默当成状态。
-    if not isinstance(free_intent, dict) or set(free_intent) != {
-        "summary",
-        "relation",
-        "confidence",
-    }:
-        return fallback
-    summary = " ".join(str(free_intent.get("summary") or "").strip().split())
-    relation = str(free_intent.get("relation") or "").strip()
-    confidence = free_intent.get("confidence")
-    if (
-        not 2 <= len(summary) <= 160
-        or relation not in THEATER_FREE_INTENT_RELATIONS
-        or isinstance(confidence, bool)
-        or not isinstance(confidence, (int, float))
-        or not THEATER_FREE_INTENT_MIN_CONFIDENCE <= float(confidence) <= 1.0
-    ):
-        return fallback
+    if route_kind != "stay" or candidate_choice or candidate_intent:
+        return None
     return {
-        "route_kind": "free_intent",
+        "route_kind": "stay",
         "matched_choice_id": "",
         "authored_intent_id": "",
-        "free_intent": {
-            "summary": summary,
-            "relation": relation,
-            "confidence": float(confidence),
-        },
-        "residual_intent": {},
         "response_focus": response_focus,
     }
 
@@ -309,30 +116,12 @@ def verify_response_focus(value: Any, *, user_message: Any) -> dict[str, Any]:
     }
 
 
-def _parse_residual_intent(value: Any) -> dict[str, str]:
-    """只接受 Choice 后可分离的短语义，不允许模型附带任何状态权威。"""  # noqa: DOCSTRING_CJK
-    if not isinstance(value, dict) or set(value) != {"summary", "evidence_excerpt"}:
-        return {}
-    summary = " ".join(str(value.get("summary") or "").strip().split())
-    evidence_excerpt = " ".join(
-        str(value.get("evidence_excerpt") or "").strip().split()
-    )
-    if (
-        not 2 <= len(summary) <= THEATER_RESIDUAL_SUMMARY_MAX_CHARS
-        or not 1 <= len(evidence_excerpt) <= THEATER_RESIDUAL_EVIDENCE_MAX_CHARS
-    ):
-        return {}
-    return {"summary": summary, "evidence_excerpt": evidence_excerpt}
-
-
 def _empty_route_result() -> dict[str, Any]:
-    """返回新的保守路由结果，避免调用方共享可变意图字典。"""  # noqa: DOCSTRING_CJK
+    """返回新的保守停留结果。"""  # noqa: DOCSTRING_CJK
     return {
-        "route_kind": "idle",
+        "route_kind": "stay",
         "matched_choice_id": "",
         "authored_intent_id": "",
-        "free_intent": {},
-        "residual_intent": {},
         "response_focus": {},
     }
 
@@ -343,19 +132,6 @@ def _technical_route_fallback() -> dict[str, Any]:
     # 该字段不属于模型合同，只能由服务端失败路径生成，并在回合事务内消费。
     result["route_delivery"] = "technical_degraded"
     return result
-
-
-def _technical_branch_handoff_fallback() -> dict[str, Any]:
-    """返回不改变支线状态的技术降级分类，且每次创建独立字典。"""  # noqa: DOCSTRING_CJK
-    return {
-        "classification": "uncertain",
-        "intent_summary": "",
-        "exit_evidence_excerpt": "",
-        "next_evidence_excerpt": "",
-        "confidence": 0.0,
-        "response_focus": {},
-        "route_delivery": "technical_degraded",
-    }
 
 
 def _parse_output(
@@ -377,7 +153,7 @@ def _parse_output(
         term.lower() in combined.lower() for term in _FORBIDDEN_OUTPUT_TERMS
     ):
         return None
-    if progress_kind not in {"roleplay_response", "branch_entry"} and not narration:
+    if progress_kind != "roleplay_response" and not narration:
         return None
     return {
         "narration": narration,

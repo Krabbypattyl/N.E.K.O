@@ -27,24 +27,12 @@ def outgoing_nodes(
     """按作者顺序返回当前可达的边和目标节点。"""  # noqa: DOCSTRING_CJK
     current_id = str(state.get("current_node_id") or "")
     completed = set(state.get("completed_node_ids") or [])
-    completed_goals = set(state.get("completed_goal_ids") or [])
     candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for edge in story.get("edges") or []:
         if not isinstance(edge, dict) or str(edge.get("from_node") or "") != current_id:
             continue
         node = node_by_id(story, str(edge.get("to_node") or ""))
         if not node or str(node.get("node_id") or "") in completed:
-            continue
-        edge_goal_id = str(edge.get("goal_id") or "").strip()
-        node_goal_ids = {
-            str(item).strip()
-            for item in node.get("completes_goal_ids") or []
-            if str(item).strip()
-        }
-        if edge_goal_id in completed_goals or node_goal_ids.intersection(
-            completed_goals
-        ):
-            # 已完成 Goal 的入口与重复完成节点同时失效，点击、自然语言和恢复投影因此共享同一过滤结果。
             continue
         if rules.node_is_available(story, node, state):
             candidates.append((edge, node))
@@ -110,31 +98,20 @@ def latent_transition_options(
 ) -> list[dict[str, Any]]:
     """返回当前可达的作者隐藏语义边，供单轮模型做白名单意图判断。"""  # noqa: DOCSTRING_CJK
     options: list[dict[str, Any]] = []
-    active_goal = str(state.get("active_goal_id") or "")
-    focused_intent = str(state.get("focused_intent_id") or "")
     for edge, node in outgoing_nodes(story, state):
         if str(edge.get("visibility") or "recommended") != "latent":
             continue
-        goal_id = str(edge.get("goal_id") or "")
         intent_id = str(edge.get("intent_id") or "")
         options.append(
             {
                 "transition_id": str(edge.get("transition_id") or ""),
-                "goal_id": goal_id,
                 "intent_id": intent_id,
                 "intent_summary": str(edge.get("intent_summary") or ""),
                 "intent_examples": [
                     str(item) for item in edge.get("intent_examples") or []
                 ],
-                "pullbacks_before_transition": int(
-                    edge.get("pullbacks_before_transition") or 0
-                ),
                 "target_node_id": str(node.get("node_id") or ""),
                 "callback": str(edge.get("callback") or ""),
-                # 连续次数只帮助模型让回应保持语境；它属于内部路由状态，不会经过 Projector。
-                "previous_hits": int(state.get("intent_streak") or 0)
-                if goal_id == active_goal and intent_id == focused_intent
-                else 0,
             }
         )
     return options
@@ -191,9 +168,15 @@ def resolve_authored_completion(
 
 
 def render_story_text(value: Any, lanlan_name: str) -> str:
-    """把作者公开文本中的当前猫娘占位符替换为本场实际角色名。"""  # noqa: DOCSTRING_CJK
+    """把作者角色称谓转换为本场猫娘名与玩家第二人称。"""  # noqa: DOCSTRING_CJK
     normalized_name = str(lanlan_name or "猫娘").strip() or "猫娘"
-    return str(value or "").replace("{{lanlan_name}}", normalized_name).strip()
+    return (
+        str(value or "")
+        .replace("{{lanlan_name}}", normalized_name)
+        .replace("男主", "你")
+        .replace("猫娘", normalized_name)
+        .strip()
+    )
 
 
 def _natural_input_key(value: Any) -> str:

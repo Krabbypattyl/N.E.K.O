@@ -39,11 +39,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="待校验的单个 Story Package JSON 文件",
     )
     parser.add_argument(
-        "--explain-slots",
-        action="store_true",
-        help="在脱敏报告中列出动态内容槽位的执行级别",
-    )
-    parser.add_argument(
         "--output",
         type=Path,
         help="可选报告路径；未显式提供时不会写入文件",
@@ -78,42 +73,6 @@ def _edge_visibility_warnings(story: dict[str, Any]) -> list[dict[str, str]]:
         if uses_legacy_default
         else []
     )
-
-
-def _slot_diagnostics(
-    story: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """说明槽位约束是否具备确定性目录证明，并为声明式约束发出警告。"""  # noqa: DOCSTRING_CJK
-    contract = story.get("world_contract")
-    slots = contract.get("dynamic_content_slots") if isinstance(contract, dict) else []
-    explanations: list[dict[str, Any]] = []
-    warnings: list[dict[str, str]] = []
-    for slot in slots if isinstance(slots, list) else []:
-        if not isinstance(slot, dict):
-            continue
-        catalog_items = slot.get("catalog_items")
-        # 只有经过 Loader 合同校验的非空目录，才能提供不依赖模型自报的确定性证明。
-        catalog_verified = isinstance(catalog_items, list) and bool(catalog_items)
-        enforcement = "catalog_verified" if catalog_verified else "declarative_only"
-        slot_id = str(slot.get("slot_id") or "")
-        explanations.append(
-            {
-                "slot_id": slot_id,
-                "allowed_fact_type": str(slot.get("allowed_fact_type") or ""),
-                # Loader 已保证这两组是稳定字符串列表；报告沿用作者顺序便于定位合同。
-                "required_traits": list(slot.get("allowed_traits") or []),
-                "forbidden_traits": list(slot.get("forbidden_traits") or []),
-                "enforcement": enforcement,
-            }
-        )
-        if not catalog_verified:
-            warnings.append(
-                {
-                    "code": "slot_traits_declarative_only",
-                    "slot_id": slot_id,
-                }
-            )
-    return explanations, warnings
 
 
 def _paths_conflict(story_path: Path, output_path: Path) -> bool:
@@ -243,12 +202,8 @@ def main(argv: list[str] | None = None) -> int:
             EXIT_TOOL_ERROR,
         )
 
-    slots, slot_warnings = _slot_diagnostics(story)
-    # 兼容警告按静态图、动态槽位固定排序，保证自动化作者工具获得稳定报告。
-    warnings = [*_edge_visibility_warnings(story), *slot_warnings]
+    warnings = _edge_visibility_warnings(story)
     report = _report("valid", valid=True, warnings=warnings)
-    if args.explain_slots:
-        report["slots"] = slots
     return _emit_report(report, output_path, EXIT_VALID)
 
 

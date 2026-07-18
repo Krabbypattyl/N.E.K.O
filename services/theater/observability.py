@@ -13,23 +13,16 @@ from utils.instrument import counter, histogram
 
 
 # 所有维度都使用框架固定枚举，禁止把剧本、玩家输入、Prompt 或模型全文写入指标。
-_CALL_TYPES = frozenset(
-    {"theater_router", "theater_planner", "theater_actor", "theater_repair"}
-)
+_CALL_TYPES = frozenset({"theater_router", "theater_actor", "theater_repair"})
 _SURFACES = frozenset(
     {
         "free_input",
-        "branch_entry",
-        "branch_handoff",
-        "branch_turn",
         "opening",
         "graph_progress",
         "roleplay_response",
     }
 )
-_RESULT_KINDS = frozenset(
-    {"generation", "patch_contract", "fact_contract", "branch_outcome"}
-)
+_RESULT_KINDS = frozenset({"generation"})
 _CALL_STATUSES = frozenset({"success", "timeout", "error"})
 # 完整回合与模型调用是两类不同分母；输入类型和实际执行场景都只接受框架固定枚举。
 _TURN_INPUT_KINDS = frozenset({"choice", "free_input", "user_exit", "invalid"})
@@ -37,8 +30,6 @@ _TURN_SURFACES = frozenset(
     {
         "roleplay_response",
         "graph_progress",
-        "branch_entry",
-        "branch_turn",
         "user_exit",
         "idempotent_replay",
         "unresolved",
@@ -328,7 +319,7 @@ def _group_calls(
 
 
 def _group_results(samples: list[dict[str, str]]) -> dict[str, dict[str, int]]:
-    """按结果类别导出原因码计数，保留 Patch 与 Fact 合同的独立分母。"""  # noqa: DOCSTRING_CJK
+    """按结果类别导出原因码计数。"""  # noqa: DOCSTRING_CJK
     grouped: dict[str, Counter[str]] = {}
     for sample in samples:
         group_key = f"{sample['result_kind']}:{sample['surface']}"
@@ -369,45 +360,18 @@ def _group_turn_submits(
 def _quality_rates(
     calls: list[dict[str, Any]], results: list[dict[str, str]]
 ) -> dict[str, float]:
-    """按明确分母计算 Repair、Patch 拒绝、回退和合同越界率。"""  # noqa: DOCSTRING_CJK
+    """按明确分母计算 Repair 与回退率。"""  # noqa: DOCSTRING_CJK
     actor_calls = sum(1 for item in calls if item["call_type"] == "theater_actor")
     repair_calls = sum(1 for item in calls if item["call_type"] == "theater_repair")
-    patch_results = [
-        item for item in results if item["result_kind"] == "patch_contract"
-    ]
-    contract_results = [
-        item
-        for item in results
-        if item["result_kind"] in {"patch_contract", "fact_contract"}
-    ]
     generation_results = [
         item for item in results if item["result_kind"] == "generation"
-    ]
-    branch_outcomes = [
-        item for item in results if item["result_kind"] == "branch_outcome"
     ]
     fallback_results = [
         item for item in generation_results if item["outcome"] in _FALLBACK_OUTCOMES
     ]
-    rejected_contracts = [
-        item for item in contract_results if item["outcome"] == "rejected"
-    ]
-    failed_branches = [
-        item
-        for item in branch_outcomes
-        if item["outcome"] in {"budget_exhausted", "nonprogress_exhausted"}
-    ]
     return {
         "repair_rate": _ratio(repair_calls, actor_calls),
-        "patch_rejection_rate": _ratio(
-            sum(1 for item in patch_results if item["outcome"] == "rejected"),
-            len(patch_results),
-        ),
         "fallback_rate": _ratio(len(fallback_results), len(generation_results)),
-        "boundary_violation_rate": _ratio(
-            len(rejected_contracts), len(contract_results)
-        ),
-        "branch_failure_rate": _ratio(len(failed_branches), len(branch_outcomes)),
     }
 
 

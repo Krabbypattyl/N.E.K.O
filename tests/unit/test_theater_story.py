@@ -89,6 +89,11 @@ def test_public_performance_renders_current_catgirl_name_placeholder():
     assert response["dialogue"]["text"] == "我是糖糖。"
 
 
+def test_public_performance_renders_story_roles_as_current_participants():
+    """旧 Story 的通用角色称谓不能原样泄漏到公开演绎。"""  # noqa: DOCSTRING_CJK
+    assert story_graph.render_story_text("男主看向猫娘。", "糖糖") == "你看向糖糖。"
+
+
 def test_framework_runtime_does_not_special_case_test_story():
     """通用服务与 Prompt 不得嵌入测试 Story 身份或专属物件。"""  # noqa: DOCSTRING_CJK
     runtime_sources = list(Path("services/theater").glob("*.py")) + [
@@ -222,126 +227,20 @@ async def test_contract_story_keeps_action_and_dialogue_choices_separate():
     assert modes == {"action", "dialogue"}
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_v25_contract_with_unknown_goal(tmp_path: Path):
-    """World Contract 只能引用当前 Story 声明的稳定 Narrative Goal。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    payload["world_contract"]["convergence_goal_ids"] = ["goal_missing"]
-    # 临时夹具只改变待验证引用，不修改正式 Story 或复用当前工作区状态。
-    await atomic_write_json_async(tmp_path / "unknown-goal.json", payload)
-    with pytest.raises(ValueError, match="unknown convergence goal"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_static_node_with_unknown_completed_goal(tmp_path: Path):
-    """静态节点只能完成当前 Story Package 声明的 Narrative Goal。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    target = next(
-        node
-        for node in payload["narrative_nodes"]
-        if node["node_id"] == THEATER_TEST_EXCHANGE_NODE_ID
-    )
-    target["completes_goal_ids"] = ["goal_missing"]
-    # 作者引用错误必须在创建玩家 Session 前失败，不能运行时静默写入未知 Goal。
-    await atomic_write_json_async(tmp_path / "unknown-static-goal.json", payload)
-    with pytest.raises(ValueError, match="unknown completed goal"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_recommended_edge_with_unknown_goal_binding(
-    tmp_path: Path,
-):
-    """推荐边若声明 Goal 归属，就必须引用现有 Narrative Goal。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    recommended = next(
-        edge
-        for edge in payload["edges"]
-        if str(edge.get("visibility") or "recommended") == "recommended"
-    )
-    recommended["goal_id"] = "goal_missing"
-    # 未知绑定不能留给 Story Graph 猜测或当作永不完成的普通字符串。
-    await atomic_write_json_async(tmp_path / "unknown-edge-goal.json", payload)
-    with pytest.raises(ValueError, match="recommended edge references unknown goal"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_v25_contract_without_safe_abort_callback(tmp_path: Path):
-    """允许动态支线时必须有作者中性退出文案，不能让模型临场补收束。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    payload["world_contract"]["branch_abort_policy"]["neutral_callback"] = ""
-    # 空 callback 必须在 Loader 阶段失败，不能等到预算耗尽后才暴露死路。
-    await atomic_write_json_async(tmp_path / "missing-abort.json", payload)
-    with pytest.raises(ValueError, match="abort callback"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_v25_contract_with_invalid_branch_budget(tmp_path: Path):
-    """默认支线预算不得超过作者上限，避免运行时永远无法满足合同。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    payload["world_contract"]["branch_turn_budget"]["default"] = 7
-    # 预算错误属于作者配置错误，Loader 必须在任何玩家 Session 创建前阻断。
-    await atomic_write_json_async(tmp_path / "invalid-budget.json", payload)
-    with pytest.raises(ValueError, match="invalid branch budget"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_v25_slot_with_unapproved_fact_type(tmp_path: Path):
-    """动态内容槽位不得绕过 World Contract 引入未批准的事实类型。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    payload["world_contract"]["dynamic_content_slots"][0]["allowed_fact_type"] = (
-        "relationship_status"
-    )
-    # 槽位只能收窄顶层白名单，不能自行扩大 Planner 的创作权限。
-    await atomic_write_json_async(tmp_path / "invalid-slot.json", payload)
-    with pytest.raises(ValueError, match="invalid dynamic content slot"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_loader_accepts_v25_ending_domain_with_public_evidence(tmp_path: Path):
-    """Ending Domain 可引用作者结局，但必须声明可确定判断的 Goal 或事实证据。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    payload["ending_domains"] = [
-        {
-            "ending_domain_id": "ending_domain_gentle_pause",
-            "required_goal_ids": [],
-            "required_fact_types": ["observable_action"],
-            "required_fact_roles": ["mutual_pause_confirmed"],
-            "forbidden_fact_roles": ["unilateral_relationship_commitment"],
-            "ending_id": "ending_contract_complete",
-        }
-    ]
-    payload["world_contract"]["allowed_ending_domains"] = ["ending_domain_gentle_pause"]
-    # 此夹具只验证稳定引用和证据结构，不改变正式故事允许抵达的结局域。
-    await atomic_write_json_async(tmp_path / "valid-ending-domain.json", payload)
-    loaded = await story_loader.list_stories(story_dir=tmp_path)
-    assert [item["id"] for item in loaded] == [THEATER_TEST_STORY_ID]
 
 
-@pytest.mark.asyncio
-async def test_loader_rejects_v25_ending_domain_with_unknown_fact_type(tmp_path: Path):
-    """Ending Domain 的完成证据必须来自 World Contract 允许的事实类型。"""  # noqa: DOCSTRING_CJK
-    payload = await read_json_async(THEATER_TEST_STORY_PATH)
-    payload["ending_domains"] = [
-        {
-            "ending_domain_id": "ending_domain_bad_evidence",
-            "required_goal_ids": [],
-            "required_fact_types": ["model_declared_feeling"],
-            "required_fact_roles": ["mutual_pause_confirmed"],
-            "forbidden_fact_roles": [],
-            "ending_id": "ending_contract_complete",
-        }
-    ]
-    payload["world_contract"]["allowed_ending_domains"] = ["ending_domain_bad_evidence"]
-    # 模型解释不能通过自造 fact_type 晋升为正式结局证据。
-    await atomic_write_json_async(tmp_path / "invalid-ending-domain.json", payload)
-    with pytest.raises(ValueError, match="unknown evidence reference"):
-        await story_loader.list_stories(story_dir=tmp_path)
 
 
 @pytest.mark.asyncio
@@ -382,80 +281,11 @@ async def test_authored_completion_requires_one_unambiguous_current_choice():
     assert story_graph.resolve_authored_completion(story, state, "继续") == {}
 
 
-def test_static_goal_completion_filters_all_author_bound_stale_entries():
-    """静态完成 Goal 后，重复完成节点、推荐入口、隐藏入口和旧提交 ID 必须同时失效。"""  # noqa: DOCSTRING_CJK
-    goal_id = "goal_shared_task"
-    story = {
-        "narrative_nodes": [
-            {
-                "node_id": "node_completed",
-                "completes_goal_ids": [goal_id],
-                "suggestions": [],
-            },
-            {
-                "node_id": "node_repeat_completion",
-                "completes_goal_ids": [goal_id],
-                "suggestions": [
-                    {"choice_id": "choice_repeat", "label": "重复完成公开约定"}
-                ],
-            },
-            {
-                "node_id": "node_stale_entry",
-                "suggestions": [
-                    {"choice_id": "choice_stale_entry", "label": "重新进入已完成目标"}
-                ],
-            },
-            {
-                "node_id": "node_latent_entry",
-                "suggestions": [],
-            },
-            {
-                "node_id": "node_fresh",
-                "suggestions": [
-                    {"choice_id": "choice_fresh", "label": "继续新的公开行动"}
-                ],
-            },
-        ],
-        "edges": [
-            {"from_node": "node_completed", "to_node": "node_repeat_completion"},
-            {
-                "from_node": "node_completed",
-                "to_node": "node_stale_entry",
-                "goal_id": goal_id,
-            },
-            {
-                "from_node": "node_completed",
-                "to_node": "node_latent_entry",
-                "visibility": "latent",
-                "goal_id": goal_id,
-                "transition_id": "transition_stale",
-                "intent_id": "intent_stale",
-                "intent_summary": "重新进入已经完成的目标",
-                "intent_examples": ["再做一次"],
-                "pullbacks_before_transition": 1,
-            },
-            {"from_node": "node_completed", "to_node": "node_fresh"},
-        ],
-    }
-    state = rules.initial_state(story, initial_node_id="node_completed")
-    rules.apply_node(story, state, story_graph.current_node(story, state))
-
-    assert state["completed_goal_ids"] == [goal_id]
-    assert [
-        item["choice_id"] for item in story_graph.suggestion_options(story, state)
-    ] == ["choice_fresh"]
-    assert story_graph.latent_transition_options(story, state) == []
-    assert story_graph.resolve_choice(story, state, "choice_repeat") == {}
-    assert story_graph.resolve_choice(story, state, "choice_stale_entry") == {}
-    assert (
-        story_graph.resolve_choice(story, state, "choice_fresh")["target_node_id"]
-        == "node_fresh"
-    )
 
 
 @pytest.mark.asyncio
-async def test_latent_transition_is_private_and_goal_scoped():
-    """隐藏语义边不得生成按钮，且连续意图只在同一目标内累计。"""  # noqa: DOCSTRING_CJK
+async def test_latent_transition_is_private_and_authored():
+    """隐藏语义边不得生成按钮，命中后直接进入作者声明的目标。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story(THEATER_TEST_STORY_ID)
     story = deepcopy(story)
     story["edges"].append(
@@ -464,11 +294,9 @@ async def test_latent_transition_is_private_and_goal_scoped():
             "to_node": THEATER_TEST_EXCHANGE_NODE_ID,
             "visibility": "latent",
             "transition_id": "transition_contract_review",
-            "goal_id": "goal_complete_public_exchange",
             "intent_id": "intent_review_public_exchange",
             "intent_summary": "玩家希望先复核公开交换步骤",
             "intent_examples": ["先复核一下交换步骤"],
-            "pullbacks_before_transition": 2,
             "callback": "双方暂不推进静态路线，先复核公开交换步骤。",
         }
     )
@@ -488,15 +316,37 @@ async def test_latent_transition_is_private_and_goal_scoped():
         for choice_id in visible_ids
     )
 
-    assert rules.record_latent_intent(state, latent[0]) is False
-    assert state["goal_pullback_count"] == 1
-    assert rules.record_latent_intent(state, latent[0]) is False
-    assert state["goal_pullback_count"] == 2
-    rules.clear_latent_intent_tracking(state)
-    assert state["intent_streak"] == 0
-    assert rules.record_latent_intent(state, latent[0]) is False
-    assert rules.record_latent_intent(state, latent[0]) is False
-    assert rules.record_latent_intent(state, latent[0]) is True
+    resolved = story_graph.resolve_latent_transition(
+        latent, "intent_review_public_exchange"
+    )
+    assert resolved["target_node_id"] == THEATER_TEST_EXCHANGE_NODE_ID
+
+
+@pytest.mark.asyncio
+async def test_installed_story_string_fact_unlocks_authored_branch():
+    """实际导入剧本推进到专业认可后，主线和作者支线必须同时可选。"""  # noqa: DOCSTRING_CJK
+    story_path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "theater"
+        / "stories"
+        / "story_908bef0897ef.json"
+    )
+    story = await story_loader.validate_story_file(story_path)
+    state = rules.initial_state(
+        story, initial_node_id=story_loader.initial_node_id(story)
+    )
+    professional_node = story_graph.node_by_id(story, "node_c0fa0e93a08f")
+    rules.apply_node(story, state, professional_node)
+
+    options = story_graph.suggestion_options(story, state, lanlan_name="糖糖")
+    labels = {item["label"] for item in options}
+    assert "接受糖糖的烘焙指导" in labels
+    assert "询问糖糖的个人喜好和兴趣" in labels
+    assert state["narrative_facts"] == [
+        *story["seed"]["opening_facts"],
+        "专业认可",
+    ]
 
 
 @pytest.mark.asyncio

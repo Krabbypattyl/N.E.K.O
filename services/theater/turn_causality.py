@@ -59,17 +59,6 @@ def build_record(
             "narrative_facts_added": _added_values(
                 before.get("narrative_facts"), after.get("narrative_facts")
             ),
-            "branch_facts_added": _added_values(
-                before.get("branch_facts"), after.get("branch_facts")
-            ),
-            "completed_goal_ids_added": _added_values(
-                before.get("completed_goal_ids"), after.get("completed_goal_ids")
-            ),
-            "branch_history_entries_added": _added_values(
-                before.get("branch_history"), after.get("branch_history")
-            ),
-            "active_runtime_branch_before": _has_active_branch(before),
-            "active_runtime_branch_after": _has_active_branch(after),
             "session_ended": bool(session_ended),
         },
     }
@@ -101,9 +90,3 @@ def _stable_identity(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-def _has_active_branch(state: dict[str, Any]) -> bool:
-    """只记录活动支线是否存在，不复制整个运行时 Patch。"""  # noqa: DOCSTRING_CJK
-    value = state.get("active_runtime_branch")
-    return isinstance(value, dict) and bool(value)
