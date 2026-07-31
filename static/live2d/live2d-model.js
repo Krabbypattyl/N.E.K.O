@@ -537,7 +537,6 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
     return { applied: true, parameters: effectiveParameters };
 };
 
-// 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
@@ -581,6 +580,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        if (!this._isLoadTokenActive(loadToken)) {
+            try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
+            const cancelError = new Error('Live2D load superseded by a newer model request.');
+            cancelError.name = 'LoadSuperseded';
+            throw cancelError;
+        }
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             this._activeLoadToken = (this._activeLoadToken || 0) + 1;
@@ -598,6 +603,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         return model;
     } catch (error) {
+        if (error && error.name === 'LoadSuperseded') {
+            throw error;
+        }
         if (error && error.name === 'PNGTuberActiveLive2DSkip') {
             console.log('[Live2D] PNGTuber 模式已接管，取消 Live2D 加载且不回退默认模型');
             throw error;
@@ -2843,14 +2851,16 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
 
     if (isMobile) {
         model.anchor.set(0.5, 0.1);
+        const viewportWidth = Math.max(window.innerWidth || this.pixi_app.renderer.screen.width || 1, 1);
+        const viewportHeight = Math.max(window.innerHeight || this.pixi_app.renderer.screen.height || 1, 1);
         const scale = Math.min(
             0.5,
-            window.innerHeight * 1.3 / 4000,
-            window.innerWidth * 1.2 / 2000
+            viewportHeight * 1.3 / 4000,
+            viewportWidth * 1.2 / 2000
         );
         model.scale.set(scale);
-        model.x = this.pixi_app.renderer.screen.width * 0.5;
-        model.y = this.pixi_app.renderer.screen.height * 0.28;
+        model.x = viewportWidth * 0.5;
+        model.y = viewportHeight * 0.28;
     } else {
         model.anchor.set(0.65, 0.75);
         if (preferences && preferences.scale && preferences.position) {

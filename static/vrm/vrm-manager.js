@@ -62,6 +62,8 @@ class VRMManager {
         this._initThreePromise = null;
         this._isDisposed = false;
         this._activeLoadToken = 0;
+        this._pendingModelLoadCount = 0;
+        this._isLoadingModel = false;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 
@@ -668,6 +670,7 @@ class VRMManager {
         this._exitIdleTickMode(false);
         if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
         this._lastRenderTime = 0;
+        this._nextRenderTime = 0;
 
         // 帧体：rAF 驱动与空闲低频 interval 共用（interval 直接调用本函数，
         // 定时器周期即节流器，不经过 rAF 驱动里的 targetFrameRate 跳帧）
@@ -796,6 +799,31 @@ class VRMManager {
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
             }
+
+            // 10. VMC Protocol 采样钩子。全局 active 标志由按需加载的
+            // sender 维护；未显式启用时不调用任何 VMC 逐帧逻辑。
+            if (
+                window.__NEKO_VMC_ACTIVE__ === true
+                && window.vrmVmcSender
+                && this.currentModel
+                && this.currentModel.vrm
+            ) {
+                try {
+                    window.vrmVmcSender.sample(this.currentModel.vrm);
+                } catch (e) {
+                    // VMC 采样异常绝不能影响渲染循环。挂起采样避免每帧重试
+                    // 抛异常污染控制台；vrm-vmc-sender.js 的状态轮询会在后端
+                    // 仍启用 VMC 时自动恢复采样（最多延迟一个轮询周期）。
+                    console.warn('[VRM Manager] VMC sample failed, suspending hook:', e);
+                    if (typeof window.vrmVmcSender.suspendSampling === 'function') {
+                        window.vrmVmcSender.suspendSampling();
+                    } else {
+                        // Mixed-cache/third-party fallback: preserve the old
+                        // fail-closed behavior when suspension is unavailable.
+                        window.vrmVmcSender = null;
+                    }
+                }
+            }
         };
         this._renderFrame = renderFrame;
 
@@ -811,14 +839,28 @@ class VRMManager {
 
             this._animationFrameId = requestAnimationFrame(animateLoop);
 
-            // 帧率限制：根据 targetFrameRate 跳帧（0 = 不限帧，跟随 VSync）
+            // VMC 启用时使用累计目标时间，避免 144Hz 等非整数倍刷新率
+            // 下发送速率退化；关闭时保留原渲染节流行为，隔离功能影响。
             const now = performance.now();
             const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
-                if (now - this._lastRenderTime < frameInterval * 0.9) return;
+                if (window.__NEKO_VMC_ACTIVE__ === true) {
+                    if (this._nextRenderTime <= 0 || now - this._nextRenderTime > frameInterval * 4) {
+                        this._nextRenderTime = now;
+                    }
+                    if (now < this._nextRenderTime) return;
+                    this._nextRenderTime += frameInterval;
+                    this._lastRenderTime = now;
+                } else {
+                    this._nextRenderTime = 0;
+                    if (now - this._lastRenderTime < frameInterval * 0.9) return;
+                    this._lastRenderTime = now;
+                }
+            } else {
+                this._nextRenderTime = 0;
+                this._lastRenderTime = now;
             }
-            this._lastRenderTime = now;
             renderFrame(now);
         };
         this._rafDriver = animateLoop;
@@ -872,6 +914,7 @@ class VRMManager {
         if (restartRaf && this.renderer && this.scene && this.camera &&
             !this._animationFrameId && this._rafDriver) {
             this._lastRenderTime = 0;
+            this._nextRenderTime = 0;
             this._animationFrameId = requestAnimationFrame(this._rafDriver);
         }
     }
@@ -1166,6 +1209,17 @@ class VRMManager {
     }
 
     async loadModel(modelUrl, options = {}) {
+        this._pendingModelLoadCount += 1;
+        this._isLoadingModel = true;
+        try {
+            return await this._loadModelImplementation(modelUrl, options);
+        } finally {
+            this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);
+            this._isLoadingModel = this._pendingModelLoadCount > 0;
+        }
+    }
+
+    async _loadModelImplementation(modelUrl, options = {}) {
         // 并发正确性由 vrm-core.loadModel 的 token 守卫兜底，实现「后到者胜」：每次 loadModel
         // 在入口同步 bump _activeLoadToken 取代前一轮；被取代的旧加载在 core 内触碰共享
         // scene/currentModel 之前的守卫处 bail，不会交错改写共享状态或留下幽灵模型。
@@ -1616,6 +1670,22 @@ class VRMManager {
      */
     async dispose() {
         console.log('[VRM Manager] 开始完整清理 VRM 资源...');
+        // Release the process-wide VMC publisher lease before tearing down
+        // the model. This also removes vrm-vmc-sender.js' strong reference to
+        // the VRM so switching to Live2D/MMD cannot retain a disposed model.
+        const vmcVrm = this.currentModel?.vrm;
+        if (
+            vmcVrm
+            && window.__NEKO_VMC_ACTIVE__ === true
+            && window.vrmVmcSender
+            && typeof window.vrmVmcSender.releaseVrm === 'function'
+        ) {
+            try {
+                window.vrmVmcSender.releaseVrm(vmcVrm);
+            } catch (error) {
+                console.warn('[VRM Manager] VMC source release failed:', error);
+            }
+        }
         this._isDisposed = true;
 
         // 使在途的 loadModel 失效：bump token 后，被取代的旧 load 的 core.loadModel

@@ -224,17 +224,11 @@ Object.assign(AvatarButtonMixin.methods, {
                 this.setButtonActive('mic', isRecording);
             }
 
-            // 屏幕分享状态
-            let isScreenSharing = false;
+            // 桌面槽位由 social 取代，但移动布局仍有独立的 screen 按钮。
+            // 以隐藏的 #screenButton 为真实状态，避免重建按钮后保留乐观状态。
             const screenButton = document.getElementById('screenButton');
-            const stopButton = document.getElementById('stopButton');
-            if (screenButton && screenButton.classList.contains('active')) {
-                isScreenSharing = true;
-            } else if (stopButton && !stopButton.disabled) {
-                isScreenSharing = true;
-            }
-            if (this._floatingButtons.screen) {
-                this.setButtonActive('screen', isScreenSharing);
+            if (this._floatingButtons.screen && screenButton) {
+                this.setButtonActive('screen', screenButton.classList.contains('active'));
             }
         };
 
@@ -243,6 +237,13 @@ Object.assign(AvatarButtonMixin.methods, {
          */
         ManagerPrototype.cleanupFloatingButtons = function() {
             const opts = this._avatarButtonOptions;
+
+            // Cancel before removing the old return container so no release
+            // timeout or queued animation frame can publish stale drag state.
+            if (this._returnButtonDragHandlers &&
+                typeof this._returnButtonDragHandlers.cleanup === 'function') {
+                this._returnButtonDragHandlers.cleanup();
+            }
 
             // 停止 RAF 循环
             if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
@@ -302,6 +303,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
                 document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
                 window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+                window.removeEventListener(
+                    'neko:niri-pet-physical-crop-state-applied',
+                    this._returnButtonDragHandlers.cropStateApplied
+                );
                 this._returnButtonDragHandlers = null;
             }
 

@@ -46,12 +46,14 @@ from memory.temporal import (
     normalize_event_when,
 )
 from config.prompts.prompts_memory import (
+    get_fact_extraction_batch_prompt,
     get_fact_extraction_prompt,
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
+from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language, get_global_language_full
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -124,6 +126,34 @@ class FactExtractionFailed(RuntimeError):
     cursor, while the former must leave the cursor untouched so the next
     idle cycle retries the same message window.
     """
+
+
+def _readable_fact_id(entry: dict):
+    """The fact's id when it can be used as a lookup key, else ``None``.
+
+    Ids are written as strings (``fact_<timestamp>_<hash>``), but facts.json is
+    a plain file users and older versions have edited: a row can arrive with no
+    id at all, or with a list/dict where the id should be. Indexing those
+    directly raises ``KeyError`` / ``TypeError: unhashable``, neither of which
+    the read-merge's ``except (json.JSONDecodeError, OSError)`` catches, so one
+    malformed row would abort every future save instead of being overwritten.
+
+    Only genuinely unusable ids are dropped. A legacy scalar id such as
+    ``12345`` still matches between cache and disk exactly as it did before, so
+    excluding it would silently stop preserving that row's ``absorbed`` /
+    ``signal_processed`` flags — trading the crash for quiet data loss.
+    """
+    fact_id = entry.get('id')
+    # 只排除「没有 id」这一类：None / 缺失 / 空串（空串会让所有没有真 id 的行
+    # 互相撞上）。不能写成 `not fact_id`——那会把老库里 id 为 0 的行也一并丢掉，
+    # 它是个完全可用的键，丢了就是又一次「崩溃换静默丢标记」。
+    if fact_id is None or fact_id == '':
+        return None
+    try:
+        hash(fact_id)
+    except TypeError:  # list / dict 之类，进不了集合
+        return None
+    return fact_id
 
 
 class FactStore:
@@ -253,6 +283,15 @@ class FactStore:
                 )
                 facts = self._facts.get(name, [])
                 path = self._facts_path(name)
+                # 先统一摘纸条（见 _SIGNAL_RESET_PENDING）：摘的动作必须无条件
+                # 发生，不能挂在下面 read-merge 的任何一层分支里——文件还不存在
+                # 或这一批没有 monotonic 标记时那些分支都不进，纸条就会跟着落盘。
+                just_unsealed_ids = {
+                    _readable_fact_id(f) for f in facts
+                    if isinstance(f, dict)
+                    and f.pop(self._SIGNAL_RESET_PENDING, False)
+                    and _readable_fact_id(f) is not None
+                }
                 # Read-merge-write: 保护其他进程/路径写入的 monotonic 标记
                 # （只能从 False → True 单向翻的字段：absorbed、signal_processed）。
                 # 否则旧 cache 的写路径会用 False 覆盖磁盘上的 True，让同一批
@@ -262,19 +301,66 @@ class FactStore:
                         with open(path, encoding='utf-8') as f:
                             disk_facts = json.load(f)
                         if isinstance(disk_facts, list):
+                            # 索引键统一走 _readable_fact_id：手改/半损坏的 legacy 行
+                            # 可能没有 id（f['id'] 抛 KeyError），也可能 id 是 list/dict
+                            # （放进 set 抛 TypeError: unhashable）。内层只接 JSON/OS
+                            # 错误，这两种异常都会冒到外层把缓存清掉并重抛，此后每次存盘
+                            # 都死在同一行、新 fact 再也落不了盘——正好是 read-merge 想
+                            # 兜的「坏数据也要能覆盖写掉」的反面。
                             absorbed_ids = {
-                                f['id'] for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('absorbed')
+                                and _readable_fact_id(f) is not None
                             }
                             signal_processed_ids = {
-                                f['id'] for f in disk_facts
+                                _readable_fact_id(f) for f in disk_facts
                                 if isinstance(f, dict) and f.get('signal_processed')
+                                and _readable_fact_id(f) is not None
                             }
+                            # ⚠残留窗口：这次读盘与下面的 atomic_write_json 之间没有
+                            # 跨进程锁（self._get_lock 只挡同进程的线程），所以理论上
+                            # 仍能被「读到 ai_disclosure → 别人升级并消费 → 我方写回
+                            # False」插进来。这不是本次豁免引入的新race：整段 read-merge
+                            # 从 #976 起就是「读盘-合并-覆盖写」的尽力而为，任何并发写
+                            # 者都能在同一窗口里丢掉合并结果。真要关掉它得给 facts.json
+                            # 加一把覆盖读+写全程的跨进程文件锁（portalocker，本仓库目前
+                            # 只在 galgame store 里用过）并让所有写者都走它——那是独立的
+                            # 架构改动，不在本次范围。豁免面已经收到「磁盘上那条仍是
+                            # ai_disclosure」这一个条件里，窗口比原来的整段合并更窄。
+                            #
+                            # 纸条只在磁盘上那条**还没被别人升级过**时算数：另一个
+                            # 进程可能已经用它自己的缓存升级完、Stage-2 也消费过了
+                            # （磁盘上是 user_observation + True）。此时本进程拿着
+                            # 旧缓存再升一次并放行回写，等于把一条已消费的 fact 重新
+                            # 排回 Stage-2——正是这段 read-merge 要挡的跨进程回归。
+                            # 重复 id 按保守口径：只有当磁盘上带这个 id 的行**全部**
+                            # 还是 ai_disclosure 时才算「没人升过」。手改或对账后的
+                            # 文件里可能同一个 id 有两行——一行还是 ai_disclosure、
+                            # 另一行已升级且 signal_processed=True。两个集合各自都会
+                            # 包含它，只判「在 disclosure 集合里」就会放行回写，把已
+                            # 消费状态盖回 False。
+                            disk_disclosure_ids: set = set()
+                            disk_other_source_ids: set = set()
+                            for f in disk_facts:
+                                if not isinstance(f, dict):
+                                    continue
+                                disk_id = _readable_fact_id(f)
+                                if disk_id is None:
+                                    continue
+                                if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
+                                    disk_disclosure_ids.add(disk_id)
+                                else:
+                                    disk_other_source_ids.add(disk_id)
+                            disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
                             if absorbed_ids or signal_processed_ids:
                                 for f in facts:
                                     if f.get('id') in absorbed_ids:
                                         f['absorbed'] = True
-                                    if f.get('id') in signal_processed_ids:
+                                    unsealed = (
+                                        f.get('id') in just_unsealed_ids
+                                        and f.get('id') in disk_ai_disclosure_ids
+                                    )
+                                    if f.get('id') in signal_processed_ids and not unsealed:
                                         f['signal_processed'] = True
                     except (json.JSONDecodeError, OSError):
                         # Read-merge is best-effort: if the on-disk
@@ -370,23 +456,49 @@ class FactStore:
     # ── extraction ───────────────────────────────────────────────────
 
     @staticmethod
-    def _format_conversation(messages: list, name_mapping: dict) -> str:
+    def _flatten_message_content(content) -> str:
+        """Flatten a message content (str or content-part list) to plain text."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(item.get('text', f"|{item.get('type', '')}|"))
+                else:
+                    parts.append(str(item))
+            return ''.join(parts)
+        return str(content or '')
+
+    @classmethod
+    def _format_conversation(cls, messages: list, name_mapping: dict) -> str:
         """Serialize messages into the 'role | content' shape used by LLM prompts."""
         lines = []
         for msg in messages:
             role = name_mapping.get(getattr(msg, 'type', ''), getattr(msg, 'type', ''))
             content = getattr(msg, 'content', '')
-            if isinstance(content, str):
-                lines.append(f"{role} | {content}")
-            elif isinstance(content, list):
-                parts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        parts.append(item.get('text', f"|{item.get('type', '')}|"))
-                    else:
-                        parts.append(str(item))
-                lines.append(f"{role} | {''.join(parts)}")
+            if isinstance(content, (str, list)):
+                lines.append(f"{role} | {cls._flatten_message_content(content)}")
         return "\n".join(lines)
+
+    @classmethod
+    def _format_speaker_segments(cls, segments: list[dict]) -> str:
+        """Render multi-speaker segments for the batch extraction prompt.
+
+        段首标记 ``[SEGMENT n | speaker: label]`` 是 locale 无关的固定形状，
+        批模板（FACT_EXTRACTION_BATCH_PROMPT）按原样向模型解释它；段内每行
+        以该段的 speaker label 开头，与单发路径的 'role | content' 同构。"""  # noqa: DOCSTRING_CJK
+        blocks = []
+        for index, segment in enumerate(segments, start=1):
+            label = str(segment.get('speaker_label') or '').strip()
+            lines = [f"[SEGMENT {index} | speaker: {label}]"]
+            for msg in segment.get('messages') or []:
+                lines.append(
+                    f"{label} | "
+                    f"{cls._flatten_message_content(getattr(msg, 'content', ''))}"
+                )
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -431,7 +543,7 @@ class FactStore:
         while retries < max_retries:
             try:
                 set_call_type(call_type)
-                api_config = self._config_manager.get_model_api_config(tier)
+                api_config = await self._config_manager.aget_model_api_config(tier)
                 from config import LLM_OUTPUT_GUARD_MAX_TOKENS
                 _llm_kwargs = dict(
                     timeout=timeout,
@@ -489,6 +601,7 @@ class FactStore:
     async def _allm_extract_facts(
         self, lanlan_name: str, messages: list,
         *, treat_malformed_as_failure: bool = False,
+        speaker_label: str | None = None,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -501,15 +614,26 @@ class FactStore:
         ``True`` so a malformed result becomes a failed day (retryable) rather
         than being checkpointed in the sidecar as a fact-less day — a sidecar
         checkpoint would skip the LLM on every later import and silently lose
-        that day's facts (Codex P2)."""
+        that day's facts (Codex P2).
+
+        ``speaker_label``: render 'user' turns and the {MASTER_NAME}
+        placeholder as this label instead of the configured master name. The
+        legacy prompt assumes the human speaker IS the master — true for
+        private admin chats, wrong for group-member batches, whose speaker
+        would otherwise have their statements extracted as facts about the
+        master (Codex P2)."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
+        if speaker_label:
+            name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
 
-        prompt = get_fact_extraction_prompt(get_global_language()) \
-            .replace('{CONVERSATION}', conversation_text) \
-            .replace('{LANLAN_NAME}', lanlan_name) \
+        prompt = (
+            get_fact_extraction_prompt(get_global_language_full())
+            .replace('{CONVERSATION}', conversation_text)
+            .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+        )
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -532,12 +656,195 @@ class FactStore:
             return []
         return extracted
 
+    async def _allm_extract_facts_batch(
+        self, lanlan_name: str, segments: list[dict],
+    ) -> list | None:
+        """Stage-1 batch: one LLM call over multiple single-speaker segments.
+
+        每个元素应带 ``segment`` 归属字段（由 ``extract_facts_batch``
+        fail-closed 解析）。非数组一律按终止失败返回 None——唯一调用方是
+        fail-closed 的 scoped_history 路由，没有"宽容当空"的模式。
+
+        占位符替换顺序刻意 {LANLAN_NAME} 在前、{SEGMENTS} 在后：消息正文
+        里出现字面 "{LANLAN_NAME}" 时不得被二次替换。"""  # noqa: DOCSTRING_CJK
+        prompt = (
+            get_fact_extraction_batch_prompt(get_global_language_full())
+            .replace('{LANLAN_NAME}', lanlan_name)
+            .replace('{SEGMENTS}', self._format_speaker_segments(segments))
+        )
+        extracted = await self._allm_call_with_retries(
+            prompt, lanlan_name,
+            tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+            call_type="memory_fact_extraction_batch",
+        )
+        if extracted is None:
+            return None
+        if not isinstance(extracted, list):
+            logger.warning(
+                f"[FactStore] {lanlan_name}: 批抽取返回非数组 "
+                f"{type(extracted).__name__}，当作抽取失败（可重试）"
+            )
+            return None
+        return extracted
+
+    @staticmethod
+    def _batch_fact_segment_index(fact, segment_count: int) -> int | None:
+        """Fail-closed attribution: the 0-based segment index, or None to drop.
+
+        归属标记无法解析 / 指向不存在的段时**必须丢弃而不是猜**——A 的
+        事实挂到 B 头上比丢一条严重得多（错误归属会进 B 的 persona 且
+        无人能发现）。接受 int 与纯数字字符串（模型输出 "1" 的常见形态），
+        bool 显式排除（True 是 int 子类）。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(fact, dict):
+            return None
+        text = fact.get('text')
+        if not isinstance(text, str) or not text.strip():
+            return None
+        raw = fact.get('segment')
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            seg = raw
+        elif isinstance(raw, str):
+            # try/except 而非 isdigit() 预检：isdigit() 对上标数字（"²"）等
+            # int() 消化不了的字符也返回 True，预检放行后 int() 抛
+            # ValueError 会把整批弄崩——按契约这类畸形只该丢这一条。
+            try:
+                seg = int(raw.strip())
+            except ValueError:
+                return None
+        elif isinstance(raw, float) and raw.is_integer():
+            seg = int(raw)
+        else:
+            return None
+        if not (1 <= seg <= segment_count):
+            return None
+        return seg - 1
+
+    @staticmethod
+    def _speaker_provenance_of(segment: dict) -> dict | None:
+        """The provenance fields to stamp onto this segment's persisted facts.
+
+        只落字段不接消费（发言人信赖度阶段一）：speaker_label = 谁说的，
+        speaker_trust = 调用方按权限等级派生的 0..1 初值。永远来自请求段，
+        绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""  # noqa: DOCSTRING_CJK
+        prov: dict = {}
+        label = str(segment.get('speaker_label') or '').strip()
+        if label:
+            prov['speaker_label'] = label[:64]
+        trust = segment.get('speaker_trust')
+        if (
+            isinstance(trust, (int, float))
+            and not isinstance(trust, bool)
+            and 0.0 <= float(trust) <= 1.0
+        ):
+            prov['speaker_trust'] = float(trust)
+        return prov or None
+
+    async def extract_facts_batch(
+        self, segments: list[dict], lanlan_name: str,
+    ) -> list[dict]:
+        """Multi-segment scoped extraction: one LLM call, per-segment dispatch.
+
+        ``segments``: ``[{'messages': [...], 'subject': MemorySubject,
+        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
+        发言人。成本从 O(发言人数) 次 LLM 调用降到每批一次。
+
+        Returns one result dict per segment, in request order:
+        ``{'status': 'ok'|'failed', 'created': list[dict]}``。
+
+        fail-closed 语义是 **per-段** 的（对比 :meth:`extract_facts` 的整批
+        判定）：
+        - 整个 LLM 调用终止失败 / 返回非数组 → raise
+          :class:`FactExtractionFailed`（路由 502，调用方整批保留重试）；
+        - 单条输出畸形 / ``segment`` 归属无法解析或越界 → 丢那一条，绝不
+          猜段；
+        - 输出非空但**零条**可归属 → 模型没理解任务，整批 raise——静默
+          全丢会让调用方 pop 掉从未入库的桶（与单发路径"畸形整批可重试"
+          同一防线）；
+        - 某段 persist 失败 → 只该段 ``failed``，其余段不连累重来。
+        """  # noqa: DOCSTRING_CJK
+        if not segments:
+            return []
+        if len(segments) == 1:
+            # 单段无归属风险：走成熟的单发抽取管线（prompt 更完整、
+            # malformed 判定也更严）。
+            segment = segments[0]
+            created = await self.extract_facts(
+                segment.get('messages') or [],
+                lanlan_name,
+                subject=segment.get('subject'),
+                fail_closed=True,
+                speaker_label=segment.get('speaker_label'),
+                speaker_provenance=self._speaker_provenance_of(segment),
+            )
+            return [{'status': 'ok', 'created': created}]
+
+        extracted = await self._allm_extract_facts_batch(lanlan_name, segments)
+        if extracted is None:
+            raise FactExtractionFailed(
+                f"batch Stage-1 LLM call failed for {lanlan_name!r} "
+                f"({len(segments)} segments, fail_closed caller)"
+            )
+        per_segment: list[list[dict]] = [[] for _ in segments]
+        dropped = 0
+        for fact in extracted:
+            index = self._batch_fact_segment_index(fact, len(segments))
+            if index is None:
+                dropped += 1
+                continue
+            per_segment[index].append(fact)
+        if extracted and not any(per_segment):
+            raise FactExtractionFailed(
+                f"batch Stage-1 returned {len(extracted)} facts but none "
+                f"attributable for {lanlan_name!r} (fail_closed caller)"
+            )
+        if dropped:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: 批抽取丢弃 {dropped}/"
+                f"{len(extracted)} 条畸形或归属不明的输出（fail-closed，不猜段）"
+            )
+
+        results: list[dict] = []
+        for segment, segment_facts in zip(segments, per_segment):
+            if not segment_facts:
+                results.append({'status': 'ok', 'created': []})
+                continue
+            try:
+                created = await self._apersist_new_facts(
+                    lanlan_name,
+                    segment_facts,
+                    subject=segment.get('subject'),
+                    speaker_provenance=self._speaker_provenance_of(segment),
+                )
+            except Exception as exc:
+                logger.error(
+                    f"[FactStore] {lanlan_name}: 批抽取第 "
+                    f"{len(results) + 1} 段持久化失败（其余段不受连累）: {exc}"
+                )
+                results.append({'status': 'failed', 'created': []})
+                continue
+            results.append({'status': 'ok', 'created': created})
+        return results
+
     # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；
     # 'ai_disclosure' = path B 抽出的 AI 自我披露/屏幕上下文（trust-tier 较低）。
     # 老 fact 没 source 字段时按 'user_observation' 回退（向后兼容——pre-#PR
     # 时代所有 fact 都源自 user msg）。
     _SOURCE_VALUES = frozenset({'user_observation', 'ai_disclosure'})
     _SOURCE_DEFAULT = 'user_observation'
+
+    # 内存内纸条，由 source 升级分支挂上、由 save_facts 摘下并放行一次
+    # signal_processed 的单调回写。下划线前缀与 '_external_import' 同约定：
+    # 只在一次 persist 流程内活着，save_facts 写盘前一律剥掉，不进磁盘。
+    #
+    # 存在的理由：save_facts 的 read-merge 把 signal_processed 当成只能
+    # False→True 的字段（#976，防旧缓存用 False 覆盖磁盘上的 True 让同一批
+    # fact 被 drain loop 重复消费），而升级分支恰恰要把它翻回 False（#1408，
+    # 用户印证过的 AI 披露要重进 Stage-2）。两条规则正面撞车、存盘那条跑在
+    # 后面永远赢，于是"升级后重进 Stage-2"在盘上从来没成立过。让解封方留一
+    # 张显式纸条，比让 save_facts 去倒推"这条是不是刚被解封"更不容易看走眼。
+    _SIGNAL_RESET_PENDING = '_signal_reset_pending'
 
     @staticmethod
     def _apply_external_import_provenance(entry: dict, external_import: dict) -> None:
@@ -556,6 +863,8 @@ class FactStore:
         *,
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
+        subject: MemorySubject | dict | None = None,
+        speaker_provenance: dict | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             return await self._apersist_new_facts_locked(
@@ -563,13 +872,31 @@ class FactStore:
                 extracted,
                 default_source=default_source,
                 semantic_dedup=semantic_dedup,
+                subject=subject,
+                speaker_provenance=speaker_provenance,
             )
+
+    async def apersist_scoped_facts(
+        self,
+        lanlan_name: str,
+        extracted: list[dict],
+        *,
+        subject: MemorySubject | dict,
+    ) -> list[dict]:
+        """Persist already extracted facts for an explicitly scoped adapter request."""
+        return await self._apersist_new_facts(
+            lanlan_name,
+            extracted,
+            subject=subject,
+        )
 
     async def _apersist_new_facts_locked(
         self, lanlan_name: str, extracted: list[dict],
         *,
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
+        subject: MemorySubject | dict | None = None,
+        speaker_provenance: dict | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -590,12 +917,21 @@ class FactStore:
         existing.source in place + reset signal_processed=False so Stage-2
         re-evaluates. The reverse (user→ai) never downgrades — user
         corroboration is irreversible.
-        """
+
+        ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
+        trust'} 子集），盖在本批每条**新建** fact 上。只落字段不接消费
+        （信赖度阶段一）；来自调用方（scoped_history 请求段），绝不读
+        extracted 元素里的同名键——LLM 输出无法伪造它。
+        """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
+        memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
         upgraded_count = 0
+        # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
+        # in-place 升级，否则重试撞守卫直接跳过保存。
+        upgraded_snapshots: list[tuple[dict, Any, Any]] = []
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -628,18 +964,20 @@ class FactStore:
             # RFC §3.1.3: **不再**在抽取入口硬丢 importance < 5。所有 fact
             # 一律落盘，消费侧按场景 min_importance= 过滤；保留完整 audit。
 
-            # Entity whitelist: RFC uses exactly these three values. Any
-            # other LLM output (common mistake: "user"→"master") gets
-            # snapped back to "master" with a debug log so the miss is
-            # visible but not alarming.
-            raw_entity = fact.get('entity', 'master')
-            if raw_entity in ('master', 'neko', 'relationship'):
-                entity = raw_entity
+            # Scoped writes own their entity: untrusted LLM output must not
+            # redirect a group/participant fact into the legacy master bucket.
+            # Legacy writes keep the original three-value whitelist unchanged.
+            if memory_subject is not None:
+                entity = memory_subject.kind
             else:
-                logger.debug(
-                    f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
-                )
-                entity = 'master'
+                raw_entity = fact.get('entity', 'master')
+                if raw_entity in ('master', 'neko', 'relationship'):
+                    entity = raw_entity
+                else:
+                    logger.debug(
+                        f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
+                    )
+                    entity = 'master'
 
             # Source resolution: LLM 显式 source 优先 + 白名单 + default fallback
             raw_source = fact.get('source')
@@ -663,6 +1001,8 @@ class FactStore:
                 else None
             )
             hash_input = f"{daily_event_date}\n{text}" if daily_event_date else text
+            if memory_subject is not None:
+                hash_input = f"{memory_subject.key}\n{memory_subject.scope}\n{hash_input}"
             content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
@@ -672,39 +1012,115 @@ class FactStore:
                     and source == 'user_observation'
                 ):
                     # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
-                    # → 升级 source + 重新进 Stage-2 evidence loop
+                    # → 升级 source + 重新进 Stage-2 evidence loop。
+                    # scoped fact 例外：简化管线不进 Stage-2，升级 source 但
+                    # 保持 signal_processed=True。
+                    upgraded_snapshots.append((
+                        existing,
+                        existing.get('source', self._SOURCE_DEFAULT),
+                        existing.get('signal_processed'),
+                    ))
                     existing['source'] = 'user_observation'
-                    existing['signal_processed'] = False
+                    existing['signal_processed'] = memory_subject is not None
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
                     # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
                     if external_import is not None:
                         self._apply_external_import_provenance(existing, external_import)
+                    # 给 save_facts 的单调 read-merge 留纸条：这次的 False 是故意
+                    # 翻回来的，别按"只能 False→True"把它顶回 True。放在 provenance
+                    # 之后并复查一次实际值——外部导入会把它重新封回 True，那种情况
+                    # 下不该留纸条，否则纸条与 entry 的真实状态对不上。
+                    if existing.get('signal_processed') is False:
+                        existing[self._SIGNAL_RESET_PENDING] = True
                     upgraded_count += 1
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
             if semantic_dedup and self._time_indexed is not None:
-                similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
+                # FTS5 is still character-wide, so fetch a wider window and
+                # keep the historical "top-3 candidates" semantics *inside*
+                # the subject boundary: cross-subject rows neither count as
+                # duplicates nor consume the 3-candidate budget (a busy
+                # group would otherwise crowd legacy candidates out of a
+                # top-3 fetch and let legacy near-duplicates slip through).
+                # 扇出场景（同一事件按 subject 存 N 份、BM25 并列）可能把
+                # 首窗 10 条全部占满——此时本 subject 的候选在 rank 11 之后，
+                # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
+                # 文本本身是退化的口水句，去重已无意义）。
                 is_dup = False
-                for fid, score in similar:
-                    if score >= -5:
-                        continue
-                    if daily_event_date:
-                        # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
-                        # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
-                        # 兜 LLM 重抽输出不稳定的重试幂等）。
+                raw_limit = 10
+                archived_by_id: dict | None = None
+
+                async def _aarchived_by_id() -> dict:
+                    # 惰性读 facts_archive.json（仅当 FTS 命中不在活跃集时）：
+                    # 归档行仍在 FTS 索引里，但 facts_by_id 只含活跃行——
+                    # 不解析归档元数据的话，归档后的同文本会绕过去重
+                    # （legacy 在 main 上本来是挡得住的，属回归；scoped
+                    # 需要 subject 戳判界）。
+                    nonlocal archived_by_id
+                    if archived_by_id is None:
+                        def _read() -> dict:
+                            path = self._facts_archive_path(lanlan_name)
+                            if os.path.exists(path):
+                                try:
+                                    with open(path, encoding='utf-8') as fh:
+                                        data = json.load(fh)
+                                    if isinstance(data, list):
+                                        return {
+                                            r.get('id'): r for r in data
+                                            if isinstance(r, dict)
+                                        }
+                                except (
+                                    json.JSONDecodeError,
+                                    UnicodeDecodeError,
+                                    OSError,
+                                ):
+                                    # 损坏归档降级为"仅活跃数据"（对齐
+                                    # load_facts_full），不得阻断本次写入。
+                                    pass
+                            return {}
+                        archived_by_id = await asyncio.to_thread(_read)
+                    return archived_by_id
+
+                while True:
+                    similar = await self._time_indexed.asearch_facts(
+                        lanlan_name, text, raw_limit,
+                    )
+                    same_subject_seen = 0
+                    for fid, score in similar:
                         hit = facts_by_id.get(fid)
-                        hit_meta = (hit or {}).get('external_import')
-                        hit_date = (
-                            str(hit_meta.get('event_date'))
-                            if isinstance(hit_meta, dict) and hit_meta.get('event_date')
-                            else None
-                        )
-                        if hit_date and hit_date != daily_event_date:
+                        if hit is None:
+                            hit = (await _aarchived_by_id()).get(fid)
+                        if hit is None or not entry_matches_subject(hit, memory_subject):
                             continue
-                    is_dup = True
-                    break
+                        same_subject_seen += 1
+                        if same_subject_seen > 3:
+                            break
+                        if score >= -5:
+                            continue
+                        if daily_event_date:
+                            # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
+                            # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
+                            # 兜 LLM 重抽输出不稳定的重试幂等）。
+                            hit_meta = (hit or {}).get('external_import')
+                            hit_date = (
+                                str(hit_meta.get('event_date'))
+                                if isinstance(hit_meta, dict) and hit_meta.get('event_date')
+                                else None
+                            )
+                            if hit_date and hit_date != daily_event_date:
+                                continue
+                        is_dup = True
+                        break
+                    if (
+                        is_dup
+                        or same_subject_seen >= 3
+                        or len(similar) < raw_limit
+                        or raw_limit >= 200
+                    ):
+                        break
+                    raw_limit = 200
                 if is_dup:
                     continue
 
@@ -752,7 +1168,14 @@ class FactStore:
                 # ⚠️ source='ai_disclosure' fact：写盘时直接置 True，让 Stage-2
                 # 永不取它。配合 aextract_facts_and_detect_signals 内部的
                 # source filter 做双重防御，防漏。
-                'signal_processed': (source == 'ai_disclosure'),
+                # ⚠️ scoped（群/成员）fact 同样置 True：群记忆走简化管线
+                # （facts → 定期合成 confirmed reflection → time-driven 晋升），
+                # 不参与 Stage-2 evidence。scoped 分区没有 user-confirm 通道，
+                # 其观察池冷启动恒空，进队列只会永久占用 batch 名额，把 legacy
+                # 私聊主链路饿死。
+                'signal_processed': (
+                    source == 'ai_disclosure' or memory_subject is not None
+                ),
                 # Vector-embedding cache (memory-enhancements P2 — see
                 # memory/embeddings.py). Written as None so /process
                 # returns immediately without blocking on embedding;
@@ -764,6 +1187,20 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
+            if memory_subject is not None:
+                fact_entry.update(memory_subject.as_entry_fields())
+            if speaker_provenance:
+                # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
+                label = str(speaker_provenance.get('speaker_label') or '').strip()
+                if label:
+                    fact_entry['speaker_label'] = label[:64]
+                trust = speaker_provenance.get('speaker_trust')
+                if (
+                    isinstance(trust, (int, float))
+                    and not isinstance(trust, bool)
+                    and 0.0 <= float(trust) <= 1.0
+                ):
+                    fact_entry['speaker_trust'] = float(trust)
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
@@ -779,24 +1216,56 @@ class FactStore:
             new_facts.append(fact_entry)
 
             if self._time_indexed is not None:
-                await self._time_indexed.aindex_fact(
-                    lanlan_name, fact_entry['id'], text,
-                )
+                try:
+                    await self._time_indexed.aindex_fact(
+                        lanlan_name, fact_entry['id'], text,
+                    )
+                except BaseException:
+                    # 索引失败也必须回滚（含取消：CancelledError 不经
+                    # except Exception，留下的缓存会让重试撞去重"空成功"）：本行已进缓存/hash 集合，留着会让
+                    # fail-closed 重试撞去重拿"空成功"、调用方推游标，而
+                    # facts.json 从未收到它（维护模式等场景）。
+                    await self._rollback_uncommitted_facts(
+                        lanlan_name, new_facts, existing_hashes,
+                        upgraded_snapshots,
+                    )
+                    raise
 
         # Save if we either added new facts OR upgraded existing ones'
         # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
         # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
         # 把升级 wipe 了。
         if new_facts or upgraded_count:
-            await self.asave_facts(lanlan_name)
+            try:
+                await self.asave_facts(lanlan_name)
+            except BaseException:
+                # 落盘失败或被取消：进程内缓存已 append、FTS 已索引——留着的话
+                # fail-closed 调用方重试会撞内容 hash 去重、拿到"空成功"
+                # 并推进游标，而磁盘上什么都没有，重启即永久丢失。回滚
+                # 本批新增（upgrade 的 in-place 字段改动保留：字段级幂等，
+                # 重试会重做），让重试重新走完整提取+持久化。
+                await self._rollback_uncommitted_facts(
+                    lanlan_name, new_facts, existing_hashes,
+                    upgraded_snapshots,
+                )
+                raise
         if new_facts:
             logger.info(
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"
             )
             for nf in new_facts:
-                logger.debug(
-                    f"   - [{nf.get('entity','?')}/{nf.get('source','?')}] {nf.get('text','')[:80]}"
-                )
+                if nf.get('subject_kind') or nf.get('subject_id') or nf.get('scope'):
+                    # scoped（群/成员衍生）事实原文不进日志：只打域标识与
+                    # 长度，对齐 scoped 反思/correction dead-letter 的口径。
+                    logger.debug(
+                        f"   - [scoped {nf.get('subject_kind','?')}"
+                        f"/{nf.get('subject_id','?')}] "
+                        f"len={len(nf.get('text','') or '')}"
+                    )
+                else:
+                    logger.debug(
+                        f"   - [{nf.get('entity','?')}/{nf.get('source','?')}] {nf.get('text','')[:80]}"
+                    )
         if upgraded_count:
             logger.info(
                 f"[FactStore] {lanlan_name}: 升级 {upgraded_count} 条 ai_disclosure → user_observation "
@@ -874,6 +1343,9 @@ class FactStore:
                     # past the filter and re-enter Stage-2 signal
                     # detection, defeating the suppression contract.
                     'suppress': r.get('suppress'),
+                    'subject_kind': r.get('subject_kind'),
+                    'subject_id': r.get('subject_id'),
+                    'scope': r.get('scope'),
                 })
 
         if persona_manager is not None:
@@ -900,7 +1372,31 @@ class FactStore:
                         'embedding_text_sha256': entry.get('embedding_text_sha256'),
                         'embedding_model_id': entry.get('embedding_model_id'),
                         'suppress': entry.get('suppress'),
+                        'subject_kind': entry.get('subject_kind'),
+                        'subject_id': entry.get('subject_id'),
+                        'scope': entry.get('scope'),
                     })
+
+        # Keep Stage-2 evidence inside the same subject boundary as the facts
+        # that triggered it. Legacy facts can only see legacy observations;
+        # scoped facts can only see explicitly matching scoped observations.
+        from memory.scopes import (
+            filter_entries_for_subjects,
+            subject_from_entry,
+        )
+        trigger_subjects = []
+        include_legacy_private = not new_facts
+        for fact in new_facts or []:
+            trigger_subject = subject_from_entry(fact)
+            if trigger_subject is None:
+                include_legacy_private = True
+            else:
+                trigger_subjects.append(trigger_subject)
+        pool = filter_entries_for_subjects(
+            pool,
+            trigger_subjects or None,
+            include_legacy_private=include_legacy_private,
+        )
 
         # P2 step 3: route through MemoryRecallReranker whenever we have
         # a query, regardless of vector service state.  The reranker
@@ -1127,13 +1623,16 @@ class FactStore:
         - ``new_facts_this_round``: facts newly extracted + persisted by this
           round's Stage-1 (for outbox and other audit purposes)
         - ``signals``: evidence signals awaiting dispatch
-        - ``batch_fact_ids``: fact ids processed by this Stage-2 round — **the
-          caller must call ``amark_signal_processed(lanlan_name, batch_fact_ids)``
-          to complete the checkpoint only after every signal has been applied
-          successfully via aapply_signal**. If the caller crashes during/after
-          dispatch, the next idle sees the signal_processed=False facts, re-runs
-          Stage-2, regenerates the signals and retries the dispatch (CodeRabbit
-          fingerprint c755101c).
+        - ``batch_fact_ids``: fact ids successfully processed by this Stage-2
+          round. The drain queue only ever carries legacy-private facts —
+          scoped (group/member) facts take the simplified pipeline and are
+          written with ``signal_processed=True``; any stray non-legacy row is
+          defensively dequeued before batching. The caller
+          must call ``amark_signal_processed(lanlan_name, batch_fact_ids)`` only
+          after every returned signal has been applied successfully via
+          aapply_signal. If dispatch fails, the next idle sees those facts still
+          at signal_processed=False and retries them (CodeRabbit fingerprint
+          c755101c).
 
         Failure semantics (§3.4.2, last paragraph):
         - Stage-1 failure → abort, no fact written; caller retries later
@@ -1172,6 +1671,29 @@ class FactStore:
             if not f.get('signal_processed', True)
             and f.get('source', self._SOURCE_DEFAULT) != 'ai_disclosure'
         ]
+
+        # Stage-2 evidence 只属于 legacy 私聊管线。scoped（群/成员）fact 走
+        # 简化管线，写盘时就 signal_processed=True 不会出现在这里；万一出现
+        # （subject 元数据损坏、旧版本代码写入的滞留数据），直接标记出队——
+        # 这类 fact 没有对应的 evidence 观察池，留在队列里会永久占用 batch
+        # 名额，把 legacy 主链路饿死（每 tick 空转还烧额外 LLM 调用）。
+        from memory.scopes import is_legacy_private_entry
+
+        stray = [f for f in unprocessed if not is_legacy_private_entry(f)]
+        if stray:
+            # 无条件把非 legacy 行滤出批次——包括没有 id、无法标记的行：
+            # 它们绝不能混进纯 legacy 的 Stage-2 prompt（跨边界泄漏）。
+            unprocessed = [
+                f for f in unprocessed if is_legacy_private_entry(f)
+            ]
+            stray_ids = [f['id'] for f in stray if f.get('id')]
+            logger.info(
+                "[FactStore] %s: Stage-2 出队 %d 条非 legacy fact"
+                "（scoped 走简化管线 / subject 损坏防御；无 id 仅过滤不标记 %d 条）",
+                lanlan_name, len(stray), len(stray) - len(stray_ids),
+            )
+            if stray_ids:
+                await self.amark_signal_processed(lanlan_name, stray_ids)
         if not unprocessed:
             return persisted_this_round, [], []
 
@@ -1185,48 +1707,50 @@ class FactStore:
         )
         batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
+        # 此时 batch 只含 legacy 私聊 facts（scoped 已在上面防御性出队），
+        # 保持与分区机制引入前一致的单批次 Stage-2。_aload_signal_targets
+        # 内部的 scope 过滤会把观察池收敛到 legacy（defense in depth：即使
+        # 未来有 scoped 观察写入 reflections/persona，也不会漏进这里）。
         try:
             existing_observations = await self._aload_signal_targets(
                 lanlan_name,
                 reflection_engine=reflection_engine,
                 persona_manager=persona_manager,
-                # 用 batch 而不是仅本轮新增作为 query，向量召回更聚焦。
                 new_facts=batch,
             )
         except Exception as e:
-            # _aload_signal_targets 现在不再吞 reflection/persona load 异常
-            # （CodeRabbit 1f follow-up：partial pool + checkpoint 会让失败池
-            # 那部分的 signal 永久丢失）。任一 manager raise 时整轮放弃 mark，
-            # 下轮 idle 重试。
             logger.warning(
                 f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
-                f"跳过本轮 Stage-2 mark，下轮 idle 重试: {e}"
+                f"跳过本轮 Stage-2（batch 保持未处理下轮重试）: {e}"
             )
             return persisted_this_round, [], []
         if not existing_observations:
-            # 真为空（冷启动 / persona 池只有 protected）：故意**不**返回
-            # batch_fact_ids，让 caller 不 mark，下轮 idle tick 重试同一批。
-            # 代价是冷启动每轮跑一次 _aload_signal_targets（无 LLM 调用）；
-            # 收益是绝不丢 signal（CodeRabbit fingerprint e625b666）。
+            # 冷启动：还没有任何 confirmed reflection / persona 观察目标。
+            # 不 mark，下轮重试（与引入 scope 之前的语义一致）。
             return persisted_this_round, [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
-            # Stage-2 LLM failure: 不返回 batch_ids，caller 不 mark，下轮重试
+            # Stage-2 LLM failure: 不返回 ids，caller 不 mark，下轮重试同批。
             return persisted_this_round, [], []
 
-        # Stage-2 成功 → 返回 batch_fact_ids 让 caller 在 dispatch 全部成功
-        # 后调 amark_signal_processed。**不**在这里立刻 mark：caller 还没有
-        # 把 signals 喂给 PersonaManager / ReflectionEngine.aapply_signal，
-        # 中途崩溃或部分失败时这批 fact 必须能下轮重跑（CodeRabbit c755101c）。
-        # 即使 signals=[]（LLM 看过认为没关联）也返回 batch_ids，caller 看到
-        # 空 signals 直接当 dispatch_ok=True 调 amark，避免下轮空跑。
-        batch_fact_ids = [f['id'] for f in batch]
-        return persisted_this_round, signals, batch_fact_ids
+        # caller 仍需在所有返回 signals dispatch 成功后才 mark。
+        return persisted_this_round, signals, [
+            fact['id'] for fact in batch if fact.get('id')
+        ]
 
-    async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
+    async def extract_facts(
+        self,
+        messages: list,
+        lanlan_name: str,
+        *,
+        subject: MemorySubject | dict | None = None,
+        fail_closed: bool = False,
+        speaker_label: str | None = None,
+        speaker_provenance: dict | None = None,
+    ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
         Kept for callers that predate the evidence mechanism
@@ -1236,13 +1760,59 @@ class FactStore:
         runs Stage-1+Stage-2 together.
 
         Unlike the Stage-1+2 entry, a Stage-1 terminal failure is swallowed
-        here (returns []): the legacy per-turn call site treats extraction as
-        best-effort — the next turn / the background loop will retry.
-        """
-        extracted = await self._allm_extract_facts(lanlan_name, messages)
+        here by default (returns []): the legacy per-turn call site treats
+        extraction as best-effort — the next turn / the background loop will
+        retry over durably stored history.
+
+        ``fail_closed=True`` raises :class:`FactExtractionFailed` on terminal
+        failure (retries exhausted or malformed payload) instead. The scoped
+        history route needs the distinction: its callers checkpoint volatile
+        caller-owned buffers on success, so a swallowed failure would
+        permanently drop the batch (Codex P1). A genuine empty extraction
+        still returns [].
+
+        ``speaker_label`` is forwarded to the extraction prompt — see
+        :meth:`_allm_extract_facts`.
+
+        ``speaker_provenance``: stamped onto每条新建 fact（speaker_label /
+        speaker_trust，信赖度阶段一只落字段）。与 ``speaker_label`` 分开传：
+        后者影响 prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——
+        那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
+        决定是否给本参数。
+        """  # noqa: DOCSTRING_CJK
+        extracted = await self._allm_extract_facts(
+            lanlan_name, messages,
+            treat_malformed_as_failure=fail_closed,
+            speaker_label=speaker_label,
+        )
+        if extracted is None and fail_closed:
+            raise FactExtractionFailed(
+                f"Stage-1 LLM call failed for {lanlan_name!r} (fail_closed caller)"
+            )
+        if fail_closed and isinstance(extracted, list) and extracted:
+            # 任一畸形元素都判整批可重试失败：persist 会静默跳过畸形项，
+            # 调用方推进游标后该元素承载的内容永久丢失；重试换一次完整
+            # 提取，去重机制兜住有效项的重复（对齐 daily import 语义）。
+            malformed = [
+                f for f in extracted
+                if not (
+                    isinstance(f, dict)
+                    and isinstance(f.get('text'), str)
+                    and f['text'].strip()
+                )
+            ]
+            if malformed:
+                raise FactExtractionFailed(
+                    f"Stage-1 returned {len(malformed)}/{len(extracted)} "
+                    f"malformed fact entries for {lanlan_name!r} "
+                    f"(fail_closed caller)"
+                )
         if not extracted:
             return []
-        return await self._apersist_new_facts(lanlan_name, extracted)
+        return await self._apersist_new_facts(
+            lanlan_name, extracted, subject=subject,
+            speaker_provenance=speaker_provenance,
+        )
 
     # ── external import state (sidecar) ──────────────────────────────
 
@@ -1721,6 +2291,8 @@ class FactStore:
         lanlan_name: str,
         messages: list,
         known_pool: list[dict],
+        *,
+        subject: MemorySubject | dict | None = None,
     ) -> list[dict] | None:
         """AI-aware Stage-1 (path B) extraction — input is the role-tagged full
         user+ai message set; the prompt embeds ``known_pool`` (facts path A
@@ -1756,7 +2328,7 @@ class FactStore:
         if not extracted:
             return []
         return await self._apersist_new_facts(
-            lanlan_name, extracted, default_source='ai_disclosure',
+            lanlan_name, extracted, default_source='ai_disclosure', subject=subject,
         )
 
     async def _allm_extract_facts_with_known_pool(
@@ -1786,11 +2358,13 @@ class FactStore:
             known_lines.append(f"- {text} (importance: {imp})")
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
-        prompt = get_fact_extraction_ai_aware_prompt(get_global_language()) \
-            .replace('{CONVERSATION}', conversation_text) \
-            .replace('{KNOWN_POOL}', known_block) \
-            .replace('{LANLAN_NAME}', lanlan_name) \
+        prompt = (
+            get_fact_extraction_ai_aware_prompt(get_global_language_full())
+            .replace('{CONVERSATION}', conversation_text)
+            .replace('{KNOWN_POOL}', known_block)
+            .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+        )
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -1813,19 +2387,91 @@ class FactStore:
 
     # ── query helpers ────────────────────────────────────────────────
 
-    def get_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+    def get_unabsorbed_facts(
+        self,
+        name: str,
+        min_importance: int = 5,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         """Get facts that haven't been consumed by a reflection yet."""
         facts = self.load_facts(name)
         return [
             f for f in facts
-            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+            if not f.get('absorbed')
+            and f.get('importance', 0) >= min_importance
+            and entry_matches_subject(f, subject)
         ]
 
-    async def aget_unabsorbed_facts(self, name: str, min_importance: int = 5) -> list[dict]:
+    async def _rollback_uncommitted_facts(
+        self, lanlan_name: str, new_facts: list, existing_hashes: set,
+        upgraded_snapshots: list | None = None,
+    ) -> None:
+        """Undo in-memory effects of a batch that never reached disk.
+
+        The fail-closed callers retry on error; if the cache and hash set
+        keep the uncommitted rows, that retry deduplicates into an empty
+        success and the caller advances a volatile cursor over facts that
+        facts.json never received. Upgrades are left alone (field-level
+        idempotent, redone by the retry)."""
+        for entry, prev_source, prev_signal in (upgraded_snapshots or []):
+            # in-place 升级同样要还原：留着的话重试会撞升级守卫（source
+            # 已是 user_observation）→ upgraded_count=0 → 整轮跳过保存，
+            # 调用方拿到"成功"推游标，磁盘上的 fact 却仍未被印证。
+            entry['source'] = prev_source
+            if prev_signal is None:
+                entry.pop('signal_processed', None)
+            else:
+                entry['signal_processed'] = prev_signal
+        added_ids = {
+            nf.get('id') for nf in new_facts if isinstance(nf, dict)
+        }
+        added_hashes = {
+            nf.get('hash') for nf in new_facts
+            if isinstance(nf, dict) and nf.get('hash')
+        }
+        cache = self._facts.get(lanlan_name)
+        if cache is not None:
+            cache[:] = [
+                f for f in cache
+                if not (isinstance(f, dict) and f.get('id') in added_ids)
+            ]
+        for content_hash in added_hashes:
+            existing_hashes.discard(content_hash)
+        if self._time_indexed is not None:
+            for fact_id in added_ids:
+                if not fact_id:
+                    continue
+                try:
+                    await self._time_indexed.adelete_fact_from_index(
+                        lanlan_name, fact_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 回滚 FTS 索引失败 "
+                        f"({fact_id})"
+                    )
+
+    async def aget_unabsorbed_facts(
+        self,
+        name: str,
+        min_importance: int = 5,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> list[dict]:
         facts = await self.aload_facts(name)
+        # load_facts preserves legacy/hand-edited non-dict rows; filter them
+        # here too or one corrupted row keeps raising through every caller
+        # (scoped synthesis re-enters this getter after its own guard).
         return [
             f for f in facts
-            if not f.get('absorbed') and f.get('importance', 0) >= min_importance
+            if isinstance(f, dict)
+            and f.get('id')
+            and not f.get('absorbed')
+            # safe_importance：手改行的非数值 importance（如 "high"）在
+            # 原生比较下 TypeError，会让该角色的 scoped 合成每 tick 全灭。
+            and safe_importance(f, 0) >= min_importance
+            and entry_matches_subject(f, subject)
         ]
 
     def get_facts_by_entity(self, name: str, entity: str) -> list[dict]:
@@ -1969,7 +2615,7 @@ class FactStore:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_fact")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],

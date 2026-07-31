@@ -79,7 +79,7 @@
 
 ## 🐱 我们是——**猫娘计划 (Project N.E.K.O.)**
 
-`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于Apache 2.0许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
+`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于 Apache 2.0 许可证**始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
 
 #### 🚀 项目现状 & 近期计划
 
@@ -495,9 +495,9 @@ uv sync
 
 # 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
 #    推荐：使用一键脚本（这是官方支持的构建方式）
-#      Windows：      
+#      Windows：
 build_frontend.bat
-#      Linux/macOS：  
+#      Linux/macOS：
 ./build_frontend.sh
 #    如需手动构建（命令须与脚本保持一致）：
 # cd frontend/react-neko-chat && npm install && npm run build && cd ../..
@@ -543,7 +543,7 @@ localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode');        location
 
 #### 修改人设
 
-- 网页版访问`http://localhost:48911/character_card_manager`即可进入人设编辑页面。初始 ~~猫娘~~ 伙伴的预设名称为`小天`，建议直接修改名字，并一项一项添加或修改基础人设，但尽量控制数量。
+- 网页版访问`http://localhost:48911/character_card_manager`即可进入人设编辑页面。初始 ~~猫娘~~ 伙伴的预设名称为`YUI`，建议直接修改名字，并一项一项添加或修改基础人设，但尽量控制数量。
 
 - 进阶人设主要包括**Live2D/VRM/MMD模型设置**和**声音设置**。如果你想要更改**Avatar模型**，请先将模型目录复制到本项目中的`static`文件夹下。从进阶设置中可以进入模型管理界面，可以更换模型，并通过拖拽和鼠标滚轮调整模型的位置和大小。如果你想要更改**角色声音**，请准备一段5秒左右的连贯、干净的语音录音。通过进阶设置进入语音克隆页面，上传录音即可完成自定义语音。
 
@@ -577,7 +577,7 @@ N.E.K.O/
 │   ├── openfang_adapter.py      # OpenFang 无头执行后端
 │   ├── task_executor.py         # 任务执行引擎
 │   └── 📁 cua/                  # Computer Use Agent 子系统
-├── 📁 config/                   # ⚙️ 配置管理模块 
+├── 📁 config/                   # ⚙️ 配置管理模块
 │   ├── api_providers.json       # API服务商配置
 │   └── 📁 prompts/              # 角色、系统和功能提示词
 │       ├── prompts_chara.py     # 角色提示词
@@ -620,7 +620,7 @@ N.E.K.O/
 
 > 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
 
-> 主页新手引导提示的维护说明见 [docs/design/tutorial_prompt_maintenance.zh-CN.md](docs/design/tutorial_prompt_maintenance.zh-CN.md)
+> 主页新手引导提示的当前接口与状态合同见 [`docs/zh-CN/api/rest/system.md`](docs/zh-CN/api/rest/system.md#教程与自启动提示)
 
 ### 开发计划
 
@@ -651,9 +651,9 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 
 > **关于"假名化设备标识"**：单向 SHA-256，不可逆、不含用户信息。同一台机器（同一 OS 安装）会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。仅用于去重 DAU 计数与版本兼容性归因。
 >
-> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server/__init__.py`](app/main_server/__init__.py) 启动时无条件调用 `initialize_steamworks()`，[`utils/token_tracker.py`](utils/token_tracker.py) 的 `_get_telemetry_steam_user_id()` 只要 SDK 起来且 `Users.GetSteamID()` 返回非零就上报，并不区分 source / release / steam 这三种 distribution 渠道。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样会带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
+> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server/__init__.py`](app/main_server/__init__.py) 启动时调用 `initialize_steamworks()`，[`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) 的 `_get_telemetry_metadata()` 会在 SDK 可用且 `Users.GetSteamID()` 返回非零时取得该 ID，并不只按 source / release / steam 这三个 distribution 标签决定。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样可能带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
 
-完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
+客户端元数据与上报实现见 [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) 和 [`utils/token_tracker/reporting.py`](utils/token_tracker/reporting.py)，服务端传输与存储协议见 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
 
 </details>
 

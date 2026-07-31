@@ -5,6 +5,7 @@ let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
 let suppressProviderTouchedTracking = false;
+let activeVoicePreviewNotice = null;
 // 防止并发应用音色的可重入守卫
 let isApplyingVoice = false;
 const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
@@ -216,10 +217,17 @@ function getNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
         const provider = voiceData && String(voiceData.provider || '').trim();
+        const configuredLabel = voiceData && String(voiceData.provider_label || '').trim();
+        // Configured presets share the Custom API source label without losing
+        // the provider key that owns preview and synthesis behavior.
+        // 配置音色共用“自定义 API”来源名，provider key 仍负责试听与合成路由。
+        if (VoiceDisplayUtils.isKnownProvider(configuredLabel)) {
+            return getNativeProviderShortName(configuredLabel);
+        }
         if (VoiceDisplayUtils.isKnownProvider(provider)) {
             return getNativeProviderShortName(provider);
         }
-        const label = voiceData && (voiceData.provider_label || provider);
+        const label = configuredLabel || provider;
         if (label) return String(label);
     }
     return '';
@@ -2082,13 +2090,172 @@ window.addEventListener('message', function (event) {
     }
 });
 
+function showVoicePreviewErrorNotice(message) {
+    if (activeVoicePreviewNotice) {
+        activeVoicePreviewNotice.dispose();
+    }
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'voice-preview-notice-backdrop';
+
+    const card = document.createElement('div');
+    card.className = 'voice-preview-notice-card';
+    card.setAttribute('role', 'alertdialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-labelledby', 'voice-preview-notice-title');
+    card.setAttribute('aria-describedby', 'voice-preview-notice-message');
+
+    const header = document.createElement('div');
+    header.className = 'voice-preview-notice-header';
+
+    const mark = document.createElement('span');
+    mark.className = 'voice-preview-notice-mark';
+    mark.setAttribute('aria-hidden', 'true');
+
+    const title = document.createElement('h3');
+    title.className = 'voice-preview-notice-title';
+    title.id = 'voice-preview-notice-title';
+    title.textContent = window.t ? window.t('voice.preview') : 'Preview';
+
+    const body = document.createElement('div');
+    body.className = 'voice-preview-notice-body';
+
+    const messageEl = document.createElement('p');
+    messageEl.className = 'voice-preview-notice-message';
+    messageEl.id = 'voice-preview-notice-message';
+    messageEl.textContent = String(message || '');
+
+    const actions = document.createElement('div');
+    actions.className = 'voice-preview-notice-actions';
+
+    const okButton = document.createElement('button');
+    okButton.type = 'button';
+    okButton.className = 'voice-preview-notice-ok';
+    okButton.textContent = window.t ? window.t('common.ok') : 'OK';
+
+    header.appendChild(mark);
+    header.appendChild(title);
+    body.appendChild(messageEl);
+    actions.appendChild(okButton);
+    card.appendChild(header);
+    card.appendChild(body);
+    card.appendChild(actions);
+    backdrop.appendChild(card);
+
+    let closed = false;
+    let cleaned = false;
+
+    function cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        document.removeEventListener('keydown', onKeydown, true);
+        if (backdrop.parentNode) {
+            backdrop.parentNode.removeChild(backdrop);
+        }
+        if (activeVoicePreviewNotice && activeVoicePreviewNotice.backdrop === backdrop) {
+            activeVoicePreviewNotice = null;
+        }
+    }
+
+    function close() {
+        if (closed) return;
+        closed = true;
+        backdrop.classList.add('is-closing');
+        window.setTimeout(cleanup, 160);
+    }
+
+    function dispose() {
+        closed = true;
+        cleanup();
+    }
+
+    function onKeydown(event) {
+        if (event.key === 'Tab') {
+            event.preventDefault();
+            event.stopPropagation();
+            okButton.focus();
+            return;
+        }
+        if (event.key === 'Escape' || event.key === 'Enter') {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        }
+    }
+
+    okButton.addEventListener('click', close);
+    backdrop.addEventListener('click', event => {
+        if (event.target === backdrop) close();
+    });
+    document.addEventListener('keydown', onKeydown, true);
+    document.body.appendChild(backdrop);
+    activeVoicePreviewNotice = { backdrop, dispose };
+    window.setTimeout(() => okButton.focus(), 0);
+}
+
+const activeVoicePreviewSessions = new Map();
+const voicePreviewOriginalButtonContents = new WeakMap();
+
+function setVoicePreviewButtonState(btn, state) {
+    if (!btn) return;
+
+    if (state === 'idle') {
+        const originalContent = voicePreviewOriginalButtonContents.get(btn);
+        if (originalContent !== undefined) {
+            btn.innerHTML = originalContent;
+            voicePreviewOriginalButtonContents.delete(btn);
+        }
+        btn.disabled = false;
+        delete btn.dataset.previewState;
+        return;
+    }
+
+    if (!voicePreviewOriginalButtonContents.has(btn)) {
+        voicePreviewOriginalButtonContents.set(btn, btn.innerHTML);
+    }
+    btn.textContent = state === 'playing'
+        ? (window.t ? window.t('voice.previewing') : '正在预览')
+        : (window.t ? window.t('voice.loading') : '...');
+    btn.disabled = true;
+    btn.dataset.previewState = state;
+}
+
+function attachVoicePreviewButton(voiceId, btn) {
+    const session = activeVoicePreviewSessions.get(String(voiceId));
+    if (!session) return;
+    session.buttons.add(btn);
+    setVoicePreviewButtonState(btn, session.state);
+}
+
+function updateVoicePreviewSessionState(session, state) {
+    if (activeVoicePreviewSessions.get(session.voiceId) !== session) return;
+    session.state = state;
+    session.buttons.forEach(btn => setVoicePreviewButtonState(btn, state));
+}
+
+function finishVoicePreviewSession(session) {
+    if (activeVoicePreviewSessions.get(session.voiceId) !== session) return;
+    activeVoicePreviewSessions.delete(session.voiceId);
+    session.buttons.forEach(btn => setVoicePreviewButtonState(btn, 'idle'));
+    session.buttons.clear();
+}
+
 async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
-    const originalContent = btn.innerHTML;
-    const loadingText = window.t ? window.t('voice.loading') : '...';
-    btn.textContent = loadingText;
-    btn.disabled = true;
+    const voiceIdKey = String(voiceId);
+    const existingSession = activeVoicePreviewSessions.get(voiceIdKey);
+    if (existingSession) {
+        attachVoicePreviewButton(voiceIdKey, btn);
+        return;
+    }
+    const session = {
+        voiceId: voiceIdKey,
+        state: 'loading',
+        buttons: new Set(),
+    };
+    activeVoicePreviewSessions.set(voiceIdKey, session);
+    attachVoicePreviewButton(voiceIdKey, btn);
 
     try {
         const storageKey = `voice_preview_${voiceId}`;
@@ -2179,19 +2346,39 @@ async function playPreview(voiceId, btn, options = {}) {
 
         if (audioSrc) {
             const audio = new Audio(audioSrc);
-            audio.play().catch(e => {
+            let playbackFinished = false;
+            const restorePreviewButton = () => {
+                if (playbackFinished) return;
+                playbackFinished = true;
+                finishVoicePreviewSession(session);
+            };
+
+            audio.addEventListener('ended', restorePreviewButton, { once: true });
+            audio.addEventListener('error', restorePreviewButton, { once: true });
+
+            try {
+                await audio.play();
+            } catch (e) {
+                restorePreviewButton();
                 console.error('Audio play error:', e);
-                alert(window.t ? window.t('voice.playFailed', { error: e.message }) : '播放失败: ' + e.message);
-            });
-            btn.innerHTML = originalContent;
-            btn.disabled = false;
+                const errorMsg = e?.message || e?.toString();
+                showVoicePreviewErrorNotice(
+                    window.t ? window.t('voice.playFailed', { error: errorMsg }) : '播放失败: ' + errorMsg
+                );
+                return;
+            }
+
+            if (!playbackFinished) {
+                updateVoicePreviewSessionState(session, 'playing');
+            }
         }
     } catch (error) {
         console.error('Preview error:', error);
         const errorMsg = error?.message || error?.toString();
-        alert(window.t ? window.t('voice.previewFailed', { error: errorMsg }) : '预览失败: ' + errorMsg);
-        btn.innerHTML = originalContent;
-        btn.disabled = false;
+        showVoicePreviewErrorNotice(
+            window.t ? window.t('voice.previewFailed', { error: errorMsg }) : '预览失败: ' + errorMsg
+        );
+        finishVoicePreviewSession(session);
     }
 }
 
@@ -2291,6 +2478,7 @@ async function loadVoices() {
                 previewImg.alt = '';
                 previewBtn.appendChild(previewImg);
                 previewBtn.appendChild(document.createTextNode(previewText));
+                attachVoicePreviewButton(voiceId, previewBtn);
                 previewBtn.onclick = (event) => {
                     event.stopPropagation();
                     playPreview(voiceId, previewBtn);
@@ -2368,6 +2556,7 @@ async function loadVoices() {
             previewImg.alt = '';
             previewBtn.appendChild(previewImg);
             previewBtn.appendChild(document.createTextNode(previewText));
+            attachVoicePreviewButton(voiceId, previewBtn);
             previewBtn.onclick = (event) => {
                 event.stopPropagation();
                 playPreview(voiceId, previewBtn, { source, provider });
@@ -2474,6 +2663,7 @@ async function loadVoices() {
                 previewImg.alt = '';
                 previewBtn.appendChild(previewImg);
                 previewBtn.appendChild(document.createTextNode(previewText));
+                attachVoicePreviewButton(voiceId, previewBtn);
                 previewBtn.onclick = (event) => {
                     event.stopPropagation();
                     playPreview(voiceId, previewBtn);
@@ -2556,6 +2746,7 @@ async function loadVoices() {
                     previewImg.alt = '';
                     previewBtn.appendChild(previewImg);
                     previewBtn.appendChild(document.createTextNode(previewText));
+                    attachVoicePreviewButton(voiceId, previewBtn);
                     previewBtn.onclick = (event) => {
                         event.stopPropagation();
                         playPreview(voiceId, previewBtn);

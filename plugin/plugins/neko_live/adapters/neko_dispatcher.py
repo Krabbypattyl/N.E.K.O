@@ -1,4 +1,4 @@
-"""Single NEKO output boundary for Neko Roast."""
+"""Single NEKO output boundary for NEKO Live."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from .output_contract_bridge import (
 )
 
 _AVATAR_INLINE_BUDGET_BYTES = 120 * 1024
-_NEKO_ROAST_AUDIENCE_SOURCES = {"live_danmaku", "manual_live_simulation"}
-_NEKO_ROAST_HOSTING_SOURCES = {"warmup_hosting", "idle_hosting", "active_engagement"}
-_NEKO_ROAST_LIVE_SOURCES = _NEKO_ROAST_AUDIENCE_SOURCES | _NEKO_ROAST_HOSTING_SOURCES | {
+_NEKO_LIVE_AUDIENCE_SOURCES = {"live_danmaku", "manual_live_simulation"}
+_NEKO_LIVE_HOSTING_SOURCES = {"warmup_hosting", "idle_hosting", "active_engagement"}
+_NEKO_LIVE_LIVE_SOURCES = _NEKO_LIVE_AUDIENCE_SOURCES | _NEKO_LIVE_HOSTING_SOURCES | {
     "live_support_events",
 }
 
@@ -132,9 +132,9 @@ def _priority_for_request(request: InteractionRequest, *, demo: bool = False) ->
     source = str(request.event.source or "").strip()
     if module == "live_support_events":
         return 9
-    if source in _NEKO_ROAST_AUDIENCE_SOURCES:
+    if source in _NEKO_LIVE_AUDIENCE_SOURCES:
         return 8
-    if source in _NEKO_ROAST_HOSTING_SOURCES:
+    if source in _NEKO_LIVE_HOSTING_SOURCES:
         return 3
     if source == "developer_sandbox":
         return 7
@@ -145,7 +145,7 @@ def _coalesce_key_for_request(request: InteractionRequest, *, demo: bool = False
     if demo:
         return f"neko_live_demo:{request.identity.uid}:{request.event.seen_at}"
     source = str(request.event.source or "").strip()
-    if source in _NEKO_ROAST_HOSTING_SOURCES:
+    if source in _NEKO_LIVE_HOSTING_SOURCES:
         target = str(request.event.target_lanlan or "").strip() or str(request.identity.uid or "").strip()
         raw = request.event.raw if isinstance(request.event.raw, dict) else {}
         host_beat = raw.get("host_beat") if isinstance(raw.get("host_beat"), dict) else {}
@@ -200,7 +200,7 @@ def _append_plugin_output_contract(
 
 def _prepend_live_delivery_boundary(text: str, request: InteractionRequest) -> str:
     source = str(request.event.source or "").strip()
-    if source not in _NEKO_ROAST_LIVE_SOURCES:
+    if source not in _NEKO_LIVE_LIVE_SOURCES:
         return text
     if "NEKO Live delivery boundary:" in text:
         return text
@@ -223,6 +223,52 @@ def _prepend_live_delivery_boundary(text: str, request: InteractionRequest) -> s
     boundary = "\n".join(boundary_lines)
     base = str(text or "").rstrip()
     return f"{base}\n\n{boundary}" if base else boundary
+
+
+def _mark_live_audience_speaker(metadata: dict[str, Any], request: InteractionRequest) -> None:
+    source = str(request.event.source or "").strip()
+    danmaku = str(request.event.danmaku_text or "").strip()
+    module = response_module_hint(request)
+    if (
+        source not in _NEKO_LIVE_AUDIENCE_SOURCES
+        or module not in {"avatar_roast", "danmaku_response"}
+        or not danmaku
+    ):
+        return
+    metadata["live_message_origin"] = "viewer_danmaku"
+    metadata["live_speaker_role"] = "viewer"
+
+
+def _prepend_live_audience_speaker_lock(
+    text: str,
+    metadata: dict[str, Any],
+    request: InteractionRequest,
+) -> str:
+    source = str(request.event.source or "").strip()
+    danmaku = str(request.event.danmaku_text or "").strip()
+    module = response_module_hint(request)
+    if (
+        source not in _NEKO_LIVE_AUDIENCE_SOURCES
+        or module not in {"avatar_roast", "danmaku_response"}
+        or not danmaku
+    ):
+        return text
+    viewer = str(metadata.get("danmaku_viewer_nickname") or "").strip()
+    if not viewer:
+        viewer = str(request.identity.nickname or request.event.nickname or "").strip()
+    viewer = " ".join(viewer.split())[:24] or "the current live viewer"
+    lock = "\n".join(
+        (
+            "NEKO Live audience speaker identity:",
+            "- message_origin: third-party live viewer danmaku",
+            f"- danmaku_author: {viewer}",
+            "- The current danmaku was written by danmaku_author, not by {MASTER_NAME}, the owner, the operator, or the human co-streamer.",
+            "- If the current danmaku is a question or request, danmaku_author is the questioner/requester.",
+            "- Answer danmaku_author in the public live room; never say or imply that the human streamer or owner asked this question.",
+        )
+    )
+    base = str(text or "").lstrip()
+    return f"{lock}\n\n{base}" if base else lock
 
 
 def _prepend_danmaku_visible_target_lock(text: str, metadata: dict[str, Any], request: InteractionRequest) -> str:
@@ -262,7 +308,7 @@ def _unverified_support_claim_reply(request: InteractionRequest, metadata: dict[
     if metadata.get("viewer_claimed_support") != "unverified_danmaku_claim":
         return ""
     source = str(request.event.source or "").strip()
-    if source not in _NEKO_ROAST_AUDIENCE_SOURCES:
+    if source not in _NEKO_LIVE_AUDIENCE_SOURCES:
         return ""
     return choose_fallback_reply(
         str(request.event.danmaku_text or ""),
@@ -350,28 +396,28 @@ class NekoDispatcher:
     async def push_context_instructions(self, text: str) -> str:
         return await self._push_context_text(
             text,
-            description="Neko Roast behavior instructions",
+            description="NEKO Live behavior instructions",
             result_name="instructions_queued",
         )
 
     async def push_context_restore(self, text: str) -> str:
         return await self._push_context_text(
             text,
-            description="Neko Roast behavior restore",
+            description="NEKO Live behavior restore",
             result_name="instructions_restored",
         )
 
     async def push_developer_instructions(self, text: str) -> str:
         return await self._push_context_text(
             text,
-            description="Neko Roast developer mode instructions",
+            description="NEKO Live developer mode instructions",
             result_name="developer_instructions_queued",
         )
 
     async def push_developer_restore(self, text: str) -> str:
         return await self._push_context_text(
             text,
-            description="Neko Roast developer mode restore",
+            description="NEKO Live developer mode restore",
             result_name="developer_instructions_restored",
         )
 
@@ -436,6 +482,7 @@ class NekoDispatcher:
         metadata = metadata_for_request(request, demo=is_demo_event)
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
+        _mark_live_audience_speaker(metadata, request)
         forced_reply = _unverified_support_claim_reply(request, metadata)
         if forced_reply:
             metadata["forced_reply_reason"] = "unverified_support_claim"
@@ -446,6 +493,11 @@ class NekoDispatcher:
             plugin=self.plugin,
         )
         parts[0]["text"] = _prepend_danmaku_visible_target_lock(
+            str(parts[0].get("text") or ""),
+            metadata,
+            request,
+        )
+        parts[0]["text"] = _prepend_live_audience_speaker_lock(
             str(parts[0].get("text") or ""),
             metadata,
             request,
