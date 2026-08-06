@@ -37,6 +37,7 @@ from utils.logger_config import get_module_logger
 # None collapses both into the same code path and would let recovery /
 # proactive paths accidentally bind their messages to a newer request_id.
 _REQUEST_ID_UNSET: Any = object()
+_HANDSHAKE_OVERRIDE_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
@@ -148,6 +149,15 @@ CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
 # contextvar 是 per-task 隔离，不会泄漏到用户 stream_text 所在的独立任务。
 _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     '_proactive_expected_sid', default=None,
+)
+
+# Startup greeting text that crossed the real frontend publish boundary in the
+# current proactive task.  ``prompt_ephemeral`` accumulates model output before
+# awaiting its delta callback, so its final committed text can contain a suffix
+# that was dropped after user preemption.  The per-task list lets the greeting
+# flow persist only chunks that ``send_lanlan_response`` actually published.
+_proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
+    contextvars.ContextVar('_proactive_published_text_chunks', default=None)
 )
 
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）

@@ -304,6 +304,11 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
 @pytest.mark.asyncio
 async def test_main_server_manual_startup_performs_fallback_import_and_continues_boot():
     from app import main_server
+    from utils import steam_state
+
+    leaked_steamworks = SimpleNamespace(source="prior-test")
+    main_server.steamworks = leaked_steamworks
+    steam_state.set_steamworks(leaked_steamworks)
 
     fake_config_manager = SimpleNamespace(
         app_docs_dir=Path("/tmp/N.E.K.O"),
@@ -333,6 +338,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "steamworks", None))
         stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
         stack.enter_context(
             patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value=""))
@@ -727,6 +733,119 @@ async def test_release_storage_startup_barrier_restores_memory_limited_mode_when
 
     mock_continue.assert_awaited_once_with("unit_test")
     mock_ensure.assert_awaited_once_with(reason="unit_test")
+    mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_reblocks_memory_before_propagating_cancellation():
+    """Cancellation must not expose initialized memory against rolled-back storage."""
+    from app import main_server
+
+    init_started = asyncio.Event()
+    block_started = asyncio.Event()
+    allow_block = asyncio.Event()
+
+    async def _wait_for_cancel(*, reason: str):
+        init_started.set()
+        await asyncio.Event().wait()
+
+    async def _block_memory(reason: str):
+        block_started.set()
+        await allow_block.wait()
+
+    with patch.object(
+        main_server,
+        "_request_memory_server_continue_startup",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        main_server,
+        "_ensure_main_server_runtime_initialized",
+        side_effect=_wait_for_cancel,
+    ), patch.object(
+        main_server,
+        "_request_memory_server_block_startup",
+        side_effect=_block_memory,
+    ) as mock_block, patch.object(
+        main_server,
+        "_main_runtime_limited_mode_enabled",
+        False,
+    ), patch.object(
+        main_server,
+        "_main_runtime_limited_mode_reason",
+        "",
+    ):
+        task = asyncio.create_task(
+            main_server.release_storage_startup_barrier(reason="unit_test")
+        )
+        await init_started.wait()
+        task.cancel()
+        await block_started.wait()
+
+        # A second cancellation must not let the storage router roll back its
+        # blocking snapshot before memory_server has restored its own guard.
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_block.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_compensates_ambiguous_continue_cancellation():
+    """A cancelled continue response may hide an already-applied server request."""
+    from app import main_server
+
+    continue_applied = asyncio.Event()
+    block_started = asyncio.Event()
+
+    async def _continue_without_response(reason: str):
+        continue_applied.set()
+        await asyncio.Event().wait()
+
+    async def _block_memory(reason: str):
+        block_started.set()
+
+    with patch.object(
+        main_server,
+        "_request_memory_server_continue_startup",
+        side_effect=_continue_without_response,
+    ), patch.object(
+        main_server,
+        "_ensure_main_server_runtime_initialized",
+        AsyncMock(),
+    ) as mock_ensure, patch.object(
+        main_server,
+        "_request_memory_server_block_startup",
+        side_effect=_block_memory,
+    ) as mock_block, patch.object(
+        main_server,
+        "_main_runtime_limited_mode_enabled",
+        False,
+    ), patch.object(
+        main_server,
+        "_main_runtime_limited_mode_reason",
+        "",
+    ):
+        task = asyncio.create_task(
+            main_server.release_storage_startup_barrier(reason="unit_test")
+        )
+        await continue_applied.wait()
+        task.cancel()
+
+        [outcome] = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(outcome, asyncio.CancelledError)
+
+        assert block_started.is_set()
+        assert main_server._main_runtime_limited_mode_enabled is True
+        assert main_server._main_runtime_limited_mode_reason == "runtime_initialization_failed"
+
+    mock_ensure.assert_not_awaited()
     mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
 
 

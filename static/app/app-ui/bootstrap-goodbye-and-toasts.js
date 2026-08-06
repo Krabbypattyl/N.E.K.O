@@ -585,6 +585,20 @@ I.mod = window.appUi;
     // --- Prominent notice (modal queue) ---
     const _prominentNoticeQueue = [];
     let _prominentNoticeActive = false;
+    let _prominentNoticeActiveKey = '';
+
+    function _prominentNoticeDedupeKey(notice) {
+        if (!notice || typeof notice !== 'object') return '';
+        const visibleFields = [
+            notice.kind,
+            notice.code,
+            notice.version,
+            notice.title,
+            notice.message,
+            notice.message_en,
+        ].map(value => String(value || ''));
+        return visibleFields.some(Boolean) ? JSON.stringify(visibleFields) : '';
+    }
 
     function _prominentNoticeText(key, fallback) {
         try {
@@ -668,11 +682,13 @@ I.mod = window.appUi;
 
     function _drainProminentNoticeQueue() {
         if (_prominentNoticeActive || _prominentNoticeQueue.length === 0) return;
-        const { notice, resolve } = _prominentNoticeQueue.shift();
+        const { notice, resolve, dedupeKey } = _prominentNoticeQueue.shift();
         _prominentNoticeActive = true;
+        _prominentNoticeActiveKey = dedupeKey;
         _renderProminentNotice(notice, () => {
             resolve();
             _prominentNoticeActive = false;
+            _prominentNoticeActiveKey = '';
             _drainProminentNoticeQueue();
         });
     }
@@ -1000,7 +1016,15 @@ I.mod = window.appUi;
             notice = { message: String(noticeOrMessage ?? '') };
         }
         return new Promise((resolve) => {
-            _prominentNoticeQueue.push({ notice, resolve });
+            const dedupeKey = _prominentNoticeDedupeKey(notice);
+            const duplicatePending = dedupeKey && _prominentNoticeQueue.some(
+                item => item.dedupeKey === dedupeKey
+            );
+            if (dedupeKey && (_prominentNoticeActiveKey === dedupeKey || duplicatePending)) {
+                resolve();
+                return;
+            }
+            _prominentNoticeQueue.push({ notice, resolve, dedupeKey });
             _drainProminentNoticeQueue();
         });
     }
@@ -1391,7 +1415,7 @@ I.mod = window.appUi;
 
     // --- syncFloatingMicButtonState ---
     I.syncFloatingMicButtonState = function syncFloatingMicButtonState(isActive) {
-        const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
+        const managers = [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager];
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
@@ -1420,23 +1444,34 @@ I.mod = window.appUi;
 
     // --- syncFloatingScreenButtonState ---
     I.syncFloatingScreenButtonState = function syncFloatingScreenButtonState(isActive) {
-        const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
+        const managers = [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager];
 
         for (const manager of managers) {
-            if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
+            if (
+                manager
+                && manager._floatingButtons
+                && (manager._floatingButtons.screen || manager._floatingButtons['screen-share-quick'])
+            ) {
                 if (typeof manager.setButtonActive === 'function') {
                     manager.setButtonActive('screen', isActive);
                 } else {
-                    const { button, imgOff, imgOn } = manager._floatingButtons.screen;
-                    if (button) {
-                        button.dataset.active = isActive ? 'true' : 'false';
-                        if (imgOff && imgOn) {
-                            imgOff.style.opacity = isActive ? '0' : '0.75';
-                            imgOn.style.opacity = isActive ? '1' : '0';
+                    const screenRef = manager._floatingButtons.screen;
+                    const quickRef = manager._floatingButtons['screen-share-quick'];
+                    if (screenRef) {
+                        const { button, imgOff, imgOn } = screenRef;
+                        if (button) {
+                            button.dataset.active = isActive ? 'true' : 'false';
+                            if (imgOff && imgOn) {
+                                imgOff.style.opacity = isActive ? '0' : '0.75';
+                                imgOn.style.opacity = isActive ? '1' : '0';
+                            }
+                            if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                                manager.updateSeparatePopupTriggerIcon('screen');
+                            }
                         }
-                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                            manager.updateSeparatePopupTriggerIcon('screen');
-                        }
+                    }
+                    if (quickRef && typeof quickRef.updateState === 'function') {
+                        quickRef.updateState(isActive);
                     }
                 }
             }

@@ -63,6 +63,31 @@ def test_character_card_manager_parts_load_in_dependency_order():
     assert script_positions == sorted(script_positions)
 
 
+def test_character_card_manager_hides_pngtuber_compatibility_fields_without_filtering_workshop_payloads():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+    ui_hidden_block = core.split("const PNGTUBER_UI_HIDDEN_FIELDS", 1)[1].split("];", 1)[0]
+    workshop_reserved_function = core.split("function getWorkshopReservedFields()", 1)[1].split(
+        "function getWorkshopHiddenFields()", 1
+    )[0]
+    workshop_hidden_function = core.split("function getWorkshopHiddenFields()", 1)[1].split(
+        "function normalizeCharacterFieldName", 1
+    )[0]
+    pngtuber_fields = (
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
+    )
+
+    for field in pngtuber_fields:
+        assert f"'{field}'" in ui_hidden_block
+    assert "PNGTUBER_UI_HIDDEN_FIELDS" not in workshop_reserved_function
+    assert "PNGTUBER_UI_HIDDEN_FIELDS" in workshop_hidden_function
+
+
 def test_character_card_import_keeps_non_blocking_progress_visible_until_completion():
     core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
     styles = (PROJECT_ROOT / "static" / "css" / "character_card_manager.css").read_text(encoding="utf-8")
@@ -332,6 +357,23 @@ def test_card_maker_rejects_remote_pngtuber_assets_before_export():
     assert "assertExportablePNGTuberConfig(pngtuberConfig);" in script
     assert "function assertExportablePNGTuberDrawable(source)" in script
     assert "assertExportablePNGTuberDrawable(source);" in script
+
+
+def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_export():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    get_canvas_block = script[
+        script.index("    function getModelCanvas(options = {})"):
+        script.index("    /**\n     * 在截图前确保渲染器输出最新帧")
+    ]
+    export_block = script[
+        script.index("    async function renderFinalPortrait(options = {})"):
+        script.index("    async function renderFullCard(options = {})")
+    ]
+
+    assert "if (options.fullResolution && mgr?.isLayeredActive?.())" in get_canvas_block
+    assert "mgr.renderLayeredSnapshotCanvas?.()" in get_canvas_block
+    assert "if (snapshot) return snapshot;" in get_canvas_block
+    assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():

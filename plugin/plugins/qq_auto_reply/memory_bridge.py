@@ -45,6 +45,17 @@ class QQMemoryBridge:
 
         return f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
 
+    #: The one place the platform literal lives. Subject builders below keep
+    #: composing their ids by hand ON PURPOSE — rewriting a subject_id would
+    #: make every stored scoped memory and persona section an unreachable
+    #: orphan, since attribution is byte equality of ``(key, scope)``.
+    PLATFORM = "qq"
+
+    @classmethod
+    def speaker_account_id(cls, sender_id: object) -> str:
+        """``platform:actor`` for the trust pool. Byte-identical to today."""
+        return f"{cls.PLATFORM}:{str(sender_id or '').strip()}"
+
     @staticmethod
     def group_subject(group_id: object) -> dict[str, str]:
         return {
@@ -61,10 +72,36 @@ class QQMemoryBridge:
             ),
         }
 
-    async def fetch_bootstrap_memory(self, her_name: str, *, timeout: float = 5.0) -> str:
+    @staticmethod
+    def participant_subject(sender_id: object) -> dict[str, str]:
+        """非 admin QQ 私聊对象的独立记忆主体（无群维度）。
+
+        与群成员的 group_participant 平行：同一个人在群里与私聊里是两个
+        隔离域（scope 由 subject_id 派生），跨域合并是单独的产品决定，
+        不在 schema 层顺手做。"""
+        return {
+            "subject_kind": "participant",
+            "subject_id": f"qq:{str(sender_id or '').strip()}",
+        }
+
+    async def fetch_bootstrap_memory(
+        self,
+        her_name: str,
+        *,
+        language: str | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        from utils.language_utils import is_supported_language_code
+
+        # Only a caller-supplied locale has explicit provenance.  With no
+        # session locale, omission lets /new_dialog restore durable state.
+        request_kwargs: dict[str, Any] = {"timeout": timeout}
+        if is_supported_language_code(language):
+            request_kwargs["params"] = {"language": language}
         client = self._client()
         response = await client.get(
-            f"{self._base_url()}/new_dialog/{her_name}", timeout=timeout,
+            f"{self._base_url()}/new_dialog/{her_name}",
+            **request_kwargs,
         )
         response.raise_for_status()
         return response.text.strip()
@@ -74,14 +111,24 @@ class QQMemoryBridge:
         her_name: str,
         *,
         subjects: list[dict[str, str]],
+        language: str | None = None,
         timeout: float = 5.0,
     ) -> str:
         if not subjects:
             return ""
+        from utils.language_utils import is_supported_language_code
+
+        # Same contract as the sibling methods: only a caller-supplied locale
+        # has explicit provenance. Omitting the field lets the server restore
+        # the durable per-subject locale, which the host process fallback
+        # would otherwise overwrite with a coarser guess.
+        payload: dict[str, Any] = {"subjects": subjects}
+        if is_supported_language_code(language):
+            payload["language"] = language
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-            json={"subjects": subjects},
+            json=payload,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -104,6 +151,26 @@ class QQMemoryBridge:
             timeout=timeout,
         )
         response.raise_for_status()
+
+    async def post_scoped_forget(
+        self,
+        her_name: str,
+        *,
+        subject: dict[str, str],
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Erase one subject's stored memory (facts/reflections/persona).
+
+        删好友/退群后的撤回入口。幂等；服务端部分失败以 HTTP 错误暴露，
+        重试安全。调用方自备触发时机（UI 操作/事件），bridge 只管线路。"""
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_forget",
+            json={"subject": subject},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def query_relevant_memory(
         self,
@@ -132,6 +199,20 @@ class QQMemoryBridge:
             request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
+        from utils.language_utils import get_global_language_full
+
+        # Deliberately still sends the process locale, unlike the sibling
+        # bootstrap/history methods. The difference is who renders: those
+        # receive server-rendered text, so omitting the field lets the server
+        # use the durable per-subject locale end to end. This one receives
+        # *structured* rows and renders the tier/entity tags locally (see
+        # render_relevant_memory), so omitting it here would only move the
+        # server half to the subject locale while the tags stayed on this
+        # process's — worse than today's self-consistent pair. Moving this
+        # path onto the subject locale needs the resolved locale returned in
+        # the response (or the tags rendered server-side); that is a response
+        # contract change and belongs in its own PR.
+        request_payload["language"] = get_global_language_full()
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/query_memory/{her_name}",
@@ -186,10 +267,10 @@ class QQMemoryBridge:
             RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
         from config.prompts.prompts_memory import render_recall_entry_tag
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
 
-        lang = get_global_language()
+        lang = get_global_language_full()
         lines: list[str] = []
         for index, item in enumerate(results, start=1):
             text = str(item.get("text") or "").strip()
@@ -234,10 +315,14 @@ class QQMemoryBridge:
         return "\n".join(kept)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
+        # QQ currently has no explicit per-conversation locale; do not turn
+        # the host process fallback into durable user evidence.
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/{endpoint}/{her_name}",
-            json={"input_history": json.dumps(messages, ensure_ascii=False)},
+            json={
+                "input_history": json.dumps(messages, ensure_ascii=False),
+            },
             timeout=timeout,
         )
         response.raise_for_status()
@@ -250,21 +335,73 @@ class QQMemoryBridge:
         *,
         subject: dict[str, str],
         speaker_label: str | None = None,
+        speaker_tier: str | None = None,
+        speaker_activity_events: list[dict[str, Any]] | None = None,
+        speaker_channel: str | None = None,
+        speaker_id: str | None = None,
+        speaker_is_owner: bool = False,
+        display_name: str | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        # speaker_label 只在单发言人批次（成员 bucket）传：提取 prompt 用它
-        # 替代私聊主人名渲染 user 轮，避免成员发言被抽成"关于主人"的事实。
-        # 群 digest 不传——内容里每条消息已带发言人头。
+        # speaker_label 只在单发言人批次（成员 bucket / 私聊 participant
+        # digest）传：提取 prompt 用它替代私聊主人名渲染 user 轮，避免对方
+        # 发言被抽成"关于主人"的事实。群 digest 不传——内容里每条消息已带
+        # 发言人头。speaker_tier 是权限档位，服务端据此自己算分并落库；插件
+        # 不再持有 trust 池、不再演化、不再接收回传。display_name 是 subject
+        # 的人类可读名（群名/昵称），服务端中和后刷进 persona section 元数据，
+        # 渲染标题用；纯装饰性，缺省即退化裸 id。
         payload: dict[str, Any] = {
             "input_history": json.dumps(messages, ensure_ascii=False),
             "subject": subject,
         }
         if speaker_label:
             payload["speaker_label"] = speaker_label
+        if speaker_tier is not None:
+            payload["speaker_tier"] = speaker_tier
+        if speaker_activity_events:
+            payload["speaker_activity_events"] = speaker_activity_events
+        if speaker_channel:
+            payload["speaker_channel"] = speaker_channel
+        if speaker_id:
+            payload["speaker_id"] = speaker_id
+        if speaker_is_owner:
+            payload["speaker_is_owner"] = True
+        if display_name:
+            payload["display_name"] = display_name
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
             json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def post_legacy_speaker_trust(
+        self,
+        *,
+        platform: str,
+        source: str,
+        profiles: dict[str, Any],
+        chunk_index: int,
+        final: bool,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Push one chunk of the frozen legacy trust ledger to the server.
+
+        Character-agnostic route: trust is a property of the person, not of
+        their relationship with one character.
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/trust/import_legacy_profiles",
+            json={
+                "platform": platform,
+                "source": source,
+                "profiles": profiles,
+                "chunk_index": chunk_index,
+                "final": bool(final),
+            },
             timeout=timeout,
         )
         response.raise_for_status()
@@ -280,9 +417,12 @@ class QQMemoryBridge:
         """The batched multi-speaker shape of /scoped_history.
 
         ``segments``: ``[{'messages': [...], 'subject': {...},
-        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
-        发言人。服务端一次抽取后按段分派，响应体按请求顺序逐段报
-        ok/failed，调用方只 pop 成功段的 bucket。"""
+        'speaker_label': str, 'speaker_tier': str|None,
+        'speaker_activity_events': list|None, 'speaker_channel': str|None,
+        'display_name': str|None}, ...]``——每段一位发言人。服务端一次抽取
+        后按段分派，响应体按请求顺序逐段报 ok/failed，调用方只 pop 成功段
+        的 bucket。display_name 是该段 subject 的显示名（昵称），只用于
+        persona 标题，可缺省。"""
         payload_segments: list[dict[str, Any]] = []
         for segment in segments:
             wire: dict[str, Any] = {
@@ -292,14 +432,37 @@ class QQMemoryBridge:
                 "subject": segment.get("subject"),
                 "speaker_label": segment.get("speaker_label"),
             }
-            trust = segment.get("speaker_trust")
-            if trust is not None:
-                wire["speaker_trust"] = trust
+            tier = segment.get("speaker_tier")
+            if tier is not None:
+                wire["speaker_tier"] = tier
+            activity_events = segment.get("speaker_activity_events")
+            if activity_events:
+                wire["speaker_activity_events"] = activity_events
+            channel = segment.get("speaker_channel")
+            if channel:
+                wire["speaker_channel"] = channel
+            speaker_id = segment.get("speaker_id")
+            if speaker_id:
+                wire["speaker_id"] = speaker_id
+            if segment.get("speaker_is_owner"):
+                wire["speaker_is_owner"] = True
+            excluded_identities = segment.get(
+                "trust_signal_excluded_fact_identities"
+            )
+            if excluded_identities:
+                wire["trust_signal_excluded_fact_identities"] = [
+                    list(identity) for identity in excluded_identities
+                ]
+            display_name = segment.get("display_name")
+            if display_name:
+                wire["display_name"] = display_name
             payload_segments.append(wire)
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
-            json={"segments": payload_segments},
+            json={
+                "segments": payload_segments,
+            },
             timeout=timeout,
         )
         response.raise_for_status()

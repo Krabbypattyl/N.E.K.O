@@ -17,7 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from main_logic.core import LLMSessionManager, _proactive_expected_sid
+from main_logic.core import (
+    LLMSessionManager,
+    _proactive_expected_sid,
+    _proactive_published_text_chunks,
+)
 from main_logic.core import proactive as proactive_core
 from main_logic.session_state import ProactivePhase, SessionEvent, SessionStateMachine
 from tests.fake_clock import patch_module_clock
@@ -59,6 +63,8 @@ def _make_mgr() -> LLMSessionManager:
     mgr._tts_bracket_stripper.feed.side_effect = lambda text: text
     mgr._tts_bracket_stripper.flush.return_value = ""
     mgr._tts_norm_speech_id = None
+    mgr.emotion_pattern = MagicMock()
+    mgr.emotion_pattern.sub.side_effect = lambda _replacement, text: text
     mgr.send_lanlan_response = AsyncMock()
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
@@ -298,6 +304,47 @@ async def test_handle_text_data_contextvar_match_passes():
     mgr._enqueue_tts_text_chunk.assert_called_once()
 
 
+async def test_handle_text_data_records_only_actual_publish_boundary():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    published_chunks: list[str] = []
+
+    async def publish_then_fail_websocket(*_args, **kwargs):
+        assert kwargs["turn_id"] == "s_proactive"
+        assert kwargs["expected_speech_id"] == "s_proactive"
+        kwargs["on_published"](100.0)
+        return False
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=publish_then_fail_websocket)
+    sid_token = _proactive_expected_sid.set("s_proactive")
+    published_token = _proactive_published_text_chunks.set(published_chunks)
+    try:
+        await LLMSessionManager.handle_text_data(mgr, "visible", is_first_chunk=False)
+    finally:
+        _proactive_published_text_chunks.reset(published_token)
+        _proactive_expected_sid.reset(sid_token)
+
+    assert published_chunks == ["visible"]
+    mgr._enqueue_tts_text_chunk.assert_called_once_with("s_proactive", "visible")
+
+
+async def test_handle_text_data_internal_publish_rejection_skips_tts():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.send_lanlan_response = AsyncMock(return_value=None)
+    published_chunks: list[str] = []
+    sid_token = _proactive_expected_sid.set("s_proactive")
+    published_token = _proactive_published_text_chunks.set(published_chunks)
+    try:
+        await LLMSessionManager.handle_text_data(mgr, "stale", is_first_chunk=False)
+    finally:
+        _proactive_published_text_chunks.reset(published_token)
+        _proactive_expected_sid.reset(sid_token)
+
+    assert published_chunks == []
+    mgr._enqueue_tts_text_chunk.assert_not_called()
+
+
 async def test_handle_text_data_contextvar_mismatch_drops_all_writes():
     """sid guard 要同时拦前端显示和 TTS —— proactive 文本不能进用户气泡。"""
     mgr = _make_mgr()
@@ -327,6 +374,33 @@ async def test_handle_text_data_contextvar_mismatch_skips_queue_clear():
     # 用户的 pending chunk 和 queue 都不能被动到
     assert mgr.tts_pending_chunks == [("s_user", "user_cached")]
     assert not mgr.tts_response_queue.empty()
+
+
+async def test_handle_text_data_preempted_while_waiting_does_not_clear_user_queue():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    await mgr.tts_cache_lock.acquire()
+    sid_token = _proactive_expected_sid.set("s_proactive")
+    try:
+        stale_task = asyncio.create_task(
+            LLMSessionManager.handle_text_data(
+                mgr, "stale proactive", is_first_chunk=True
+            )
+        )
+        await asyncio.sleep(0)
+        mgr.current_speech_id = "s_user"
+        mgr.tts_pending_chunks = [("s_user", "user_cached")]
+        mgr.tts_response_queue.put(b"user audio bytes")
+        mgr.tts_cache_lock.release()
+        await stale_task
+    finally:
+        if mgr.tts_cache_lock.locked():
+            mgr.tts_cache_lock.release()
+        _proactive_expected_sid.reset(sid_token)
+
+    assert mgr.tts_pending_chunks == [("s_user", "user_cached")]
+    assert not mgr.tts_response_queue.empty()
+    mgr.send_lanlan_response.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -391,7 +465,15 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     mgr.last_user_engagement_time = None
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
+    # 两段式：stage_output 在收尾信号之前，落盘在之后。落盘走 flush_staged_detached
+    # ——同步返回、内部自己起 task——所以这一段里没有挂起点，取消不能把已经投递出去
+    # 的一轮倒回成「没投递」（见 test_anti_repeat 的对偶用例）。
+    # aflush_staged 仍留 AsyncMock：万一有人把它 await 回来，MagicMock 会让 await 抛、
+    # 被调用点的 except 吞掉，这条用例就变成永远绿的空断言。
     corpus = MagicMock()
+    corpus.stage_output = MagicMock(return_value=("Test", {"window": []}, 1))
+    corpus.flush_staged_detached = MagicMock()
+    corpus.aflush_staged = AsyncMock()
     monkeypatch.setattr(
         anti_repeat,
         "get_anti_repeat_corpus",
@@ -413,12 +495,17 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     )
 
     assert result is True
-    corpus.record_output.assert_called_once_with(
+    corpus.stage_output.assert_called_once_with(
         "Test",
         "delivered before immediate reply",
         is_proactive=True,
         now=100.0,
     )
+    corpus.flush_staged_detached.assert_called_once_with(
+        corpus.stage_output.return_value
+    )
+    corpus.aflush_staged.assert_not_awaited()
+    corpus.record_output.assert_not_called()
 
 
 async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
@@ -556,12 +643,21 @@ async def test_end_to_end_proactive_interrupted_by_user():
     """
     mgr = _make_mgr()
     mgr.current_speech_id = "s_proactive"
+    published_chunks: list[str] = []
+
+    async def publish(*_args, **kwargs):
+        if kwargs["on_published"] is not None:
+            kwargs["on_published"](100.0)
+        return True
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=publish)
 
     user_started = asyncio.Event()
     proactive_can_continue = asyncio.Event()
 
     async def proactive_flow():
-        token = _proactive_expected_sid.set("s_proactive")
+        sid_token = _proactive_expected_sid.set("s_proactive")
+        published_token = _proactive_published_text_chunks.set(published_chunks)
         try:
             # 第一个 chunk：sid 仍是 s_proactive，应入队
             await LLMSessionManager.handle_text_data(mgr, "p_early", is_first_chunk=False)
@@ -571,7 +667,8 @@ async def test_end_to_end_proactive_interrupted_by_user():
             # 第二个 chunk：此时 sid 已被 user 换掉，guard 应拦截
             await LLMSessionManager.handle_text_data(mgr, "p_late", is_first_chunk=False)
         finally:
-            _proactive_expected_sid.reset(token)
+            _proactive_published_text_chunks.reset(published_token)
+            _proactive_expected_sid.reset(sid_token)
 
     async def user_flow():
         await user_started.wait()
@@ -592,6 +689,7 @@ async def test_end_to_end_proactive_interrupted_by_user():
     assert "u_reply" in enqueued_texts
     assert "p_late" not in enqueued_texts
     assert len(enqueued_texts) == 2
+    assert published_chunks == ["p_early"]
 
     # 入队的 sid 必须和当时的 current_speech_id 对应
     enqueued_sids = {c.args[1]: c.args[0] for c in mgr._enqueue_tts_text_chunk.call_args_list}

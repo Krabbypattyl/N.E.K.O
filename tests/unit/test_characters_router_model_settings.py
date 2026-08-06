@@ -62,6 +62,34 @@ def test_live2d_idle_animation_is_reserved_and_hidden_from_editable_fields():
     assert 'live2d_idle_animation' not in editable_keys
 
 
+def test_pngtuber_flat_legacy_fields_survive_create_filter_and_migrate():
+    pngtuber_config = {
+        'idle_image': '/user_pngtuber/avatar/idle.png',
+        'talking_image': '/user_pngtuber/avatar/talking.png',
+        'happy_image': '/user_pngtuber/avatar/happy.png',
+        'sad_image': '/user_pngtuber/avatar/sad.png',
+        'angry_image': '/user_pngtuber/avatar/angry.png',
+        'surprised_image': '/user_pngtuber/avatar/surprised.png',
+    }
+    legacy_fields = {
+        f'pngtuber_{key}': value
+        for key, value in pngtuber_config.items()
+    }
+    assert characters_crud_module._filter_mutable_catgirl_fields(legacy_fields) == legacy_fields
+    assert characters_crud_module._filter_mutable_catgirl_fields(
+        {'pngtuber': dict(pngtuber_config)}
+    ) == {'pngtuber': pngtuber_config}
+
+    catgirl = dict(legacy_fields)
+    assert migrate_catgirl_reserved(catgirl) is True
+    assert all(field not in catgirl for field in legacy_fields)
+    assert get_reserved(catgirl, 'avatar', 'pngtuber') == pngtuber_config
+
+    flattened = flatten_reserved(catgirl)
+    assert flattened['pngtuber'] == pngtuber_config
+    assert all(flattened[f'pngtuber_{key}'] == value for key, value in pngtuber_config.items())
+
+
 def _build_characters_fixture():
     return {
         '猫娘': {
@@ -93,13 +121,15 @@ def _build_characters_fixture():
     }
 
 
-async def _call_update(monkeypatch, payload, characters=None):
+async def _call_update(monkeypatch, payload, characters=None, init_calls=None):
     config_manager = DummyConfigManager(characters or _build_characters_fixture())
 
     async def _noop_initialize():
         return None
 
     async def _noop_init_one(name, *, is_new=False):
+        if init_calls is not None:
+            init_calls.append((name, is_new))
         return None
 
     monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
@@ -169,6 +199,54 @@ async def test_pngtuber_save_defaults_missing_mobile_layout_fields(monkeypatch):
     assert pngtuber['mobile_scale'] == 1
     assert pngtuber['mobile_offset_x'] == 0
     assert pngtuber['mobile_offset_y'] == 0
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_position_save_can_skip_runtime_refresh(monkeypatch):
+    init_calls = []
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/pngtuber/default/idle.png',
+                'scale': 1.5,
+                'offset_x': 24,
+                'offset_y': -36,
+            },
+            'apply_runtime': False,
+        },
+        init_calls=init_calls,
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    assert body['applied_runtime'] is False
+    assert init_calls == []
+    catgirl = _single_saved_catgirl(saved)
+    assert get_reserved(catgirl, 'avatar', 'pngtuber', 'offset_x') == 24
+    assert get_reserved(catgirl, 'avatar', 'pngtuber', 'offset_y') == -36
+
+
+@pytest.mark.asyncio
+async def test_model_update_refreshes_runtime_by_default(monkeypatch):
+    init_calls = []
+    response, body, _saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/pngtuber/default/idle.png',
+            },
+        },
+        init_calls=init_calls,
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    assert body['applied_runtime'] is True
+    assert len(init_calls) == 1
+    assert init_calls[0][1] is False
 
 
 @pytest.mark.asyncio

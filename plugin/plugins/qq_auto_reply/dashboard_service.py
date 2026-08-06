@@ -50,6 +50,9 @@ class QQDashboardService:
                 "token": str(settings.get("token") or ""),
                 "qq_open_app_id": str(settings.get("qq_open_app_id") or ""),
                 "qq_open_client_secret": str(settings.get("qq_open_client_secret") or ""),
+                "qq_open_identity_probe_enabled": bool(
+                    settings.get("qq_open_identity_probe_enabled", False)
+                ),
                 "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
                 "napcat_directory": str(napcat_dir),
@@ -70,7 +73,20 @@ class QQDashboardService:
                 "sticker_cooldown_messages": int(settings.get("sticker_cooldown_messages", 5) or 5),
                 "group_memory_enabled": bool(settings.get("group_memory_enabled", False)),
                 "group_member_memory_enabled": bool(settings.get("group_member_memory_enabled", False)),
+                "private_participant_memory_enabled": bool(settings.get("private_participant_memory_enabled", False)),
                 "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
+                "group_attention_focus_rise_seconds": int(settings.get("group_attention_focus_rise_seconds", 30) or 30),
+                "group_attention_focus_cooldown_seconds": int(settings.get("group_attention_focus_cooldown_seconds", 60) or 60),
+                "group_attention_decay_per_second": float(settings.get("group_attention_decay_per_second", 0.02) or 0.02),
+                "group_attention_message_recovery": float(settings.get("group_attention_message_recovery", 0.6) or 0.6),
+                "group_attention_reply_penalty": float(settings.get("group_attention_reply_penalty", 1.3) or 1.3),
+                "group_attention_keyword_boost_scale": float(settings.get("group_attention_keyword_boost_scale", 2.5) or 2.5),
+                "group_attention_focus_lock_seconds": int(settings.get("group_attention_focus_lock_seconds", 120) or 120),
+                "group_attention_max_score": float(settings.get("group_attention_max_score", 10.0) or 10.0),
+                "group_attention_focus_threshold": float(settings.get("group_attention_focus_threshold", 4.0) or 4.0),
+                "group_attention_min_threshold": float(settings.get("group_attention_min_threshold", 1.0) or 1.0),
+                "group_attention_message_gain": float(settings.get("group_attention_message_gain", 0.25) or 0.25),
+                "icebreaker_cold_threshold": int(settings.get("icebreaker_cold_threshold", 3) or 3),
             },
             "guide": {
                 "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
@@ -118,16 +134,17 @@ class QQDashboardService:
         return Ok(self._build_open_ui_payload(available=True))
 
     async def init_config(self, *, guide_step_config_done: Optional[bool] = None):
-        if await self.plugin.config_store.exists():
-            config = await self.plugin.settings_service.load_business_config()
-        else:
-            config = await self.plugin.settings_service.create_business_config()
-        if guide_step_config_done is not None:
-            config["guide_step_config_done"] = bool(guide_step_config_done)
-            self.plugin._qq_settings = await self.plugin.config_store.save(config)
-            config = dict(self.plugin._qq_settings)
-        self.plugin.settings_service.rebuild_permission_managers(config)
-        self.plugin.settings_service.apply_runtime_settings(config)
+        async with self.plugin.settings_service.permission_manager_rebuild_guard():
+            if await self.plugin.config_store.exists():
+                config = await self.plugin.settings_service.load_business_config()
+            else:
+                config = await self.plugin.settings_service.create_business_config()
+            if guide_step_config_done is not None:
+                config["guide_step_config_done"] = bool(guide_step_config_done)
+                self.plugin._qq_settings = await self.plugin.config_store.save(config)
+                config = dict(self.plugin._qq_settings)
+            self.plugin.settings_service.rebuild_permission_managers(config)
+            self.plugin.settings_service.apply_runtime_settings(config)
         return Ok(await self.build_dashboard_state())
 
     async def get_dashboard_state(self):
@@ -165,15 +182,30 @@ class QQDashboardService:
         truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         sticker_cooldown_messages: Optional[int] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
         group_memory_enabled: Optional[bool] = None,
         group_member_memory_enabled: Optional[bool] = None,
+        private_participant_memory_enabled: Optional[bool] = None,
         allow_cross_group_context: Optional[bool] = None,
         strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        qq_open_identity_probe_enabled: Optional[bool] = None,
+        local_stt_url: Optional[str] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -190,15 +222,30 @@ class QQDashboardService:
                 truth_reply_probability=truth_reply_probability,
                 backlog_labels=backlog_labels,
                 sticker_cooldown_messages=sticker_cooldown_messages,
+                group_attention_decay_per_second=group_attention_decay_per_second,
+                group_attention_message_recovery=group_attention_message_recovery,
+                group_attention_reply_penalty=group_attention_reply_penalty,
+                group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+                group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+                group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+                group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+                group_attention_max_score=group_attention_max_score,
+                group_attention_focus_threshold=group_attention_focus_threshold,
+                group_attention_min_threshold=group_attention_min_threshold,
+                group_attention_message_gain=group_attention_message_gain,
+                icebreaker_cold_threshold=icebreaker_cold_threshold,
                 retroactive_review_max_messages=retroactive_review_max_messages,
                 retroactive_review_max_reply=retroactive_review_max_reply,
                 group_memory_enabled=group_memory_enabled,
                 group_member_memory_enabled=group_member_memory_enabled,
+                private_participant_memory_enabled=private_participant_memory_enabled,
                 allow_cross_group_context=allow_cross_group_context,
                 strategy_mode=strategy_mode,
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
+                local_stt_url=local_stt_url,
             )
         except ValueError as exc:
             message = str(exc)
@@ -226,7 +273,13 @@ class QQDashboardService:
             value = float(normal_relay_probability)
             if value < 0.0 or value > 1.0:
                 return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
-        self.plugin.permission_mgr.add_user(qq_number, level, normalized_nickname, normal_relay_probability=normal_relay_probability)
+        if not self.plugin.permission_mgr.add_user(
+            qq_number,
+            level,
+            normalized_nickname,
+            normal_relay_probability=normal_relay_probability,
+        ):
+            return Err(SdkError(f"SET_FAILED: {self.plugin.i18n.t('errors.set_nickname_failed', default='设置昵称失败')}"))
         self.plugin._refresh_admin_qq()
         await self.plugin._invalidate_private_session(qq_number)
         success = await self.plugin.settings_service.persist_business_config()
