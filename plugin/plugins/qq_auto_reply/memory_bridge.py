@@ -253,66 +253,38 @@ class QQMemoryBridge:
         *,
         kept_count_out: list[int] | None = None,
     ) -> str:
-        # tier / entity 是内部枚举（scoped 条目的 entity 恒等于 subject.kind），
-        # 裸拼会让 `[fact/group_chat]` 出现在中文 prompt 里。与本体侧
-        # main_logic/core/tool_calling.py 的召回渲染同一张标签表。
-        #
-        # 预算：这段此前只有"取前 5 条"，单条零上限——一条被合并出来的超长
-        # reflection 就能把召回段撑到几千 token。单条按 token 截断（不丢弃：
-        # 召回按相关度排，命中的那条留半段也比整条消失有用），整段按
-        # take_lines_within_token_budget 收口，与本体侧同一个 helper。
-        from config import (
-            RECALL_RENDER_ENTRY_MAX_TOKENS,
-            RECALL_RENDER_LINE_OVERHEAD_TOKENS,
-            RECALL_RENDER_TOTAL_MAX_TOKENS,
-        )
-        from config.prompts.prompts_memory import render_recall_entry_tag
-        from utils.language_utils import get_global_language_full
-        from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
+        """Render this group's recall hits through the shared entry point.
 
-        lang = get_global_language_full()
-        lines: list[str] = []
-        for index, item in enumerate(results, start=1):
-            text = str(item.get("text") or "").strip()
-            if not text:
-                continue
-            text = truncate_to_tokens(text, RECALL_RENDER_ENTRY_MAX_TOKENS)
-            tag = render_recall_entry_tag(
-                item.get("tier"), item.get("entity"), lang,
-            )
-            anchor = str(
-                item.get("event_end_at")
-                or item.get("event_start_at")
-                or item.get("created_at")
-                or ""
-            ).strip()
-            suffix = f" ({anchor[:10]})" if anchor else ""
-            # 整行再兜一次底。截断只管 text，而 tag 里的 tier / entity 是
-            # 未知枚举原样透出的（见 render_recall_entry_tag），手改过的
-            # facts.json 能塞进任意长的 entity——而整段预算的"至少留一条"
-            # 规则会无条件留下第一行。行上限用「单条 + 行装饰」的口径，
-            # 正常条目够不着，只有畸形数据会被它切。
-            lines.append(truncate_to_tokens(
-                f"{index}. {tag} {text}{suffix}",
-                RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS,
-            ))
-        kept, dropped = take_lines_within_token_budget(
-            lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
-        )
+        No line building happens here. ``memory.recall_render`` is the one
+        place recall results become prompt text — it carries the token
+        budgets, and it carries them once so this side and the main app's
+        ``recall_memory`` tool cannot drift apart (issue #2588; the two
+        used to be hand-written twins). This method only supplies the
+        locale, reports the drop, and adapts the result to the caller's
+        out-param.
+
+        No header: the QQ side wraps the block in ``LONG_TERM_MEMORY_SECTION``
+        instead of an overview line.
+        """
+        from config import RECALL_RENDER_TOTAL_MAX_TOKENS
+        from memory.recall_render import render_recall_block
+        from utils.language_utils import get_global_language_full
+
+        block = render_recall_block(results, get_global_language_full())
         if kept_count_out is not None:
             # out-param 而非改返回签名（与 reply_context_node 的
             # used_member_subject_out 同模式）：既有直调方不受影响。
-            kept_count_out.append(len(kept))
+            kept_count_out.append(block.kept)
         logger = getattr(self.plugin, "logger", None)
-        if dropped and logger is not None:
+        if block.dropped and logger is not None:
             # 诊断行不该成为渲染的硬依赖：这个函数此前对 plugin 对象零依赖，
             # 抛 AttributeError 会被上游 _build_recalled_memory_text 的
             # except 吞掉，整段召回为了一条日志凭空消失。
             logger.info(
                 f"QQ 长期记忆召回段超出 {RECALL_RENDER_TOTAL_MAX_TOKENS} tok 预算，"
-                f"丢弃末尾 {dropped} 条"
+                f"丢弃末尾 {block.dropped} 条"
             )
-        return "\n".join(kept)
+        return block.text
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
         # QQ currently has no explicit per-conversation locale; do not turn
@@ -402,6 +374,122 @@ class QQMemoryBridge:
                 "chunk_index": chunk_index,
                 "final": bool(final),
             },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def declare_identity_scope(
+        self,
+        *,
+        channel: str,
+        actor_scope: str,
+        conversation_scope: str,
+        asserted_by: str,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """把本通道标识符的**协议语义**登记进服务端身份池。
+
+        登记的是「这个连接模式的 wire format 是什么」，不是「我们观察到了
+        什么」——所以这里没有、也永远不该有任何 account id 或样本参数。见
+        ``adeclare_platform_identity_scope`` 的 docstring。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/scope",
+            json={
+                "platform": self.PLATFORM,
+                "channel": channel,
+                "actor_scope": actor_scope,
+                "conversation_scope": conversation_scope,
+                "asserted_by": asserted_by,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def bind_speaker_account(
+        self,
+        *,
+        account_id: str,
+        entity_id: str,
+        bound_by: str,
+        require_unbound: bool = False,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """把一个 account 并入已有 entity。**只能由人触发**。
+
+        唯一调用方是信任用户页的「合并到已有身份」——开放平台上同一个人在
+        每个群是一个不同的 member_openid，跨群把信赖度并起来只有人工断言这
+        一条路（见设计文档 §2.15.4.3 第 1 级）。任何自动建边（昵称、共现、
+        时序、编辑距离）都被硬约束否决，不要在调用侧偷偷补上。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/accounts/bind",
+            json={
+                "account_id": account_id,
+                "entity_id": entity_id,
+                "bound_by": bound_by,
+                "require_unbound": bool(require_unbound),
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def ensure_speaker_account(
+        self, *, account_id: str, timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """确保一个 account 在身份池里有 entity，返回它。
+
+        合并目标必须先有 entity 才能被 bind（服务端对未知 entity 直接
+        404），而 entity 只从账本活动里诞生——新装机器上主人的私聊 account
+        往往一个都没有，恰恰是所有群内 ID 要并进去的那一个。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/accounts/ensure",
+            json={"account_id": account_id},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def unbind_speaker_account(
+        self, *, account_id: str, require_provenance: bool = False,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """把一个 account 拆回独立 entity。**误绑的唯一回滚**。
+
+        ``require_provenance`` 让服务端在临界区里确认「这个账号确实是被绑
+        过来的」，否则原样返回 ``changed=false``。UI 的撤销按钮必须带上：
+        没有它，连点两下会把一个已经独立的账号反复搬进新 entity。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/accounts/unbind",
+            json={
+                "account_id": account_id,
+                "require_provenance": bool(require_provenance),
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def fetch_speaker_profile(
+        self, account_id: str, *, timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """一个 account 的只读诊断视图（entity_id + 账本权重）。
+
+        合并候选**只能按账本权重排序**，这个方法就是权重的来源。
+        """
+        client = self._client()
+        response = await client.get(
+            f"{self._base_url()}/internal/trust/profile",
+            params={"account_id": account_id},
             timeout=timeout,
         )
         response.raise_for_status()

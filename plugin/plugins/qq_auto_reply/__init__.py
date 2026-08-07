@@ -80,7 +80,10 @@ from .runtime_ops_service import QQProactiveMessageService, QQRuntimeOpsService
 from .runtime_service import QQRuntimeService
 from .session import QQAutoReplySessionMixin
 from .session_bootstrap_service import QQSessionBootstrapService
-from .session_instruction_service import QQSessionInstructionService
+from .session_instruction_service import (
+    QQSessionInstructionService,
+    resolve_prompt_override,
+)
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
@@ -163,6 +166,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._session_housekeeping_task: Optional[asyncio.Task] = None
         self._group_digest_task: Optional[asyncio.Task] = None
         self._trust_migration_task: Optional[asyncio.Task] = None
+        self._identity_scope_task: Optional[asyncio.Task] = None
         # 只有在存量 trust 池成功推给 memory_server 之后才开始上报
         # speaker_tier / speaker_activity_events。纵深防御第一层，服务端的
         # legacy_barriers 是第二层。
@@ -514,6 +518,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._trust_migration_task = asyncio.create_task(
                 self.settings_service.push_legacy_speaker_trust_forever()
             )
+        # 标识符语义的登记**不在这里**：它描述的是「现在跑着的 wire
+        # format」，而 startup 时还没有连接。登记发生在连接真正建立之后
+        # （runtime_ops_service 的 start_auto_reply，见 §2.15.4）。
         if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
         # 定期清理已审核超过24h的旧消息
@@ -615,6 +622,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             and not self._trust_migration_task.done()
         ):
             self._trust_migration_task.cancel()
+        if (
+            self._identity_scope_task
+            and not self._identity_scope_task.done()
+        ):
+            self._identity_scope_task.cancel()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
         if getattr(self, "_purge_task", None) and not self._purge_task.done():
@@ -1128,6 +1140,25 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             normal_relay_probability=normal_relay_probability,
         )
 
+    @ui.action(id="list_identity_claims", label=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), refresh_context=False)
+    @plugin_entry(id="list_identity_claims", name=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), description=tr("entries.list_identity_claims.description", default="列出开放平台上出现过、但还不在信任用户名册里的群内 ID，以及可供人工合并的已有身份候选。"), input_schema={"type": "object", "properties": {}, "additionalProperties": False})
+    async def list_identity_claims(self, **_):
+        return await self.dashboard_service.list_identity_claims()
+
+    @ui.action(id="bind_identity_account", label=tr("entries.bind_identity_account.name", default="合并到已有身份"), refresh_context=True)
+    @plugin_entry(id="bind_identity_account", name=tr("entries.bind_identity_account.name", default="合并到已有身份"), description=tr("entries.bind_identity_account.description", default="把一个群内 ID 的信赖度账本并入已有身份。只能由人触发，系统不会自动合并任何身份。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}, "target_user_id": {"type": "string"}}, "required": ["user_id", "target_user_id"], "additionalProperties": False})
+    async def bind_identity_account(self, user_id: str, target_user_id: str, **_):
+        return await self.dashboard_service.bind_identity_account(
+            user_id=user_id, target_user_id=target_user_id,
+        )
+
+    @ui.action(id="unbind_identity_account", label=tr("entries.unbind_identity_account.name", default="撤销合并"), refresh_context=True)
+    @plugin_entry(id="unbind_identity_account", name=tr("entries.unbind_identity_account.name", default="撤销合并"), description=tr("entries.unbind_identity_account.description", default="把一个群内 ID 从它被合并进的身份里拆回独立身份。误合并的唯一回滚方式。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"], "additionalProperties": False})
+    async def unbind_identity_account(self, user_id: str, **_):
+        return await self.dashboard_service.unbind_identity_account(
+            user_id=user_id,
+        )
+
     @ui.action(id="remove_trusted_user", label=tr("entries.remove_trusted_user.name", default="移除信任用户"), refresh_context=True)
     @plugin_entry(id="remove_trusted_user", name=tr("entries.remove_trusted_user.name", default="移除信任用户"), description=tr("entries.remove_trusted_user.description", default="把一个 QQ 号从信任用户列表中移除，不再按信任用户处理。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}}, "required": ["qq_number"]})
     async def remove_trusted_user(self, qq_number: str, **_):
@@ -1301,9 +1332,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         frontend_mode = str(mode or "").strip()
         stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
         mode = frontend_mode if frontend_mode in ("napcat", "open_platform") else stored_mode
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         frontend_locale = str(locale or "").strip()
-        locale = frontend_locale if frontend_locale else get_global_language()
+        # #2500 第 2 步：兜底也用全码。这个 locale 有两个身份——查 i18n bundle 的
+        # 键，以及回传给前端、被 save_prompt_override 原样当作覆盖的存储键。短码
+        # 'zh' 会让繁中用户在编辑器里看到（并覆盖）简体那份。
+        # ⚠️ 必须和 session_instruction_service._resolve_static_layer 的兜底同时
+        # 翻：写侧用 'zh-TW' 存、读侧还按 'zh' 的候选链找，覆盖会静默失效。
+        locale = frontend_locale if frontend_locale else get_global_language_full()
         strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
         is_napcat = mode == "napcat"
         overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
@@ -1367,9 +1403,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             has_override = False
             effective_text = ""
             if not is_runtime:
-                if isinstance(overrides.get(locale), dict) and i18n_key in overrides[locale]:
+                # ⚠️ 走候选链而不是精确匹配 ``overrides[locale]``：覆盖桶的键是
+                # 存的时候那次的 locale，未必等于现在解析出来的（#2500 之前繁中
+                # 用户的兜底是短码 'zh'）。运行时按候选链读，编辑器精确匹配的
+                # 话，那份覆盖照样生效、编辑器却报「未修改」。
+                found = resolve_prompt_override(overrides, locale, i18n_key)
+                if found is not None:
                     has_override = True
-                    effective_text = str(overrides[locale][i18n_key] or "")
+                    effective_text = str(found[1] or "")
                 else:
                     effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
             if lid == "time" and self.fatigue_service:
@@ -1481,21 +1522,44 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         def _reset_override(settings):
             nonlocal override_found
             raw_overrides = settings.get("prompt_overrides") or {}
-            overrides = (
-                dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
-            )
-            locale_overrides = overrides.get(locale)
-            if not isinstance(locale_overrides, dict):
-                return False
-            locale_overrides = dict(locale_overrides)
-            if layer_def["i18n_key"] not in locale_overrides:
+            overrides = {
+                bucket: (dict(entries) if isinstance(entries, dict) else entries)
+                for bucket, entries in (
+                    raw_overrides.items() if isinstance(raw_overrides, dict) else ()
+                )
+            }
+            i18n_key = layer_def["i18n_key"]
+            removed = False
+
+            # 先删精确桶。它可能存着空串（编辑器清空时的存法），resolve 看不见
+            # 那种，光靠下面的循环会漏。
+            exact = overrides.get(locale)
+            if isinstance(exact, dict) and i18n_key in exact:
+                exact.pop(i18n_key)
+                removed = True
+
+            # 再一直删到「解析不出覆盖」为止。只删精确桶是不够的：候选链上
+            # 还有别的桶（存量短码 'zh'，以及每条链都会带上的 'zh-CN' /
+            # 'en'），删掉 zh-TW 之后它们会顶上来 —— 「恢复默认」就变成了
+            # 「换一份旧覆盖」，而且再按一次还是它。
+            # ⚠️ 代价说清楚：同一个人如果按 locale 分别调过这一层的提示词，
+            # 重置会把该层其它 locale 的那几份一起清掉。单用户桌面应用里，
+            # 这比「按了恢复默认却恢复不掉」轻 —— 后者没有任何出路。
+            while True:
+                found = resolve_prompt_override(overrides, locale, i18n_key)
+                if found is None:
+                    break
+                overrides[found[0]].pop(i18n_key, None)
+                removed = True
+
+            if not removed:
                 return False
             override_found = True
-            locale_overrides.pop(layer_def["i18n_key"])
-            if locale_overrides:
-                overrides[locale] = locale_overrides
-            else:
-                overrides.pop(locale, None)
+            for bucket in [
+                b for b, entries in overrides.items()
+                if isinstance(entries, dict) and not entries
+            ]:
+                overrides.pop(bucket, None)
             settings["prompt_overrides"] = overrides
             return True
 

@@ -101,6 +101,19 @@ VOICE_INPUT_LAYERING
     processing, routers, or arbitrary utility modules. ASR runtime code emits
     neutral callbacks and cannot import the Core-owned Registry in reverse.
 
+CORE_LOCK_NO_AWAIT
+    No ``async with self.lock`` block holds a suspension point. Twelve of
+    those blocks write ``current_speech_id``, eight of them writing the two
+    TTS done flags in the same block. Because no holder suspends, the lock is
+    never observed held, every acquire takes the uncontended fast path, and
+    no acquire is a cancellation point — which is what makes those paired
+    writes atomic (#2619). The first ``await`` inside any of these blocks
+    makes the lock contendable and reopens a torn "flags say the new turn,
+    speech id still says the old one" state at every one of them. The lock
+    must also be taken ONLY as a context manager — manual
+    ``acquire()``/``release()`` would hold it across awaits while presenting
+    no block for the shape check to see.
+
 VOICE_IDENTITY_LAYERING
     The in-memory speaker identity domain owns only model identity, normalized
     references, and profiles. Its package initializer is inert; its domain
@@ -937,6 +950,556 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
             core_dir / "asr_runtime.py", 1, 0, "VOICE_FAIL_CLOSED_CHOKEPOINT",
             f"{CHOKEPOINT}() is gone from main_logic/core — it is the only sanctioned caller "
             f"of {sorted(REVOKE_HELPERS)}, so its removal makes this gate vacuous"))
+    return violations
+
+
+def _statements_in_critical_section(body: list[ast.stmt]):
+    """Yield every node a critical section actually executes.
+
+    A generator expression is deferred the same way, with one eager part:
+    measured, ``(await work(x) async for x in src())`` evaluates NOTHING at
+    creation, while ``(x for x in await get())`` does evaluate the outermost
+    iterable there. So only ``generators[0].iter`` is walked for those. List,
+    set and dict comprehensions are NOT deferred — measured, they run their
+    element expression immediately — and stay fully walked.
+
+    A nested ``def`` / ``async def`` / ``lambda`` splits into two halves that
+    run at different times, and only the body is deferred:
+
+    * the BODY runs when the closure is called, which is necessarily after
+      the block has exited, so an ``await`` in there is not a suspension of
+      this critical section and flagging it would be a false positive;
+    * the DEFINITION-TIME parts — decorators, default values, annotations —
+      are evaluated right here, while the lock is held. ``async def
+      later(x=await self.flush())`` parses, and the default is evaluated at
+      def time (measured), so skipping the whole node would let a real
+      suspension through.
+
+    So the body is skipped and everything else about the definition is still
+    walked.
+    """
+
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, ast.GeneratorExp):
+            # Everything but the outermost iterable runs at consumption time,
+            # which is necessarily after the block has exited.
+            if node.generators:
+                stack.append(node.generators[0].iter)
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # ``Lambda.body`` is one expression; the others hold a statement
+            # list. Compare by identity — AST nodes have no ``__eq__``, and
+            # two structurally identical children must not collapse.
+            deferred = (
+                {id(node.body)}
+                if isinstance(node, ast.Lambda)
+                else {id(stmt) for stmt in node.body}
+            )
+            stack.extend(
+                child
+                for child in ast.iter_child_nodes(node)
+                if id(child) not in deferred
+            )
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _name_binding_sites(tree: ast.AST, name: str) -> list[ast.AST]:
+    """Return every node that binds ``name``, in any scope, by any syntax.
+
+    Written as an enumeration of BINDINGS rather than of ways-to-rebind: the
+    latter is open-ended (import-as, assignment, parameter, loop target,
+    ``with ... as``, ``except ... as``, comprehension, walrus, ``match``
+    capture, a def or class of that name …) and a checker built by listing
+    them stays one form behind whoever is looking. Scope is deliberately
+    ignored — any binding of the name anywhere in the module is enough to
+    make a spelling-based check on it unsound.
+
+    Models ordinary binding syntax only, not reflective mutation through
+    ``globals()`` / ``exec`` / attribute writes on the module object.
+    """
+
+    sites: list[ast.AST] = []
+    for node in ast.walk(tree):
+        # The ``ast.alias`` is returned, not the containing import: one
+        # statement can carry several, and ``import asyncio, vendor as
+        # asyncio`` must not be judged by whichever alias happens to look
+        # right — Python leaves the name bound to the LAST one.
+        if isinstance(node, ast.Import):
+            sites.extend(
+                alias for alias in node.names
+                if (alias.asname or alias.name.split(".")[0]) == name
+            )
+        elif isinstance(node, ast.ImportFrom):
+            sites.extend(
+                alias for alias in node.names
+                # ``from x import *`` can bind ANY name the module exports,
+                # including this one, and nothing in the AST says which. It
+                # counts as a binding of every name — unknown, so not the
+                # sanctioned one.
+                if alias.name == "*" or (alias.asname or alias.name) == name
+            )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                sites.append(node)
+        elif isinstance(node, ast.arg):
+            if node.arg == name:
+                sites.append(node)
+        elif isinstance(node, ast.Assign):
+            if any(
+                name in _assignment_target_names(target) for target in node.targets
+            ):
+                sites.append(node)
+        elif isinstance(node, ast.AnnAssign):
+            if name not in _assignment_target_names(node.target):
+                pass
+            elif node.value is not None:
+                sites.append(node)
+            elif isinstance(node.target, ast.Name):
+                # A valueless annotation binds no VALUE but does affect scope:
+                # ``asyncio: object`` anywhere in a function makes the name
+                # local for that whole function, so a later ``asyncio.Lock()``
+                # raises UnboundLocalError rather than reaching the module.
+                # Either way the name no longer means the import, so it counts.
+                # (An ATTRIBUTE annotation — ``self.lock: asyncio.Lock`` — has
+                # no such effect and is handled where lock bindings are
+                # collected, not here.)
+                sites.append(node)
+        elif isinstance(node, (ast.AugAssign, ast.NamedExpr)):
+            if name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            if name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            if any(
+                item.optional_vars is not None
+                and name in _assignment_target_names(item.optional_vars)
+                for item in node.items
+            ):
+                sites.append(node)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name == name:
+                sites.append(node)
+        elif isinstance(node, ast.comprehension):
+            if name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, ast.match_case):
+            if name in _match_pattern_binding_names(node.pattern):
+                sites.append(node)
+    return sites
+
+
+def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Violation]:
+    """CORE_LOCK_NO_AWAIT — the session lock is never held across a suspension.
+
+    Every ``async with self.lock`` block in the package holds only
+    synchronous statements. That is not a style preference, it is what makes
+    the speech-id rotations atomic, and it holds by induction: if no holder
+    ever suspends while holding the lock, no other task can ever observe it
+    held, so ``await self.lock.acquire()`` always takes the uncontended fast
+    path and never yields — which means cancellation cannot be delivered
+    between taking the lock and the writes inside it.
+
+    #2619 read the same code the other way round and proposed reordering the
+    writes in ``rotate_speech_id_for_response_done`` to close a torn-state
+    window. Measured, that window does not exist while this contract holds:
+    the acquire never suspends, so the rotation either runs whole or does not
+    start. The first ``await`` added inside any of these blocks is what would
+    make the window real — for that rotation and for the eight other blocks
+    that write ``current_speech_id`` alongside both TTS done flags. So the
+    invariant is the fix, and this gate is what keeps it true.
+
+    Two halves, because a shape check alone is defeatable. The reachable
+    shape — no suspension inside any ``async with self.lock`` block — is only
+    meaningful if every acquisition IS such a block, so the lock is also
+    required to appear nowhere else: manual ``acquire()``/``release()`` holds
+    it across arbitrary awaits while presenting no block to inspect.
+    ``manager.py``'s binding assignment is the single exemption.
+
+    The check is deliberately package-wide rather than pinned to the rotation
+    sites: the property is a property of the lock, and one careless holder
+    anywhere is enough to lose it everywhere.
+
+    Known boundary: the scan covers ``main_logic/core`` only. A holder
+    OUTSIDE the package — ``async with manager.lock: await ...`` somewhere
+    that was handed a manager — would make the lock contendable just the
+    same, and this gate would not see it. That gap is not closed here
+    because the cheap closure is not sound: matching ``.lock`` repo-wide
+    collides with unrelated locks that legitimately suspend under
+    themselves (measured: ``plugin/plugins/neko_live/core/pipeline_session.py``
+    holds a per-uid ``entry.lock`` by design), and demanding an allowlist
+    entry from unrelated code makes the gate about the wrong thing. What IS
+    closed is the leak path: core cannot hand the lock out, because every
+    ``.lock`` mention there must be an ``async with`` context expression, so
+    an external holder can only arise from new code reaching into the
+    attribute directly. Measured today: no production module outside the
+    package references a manager's ``.lock`` at all.
+
+    Second known boundary: the ``asyncio`` binding check is scope- and
+    control-flow-blind. It requires every binding of the name to be a plain
+    ``import asyncio``, but does not work out which one reaches the
+    ``self.lock`` assignment — a module-level import plus a conditional
+    ``import asyncio`` inside ``__init__`` satisfies it. That is deliberate:
+    the local import makes the name local for the whole method, so the
+    un-taken branch raises ``UnboundLocalError`` at ``asyncio.Lock()``
+    (measured). The failure is a crash at construction, not a lock with
+    different suspension semantics slipping through — unlike the shadowing
+    forms above, which run fine and only the gate cannot see. Deciding it
+    properly needs reaching-definition analysis at the assignment, which is a
+    dataflow pass this syntax-level gate does not want to become.
+    """
+
+    def suspension_kind(node: ast.AST) -> str | None:
+        # ``yield`` counts: it turns the holder into an async generator and
+        # hands control back to whoever drives it, which can abandon or throw
+        # into the generator while the lock is still held.
+        if isinstance(node, ast.Await):
+            return "await"
+        if isinstance(node, ast.AsyncFor):
+            return "async for"
+        if isinstance(node, ast.AsyncWith):
+            return "nested async with"
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return "yield"
+        # ``[x async for x in y]`` carries no AsyncFor node of its own.
+        if isinstance(node, ast.comprehension) and node.is_async:
+            return "async comprehension"
+        return None
+
+    def is_lock_attr(node: ast.AST) -> bool:
+        """Any reach for the ``lock`` attribute, however it is spelled.
+
+        Deliberately NOT pinned to a literal ``self`` receiver: ``owner =
+        self`` followed by ``async with owner.lock:`` acquires the same
+        object, and resolving aliases properly is dataflow analysis. Matching
+        the attribute name alone over-approximates instead, which is the safe
+        direction — and measured, it costs nothing: the package contains no
+        ``.lock`` acquisition with any other receiver, and manager.py's
+        binding is the only non-``async with`` mention at all.
+
+        The literal reflective spellings count too — ``getattr(x, "lock")``,
+        ``setattr(x, "lock", …)`` and ``x.__dict__["lock"]`` reach the same
+        attribute while carrying no ``Attribute`` node named ``lock`` for a
+        syntax-only match to see. Reads and WRITES both: a reflective write
+        replaces the primitive itself, which the exact-once binding check
+        would never notice, and then a perfectly clean-looking ``async with
+        self.lock:`` runs on a lock whose acquire may suspend. Same reasoning
+        as ``check_fail_closed_chokepoint``'s ``called_name`` in this file: a
+        gate a one-line rewrite defeats is not a gate. A computed name
+        (``getattr(x, name)``) is out of reach of any AST check and is not
+        claimed to be covered.
+        """
+
+        return is_lock_read(node) or is_lock_write(node)
+
+    def is_lock_read(node: ast.AST) -> bool:
+        """A reach for the attribute that yields the lock object."""
+
+        if isinstance(node, ast.Attribute):
+            return node.attr == "lock"
+        if (
+            isinstance(node, ast.Call)
+            and dotted_node_path(node.func) in {"getattr", "object.__getattribute__"}
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "lock"
+        ):
+            return True
+        return (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "__dict__"
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == "lock"
+        )
+
+    def is_lock_write(node: ast.AST) -> bool:
+        """A reflective call that REPLACES the attribute."""
+
+        return (
+            isinstance(node, ast.Call)
+            and dotted_node_path(node.func) in {"setattr", "object.__setattr__"}
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "lock"
+        )
+
+    def is_session_lock(item: ast.withitem) -> bool:
+        """Reads only — a write is never an acquisition.
+
+        Both spellings have to be recognised by the form check, but only a
+        READ can be the thing an ``async with`` acquires. Letting a write
+        qualify here sanctioned the setter itself: ``async with setattr(self,
+        "lock", OtherLock()): pass`` was recorded as a lock acquisition and
+        reported nothing, even though the swap already happened by the time
+        entering ``None`` raises TypeError — which the surrounding code is
+        free to catch.
+        """
+
+        return is_lock_read(item.context_expr)
+
+    def is_self_lock_attr(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "lock"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        )
+
+    violations: list[Violation] = []
+    blocks_seen = 0
+    manager_bindings: list[tuple[ast.AST, ast.expr | None]] = []
+    annotation_only: list[ast.AST] = []
+    # rglob, and no ``__init__.py`` exemption: a holder in the facade or in a
+    # subpackage is inside the package whose invariant this enforces. The flat
+    # layout is enforced separately by CORE_MIXIN_SHAPE, but this gate must not
+    # depend on that one still being there to be complete.
+    for path in sorted(p for p in core_dir.rglob("*.py") if "__pycache__" not in p.parts):
+        tree = parse(path)
+        # Every sanctioned mention of the lock is the context expression of an
+        # ``async with``. Manual ``await self.lock.acquire()`` ... ``release()``
+        # would hold it across arbitrary awaits while presenting no AsyncWith
+        # node for the scan below to inspect — the one rewrite that defeats
+        # this gate without tripping it. So the reachable-shape check is
+        # paired with a form check: any other reference to ``self.lock`` is
+        # rejected outright, which also covers handing the lock to a helper
+        # that awaits under it.
+        sanctioned: set[int] = {
+            id(item.context_expr)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncWith)
+            for item in node.items
+            if is_session_lock(item)
+        }
+        # The module can stay the real stdlib one while its ``Lock`` attribute
+        # is replaced: ``asyncio.Lock = OtherLock`` leaves both the name check
+        # and the ``asyncio.Lock()`` spelling intact while the manager builds
+        # an arbitrary primitive. Same family as the reflective writes above —
+        # the swap happens where the checker was only reading spelling.
+        # Reflective writes count the same as direct ones, for the same reason
+        # they do on the lock attribute itself: catching one spelling and not
+        # the other is not a gate, it is a speed bump.
+        def replaces_asyncio_lock(node: ast.AST) -> bool:
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets = [node.target]
+            for target in targets:
+                if dotted_node_path(target) == "asyncio.Lock":
+                    return True
+                # ``asyncio.__dict__["Lock"] = X``
+                if (
+                    isinstance(target, ast.Subscript)
+                    and dotted_node_path(target.value) == "asyncio.__dict__"
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "Lock"
+                ):
+                    return True
+            # ``setattr(asyncio, "Lock", X)`` / ``object.__setattr__(...)``
+            return (
+                isinstance(node, ast.Call)
+                and dotted_node_path(node.func) in {"setattr", "object.__setattr__"}
+                and len(node.args) >= 2
+                and dotted_node_path(node.args[0]) == "asyncio"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "Lock"
+            )
+
+        for node in ast.walk(tree):
+            if replaces_asyncio_lock(node):
+                violations.append(Violation(
+                    path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                    "asyncio.Lock is replaced — the primitive check validates the "
+                    "spelling 'asyncio.Lock()' and that 'asyncio' means the standard "
+                    "library, but neither survives the attribute itself being "
+                    "replaced; the manager would then build an arbitrary lock whose "
+                    "acquire may suspend (#2619)"))
+        # manager.py binds the attribute; that assignment target is the only
+        # non-``async with`` mention the package is allowed to carry. Every
+        # binding is collected — not just the first — because the primitive
+        # check below has to see a rebind that a later statement performs.
+        if path == manager_path:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    if not any(is_self_lock_attr(t) for t in node.targets):
+                        continue
+                    # ``self.other_lock = self.lock = asyncio.Lock()`` binds
+                    # ONE object to two names. The gate deliberately ignores
+                    # non-session locks, so the second name would then be a
+                    # sanctioned handle on the session lock that may be held
+                    # across awaits. One target only.
+                    if len(node.targets) != 1:
+                        violations.append(Violation(
+                            path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                            "the self.lock binding must have exactly one target — a "
+                            "chained assignment aliases the same lock object under "
+                            "another name, and every other lock name is allowed to be "
+                            "held across awaits, so the alias becomes a way to suspend "
+                            "while holding the session lock (#2619)"))
+                    manager_bindings.extend(
+                        (target, node.value)
+                        for target in node.targets
+                        if is_self_lock_attr(target)
+                    )
+                elif isinstance(node, ast.AnnAssign) and is_self_lock_attr(node.target):
+                    if node.value is None:
+                        # ``self.lock: asyncio.Lock`` with no value is a type
+                        # declaration; it neither assigns nor replaces the
+                        # attribute, so it is exempt from the form check
+                        # without counting as a binding.
+                        annotation_only.append(node.target)
+                    else:
+                        manager_bindings.append((node.target, node.value))
+        bind_targets = {id(target) for target, _ in manager_bindings}
+        bind_targets.update(id(target) for target in annotation_only)
+        for node in ast.walk(tree):
+            if not is_lock_attr(node):
+                continue
+            if id(node) in sanctioned or id(node) in bind_targets:
+                continue
+            violations.append(Violation(
+                path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                "a '.lock' attribute is referenced outside an 'async with' block — the "
+                "session lock may only be taken as a context manager, and the receiver "
+                "is not required to be literally 'self' because an alias reaches the "
+                "same object. Manual "
+                "acquire()/release() (or passing the lock elsewhere) can hold it across "
+                "an await without presenting a block for this gate to check, which makes "
+                "the lock contendable and reopens the torn sid/TTS-flag state (#2619)"))
+        for block in ast.walk(tree):
+            if not isinstance(block, ast.AsyncWith):
+                continue
+            if not any(is_session_lock(item) for item in block.items):
+                continue
+            blocks_seen += 1
+            # ``async with self.lock, other:`` enters ``other`` while the
+            # session lock is already held, and on the way out awaits its
+            # ``__aexit__`` before the lock is released — two suspensions the
+            # body scan below never sees, because neither is in the body. So
+            # the session lock has to be the LAST item. An item BEFORE it is
+            # fine: the lock is not yet held on the way in, and is already
+            # released on the way out.
+            lock_index = next(
+                i for i, item in enumerate(block.items) if is_session_lock(item)
+            )
+            for trailing in block.items[lock_index + 1:]:
+                violations.append(Violation(
+                    path, trailing.context_expr.lineno, trailing.context_expr.col_offset,
+                    "CORE_LOCK_NO_AWAIT",
+                    "context manager entered after self.lock in the same 'async with' — "
+                    "its __aenter__ (and its __aexit__ on the way out) run while the "
+                    "session lock is held, which is a suspension the lock must never "
+                    "span (#2619). Put it in its own block before the lock, or make "
+                    "self.lock the last item"))
+            for node in _statements_in_critical_section(block.body):
+                kind = suspension_kind(node)
+                if kind is None:
+                    continue
+                violations.append(Violation(
+                    path, getattr(node, "lineno", block.lineno),
+                    getattr(node, "col_offset", block.col_offset),
+                    "CORE_LOCK_NO_AWAIT",
+                    f"'{kind}' inside the 'async with self.lock' block opened at line "
+                    f"{block.lineno} — the session lock must never be held across a "
+                    f"suspension. While it is not, the lock is never contended, so every "
+                    f"acquire takes the fast path, no acquire is a cancellation point, and "
+                    f"the sid+TTS-flag writes inside these blocks are atomic (#2619). One "
+                    f"suspension here makes the lock contendable and reopens that torn "
+                    f"state at every one of these blocks, not just this one. Do the awaited "
+                    f"work before or after the block"))
+                break  # one report per block; the first suspension is the defect
+    if not blocks_seen:
+        violations.append(Violation(
+            # Anchored on the package initializer, not on whichever module
+            # happens to hold a rotation today: this violation fires exactly
+            # when the package changed shape, so naming a module that may
+            # itself have been renamed or deleted would render as a bare
+            # absolute path. ``run()`` hard-fails if this file is missing.
+            core_dir / "__init__.py", 1, 0, "CORE_LOCK_NO_AWAIT",
+            "no 'async with self.lock' block left in main_logic/core — either the session "
+            "lock moved or the rotations stopped taking it; this gate is now vacuous, so "
+            "update it instead of letting it go dark"))
+    # The no-suspension argument assumes a plain asyncio.Lock: a reentrant or
+    # threading primitive would make 'never observed held' false for reasons
+    # this AST cannot see. Checking that SOME binding is asyncio.Lock() is not
+    # enough — a later ``self.lock = OtherLock()`` would leave the first
+    # binding intact for the check to find while the attribute the code
+    # actually takes is the second. So exactly one binding is required, and
+    # that one is the one validated.
+    if len(manager_bindings) != 1:
+        found = ", ".join(
+            f"line {getattr(target, 'lineno', '?')}" for target, _ in manager_bindings
+        ) or "none"
+        violations.append(Violation(
+            manager_path,
+            getattr(manager_bindings[0][0], "lineno", 1) if manager_bindings else 1, 0,
+            "CORE_LOCK_NO_AWAIT",
+            f"self.lock must be bound exactly once in manager.py, found "
+            f"{len(manager_bindings)} ({found}) — with more than one binding the "
+            f"primitive check cannot tell which object the package actually takes, and "
+            f"a rebind to a suspending lock would pass while an earlier asyncio.Lock() "
+            f"line satisfies the check"))
+    else:
+        target, value = manager_bindings[0]
+        line = getattr(target, "lineno", 1)
+        if not (
+            isinstance(value, ast.Call)
+            and dotted_node_path(value.func) == "asyncio.Lock"
+        ):
+            violations.append(Violation(
+                manager_path, line, 0, "CORE_LOCK_NO_AWAIT",
+                "self.lock is no longer bound to asyncio.Lock() in manager.py — the "
+                "atomicity this gate protects rests on the uncontended-acquire fast path "
+                "of that exact primitive; re-derive the contract before swapping it"))
+        else:
+            # ``asyncio.Lock`` is matched by SPELLING, so the name has to mean
+            # the standard library. Rather than enumerate the ways it could
+            # mean something else (``import custom_locks as asyncio``, a plain
+            # ``asyncio = custom_locks``, a parameter named ``asyncio``, a
+            # loop target, a ``with ... as`` …), require the name to have
+            # exactly one binding in manager.py and require that binding to be
+            # a plain ``import asyncio``. That is closed under binding syntax
+            # instead of chasing forms one at a time.
+            manager_tree = parse(manager_path)
+            bindings = _name_binding_sites(manager_tree, "asyncio")
+
+            def binds_the_stdlib_package(node: ast.AST) -> bool:
+                # ``import asyncio`` and ``import asyncio.subprocess`` both
+                # bind the top-level name to the same stdlib package, so both
+                # are the guarantee this check wants; anything with an
+                # ``asname`` or any other syntax is not. Judged per ALIAS —
+                # judging the containing statement let ``import asyncio,
+                # vendor as asyncio`` pass on the strength of its first alias
+                # while Python bound the name to the second.
+                return (
+                    isinstance(node, ast.alias)
+                    and node.asname is None
+                    and (node.name == "asyncio" or node.name.startswith("asyncio."))
+                )
+
+            plain_import = bool(bindings) and all(
+                binds_the_stdlib_package(node) for node in bindings
+            )
+            if not plain_import:
+                where = ", ".join(
+                    f"line {getattr(b, 'lineno', '?')}" for b in bindings
+                ) or "nowhere"
+                violations.append(Violation(
+                    manager_path,
+                    getattr(bindings[0], "lineno", 1) if bindings else 1, 0,
+                    "CORE_LOCK_NO_AWAIT",
+                    f"the name 'asyncio' must be bound in manager.py only by a plain "
+                    f"'import asyncio' — found {len(bindings)} binding(s) "
+                    f"({where}). The primitive check matches the spelling "
+                    f"'asyncio.Lock()', so any other binding of that name (alias import, "
+                    f"wildcard import, assignment, parameter, loop target, with/except "
+                    f"capture …) lets a lock with different suspension semantics pass as "
+                    f"the standard-library one (#2619)"))
     return violations
 
 
@@ -1821,6 +2384,7 @@ def run(root: Path) -> list[Violation]:
     violations: list[Violation] = []
     violations.extend(check_voice_identity_contracts(root))
     violations.extend(check_fail_closed_chokepoint(core_dir))
+    violations.extend(check_session_lock_atomicity(core_dir, manager_path))
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)
     facade_owners = facade_owner_modules(init_tree)

@@ -321,7 +321,29 @@ class TtsRuntimeMixin:
         regardless of ``use_tts``, so a Realtime native voice session
         (``use_tts=False``) can still have a live worker that needs
         interrupting on ``interrupt_audio``.
+
+        The two TTS-done flags are NOT reset together, because they are not
+        paired with the same thing — see the comments at each reset.
         """
+        # ``_tts_done_queued_for_turn`` 的对偶是下面的 ``__interrupt__``：一入队
+        # 就把上一轮那个 done sentinel 作废，而这个 flag 是"本轮 sentinel 已排队"
+        # 的唯一记账。所以清零属于 interrupt 的同一步，必须落在函数的第一个
+        # await（下面的 sleep）之前：从函数入口到 put("__interrupt__") 全是同步
+        # 语句，取消无从投递，两者因此原子。放在 await 之后（历史写法：由各调用方
+        # 在 await 返回后各自清）取消落在 sleep 上就会留下"worker 已被中断、记账
+        # 还说已排队"的残留态，下一轮 ``_request_tts_done_locked`` 因此
+        # early-return "already"，flush sentinel 永远进不了队 —— 正是
+        # handle_new_message 那两行清零本来要防的后果。
+        #
+        # ``_tts_done_pending_until_ready`` 不能跟着挪上来：它的对偶是
+        # ``tts_pending_chunks``（"这批文本还没刷出去，done 要等它们之后再补发"），
+        # 两者一起在函数末尾的 tts_cache_lock 段里清。单把 flag 提前、chunks 留在
+        # 原地，取消落在 sleep 上就撕成另一个方向的半套态：worker 就绪后
+        # ``_flush_tts_pending_chunks`` 会把陈旧 chunks 重新入队，却因为 flag 已是
+        # False 而跳过它们的 done 补发，合成器一直不 flush。所以它留在下面不动。
+        # 调用方在本函数返回后的重复清零保留不动：那是给 sleep 窗口内被并发
+        # 置回 True 的情况兜底，与这里要修的取消残留是两件事。
+        self._tts_done_queued_for_turn = False
         if self.tts_thread and self.tts_thread.is_alive():
             while not self.tts_response_queue.empty():
                 try:
@@ -343,6 +365,14 @@ class TtsRuntimeMixin:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
+            # 再清一次 queued：上面那 20ms 里并发路径（finish_proactive_delivery
+            # 等）可能看到 False、排了自己的 sentinel 并把它置回 True。那个
+            # sentinel 排在 __interrupt__ 之后、本轮后续文本之前，本来就已作废；
+            # 而记账留 True 会让后续文本的 done 请求 early-return "already"，
+            # 重试那一轮因此发不出句尾 sentinel。handle_new_message 一族靠调用方
+            # 返回后的重复清零兜住了这一点，丢弃/takeover 两条路径没有，所以兜底
+            # 收进这里，让五个调用方拿到同一个保证。
+            self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self._reset_tts_replay_state()
             # Drop only queued-but-unconfirmed TTS text. Already-confirmed

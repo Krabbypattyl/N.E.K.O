@@ -715,15 +715,296 @@ async def test_channel_collision_is_detected_without_touching_the_ledger():
 
 
 async def test_platform_identity_scope_is_never_inferred_by_code(pool):
-    """Showing "unknown" is the honest state until a human fills it in."""
+    """Showing "unknown" is the honest state until someone declares it.
+
+    Traffic must not move this container. Not one message, not a thousand,
+    not messages whose ids visibly disagree -- concluding a scope from what
+    came over the wire is the inference this whole design forbids.
+    """
     await _open_gate()
     await trust_store.aapply_trust_mutations([
         _mutation("qq:1", activity=[("activity_a0000001", 1)],
                   channel="napcat"),
+        # Two ids that a naive observer would "obviously" read as
+        # per-conversation. The pool still says nothing.
+        _mutation("qq:MEMBER_IN_X", activity=[("activity_a0000002", 1)],
+                  channel="open"),
+        _mutation("qq:MEMBER_IN_Y", activity=[("activity_a0000003", 1)],
+                  channel="open"),
     ])
     assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
     stored = json.loads(pool.read_text(encoding="utf-8"))
     assert stored["platform_identity_scope"] == {}
+
+
+async def test_declaring_a_scope_records_it_with_its_asserter(pool):
+    result = await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+
+    assert result["persisted"] is True
+    scope = trust_store.trust_snapshot().platform_identity_scope("qq")
+    assert scope["actor_scope"] == "per_conversation"
+    assert scope["conversation_scope"] == "global"
+    assert scope["channel"] == "open"
+    assert scope["asserted_by"] == "protocol:qq-open-v2"
+    assert scope["asserted_at"]
+    stored = json.loads(pool.read_text(encoding="utf-8"))
+    assert stored["platform_identity_scope"]["qq"] == scope
+
+
+async def test_redeclaring_the_same_scope_does_not_touch_disk(pool):
+    """A connector declares on every startup; that must not rewrite the pool."""
+    await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+    before = pool.read_text(encoding="utf-8")
+
+    again = await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+
+    # ``persisted`` means "disk agrees with memory", so a no-op reports True
+    # exactly like the other idempotent mutators. The proof that nothing was
+    # written is the file itself: any real write bumps ``updated_at``.
+    assert again["persisted"] is True
+    assert pool.read_text(encoding="utf-8") == before
+
+
+async def test_switching_connection_mode_redeclares_the_scope(pool):
+    await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+    result = await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="napcat", actor_scope="global",
+        conversation_scope="global", asserted_by="protocol:onebot-v11",
+    )
+
+    assert result["persisted"] is True
+    scope = trust_store.trust_snapshot().platform_identity_scope("qq")
+    assert (scope["channel"], scope["actor_scope"]) == ("napcat", "global")
+
+
+@pytest.mark.parametrize("actor_scope", [
+    "", "probably_global", "PER_CONVERSATION_ISH", "per-conversation", None,
+])
+async def test_a_scope_outside_the_closed_set_is_refused(pool, actor_scope):
+    """A hedged value would leave every consumer guessing what it licenses."""
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.adeclare_platform_identity_scope(
+            "qq", channel="open", actor_scope=actor_scope,
+            conversation_scope="global", asserted_by="protocol:qq-open-v2",
+        )
+    assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
+
+
+async def test_an_unattributed_declaration_is_refused(pool):
+    """Without an asserter, a declaration reads exactly like an inference."""
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.adeclare_platform_identity_scope(
+            "qq", channel="open", actor_scope="per_conversation",
+            conversation_scope="global", asserted_by="  ",
+        )
+    assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
+
+
+async def test_binding_into_a_roster_account_with_no_ledger_needs_a_seed_first(pool):
+    """Pins why the dashboard binds to an ACCOUNT, not to an entity id.
+
+    Entities are born from ledger activity. A trusted user who has never
+    accrued a trust event has none -- on a fresh install that describes the
+    private-chat admin, the very account every in-group openid must merge
+    into. Binding straight to it raises; seeding it first is what makes the
+    main use case reachable at all.
+    """
+    await _open_gate()
+    owner = "qq:OWNER_PRIVATE_OPENID"
+    member = "qq:MEMBER_IN_GROUP_X"
+
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.abind_account(member, owner)
+
+    entity_id = await trust_store.aensure_account(owner)
+    assert entity_id
+    result = await trust_store.abind_account(
+        member, entity_id, bound_by="qq_auto_reply.dashboard",
+    )
+
+    assert result["entity_id"] == entity_id
+    snap = trust_store.trust_snapshot()
+    assert snap.entity_of(member) == entity_id
+    assert snap.same_entity(member, owner)
+
+
+async def test_require_unbound_refuses_instead_of_merging_two_targets(pool):
+    """The guard that a caller-side preflight cannot provide.
+
+    A second bind of the same source is not "retarget" -- ``_bind_locked``
+    merges the two TARGET entities, i.e. two different people, and unbinding
+    the source afterwards does not separate them again. Two concurrent binds
+    both pass any check made outside the critical section, so the refusal has
+    to live inside it.
+    """
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    first = await trust_store.aensure_account("qq:OWNER_A")
+    second = await trust_store.aensure_account("qq:OWNER_B")
+    await trust_store.abind_account(source, first, require_unbound=True)
+
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.abind_account(source, second, require_unbound=True)
+
+    snap = trust_store.trust_snapshot()
+    assert snap.entity_of(source) == first
+    # The decisive assertion: the two targets stayed separate people.
+    assert not snap.same_entity("qq:OWNER_A", "qq:OWNER_B")
+
+
+async def test_require_unbound_still_admits_a_standalone_account_with_a_ledger(pool):
+    """"Bound" is not "known" -- and the difference is the main use case.
+
+    Any account that ever accrued trust or activity already sits in its own
+    singleton entity. Those are precisely the accounts whose ledger somebody
+    wants to consolidate; rejecting them would leave only never-seen accounts
+    bindable, which is the opposite of the point.
+    """
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    await trust_store.aapply_trust_mutations([
+        _mutation(source, activity=[("activity_b0000001", 1)], channel="open"),
+    ])
+    target = await trust_store.aensure_account("qq:OWNER_A")
+
+    result = await trust_store.abind_account(
+        source, target, bound_by="dashboard", require_unbound=True,
+    )
+
+    # It goes through the merge path, so which id survives is the merge rule's
+    # business -- what matters is that the two are now one person and the
+    # source's existing ledger came along.
+    assert result["changed"] is True
+    assert trust_store.trust_snapshot().same_entity(source, "qq:OWNER_A")
+
+
+async def test_unbind_provenance_is_enforced_inside_the_critical_section(pool):
+    """A second press must not detach an already-standalone account again.
+
+    Two tabs can both read a profile that still has ``bound_by``; the first
+    unbind clears it, and a caller-side check cannot see that. Pressing again
+    would mint yet another entity and strand rows resolved under the first.
+    """
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    target = await trust_store.aensure_account("qq:OWNER_A")
+    await trust_store.abind_account(source, target, bound_by="dashboard")
+
+    first = await trust_store.aunbind_account(source, require_provenance=True)
+    entity_after_first = trust_store.trust_snapshot().entity_of(source)
+    second = await trust_store.aunbind_account(source, require_provenance=True)
+
+    assert first["changed"] is True
+    assert second["changed"] is False
+    assert second.get("reason") == "not_bound"
+    # The decisive assertion: no second fresh entity was minted.
+    assert trust_store.trust_snapshot().entity_of(source) == entity_after_first
+
+
+async def test_unbind_provenance_is_off_by_default(pool):
+    """The endpoint's existing unconditional behaviour is unchanged."""
+    await _open_gate()
+    await trust_store.aapply_trust_mutations([
+        _mutation("qq:SOLO", activity=[("activity_c0000001", 1)],
+                  channel="open"),
+    ])
+
+    result = await trust_store.aunbind_account("qq:SOLO")
+
+    assert result["changed"] is True
+
+
+async def test_ensure_reports_whether_the_seed_reached_disk(pool):
+    entity_id, persisted = await trust_store.aensure_account(
+        "qq:OWNER_A", report_persisted=True,
+    )
+
+    assert entity_id
+    assert persisted is True
+    # Re-ensuring an account that already exists is still a truthful "yes".
+    again, persisted_again = await trust_store.aensure_account(
+        "qq:OWNER_A", report_persisted=True,
+    )
+    assert (again, persisted_again) == (entity_id, True)
+
+
+async def test_require_unbound_is_off_by_default(pool):
+    """Existing callers keep the merge-on-rebind behaviour they were written for."""
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    first = await trust_store.aensure_account("qq:OWNER_A")
+    second = await trust_store.aensure_account("qq:OWNER_B")
+    await trust_store.abind_account(source, first)
+
+    await trust_store.abind_account(source, second)
+
+    assert trust_store.trust_snapshot().same_entity("qq:OWNER_A", "qq:OWNER_B")
+
+
+async def test_require_unbound_still_allows_a_redundant_rebind_to_the_same_entity(pool):
+    """Same target twice is a no-op, not a conflict -- double-click must not 409."""
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    target = await trust_store.aensure_account("qq:OWNER_A")
+    await trust_store.abind_account(source, target, require_unbound=True)
+
+    result = await trust_store.abind_account(
+        source, target, require_unbound=True,
+    )
+
+    assert result["changed"] is False
+
+
+async def test_seeding_an_account_records_no_channel_observation(pool):
+    """``channels_seen`` is an observation of traffic; a seed is not traffic."""
+    await _open_gate()
+
+    await trust_store.aensure_account("qq:OWNER_PRIVATE_OPENID")
+
+    assert trust_store.trust_snapshot().channels_seen(
+        "qq:OWNER_PRIVATE_OPENID",
+    ) == ()
+
+
+async def test_unbinding_an_account_that_was_never_bound_is_a_no_op(pool):
+    """The dashboard offers undo unconditionally; it must be safe to press."""
+    await _open_gate()
+
+    result = await trust_store.aunbind_account("qq:NEVER_SEEN")
+
+    assert result["changed"] is False
+
+
+async def test_the_declaration_signature_admits_nothing_derived_from_traffic():
+    """The argument list is the guardrail; keep it unable to express an inference.
+
+    No account id, no sample payload, no observed counter -- a caller who
+    wanted to launder "we saw two different ids" into an assertion has no
+    parameter to put it in.
+    """
+    import inspect
+
+    params = set(
+        inspect.signature(
+            trust_store.adeclare_platform_identity_scope
+        ).parameters
+    )
+    assert params == {
+        "platform", "channel", "actor_scope", "conversation_scope",
+        "asserted_by",
+    }
 
 
 # ── reconcile ───────────────────────────────────────────────────────────────

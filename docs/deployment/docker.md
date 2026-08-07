@@ -15,17 +15,17 @@ docker compose up -d
 Open `http://127.0.0.1:48911`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
 
 ::: warning Initial configuration
-The entrypoint generates `/app/config/core_config.json` only when absent or when `NEKO_FORCE_ENV_UPDATE` is set. API environment variables are initialization inputs, not a live universal override. Confirm effective values in the Web UI.
+The entrypoint generates `/home/neko/.local/share/N.E.K.O/config/core_config.json` only when absent. API environment variables are initialization inputs, not a live universal override. Setting `NEKO_FORCE_ENV_UPDATE` explicitly regenerates and replaces that persisted bootstrap configuration; back it up first. Confirm effective values in the Web UI.
 :::
 
 ## Persistent mounts
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./neko-home` | `/home/neko` | User configuration, characters, memories, feature data, TLS certificate and private key, OpenFang runtime state |
+| `./neko-home` | `/home/neko` | User configuration, characters, memories, user plugins and their state, feature data, TLS certificate and private key, OpenFang runtime state |
 | `./logs` | `/app/logs` | Logs |
 
-Back up the first mount before upgrades. Never expose the data or private-key directories through a web server.
+`TZ` defaults to `Asia/Shanghai`; override it in `.env` with any IANA timezone such as `Etc/UTC`. Back up `neko-home` and `logs` before upgrades. Never expose data or private-key directories through a web server. Do not point `PLUGIN_CONFIG_ROOT`, `PLUGIN_PACKAGES_ROOT`, or `PACKAGE_PROFILES_ROOT` outside `neko-home`, or the corresponding user-plugin data will not survive container recreation.
 
 ::: danger Upgrading from the two-mount layout
 Earlier versions mounted `./N.E.K.O` and `./ssl` separately. Pulling a new image without migrating leaves the container with an **empty** data directory: it starts normally and API keys are regenerated from the environment, so nothing looks wrong, but characters, memories and plugins are all missing. The old data is not deleted — it is simply no longer mounted.
@@ -44,27 +44,60 @@ mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # contains: the old README mounted ./N.E.K.O at /root/Documents/N.E.K.O, a path the
 # services never write to, so that host directory can hold files you put there while
 # the real data still lives only in the container's writable layer.
-MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
+if ! MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null); then
+  echo "Cannot inspect container neko; stop the migration before removing it." >&2
+  exit 1
+fi
 
-# Needed in step 4: data recovered from the container must not be overwritten by the host copy.
+# Needed in step 2: data recovered from the container must not be overwritten by the host copy.
 EXPORTED_APP_DATA=""
 
-if [ -z "$MOUNTS" ]; then
-  echo "Container neko is gone (already removed?) - skipping export."
-elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
+if printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "Container already uses the new layout — nothing to export."
 else
+  # The old entrypoint generated its bootstrap config in /app/config. It may be
+  # the only copy of API settings even when the application data itself was
+  # mounted. Copy it over the newly generated defaults before removing neko.
+  if ! LEGACY_CORE_CONFIG_STATE=$(docker exec neko sh -c 'if [ -f /app/config/core_config.json ]; then printf present; elif [ -e /app/config/core_config.json ]; then printf invalid; else printf missing; fi'); then
+    echo "Cannot inspect legacy bootstrap configuration; stop the migration." >&2
+    exit 1
+  fi
+  case "$LEGACY_CORE_CONFIG_STATE" in
+    present)
+      if ! docker cp neko:/app/config/core_config.json ./neko-home/.local/share/N.E.K.O/config/core_config.json; then
+        echo "Legacy bootstrap-config export failed; stop the migration before removing the container." >&2
+        exit 1
+      fi
+      ;;
+    missing) echo "(no legacy /app/config/core_config.json to export)" ;;
+    *) echo "Legacy bootstrap configuration is not a regular file; stop the migration." >&2; exit 1 ;;
+  esac
+
   # Application data first; this is the part that cannot be recovered later. If the
   # container does not mount the data directory, that data exists nowhere else.
   if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
-    docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+    if ! docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/; then
+      echo "Application-data export failed; stop the migration before removing the container." >&2
+      exit 1
+    fi
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang state second, and non-fatal: a container that never initialised it has
-  # no such directory, and `docker cp` fails on a missing SRC_PATH — that must not
-  # abort the run after the application data above already succeeded.
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
-    || echo "(no .openfang in the container, or its export failed — application data above is unaffected)"
+  # OpenFang is optional only when its source directory is genuinely absent.
+  # Other inspection or copy failures can lose state and must stop the migration.
+  if ! OPENFANG_STATE=$(docker exec neko sh -c 'if [ -d /home/neko/.openfang ]; then printf present; elif [ -e /home/neko/.openfang ]; then printf invalid; else printf missing; fi'); then
+    echo "Cannot inspect OpenFang state; stop the migration." >&2
+    exit 1
+  fi
+  case "$OPENFANG_STATE" in
+    present)
+      if ! docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/; then
+        echo "OpenFang-state export failed; stop the migration before removing the container." >&2
+        exit 1
+      fi
+      ;;
+    missing) echo "(no .openfang in the container)" ;;
+    *) echo "OpenFang state is not a directory; stop the migration." >&2; exit 1 ;;
+  esac
 fi
 ```
 
@@ -76,9 +109,9 @@ fi
 #    freshly generated self-signed certificate) and `mv` would nest them one level
 #    deeper. Same-named files resolve in favour of the old data.
 docker compose down
-# The container's neko user is pinned to uid/gid 1000, matching the first regular
-# user on most distributions, so ownership usually already lines up. Only needed
-# when your host account is not 1000.
+# The migration merge itself runs as your host user. The new container later
+# restores its runtime state to uid/gid 1000, so hosts whose user is not 1000
+# may need sudo (or matching group permissions) for later backups and edits.
 [ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
 # Only merge the host copy when step 1 did NOT recover the data from the container:
 # under the old README layout that directory was mounted at a path the services never
@@ -94,7 +127,7 @@ fi
 docker compose up -d
 ```
 
-`./logs` is unaffected. The application user inside the container is pinned to uid/gid **1000** — the first regular user on most Linux distributions — so `neko-home/` is owned by you on the host and needs no `sudo` to back up or edit.
+`./logs` is unaffected. The application user inside the container is pinned to uid/gid **1000**. Users whose host uid is 1000 can normally manage `neko-home/` directly; other hosts may need `sudo` or an appropriate group/ACL after the container starts.
 :::
 
 ## Build locally

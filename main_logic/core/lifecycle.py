@@ -413,23 +413,41 @@ class LifecycleMixin:
             self.initial_next_session_context_snapshot_len = 0
 
     async def _cleanup_pending_session_resources(self):
-        """[Hot-swap related] Safely cleans up ONLY PENDING connector and session if they exist AND are not the current main session."""
+        """[Hot-swap related] Safely cleans up ONLY PENDING connector and session if they exist AND are not the current main session.
+
+        The close runs as a task this manager owns and every caller awaits it
+        through ``shield``. Its usual caller is the background prep task's
+        CancelledError handler, and ``_reset_preparation_state`` caps its wait
+        at 2s by cancelling that same task a second time — which, when the
+        close was awaited directly, interrupted it after the reference had
+        already been dropped: nobody left to finish closing the socket, and
+        ``_wait_one`` swallows the timeout so the reset reports success. The
+        cap now bounds only how long the caller waits.
+        """
         # Stop any listener specifically for the pending session (if different from main listener structure)
         # The _listen_for_pending_session_response tasks are short-lived and managed by their callers.
-        if self.pending_session:
-            try:
-                logger.info("🧹 清理pending_session资源...")
-                await self.pending_session.close()
-                logger.info("✅ Pending session已关闭")
-            except Exception as e:
-                logger.error(f"💥 清理pending_session时出错: {e}")
-            finally:
-                self.pending_session = None  # 即使close失败也要清除引用
+        session, self.pending_session = self.pending_session, None
+        if session:
+            task = asyncio.create_task(self._close_detached_pending_session(session))
+            self._pending_session_close_tasks.add(task)
+            task.add_done_callback(self._pending_session_close_tasks.discard)
+            await asyncio.shield(task)
+
+    async def _close_detached_pending_session(self, session):
+        """Close a pending session that no longer has a slot to be cleared from."""
+        try:
+            logger.info("🧹 清理pending_session资源...")
+            await session.close()
+            logger.info("✅ Pending session已关闭")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"💥 清理pending_session时出错: {e}")
 
     async def _init_renew_status(self):
         await self._reset_preparation_state(True)
         self.session_start_time = None
-        await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
+        await self._cleanup_pending_session_resources()  # 关闭由 manager 持有，取消也不会丢
         self.is_hot_swap_imminent = False
         # 状态机是 per-manager 的，跨 start_session/end_session 复用同一实例。
         # 若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开、PROACTIVE_DONE 来不及
@@ -1534,6 +1552,7 @@ class LifecycleMixin:
                 on_audio_done=self.handle_audio_done,
                 on_new_message=self.handle_new_message,
                 on_sid_rotate=self.rotate_speech_id_for_response_done,
+                get_host_turn_id=self.read_current_speech_id,
                 on_input_transcript=self.handle_input_transcript,
                 on_output_transcript=self.handle_output_transcript,
                 on_connection_error=self.handle_connection_error,
@@ -1844,6 +1863,7 @@ class LifecycleMixin:
                     on_audio_done=self.handle_audio_done,
                     on_new_message=self.handle_new_message,
                     on_sid_rotate=self.rotate_speech_id_for_response_done,
+                    get_host_turn_id=self.read_current_speech_id,
                     on_input_transcript=self.handle_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -2098,7 +2118,8 @@ class LifecycleMixin:
             selected = selected_all[len(_extras):]
             if not selected:
                 return [], ""
-            _lang = normalize_language_code(self.user_language, format='short')
+            # 与 proactive 三条投递路径同口径：字形留到渲染函数再归一化。
+            _lang = normalize_language_code(self.user_language, format='full')
             rendered = _build_callback_instruction(
                 selected,
                 lang=_lang,

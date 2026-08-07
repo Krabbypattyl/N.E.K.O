@@ -100,6 +100,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -136,6 +137,12 @@ _config_manager = get_config_manager()
 POOL_VERSION = 2
 
 _ENTITY_RESOLVE_MAX_DEPTH = 8
+
+#: The only values ``platform_identity_scope`` may hold. A closed set is the
+#: point: an open string field would let a caller smuggle in a hedge like
+#: "probably_global", and every consumer would then have to guess what that
+#: licenses. ``unknown`` is a first-class answer, not a missing one.
+IDENTITY_SCOPE_VALUES = frozenset({"global", "per_conversation", "unknown"})
 
 
 class TrustIdentityError(Exception):
@@ -1552,9 +1559,28 @@ def _merge_entities_locked(
     return survivor["entity_id"]
 
 
+def _is_bound_locked(
+    draft: _Draft, entity_id: str, account_id: str,
+) -> bool:
+    """Is this account linked to somebody else, as opposed to merely known?
+
+    Two signals, union: the entity holds more than this one account, or the
+    account carries ``bound_by`` provenance. The second catches an account
+    whose co-tenant was later detached -- the link happened, and rebinding it
+    would still take the merge branch.
+
+    A singleton entity with no provenance is NOT bound: that is just an
+    account with a ledger of its own.
+    """
+    entity = (draft.pool["entities"] or {}).get(entity_id) or {}
+    accounts = entity.get("accounts") or {}
+    record = accounts.get(account_id) or {}
+    return len(accounts) > 1 or bool(record.get("bound_by"))
+
+
 def _bind_locked(
     draft: _Draft, account_id: str, entity_id: str, *,
-    now: str, bound_by: str | None,
+    now: str, bound_by: str | None, require_unbound: bool = False,
 ) -> tuple[bool, dict]:
     target = draft.resolve_entity(entity_id)
     if target is None:
@@ -1562,6 +1588,26 @@ def _bind_locked(
     current = draft.entity_of(account_id)
     if current == target:
         return False, {"entity_id": target, "changed": False}
+    if current is not None and require_unbound and _is_bound_locked(
+        draft, current, account_id,
+    ):
+        # The caller only meant "attach this account that belongs to nobody
+        # else". Reaching the merge branch instead would fuse two OTHER
+        # entities -- two different people -- and unbinding this account
+        # afterwards does not separate them again. A preflight check in the
+        # caller cannot cover this: two concurrent binds of the same loose
+        # source both see "unbound" and the second one merges. Refusing here,
+        # inside the one critical section, is the only place the answer cannot
+        # go stale.
+        #
+        # "Belongs to nobody else" is NOT "has no entity": any account that has
+        # ever accrued trust or activity sits in its own singleton entity, and
+        # those are exactly the accounts whose ledger someone wants to
+        # consolidate. Rejecting them would leave only never-seen accounts
+        # bindable.
+        raise TrustIdentityError(
+            "account is already bound; unbind it first", status_code=409,
+        )
     if current is not None:
         # The account already belongs to another entity: binding is then
         # exactly a merge, and the ledger follows automatically.
@@ -1595,6 +1641,7 @@ def _bind_locked(
 
 def _unbind_locked(
     draft: _Draft, account_id: str, *, now: str,
+    require_provenance: bool = False,
 ) -> tuple[bool, dict]:
     """Move one account out into a fresh entity. Ledger loss is exactly zero.
 
@@ -1615,6 +1662,15 @@ def _unbind_locked(
     record = entity["accounts"].get(account_id)
     if record is None:
         return False, {"entity_id": entity_id, "changed": False}
+    if require_provenance and not record.get("bound_by"):
+        # Rollback is only defined for the side a bind actually attached.
+        # Without this, a second click (or a second tab) that read the same
+        # pre-unbind profile detaches the now-standalone account AGAIN,
+        # minting yet another entity and stranding rows resolved under the
+        # first fresh one. A caller-side check cannot see the first click.
+        return False, {
+            "entity_id": entity_id, "changed": False, "reason": "not_bound",
+        }
     before_adjustment = sum(
         float((row or {}).get("adjustment", 0.0) or 0.0)
         for row in (entity.get("accounts") or {}).values()
@@ -1696,7 +1752,17 @@ def _forget_entity_locked(
 
 async def abind_account(
     account_id: Any, entity_id: Any, *, bound_by: str | None = None,
+    require_unbound: bool = False,
 ) -> dict:
+    """Link one account to an entity.
+
+    ``require_unbound`` refuses instead of merging when the account already
+    belongs to somewhere. Callers whose UI means "attach this loose account"
+    must pass it: without it, a second bind of the same source silently
+    becomes a merge of the two TARGETS, which unbind cannot undo. Default is
+    off so the existing merge-on-rebind behaviour is unchanged for callers
+    that want it.
+    """
     normalized = normalize_account_id(account_id)
     if normalized is None:
         raise TrustIdentityError("invalid account_id")
@@ -1707,6 +1773,7 @@ async def abind_account(
     def _mutator(draft: _Draft) -> tuple[bool, Any]:
         return _bind_locked(
             draft, normalized, target, now=_now_iso(), bound_by=bound_by,
+            require_unbound=require_unbound,
         )
 
     persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
@@ -1716,13 +1783,26 @@ async def abind_account(
     return result
 
 
-async def aunbind_account(account_id: Any) -> dict:
+async def aunbind_account(
+    account_id: Any, *, require_provenance: bool = False,
+) -> dict:
+    """Detach one account into a fresh entity.
+
+    ``require_provenance`` makes it a no-op unless the account carries
+    ``bound_by``, i.e. unless a bind actually put it where it is. Callers
+    exposing an "undo" button must pass it: without it a second press keeps
+    minting entities for an account that is already standalone. Default off so
+    the endpoint's existing unconditional behaviour is unchanged.
+    """
     normalized = normalize_account_id(account_id)
     if normalized is None:
         raise TrustIdentityError("invalid account_id")
 
     def _mutator(draft: _Draft) -> tuple[bool, Any]:
-        return _unbind_locked(draft, normalized, now=_now_iso())
+        return _unbind_locked(
+            draft, normalized, now=_now_iso(),
+            require_provenance=require_provenance,
+        )
 
     persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
     result = dict(value or {})
@@ -1764,14 +1844,101 @@ async def aforget_entity(entity_id: Any) -> dict:
     return result
 
 
-async def aensure_account(account_id: Any, *, channel: Any = None) -> str | None:
-    """Register one account if unseen (used by the identity endpoints)."""
+async def adeclare_platform_identity_scope(
+    platform: Any,
+    *,
+    channel: Any,
+    actor_scope: Any,
+    conversation_scope: Any,
+    asserted_by: Any,
+) -> dict:
+    """Record what a platform's identifiers MEAN. Declared, never inferred.
+
+    The distinction this function exists to keep sharp:
+
+    - **Inferring** a scope would mean watching traffic and concluding "these
+      two ids differ, so they must be per-conversation". That path stays
+      closed. No mutation path writes this container, and
+      ``test_platform_identity_scope_is_never_inferred_by_code`` pins it.
+    - **Declaring** a scope means transcribing a protocol contract that the
+      platform vendor already published. QQ's official docs state that a
+      ``member_openid`` differs for the same person in each group, so the open
+      channel is ``per_conversation`` — that is a fact about the wire format,
+      knowable before a single message arrives, and not a function of any
+      observed value.
+
+    Hence the argument list admits nothing derived from traffic: a platform, a
+    channel, two enum values, and who says so. There is no account id, no
+    sample, no counter. A caller that wanted to infer could not express it
+    here.
+
+    Idempotent: re-declaring the same tuple is a no-op and does not touch disk,
+    so a connector may declare on every startup.
+    """
+    key = str(platform or "").strip().lower()
+    if not key or not re.fullmatch(r"[a-z0-9_.-]+", key):
+        raise TrustIdentityError("invalid platform")
+    channel_key = normalize_channel(channel)
+    if not channel_key:
+        raise TrustIdentityError("channel is required")
+    actor = str(actor_scope or "").strip().lower()
+    conversation = str(conversation_scope or "").strip().lower()
+    for value in (actor, conversation):
+        if value not in IDENTITY_SCOPE_VALUES:
+            raise TrustIdentityError(
+                f"scope must be one of {sorted(IDENTITY_SCOPE_VALUES)}",
+            )
+    asserter = str(asserted_by or "").strip()
+    if not asserter:
+        # An unattributed declaration is indistinguishable from an inference
+        # once it is on disk, and this container's whole value is that a reader
+        # can tell those apart.
+        raise TrustIdentityError("asserted_by is required")
+
+    def _mutator(draft: _Draft) -> tuple[bool, Any]:
+        current = draft.pool["platform_identity_scope"].get(key) or {}
+        entry = {
+            "channel": channel_key,
+            "actor_scope": actor,
+            "conversation_scope": conversation,
+            "asserted_at": current.get("asserted_at"),
+            "asserted_by": asserter,
+        }
+        unchanged = all(
+            current.get(field) == entry[field]
+            for field in ("channel", "actor_scope",
+                          "conversation_scope", "asserted_by")
+        )
+        if unchanged and current.get("asserted_at"):
+            return False, dict(current)
+        entry["asserted_at"] = _now_iso()
+        draft.pool["platform_identity_scope"][key] = entry
+        return True, dict(entry)
+
+    persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
+    result = dict(value or {})
+    result["persisted"] = bool(persisted)
+    result["platform"] = key
+    return result
+
+
+async def aensure_account(
+    account_id: Any, *, channel: Any = None, report_persisted: bool = False,
+) -> Any:
+    """Register one account if unseen (used by the identity endpoints).
+
+    ``report_persisted`` returns ``(entity_id, persisted)`` instead of just the
+    id. Callers that go on to bind want it: a discarded draft leaves no entity,
+    and the bind then 404s with "unknown entity" -- which sends the operator
+    looking at the identity graph instead of at the failed disk write.
+    """
     normalized = normalize_account_id(account_id)
     if normalized is None:
-        return None
+        return (None, False) if report_persisted else None
     snap = trust_snapshot()
-    if snap.entity_of(normalized) is not None:
-        return snap.entity_of(normalized)
+    existing = snap.entity_of(normalized)
+    if existing is not None:
+        return (existing, True) if report_persisted else existing
 
     def _mutator(draft: _Draft) -> tuple[bool, Any]:
         now = _now_iso()
@@ -1781,5 +1948,5 @@ async def aensure_account(account_id: Any, *, channel: Any = None) -> str | None
         )
         return True, draft.entity_of(normalized)
 
-    _, value = await asyncio.to_thread(_with_pool_write, _mutator)
-    return value
+    persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
+    return (value, bool(persisted)) if report_persisted else value

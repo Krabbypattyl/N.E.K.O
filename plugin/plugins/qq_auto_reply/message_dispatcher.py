@@ -19,10 +19,19 @@ class QQMessageDispatcher:
     OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS = 3
     #: 最多跟踪多少个群的告警状态，避免长期运行时无界增长。
     OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS = 128
+    #: 「未认领的群内 ID」池的上限（群数 × 每群人数）。这个池是给人看的一份
+    #: 待办清单，不是账本：满了就按最久未见淘汰，丢一条的代价只是那个人要再
+    #: 发一次言才重新出现在列表里。
+    OPEN_PLATFORM_CLAIM_MAX_GROUPS = 64
+    OPEN_PLATFORM_CLAIM_MAX_PER_GROUP = 32
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._open_platform_bootstrap_lock = asyncio.Lock()
+        #: ``{group_id: {sender_id: {first_seen, last_seen, count, nickname}}}``
+        #: 只进内存、不落盘：它是「现在还没认领的人」，重启后由新消息自然重
+        #: 建。落盘等于把一份 openid 名单永久化，而这些 id 正是敏感的那类。
+        self._open_platform_pending_claims: dict[str, dict[str, dict]] = {}
 
     async def _maybe_reserve_open_platform_admin(
         self, message: dict[str, Any],
@@ -99,6 +108,129 @@ class QQMessageDispatcher:
             if value:
                 return value, key
         return "", ""
+
+    def _note_open_platform_pending_claim(
+        self,
+        message: dict[str, Any],
+        permission_level: Any,
+    ) -> None:
+        """记录「这个群里出现了一个不在名册上的 ID」，供人工认领。
+
+        设计出处：``docs/design/speaker-trust-entity-semantics.md``
+        §2.15.4.3 第 1 级（操作者人工断言）。开放平台上同一个人在每个群是一
+        个不同的 ``member_openid``，主人要在每个群单独被认出来，就得把那个群
+        里的 ID 加进名册——而那串 openid 在界面上根本无处可看，只能去翻日
+        志。这个池就是把它摆到界面上。
+
+        **纯观测，不改任何权限判定。**它只回答「有哪些 ID 还没被认领」，不
+        回答「这些 ID 是不是同一个人」——后者是被硬约束否决的自动合并，只能
+        由人在 UI 上逐个断言。
+
+        对上了名册的 ID 立刻移出：认领完成就该从待办清单里消失。
+        """
+        try:
+            channel = str(message.get("channel") or "").strip().lower()
+            if channel != _OPEN_PLATFORM_CHANNEL:
+                return
+            group_id, _ = self._resolve_open_platform_group_key(message)
+            sender_id = str(message.get("user_id") or "").strip()
+            if not group_id or not sender_id:
+                return
+            pool = getattr(self, "_open_platform_pending_claims", None)
+            if pool is None:
+                pool = {}
+                self._open_platform_pending_claims = pool
+            if str(permission_level or "none") != "none":
+                bucket = pool.get(group_id)
+                if bucket is not None:
+                    bucket.pop(sender_id, None)
+                    if not bucket:
+                        pool.pop(group_id, None)
+                return
+            bucket = pool.get(group_id)
+            if bucket is None:
+                if len(pool) >= self.OPEN_PLATFORM_CLAIM_MAX_GROUPS:
+                    self._evict_stalest_claim_group(pool)
+                bucket = {}
+                pool[group_id] = bucket
+            now = int(__import__("time").time())
+            entry = bucket.get(sender_id)
+            if entry is None:
+                if len(bucket) >= self.OPEN_PLATFORM_CLAIM_MAX_PER_GROUP:
+                    stalest = min(
+                        bucket,
+                        key=lambda key: bucket[key].get("last_seen", 0),
+                    )
+                    bucket.pop(stalest, None)
+                entry = {"first_seen": now, "count": 0, "nickname": ""}
+                bucket[sender_id] = entry
+            entry["last_seen"] = now
+            entry["count"] = int(entry.get("count", 0)) + 1
+            # 昵称是别人随手打的，且这里是**唯一**不经过 PermissionManager
+            # 那道清洗就直达界面的入口（名册那条路会拒掉带控制字符的昵称）。
+            # 剥掉控制字符再截断：它们在表格里看不见，在内联 handler 里却能
+            # 把那段 JS 截断。
+            nickname = "".join(
+                char for char in str(message.get("user_nickname") or "")
+                if char.isprintable()
+            ).strip()
+            if nickname:
+                entry["nickname"] = nickname[:64]
+        except Exception:
+            # 观测绝不允许把消息管线带下去。
+            pass
+
+    @staticmethod
+    def _evict_stalest_claim_group(pool: dict[str, dict[str, dict]]) -> None:
+        """淘汰最久没有新消息的那个群。"""
+        def _group_last_seen(group_id: str) -> int:
+            bucket = pool.get(group_id) or {}
+            return max(
+                (int((row or {}).get("last_seen", 0)) for row in bucket.values()),
+                default=0,
+            )
+
+        if not pool:
+            return
+        pool.pop(min(pool, key=_group_last_seen), None)
+
+    def list_open_platform_pending_claims(
+        self, *, is_claimed: Any = None,
+    ) -> list[dict[str, Any]]:
+        """待认领清单，最近出现的排前面。
+
+        ``is_claimed`` 是一个 ``(actor) -> bool`` 的谓词，为真的当场出清单
+        并从池里删掉。没有它的话，一个刚被加进名册的人要等**再发一次言**
+        才会消失（移除只发生在 `_note_open_platform_pending_claim`），而操
+        作者认领完最可能的下一步就是刷新页面——看见同一行还在，于是重复
+        点一次。
+        """
+        pool = getattr(self, "_open_platform_pending_claims", None) or {}
+        if callable(is_claimed):
+            for group_id in list(pool):
+                bucket = pool.get(group_id) or {}
+                for sender_id in list(bucket):
+                    try:
+                        claimed = bool(is_claimed(sender_id))
+                    except Exception:
+                        claimed = False
+                    if claimed:
+                        bucket.pop(sender_id, None)
+                if not bucket:
+                    pool.pop(group_id, None)
+        rows: list[dict[str, Any]] = []
+        for group_id, bucket in pool.items():
+            for sender_id, entry in bucket.items():
+                rows.append({
+                    "group_id": group_id,
+                    "user_id": sender_id,
+                    "nickname": str(entry.get("nickname") or ""),
+                    "first_seen": int(entry.get("first_seen", 0)),
+                    "last_seen": int(entry.get("last_seen", 0)),
+                    "message_count": int(entry.get("count", 0)),
+                })
+        rows.sort(key=lambda row: row["last_seen"], reverse=True)
+        return rows
 
     def _note_open_platform_identity_scope(
         self,
@@ -343,6 +475,9 @@ class QQMessageDispatcher:
                             # 纯观测，挂在刚算出的那个档位后面：告警读的必须
                             # 是管线真正用的那个值，不能自己再查一次。
                             self._note_open_platform_identity_scope(
+                                message, permission_at_receipt,
+                            )
+                            self._note_open_platform_pending_claim(
                                 message, permission_at_receipt,
                             )
                         if message.get("message_type") == "private":

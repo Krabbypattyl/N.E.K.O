@@ -2756,15 +2756,25 @@ class IdentityBindRequest(BaseModel):
     account_id: str
     entity_id: str
     bound_by: str | None = None
+    require_unbound: bool = False
 
 
 class IdentityAccountRequest(BaseModel):
     account_id: str
+    require_provenance: bool = False
 
 
 class IdentityMergeRequest(BaseModel):
     entity_id: str
     other_entity_id: str
+
+
+class IdentityScopeDeclareRequest(BaseModel):
+    platform: str
+    channel: str
+    actor_scope: str
+    conversation_scope: str
+    asserted_by: str
 
 
 class IdentityEntityRequest(BaseModel):
@@ -2876,6 +2886,71 @@ async def reconcile_trust_from_facts(req: TrustReconcileRequest):
     )
 
 
+@app.post("/internal/identity/scope")
+async def declare_identity_scope(req: IdentityScopeDeclareRequest):
+    """Record what a platform's identifiers mean on the wire.
+
+    A connector may call this on every startup: the declaration is a transcript
+    of the vendor's published protocol, so it is a constant of the connection
+    mode rather than something learned from traffic. Re-declaring the same
+    tuple writes nothing.
+
+    This is emphatically NOT a place to report an observation. The request body
+    carries no account id and no sample precisely so that "we saw two different
+    ids, so it must be per_conversation" cannot be expressed — see the kill list
+    in ``memory.trust_store``. Deriving a scope from traffic and posting it here
+    would launder an inference into an assertion, and downstream consumers show
+    this value to the operator as ground truth.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    try:
+        return await trust_store.adeclare_platform_identity_scope(
+            req.platform,
+            channel=req.channel,
+            actor_scope=req.actor_scope,
+            conversation_scope=req.conversation_scope,
+            asserted_by=req.asserted_by,
+        )
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
+
+
+@app.post("/internal/identity/accounts/ensure")
+async def ensure_identity_account(req: IdentityAccountRequest):
+    """Register one account so it has an entity to be bound to.
+
+    ``bind`` takes an entity id and 404s on an unknown one, but an entity is
+    only born from ledger activity -- so a roster account that has never
+    accrued a trust event has none, and on a fresh install that describes the
+    very account everything else needs to merge INTO (the owner authorised in
+    DMs). This is the seam that lets the dashboard offer it as a merge target.
+
+    Creating the seed entity is not an edge and asserts nothing about who the
+    person is: it links the account to itself. The human assertion is the bind
+    that follows. No channel is recorded either -- ``channels_seen`` is an
+    observation of traffic, and this call is not traffic.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    entity_id, persisted = await trust_store.aensure_account(
+        req.account_id, report_persisted=True,
+    )
+    if entity_id is None:
+        raise HTTPException(status_code=422, detail="invalid account_id")
+    # Pass ``persisted`` through like bind/unbind do. Without it a failed disk
+    # write is invisible here and only surfaces one step later as the bind's
+    # 404 on an unknown entity -- the operator is then told "merge failed"
+    # instead of "the write failed", which points at the wrong thing.
+    return {
+        "account_id": req.account_id,
+        "entity_id": entity_id,
+        "persisted": persisted,
+    }
+
+
 @app.post("/internal/identity/accounts/bind")
 async def bind_identity_account(req: IdentityBindRequest):
     """Link one account to an entity. HUMAN-TRIGGERED ONLY.
@@ -2899,6 +2974,7 @@ async def bind_identity_account(req: IdentityBindRequest):
     try:
         return await trust_store.abind_account(
             req.account_id, req.entity_id, bound_by=req.bound_by,
+            require_unbound=bool(req.require_unbound),
         )
     except trust_store.TrustIdentityError as exc:
         raise _identity_error(exc) from exc
@@ -2925,7 +3001,10 @@ async def unbind_identity_account(req: IdentityAccountRequest):
     _require_loaded_identity_pool()
     snapshot_before = trust_store.trust_snapshot()
     try:
-        result = await trust_store.aunbind_account(req.account_id)
+        result = await trust_store.aunbind_account(
+            req.account_id,
+            require_provenance=bool(req.require_provenance),
+        )
     except trust_store.TrustIdentityError as exc:
         raise _identity_error(exc) from exc
     result["stranded_rows"] = await _count_stranded_rows(
