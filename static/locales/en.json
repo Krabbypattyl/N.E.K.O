@@ -2801,7 +2801,8 @@
         "userExitEnded": "You left the theater. This does not count as a story ending."
     },
     "voiceIdentity": {
-        "title": "Owner Voice Profile",
+        "pageTitle": "Voiceprint Registration Panel (In Development)",
+        "title": "Voiceprint Registration Panel",
         "profileStatus": "Profile status",
         "privacyTitle": "Before you begin",
         "privacyBody": "Your voice profile is processed locally and stored with encryption. It is never sent to an ASR provider. This beta feature reduces some non-Owner voice usage and is not security authentication.",
@@ -3669,7 +3670,8 @@
             "prev": "Previous",
             "done": "Done",
             "close": "Close",
-            "skip": "Skip"
+            "skip": "Skip",
+            "skipWithEsc": "Skip (ESC)"
         },
         "fullscreenPrompt": {
             "title": "🎓 Start Tutorial",

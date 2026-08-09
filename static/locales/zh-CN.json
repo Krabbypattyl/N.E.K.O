@@ -2801,7 +2801,8 @@
         "userExitEnded": "你已离开小剧场，本次离场不算作剧情结局。"
     },
     "voiceIdentity": {
-        "title": "Owner 声纹设置",
+        "pageTitle": "声纹注册面板（开发中）",
+        "title": "声纹注册面板",
         "profileStatus": "Profile 状态",
         "privacyTitle": "开始前请了解",
         "privacyBody": "声纹仅在本机处理并加密保存，不会发送给 ASR Provider。这是用于减少部分非 Owner 语音消耗的测试功能，不属于安全认证。",
@@ -3669,7 +3670,8 @@
             "prev": "上一步",
             "done": "完成",
             "close": "关闭",
-            "skip": "跳过"
+            "skip": "跳过",
+            "skipWithEsc": "跳过(ESC)"
         },
         "fullscreenPrompt": {
             "title": "🎓 开始新手引导",
