@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="theater.title">小剧场 - Project N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/theater.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/theater_home.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+    <main class="theater-home-shell">
+        <header class="theater-title-bar page-title-bar">
+            <div class="theater-title-copy">
+                <h2 data-i18n="theater.title">小剧场</h2>
+                <span class="theater-mode-badge" data-i18n="theater.modeLabel">模式选择</span>
+            </div>
+            <div class="neko-window-controls theater-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化"><span class="neko-window-minimize-icon"></span></button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化"><span class="neko-window-maximize-icon"></span></button>
+                <button type="button" class="neko-window-control-btn theater-close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"><span class="theater-close-icon" aria-hidden="true"></span></button>
+            </div>
+        </header>
+
+        <section class="theater-home-content" aria-labelledby="theater-home-title">
+            <div class="theater-home-heading">
+                <p class="theater-home-kicker" data-i18n="theater.homeKicker">N.E.K.O. 小剧场</p>
+                <h1 id="theater-home-title" data-i18n="theater.homeTitle">选择你的演绎方式</h1>
+                <p data-i18n="theater.homeSubtitle">一个入口，进入由数值驱动的剧本，或让角色卡陪你自由聊天。</p>
+            </div>
+
+            <div class="theater-mode-cards">
+                <a class="theater-mode-card theater-mode-card-script" href="/theater-numeric">
+                    <span class="theater-mode-card-kicker" data-i18n="theater.scriptMode">剧本模式</span>
+                    <strong data-i18n="theater.homeScriptTitle">剧本模式</strong>
+                    <span data-i18n="theater.homeScriptDescription">导入作者编排的节点、选择、事件与状态变化，让你的输入推动剧情。</span>
+                    <span class="theater-mode-card-action" data-i18n="theater.homeEnter">进入剧本模式 →</span>
+                </a>
+                <a class="theater-mode-card theater-mode-card-free" href="/theater">
+                    <span class="theater-mode-card-kicker" data-i18n="theater.freeMode">自由模式</span>
+                    <strong data-i18n="theater.homeFreeTitle">自由模式</strong>
+                    <span data-i18n="theater.homeFreeDescription">参考 RP-Hub 角色卡，与猫娘进行不受剧本约束的聊天演绎。</span>
+                    <span class="theater-mode-card-action" data-i18n="theater.homeEnter">进入自由模式 →</span>
+                </a>
+            </div>
+
+            <div class="theater-home-guide">
+                <article>
+                    <h2 data-i18n="theater.homeGameplay">玩法</h2>
+                    <p data-i18n="theater.homeGameplayText">剧本模式中，作者预先设计世界、节点和数值；你可以点击 Choice，也可以直接输入行动，让输入共同推动下一步。自由模式则只围绕角色卡进行聊天，不写入剧本状态。</p>
+                </article>
+                <article>
+                    <h2 data-i18n="theater.homeAdvantages">项目优势</h2>
+                    <p data-i18n="theater.homeAdvantagesText">剧本状态、自由聊天、长期记忆和角色卡彼此分开；既保留作者可控的剧情结构，也给玩家留下自然表达和临场发挥的空间。</p>
+                </article>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

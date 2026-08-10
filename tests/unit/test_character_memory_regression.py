@@ -1373,7 +1373,7 @@ async def test_character_switch_clears_theater_session_for_outgoing_catgirl():
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
-            from services.theater import runtime, session_store
+            from services.theater import free_runtime, session_store
 
             characters = cm.load_characters()
             old_catgirl = characters["当前猫娘"]
@@ -1382,16 +1382,26 @@ async def test_character_switch_clears_theater_session_for_outgoing_catgirl():
             cm.save_characters(characters)
 
             theater_root = Path(cm.app_docs_dir) / "theater"
-            theater_session = await runtime.start_session(theater_root, lanlan_name=old_catgirl)
+            # 该测试只验证角色切换清理生命周期；Actor 现在是开场事务的必需依赖，
+            # 因此用合格演绎结果隔离用户 API 配置，避免把模型缺失误当成清理失败。
+            with patch.object(
+                free_runtime.llm,
+                "generate_free_turn_async",
+                new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
+            ):
+                theater_session = await free_runtime.start_session(
+                    theater_root,
+                    lanlan_name=old_catgirl,
+                )
             switch_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": new_catgirl})
             )
 
-            session = await session_store.load_session(theater_root, theater_session["session_id"])
-            active_index = await session_store.load_active_sessions(theater_root)
+            free_root = theater_root / free_runtime.FREE_SESSION_ROOT_NAME
+            session = await session_store.load_session(free_root, theater_session["session_id"])
+            active_index = await session_store.load_active_sessions(free_root)
             assert switch_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == new_catgirl
-            assert session["phase"] == "ended"
             assert session["ended_at"]
             assert active_index == {}
 
@@ -1694,13 +1704,23 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             assert add_result["success"] is True
 
             # 把待改名角色设为当前猫娘并启动演出，验证改名后不会遗留旧名称的恢复入口。
-            from services.theater import runtime as theater_runtime, session_store as theater_session_store
+            from services.theater import free_runtime as theater_runtime, session_store as theater_session_store
 
             characters = cm.load_characters()
             characters["当前猫娘"] = "旧角色"
             cm.save_characters(characters)
             theater_root = Path(cm.app_docs_dir) / "theater"
-            theater_session = await theater_runtime.start_session(theater_root, lanlan_name="旧角色")
+            # 改名测试不评估模型质量；固定一条合法 Actor 输出后，只观察
+            # Session 是否随角色重命名按既有规则结束并清除恢复索引。
+            with patch.object(
+                theater_runtime.llm,
+                "generate_free_turn_async",
+                new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
+            ):
+                theater_session = await theater_runtime.start_session(
+                    theater_root,
+                    lanlan_name="旧角色",
+                )
 
             old_memory_dir = Path(cm.memory_dir) / "旧角色"
             old_memory_dir.mkdir(parents=True, exist_ok=True)
@@ -1736,12 +1756,13 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             saved_characters = cm.load_characters()
             assert "新角色" in saved_characters.get("猫娘", {})
             assert "旧角色" not in saved_characters.get("猫娘", {})
+            free_root = theater_root / theater_runtime.FREE_SESSION_ROOT_NAME
             saved_theater_session = await theater_session_store.load_session(
-                theater_root,
+                free_root,
                 theater_session["session_id"],
             )
             assert saved_theater_session["ended_at"]
-            assert await theater_session_store.load_active_sessions(theater_root) == {}
+            assert await theater_session_store.load_active_sessions(free_root) == {}
             saved_profile = saved_characters["猫娘"]["新角色"]
             assert "我的改名记录" not in saved_profile
             rename_events = saved_profile["_reserved"]["ai_context"]["rename_events"]

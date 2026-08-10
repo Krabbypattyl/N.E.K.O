@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：声纹注册面板新增 pageTitle 多语言键；
-    // 递增版本让 Electron、Docker 等长期缓存重新拉取包含完整新 key 的语言包。
-    const LOCALE_VERSION = '2026-08-07-voice-identity-page-title';
+    // 修改原因：合并主线凭证、声纹等文案与本地小剧场文案；递增版本让 Electron、
+    // Docker 等长期缓存重新拉取包含两边完整新 key 的语言包。
+    const LOCALE_VERSION = '2026-08-09-theater-reader';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="theater.title">小剧场 - Project N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/theater.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/theater_numeric_v2.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/theater_numeric_v2.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+    <main class="theater-shell numeric-theater-shell" data-numeric-theater-app>
+        <header class="theater-title-bar page-title-bar">
+            <div class="theater-title-copy">
+                <h2 data-i18n="theater.title">小剧场</h2>
+                <span class="theater-mode-badge" data-i18n="theater.scriptMode">剧本模式</span>
+                <div class="theater-status" id="numeric-theater-status" data-i18n="theater.ready" aria-live="polite">准备中</div>
+            </div>
+            <div class="neko-window-controls theater-window-controls">
+                <a class="theater-mode-link" href="/theater-home" data-i18n="theater.modeHome">模式选择</a>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                    <span class="neko-window-minimize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                    <span class="neko-window-maximize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn theater-close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+                    <span class="theater-close-icon" aria-hidden="true"></span>
+                </button>
+            </div>
+        </header>
+
+        <section class="theater-stage numeric-theater-stage" aria-live="polite">
+            <video
+                class="theater-galaxy-video"
+                src="/static/assets/theater/galaxy-flow-down-right-8s.mp4?v={{ static_asset_version }}"
+                autoplay
+                muted
+                loop
+                playsinline
+                preload="auto"
+                disablepictureinpicture
+                aria-hidden="true"
+                tabindex="-1"
+            ></video>
+            <div class="numeric-theater-stage-content">
+                <section class="theater-story-intro numeric-theater-intro" id="numeric-theater-intro" hidden aria-labelledby="numeric-theater-intro-title">
+                    <div class="theater-story-intro-heading">
+                        <p data-i18n="theater.storyIntroKicker">前情提要</p>
+                        <h1 id="numeric-theater-intro-title"></h1>
+                    </div>
+                    <p class="theater-story-intro-background" id="numeric-theater-intro-background"></p>
+                    <dl class="theater-story-intro-roles">
+                        <div id="numeric-theater-player-role-row" hidden><dt data-i18n="theater.playerRoleLabel">你的身份</dt><dd id="numeric-theater-player-role"></dd></div>
+                        <div id="numeric-theater-catgirl-role-row" hidden><dt data-i18n="theater.catgirlRoleLabel">猫娘身份</dt><dd id="numeric-theater-catgirl-role"></dd></div>
+                    </dl>
+                </section>
+            </div>
+            <div class="theater-stage-footer">
+                <div class="theater-stage-controls">
+                    <button type="button" class="theater-stage-toggle" id="numeric-theater-stage-toggle" aria-controls="numeric-theater-intro numeric-theater-status" aria-expanded="true" data-i18n-title="theater.collapseStage" title="折叠舞台"><span class="theater-stage-toggle-icon" aria-hidden="true">⌃</span><span id="numeric-theater-stage-toggle-label" data-i18n="theater.collapseStage">折叠舞台</span></button>
+                </div>
+            </div>
+        </section>
+
+        <section class="theater-console numeric-theater-console" aria-label="Numeric v2 theater controls">
+            <div class="theater-toolbar">
+                <select class="theater-story-select" id="numeric-theater-story-select" data-i18n-aria="theater.storySelect" aria-label="选择小剧场故事"></select>
+                <div class="numeric-theater-toolbar-actions">
+                    <button type="button" class="theater-primary" id="numeric-theater-start-btn" data-i18n="theater.start">开始</button>
+                    <!-- 终局后只能创建全新 Numeric v2 Session，不能把旧终局状态重置后继续写入。 -->
+                    <button type="button" class="theater-secondary" id="numeric-theater-restart-btn" data-i18n="theater.restartSession" hidden>重新开始</button>
+                    <!-- Numeric v2 导入只接收 Story Package JSON，不进入旧剧本页面链路。 -->
+                    <button type="button" class="theater-secondary" id="numeric-theater-import-btn" data-i18n="theater.importStory" data-i18n-aria="theater.importStoryAria" aria-label="导入 Numeric v2 剧本">导入剧本</button>
+                    <button type="button" class="theater-secondary theater-danger" id="numeric-theater-end-btn" data-i18n="theater.end" disabled>结束当前剧本</button>
+                </div>
+                <input id="numeric-theater-import-input" class="numeric-theater-import-input" type="file" accept="application/json,.json" data-i18n-aria="theater.importStoryAria" aria-label="导入 Numeric v2 剧本">
+            </div>
+            <div id="numeric-theater-import-feedback" class="numeric-theater-import-feedback" role="status" aria-live="polite" hidden></div>
+
+            <div class="numeric-theater-workspace">
+                <div class="theater-performance-column">
+                    <div class="theater-log" id="numeric-theater-log" role="log" aria-live="polite"></div>
+                    <aside class="theater-ending-panel numeric-theater-ending-panel" id="numeric-theater-ending-panel" hidden aria-live="polite">
+                        <strong data-i18n="theater.endingTitle">落幕状态</strong>
+                        <p id="numeric-theater-ending-text"></p>
+                    </aside>
+                    <aside class="numeric-theater-choice-panel" id="numeric-theater-choice-panel" aria-labelledby="numeric-theater-choice-title" hidden>
+                        <h3 id="numeric-theater-choice-title" data-i18n="theater.actionChoicesTitle">可以这样回应</h3>
+                        <div id="numeric-theater-choices"></div>
+                    </aside>
+                </div>
+            </div>
+
+            <form class="theater-input-row" id="numeric-theater-input-form">
+                <input id="numeric-theater-input" type="text" data-i18n-placeholder="theater.inputPlaceholder" placeholder="输入你想说的话，或用 *...* 描述动作" aria-label="输入动作和对白" autocomplete="off" disabled>
+                <button type="submit" id="numeric-theater-send-btn" data-i18n="theater.send" disabled>发送</button>
+            </form>
+        </section>
+    </main>
+</body>
+</html>

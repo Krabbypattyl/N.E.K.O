@@ -195,6 +195,10 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/theater.css",
     _PROJECT_ROOT / "static/js/theater.js",
     _PROJECT_ROOT / "static/vrm/motion/player.js",
+    # 小剧场三页共用同一版本号，确保统一入口和 Numeric v2 控件不会被旧缓存遮住。
+    _PROJECT_ROOT / "static/css/theater_home.css",
+    _PROJECT_ROOT / "static/css/theater_numeric_v2.css",
+    _PROJECT_ROOT / "static/js/theater_numeric_v2.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )
@@ -300,6 +304,28 @@ async def get_theater(request: Request):
     """Render the theater MVP page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/theater.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/theater-home", response_class=HTMLResponse)
+async def get_theater_home(request: Request):
+    """渲染小剧场统一入口，集中说明两种模式和项目玩法。"""
+
+    templates = get_templates()
+    return templates.TemplateResponse("templates/theater_home.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/theater-numeric", response_class=HTMLResponse)
+async def get_numeric_theater(request: Request):
+    """渲染独立 Numeric v2 剧本页，不复用旧剧本页的状态脚本。"""
+
+    templates = get_templates()
+    return templates.TemplateResponse("templates/theater_numeric.html", {
         "request": request,
         **_static_assets_ctx(),
     })

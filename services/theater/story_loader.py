@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from utils.file_utils import read_json_async
 
-from . import story_contracts
+from . import story_contracts, story_graph
 from .story_contracts import (
     StoryRootNotObjectError as StoryRootNotObjectError,
     initial_node_id as initial_node_id,
@@ -29,10 +30,36 @@ async def validate_story_file(story_path: Path) -> dict[str, Any]:
     return story_contracts.validate_story_package(payload, path)
 
 
-async def list_stories(*, story_dir: Path | None = None) -> list[dict[str, Any]]:
+async def list_stories(
+    *, story_dir: Path | None = None, lanlan_name: str = ""
+) -> list[dict[str, Any]]:
     """返回可公开的故事卡，不携带内部节点和条件。"""  # noqa: DOCSTRING_CJK
     stories = await _load_config_stories(story_dir or CONFIG_STORY_DIR)
-    return [public_story(story) for story in stories]
+    return [public_story(story, lanlan_name=lanlan_name) for story in stories]
+
+
+async def delete_story(story_id: str, *, story_dir: Path | None = None) -> Path:
+    """按文件顶层 Story ID 删除唯一作者文件，不按用户输入拼接路径。"""  # noqa: DOCSTRING_CJK
+    normalized_id = str(story_id or "").strip()
+    if not normalized_id:
+        raise FileNotFoundError(normalized_id)
+
+    directory = story_dir or CONFIG_STORY_DIR
+    matches: list[Path] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            payload = await read_json_async(path)
+        except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # 删除操作只针对明确的顶层 ID；旁边已损坏或被并发移走的文件不能改变目标判定。
+            continue
+        if isinstance(payload, dict) and str(payload.get("id") or "") == normalized_id:
+            matches.append(path)
+    if not matches:
+        raise FileNotFoundError(normalized_id)
+    if len(matches) > 1:
+        raise ValueError(f"Theater story ID is ambiguous: {normalized_id}")
+    matches[0].unlink()
+    return matches[0]
 
 
 async def load_story(
@@ -62,16 +89,26 @@ async def load_story_exact(
     return await load_story(normalized_id, story_dir=story_dir)
 
 
-def public_story(story: dict[str, Any]) -> dict[str, Any]:
+def public_story(
+    story: dict[str, Any], *, lanlan_name: str = ""
+) -> dict[str, Any]:
     """只公开故事选择页需要的信息。"""  # noqa: DOCSTRING_CJK
     initial_scene = scene_by_id(story, str(story.get("initial_scene_id") or ""))
+    background = str(story.get("background") or "")
+    projected_scene = public_scene(initial_scene)
+    if lanlan_name:
+        # 开演前的背景与首个 Scene 也是公开表演文本，必须与正式 Session 使用同一角色投影。
+        background = story_graph.render_story_text(background, lanlan_name)
+        projected_scene["text"] = story_graph.render_story_text(
+            projected_scene.get("text"), lanlan_name
+        )
     public: dict[str, Any] = {
         "id": str(story.get("id") or ""),
         "title": str(story.get("title") or ""),
         # background 是玩家背景的唯一作者真源；summary 和未来 Scene 都不属于选剧接口。
-        "background": str(story.get("background") or ""),
+        "background": background,
         # 开演前只需要作者指定的初始 Scene，不能把后续转折和结局提前送进浏览器。
-        "initial_scene": public_scene(initial_scene),
+        "initial_scene": projected_scene,
     }
     card = story.get("scenario_card")
     if isinstance(card, dict):

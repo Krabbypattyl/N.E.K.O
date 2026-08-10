@@ -8,23 +8,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Request
 
-from main_logic.mirror_meta import build_mirror_meta
-from services.theater import runtime
+from services.theater import free_runtime, story_loader
+from services.theater.tts_bridge import speak_committed_line
 from .shared_state import get_config_manager, get_session_manager
-from utils.logger_config import get_module_logger
 
 
 router = APIRouter(tags=["theater"], prefix="/api/theater")
-logger = get_module_logger("main_routers.theater_router")
 
 
-def _resolve_lanlan_name(_raw: Any = None) -> str:
+def _resolve_lanlan_name() -> str:
     """只从服务端配置解析当前猫娘，不信任调用方传入的角色名。"""  # noqa: DOCSTRING_CJK
-    # 保留参数仅兼容现有调用位置；当前 1v1 版本必须由服务端决定入戏猫娘，避免请求体越权切换人格。
     try:
         characters = get_config_manager().load_characters()
         return str(characters.get("当前猫娘") or "").strip()
@@ -55,8 +52,14 @@ def _validate_theater_local_mutation(request: Request, data: dict[str, Any]):
     )
 
 
-async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
-    """把已提交公开对白交给当前猫娘 TTS，失败时只降级文字演绎。"""  # noqa: DOCSTRING_CJK
+async def _speak_dialogue_with_claim(
+    response: dict[str, Any],
+    *,
+    claim_dialogue: Callable[..., Awaitable[dict[str, Any]]],
+    metadata_kind: str,
+    request_prefix: str,
+) -> dict[str, Any]:
+    """复用同一 TTS 播放器，但由调用方选择剧本或自由 Session 认领器。"""  # noqa: DOCSTRING_CJK
     if response.get("ok") is not True:
         return {"ok": True, "skipped": "turn_failed"}
     session_id = str(response.get("session_id") or "")
@@ -64,119 +67,112 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
     async def _play_claimed_dialogue(claim: dict[str, Any]) -> dict[str, Any]:
         """在 Runtime 持有角色边界期间，把已认领对白提交给现有 TTS。"""  # noqa: DOCSTRING_CJK
         lanlan_name = str(claim.get("lanlan_name") or "")
-        if (_resolve_lanlan_name(None) or "Lan") != lanlan_name:
+        if (_resolve_lanlan_name() or "Lan") != lanlan_name:
             # 认领后若配置中的当前猫娘已经变化，不再查找旧角色 Manager 或打断新角色音频。
             return {"ok": True, "skipped": "character_changed"}
-        manager = get_session_manager().get(lanlan_name) if lanlan_name else None
-        speak = getattr(manager, "mirror_assistant_speech", None)
-        if not callable(speak):
-            return {"ok": True, "skipped": "project_tts_unavailable"}
-
-        # 只复用现有音频管线：不镜像普通聊天文字、不发送普通聊天 turn-end，也不占用游戏 route。
-        metadata = build_mirror_meta(
-            source="theater",
-            kind="theater_dialogue",
+        return await speak_committed_line(
+            str(claim.get("line") or ""),
             session_id=session_id,
-            event={"state_revision": int(claim.get("state_revision") or 0)},
+            state_revision=int(claim.get("state_revision") or 0),
+            lanlan_name=lanlan_name,
+            resolve_current_catgirl=_resolve_lanlan_name,
+            get_session_manager=get_session_manager,
+            metadata_kind=metadata_kind,
+            request_id=f"{request_prefix}_{session_id}_{claim.get('state_revision')}",
         )
-        try:
-            return await speak(
-                str(claim.get("line") or ""),
-                metadata=metadata,
-                request_id=f"theater_tts_{session_id}_{claim.get('state_revision')}",
-                mirror_text=False,
-                emit_turn_end_after=False,
-                # 新剧场对白拥有当前播放权，进入下一轮时停止上一段尚未播完的猫娘台词。
-                interrupt_audio=True,
-            )
-        except Exception as exc:
-            logger.warning("小剧场猫娘对白 TTS 降级为纯文字: %s", exc)
-            return {"ok": True, "skipped": "project_tts_failed", "error_type": type(exc).__name__}
 
-    return await runtime.claim_dialogue_speech(
+    return await claim_dialogue(
         _theater_root(),
         session_id=session_id,
         state_revision=state_revision,
         # 先在写入已朗读 revision 前绑定当前猫娘，阻止切换后继续认领旧角色对白。
-        expected_lanlan_name=_resolve_lanlan_name(None) or "Lan",
-        # Runtime 会把认领、写盘和播放提交保持在同一个角色锁内，消除返回后的过期窗口。
+        expected_lanlan_name=_resolve_lanlan_name() or "Lan",
+        # 认领器会把认领、写盘和播放提交保持在同一个角色锁内，消除返回后的过期窗口。
         play=_play_claimed_dialogue,
+    )
+
+
+async def _speak_free_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
+    """把自由模式对白交给独立认领器，不读取剧本模式 Session。"""  # noqa: DOCSTRING_CJK
+    return await _speak_dialogue_with_claim(
+        response,
+        claim_dialogue=free_runtime.claim_dialogue_speech,
+        metadata_kind="theater_free_dialogue",
+        request_prefix="theater_free_tts",
     )
 
 
 @router.get("/stories")
 async def list_theater_stories():
-    """只读返回公开故事列表，不改变任何 Session 生命周期。"""  # noqa: DOCSTRING_CJK
-    stories = await runtime.list_stories()
+    """只读返回自由模式可用的背景种子列表，不暴露 Story v3 剧本运行接口。"""  # noqa: DOCSTRING_CJK
+    # 自由模式仍可使用旧故事文件生成最小背景种子；这里不再把它当作剧本 Session 目录。
+    stories = await story_loader.list_stories(lanlan_name=_resolve_lanlan_name() or "Lan")
     return {"ok": True, "stories": stories}
 
 
-@router.post("/session/start")
-async def start_theater_session(request: Request):
-    """启动小剧场 Session；生命周期只由玩家操作和明确管理事件改变。"""  # noqa: DOCSTRING_CJK
+@router.post("/free/session/start")
+async def start_free_theater_session(request: Request):
+    """启动独立自由模式 Session，不触碰剧本模式 active 索引或账本。"""  # noqa: DOCSTRING_CJK
     data = await request.json()
     if not isinstance(data, dict):
         data = {}
     validation_error = _validate_theater_local_mutation(request, data)
     if validation_error is not None:
         return validation_error
-    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name")) or "Lan"
-    root = _theater_root()
-    result = await runtime.start_session(
-        root,
+    lanlan_name = _resolve_lanlan_name() or "Lan"
+    result = await free_runtime.start_session(
+        _theater_root(),
         lanlan_name=lanlan_name,
         story_id=data.get("story_id"),
-        # 稳定开场 ID 让响应丢失后的网络重试复用同一 Session，而不是重复开场。
         client_start_id=str(data.get("client_start_id") or ""),
-        # 只有前端已经展示不兼容提示后，玩家再次点击开始才允许替换旧恢复入口。
-        replace_incompatible_session=data.get("replace_incompatible_session") is True,
-        # Runtime 会在角色锁内重读同一配置，防止排队期间切换猫娘后仍创建旧角色 Session。
+        # role_card 只绑定当前 Free Session；普通剧本和全局角色卡目录不会读取它。
+        role_card=data.get("role_card") if isinstance(data.get("role_card"), dict) else None,
         config_manager=get_config_manager(),
     )
-    await _speak_committed_dialogue(result)
+    # 自由模式使用独立认领器接入现有播放器，不跨模式读取剧本 Session。
+    await _speak_free_committed_dialogue(result)
     return result
 
 
-@router.post("/session/input")
-async def submit_theater_input(request: Request):
-    """提交用户输入并推进指定小剧场 session。"""  # noqa: DOCSTRING_CJK
+@router.post("/free/session/input")
+async def submit_free_theater_input(request: Request):
+    """提交自由模式输入；服务端只保存沙盒 Session，不推进 Story v3。"""  # noqa: DOCSTRING_CJK
     data = await request.json()
     if not isinstance(data, dict):
         data = {}
     validation_error = _validate_theater_local_mutation(request, data)
     if validation_error is not None:
         return validation_error
-    result = await runtime.submit_input(
+    result = await free_runtime.submit_input(
         _theater_root(),
         session_id=str(data.get("session_id") or ""),
         message=str(data.get("message") or ""),
-        # Router 只做协议转交，互斥校验和 Choice 可见性由轻量 Turn Service 负责。
         input_kind=str(data.get("input_kind") or ""),
         choice_id=str(data.get("choice_id") or ""),
         client_turn_id=str(data.get("client_turn_id") or ""),
-        # 保持原始 JSON 类型，让服务层统一验证非负整数 revision。
         base_revision=data.get("base_revision"),
         config_manager=get_config_manager(),
-        # Session ID 不代表角色授权；每次输入都必须重新绑定服务端当前猫娘。
-        expected_lanlan_name=_resolve_lanlan_name(None) or "Lan",
+        expected_lanlan_name=_resolve_lanlan_name() or "Lan",
     )
-    await _speak_committed_dialogue(result)
+    # 认领器只消费已提交的公开对白；失败时保留文字结果，不阻断自由回合。
+    await _speak_free_committed_dialogue(result)
     return result
 
 
-@router.get("/session/state")
-async def get_theater_session_state(session_id: str):
-    """返回指定小剧场 session 的公开状态摘要。"""  # noqa: DOCSTRING_CJK
-    return await runtime.get_state(
+@router.get("/free/session/state")
+async def get_free_theater_session_state(session_id: str):
+    """返回自由模式 Session 的公开快照，不读取剧本模式状态。"""  # noqa: DOCSTRING_CJK
+    return await free_runtime.get_state(
         _theater_root(),
         session_id=str(session_id or ""),
-        # 浏览器本地指针只能恢复当前猫娘的 Session，不能跨人格读取公开快照。
-        expected_lanlan_name=_resolve_lanlan_name(None) or "Lan",
+        expected_lanlan_name=_resolve_lanlan_name() or "Lan",
     )
 
 
-@router.get("/session/active")
-async def get_active_theater_session_state():
-    """返回当前角色可恢复的小剧场公开快照，不向前端暴露 active 索引文件。"""  # noqa: DOCSTRING_CJK
-    lanlan_name = _resolve_lanlan_name(None) or "Lan"
-    return await runtime.get_active_state(_theater_root(), lanlan_name=lanlan_name)
+@router.get("/free/session/active")
+async def get_active_free_theater_session_state():
+    """恢复当前猫娘的自由模式 Session；独立于剧本模式 active 指针。"""  # noqa: DOCSTRING_CJK
+    return await free_runtime.get_active_state(
+        _theater_root(),
+        lanlan_name=_resolve_lanlan_name() or "Lan",
+    )

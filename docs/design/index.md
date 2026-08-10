@@ -29,10 +29,23 @@ These documents preserve design intent and implementation context. They are grou
 - [Live2D idle motion selection and recovery](/live2d_motion_plan)
 - [PNGTubeRemix layered physics compatibility](/pngtuber-remix-physics-plan)
 
+## N.E.K.O 小剧场当前记录
+
+当前实现基线依次为：统一开发方向 → Numeric v2 运行时合同 → 当前架构 → 双模式设计。代码和测试高于历史记录。
+
+- [统一开发方向](./neko-theater-development-direction)
+- [Numeric v2 生成、演绎架构与质量闭环](./neko-theater-numeric-v2-architecture-evaluation-loop)
+- [小剧场 Numeric v2 运行时开发文档](./neko-theater-numeric-v2-runtime-development)
+- [小剧场当前架构](./neko-theater-architecture)
+- [双模式设计与实施方案](./neko-theater-dual-mode)
+- [自由模式 Free Seed 开发文档](./neko-theater-free-seed-development)
+- [阶段 0 瘦身盘点](./neko-theater-phase0-slimming-inventory)
+
+Numeric v2 的 InkAI 生成器方案位于 `InkAI-/docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md`。
+
 ## Product-flow and interaction records
 
 - [Seven-day floating avatar guide](./avatar-floating-7day-complete-guide-dev)
-- [Floating avatar panel functions](./avatar-floating-panel-functions)
 - [Post-tutorial low-disruption chat branches](./avatar-floating-post-theater-chat-branches)
 - [CAT1 Playground Drop](./cat1-playground-drop-design)
 - [Focus / True-Name mode](./focus-truename-mode)

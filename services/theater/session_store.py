@@ -12,8 +12,8 @@ from utils.logger_config import get_module_logger
 
 
 _SESSION_ID_RE = re.compile(r"^theater_[a-f0-9-]{36}$")
-# 轻量架构只接受当前协议存档；旧重型 Session 不做高风险字段迁移。
-SESSION_SCHEMA_VERSION = 1
+# Session 版本只描述当前运行结构；旧版本不会进入读取或迁移链路。
+SESSION_SCHEMA_VERSION = 2
 # Session 终止原因只接受框架固定枚举；休眠不属于终止，不能写入这组原因。
 SESSION_END_REASONS = frozenset(
     {
@@ -62,7 +62,7 @@ async def character_guard(root: Path, lanlan_name: str):
 
 
 def state_revision(session: dict[str, Any]) -> int:
-    """读取非负 revision；旧存档缺失时从零开始。"""  # noqa: DOCSTRING_CJK
+    """读取非负 revision；非法内存候选回退到零并由合同校验拒绝。"""  # noqa: DOCSTRING_CJK
     value = session.get("state_revision")
     return (
         value
@@ -147,32 +147,19 @@ async def is_stale_session(root: Path, session: dict[str, Any]) -> bool:
 
 
 async def load_session(root: Path, session_id: str) -> dict[str, Any] | None:
-    """读取当前轻量协议 Session；不兼容版本由状态接口另行解释。"""  # noqa: DOCSTRING_CJK
-    session, _reason = await load_session_with_status(root, session_id)
-    return session
-
-
-async def load_session_with_status(
-    root: Path, session_id: str
-) -> tuple[dict[str, Any] | None, str]:
-    """读取 Session，并区分不存在、旧版本和不支持版本。"""  # noqa: DOCSTRING_CJK
+    """只读取当前 Session 版本，其他文件一律视为不可用。"""  # noqa: DOCSTRING_CJK
     if not _SESSION_ID_RE.match(str(session_id or "")):
-        return None, "session_not_found"
+        return None
     path = session_path(root, session_id)
     try:
         data = await read_json_async(path)
     except FileNotFoundError:
-        return None, "session_not_found"
+        return None
     if not isinstance(data, dict):
-        return None, "session_not_found"
-    schema_version = data.get("schema_version")
-    if schema_version is None:
-        # 瘦身前 Session 结构无法安全映射到作者图节点，保留原文件并明确要求重新开场。
-        return None, "session_upgrade_required"
-    if schema_version != SESSION_SCHEMA_VERSION:
-        # 未知版本可能来自更高版本，不能删除或按当前结构误读。
-        return None, "session_version_unsupported"
-    return data, ""
+        return None
+    if data.get("schema_version") != SESSION_SCHEMA_VERSION:
+        return None
+    return data
 
 
 async def save_session(root: Path, session: dict[str, Any]) -> None:

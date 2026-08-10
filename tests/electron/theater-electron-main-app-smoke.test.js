@@ -33,11 +33,21 @@ function startFakeBackend() {
     const theaterHtml = fs.readFileSync(path.join(repoRoot, 'templates', 'theater.html'), 'utf8')
       .replaceAll('{{ static_asset_version }}', 'electron-main-smoke');
     const theaterScript = fs.readFileSync(path.join(repoRoot, 'static', 'js', 'theater.js'), 'utf8');
+    const windowControlsScript = fs.readFileSync(
+      path.join(repoRoot, 'static', 'js', 'window_controls.js'),
+      'utf8',
+    );
     let sessionActive = false;
     let startRequests = 0;
     let stateRequests = 0;
     let activeRequests = 0;
     let turnRequests = 0;
+    let freeStartRequests = 0;
+    let freeStateRequests = 0;
+    let freeActiveRequests = 0;
+    let freeTurnRequests = 0;
+    let systemStatusRequests = 0;
+    let chatPageRequests = 0;
     let stateRevision = 0;
     let latestDialogue = '第一次启动的公开对白。';
     let lastTurnRequest = null;
@@ -51,7 +61,6 @@ function startFakeBackend() {
         state_revision: stateRevision,
         can_resume: true,
         stale: false,
-        phase: 'setup',
         scene: { scene_id: 'electron_scene', title: '桌边', text: '桌上的剧本仍停在同一页。' },
         narration: { text: '' },
         dialogue: { text: latestDialogue },
@@ -59,7 +68,6 @@ function startFakeBackend() {
           available_props: [{ id: 'prop_note', label: '折叠便笺', public_hint: '尚未展开。' }],
           used_props: [],
           discovered_clues: [],
-          flags: [],
         },
         scenario_trace: null,
         suggestion_options: [
@@ -96,6 +104,20 @@ function startFakeBackend() {
       const url = new URL(req.url || '/', 'http://127.0.0.1');
       if (url.pathname === '/health') {
         sendJson(res, { app: 'N.E.K.O', service: 'main' });
+        return;
+      }
+      if (url.pathname === '/api/system/status') {
+        // 放行真实 PC storage gate，令 smoke 同时获得独立的普通聊天窗口隔离信号。
+        systemStatusRequests += 1;
+        sendJson(res, {
+          ready: true,
+          lifecycle_state: 'ready',
+          storage: {
+            selection_required: false,
+            migration_pending: false,
+            recovery_required: false,
+          },
+        });
         return;
       }
       if (url.pathname === '/api/theater/stories') {
@@ -150,8 +172,43 @@ function startFakeBackend() {
         );
         return;
       }
+      if (url.pathname === '/api/theater/free/session/start') {
+        freeStartRequests += 1;
+        sendJson(res, { ok: false, reason: 'session_not_found' });
+        return;
+      }
+      if (url.pathname === '/api/theater/free/session/input') {
+        freeTurnRequests += 1;
+        sendJson(res, { ok: false, reason: 'session_not_found' });
+        return;
+      }
+      if (url.pathname === '/api/theater/free/session/state') {
+        freeStateRequests += 1;
+        sendJson(res, { ok: false, reason: 'session_not_found' });
+        return;
+      }
+      if (url.pathname === '/api/theater/free/session/active') {
+        // theater.js restores both modes on startup. Mirror the production
+        // inactive response so this main-process smoke exercises its real
+        // renderer path instead of turning a missing fake route into a 404.
+        freeActiveRequests += 1;
+        sendJson(res, { ok: false, reason: 'session_not_found' });
+        return;
+      }
       if (url.pathname === '/__smoke-metrics') {
-        sendJson(res, { startRequests, stateRequests, activeRequests, turnRequests, lastTurnRequest });
+        sendJson(res, {
+          startRequests,
+          stateRequests,
+          activeRequests,
+          turnRequests,
+          freeStartRequests,
+          freeStateRequests,
+          freeActiveRequests,
+          freeTurnRequests,
+          systemStatusRequests,
+          chatPageRequests,
+          lastTurnRequest,
+        });
         return;
       }
       res.setHeader('content-type', 'text/html; charset=utf-8');
@@ -168,6 +225,12 @@ function startFakeBackend() {
         res.end(theaterScript);
         return;
       }
+      if (url.pathname === '/static/js/window_controls.js') {
+        // 标题栏按钮的真实绑定逻辑必须参与 smoke，不能只探测 preload API 是否存在。
+        res.setHeader('content-type', 'application/javascript; charset=utf-8');
+        res.end(windowControlsScript);
+        return;
+      }
       if (url.pathname.startsWith('/static/')) {
         // 恢复链只依赖 theater.js；其它装饰资源返回空内容，避免引入与本轮无关的网络依赖。
         res.setHeader(
@@ -178,6 +241,7 @@ function startFakeBackend() {
         return;
       }
       if (url.pathname === '/chat' || url.pathname === '/subtitle') {
+        if (url.pathname === '/chat') chatPageRequests += 1;
         res.end('<!doctype html><html><body data-aux-window></body></html>');
         return;
       }
@@ -225,9 +289,13 @@ app.commandLine.appendSwitch('disable-software-rasterizer');
 
 const baseUrl = process.env.NEKO_THEATER_MAIN_SMOKE_BASE_URL;
 const pcMainPath = process.env.NEKO_PC_MAIN_PATH;
-let openedTheater = false;
 let finished = false;
-let theaterLoadCount = 0;
+let phase = 'OPEN_INITIAL';
+let initialTheaterWindowId = null;
+let reopenedTheaterWindowId = null;
+let closeObserved = false;
+let metricsAfterReload = null;
+let windowControlResult = null;
 let submittedLogBeforeReload = '';
 
 // Finish the smoke with a machine-readable result line before exiting Electron.
@@ -238,21 +306,56 @@ function finish(code, payload) {
   setTimeout(() => app.exit(code), 50);
 }
 
-// Return true when a BrowserWindow is the real fake-backend pet/root window.
-function isPetBackendWindow(win) {
+// Read a fake-backend path without allowing the normal chat window to be mistaken for Pet.
+function backendPathOf(win) {
   try {
     const url = win.webContents.getURL();
-    return url && url.startsWith(baseUrl) && !url.includes('/theater');
+    if (!url || !url.startsWith(baseUrl)) return '';
+    return new URL(url).pathname;
   } catch (_) {
-    return false;
+    return '';
   }
+}
+
+// Return true only for the real fake-backend Pet/root window.
+function isPetBackendWindow(win) {
+  const pathname = backendPathOf(win);
+  return pathname === '/' || pathname === '/index.html';
+}
+
+function isNormalChatWindow(win) {
+  return backendPathOf(win) === '/chat';
+}
+
+function isTheaterWindow(win) {
+  return backendPathOf(win) === '/theater';
+}
+
+async function waitFor(label, predicate, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 8000);
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (_) {
+      // Window creation and destruction race with polling; keep waiting for the stable state.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(label);
+}
+
+async function waitForWindowState(win, label, predicate) {
+  await waitFor(label, () => !win.isDestroyed() && predicate(win), 5000);
 }
 
 // Ask the loaded pet page to open the theater route through the real PC child-window handler.
 async function openTheaterFromPet(win) {
-  if (openedTheater || !win || win.isDestroyed()) return;
+  if (phase !== 'OPEN_INITIAL' && phase !== 'OPEN_REOPEN') return;
+  if (!win || win.isDestroyed()) return;
   if (!isPetBackendWindow(win)) return;
-  openedTheater = true;
+  // Change phase before window.open so the fallback poll cannot create a duplicate child.
+  phase = phase === 'OPEN_INITIAL' ? 'WAIT_INITIAL_LOAD' : 'WAIT_REOPEN_LOAD';
   try {
     await win.webContents.executeJavaScript("window.open('/theater', '_blank'); true");
   } catch (error) {
@@ -260,56 +363,221 @@ async function openTheaterFromPet(win) {
   }
 }
 
-// 第一次加载真实开演并提交玩家输入，第二次加载验证公开快照恢复且没有重复提交。
+async function readRestoredTheaterState(win) {
+  return win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('restore-timeout'); }; await waitFor(() => !document.querySelector('#theater-input').disabled && document.querySelector('#theater-log').innerText.includes('我听见你说要检查便笺了，我们现在就一起看。')); const metrics = await fetch('/__smoke-metrics').then((response) => response.json()); return { href: location.href, hasTheaterRoot: !!document.querySelector('[data-theater-app]'), hasHostClose: !!(window.nekoHost && typeof window.nekoHost.closeWindow === 'function'), hasMinimize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.minimize === 'function'), hasMaximize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.maximize === 'function'), hasMaximizedProbe: !!(window.nekoWindowControl && typeof window.nekoWindowControl.isMaximized === 'function'), theaterMode: document.querySelector('#theater-mode-select').value, restoredLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1'), modePointer: localStorage.getItem('neko.theater.activeMode.v1'), startRequests: metrics.startRequests, stateRequests: metrics.stateRequests, activeRequests: metrics.activeRequests, turnRequests: metrics.turnRequests, freeStartRequests: metrics.freeStartRequests, freeStateRequests: metrics.freeStateRequests, freeActiveRequests: metrics.freeActiveRequests, freeTurnRequests: metrics.freeTurnRequests, systemStatusRequests: metrics.systemStatusRequests, chatPageRequests: metrics.chatPageRequests, lastTurnRequest: metrics.lastTurnRequest }; })()");
+}
+
+async function waitForWindowControls(win) {
+  return win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate) => { const deadline = Date.now() + 5000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('window-controls-ready-timeout'); }; const button = (name) => document.querySelector('[data-neko-window-control=' + JSON.stringify(name) + ']'); await waitFor(() => ['minimize', 'maximize', 'close'].every((name) => { const item = button(name); return item && item.dataset.nekoWindowControlBound === '1'; })); return { hasRuntime: !!window.nekoWindowControls, minimizeBound: button('minimize').dataset.nekoWindowControlBound === '1', maximizeBound: button('maximize').dataset.nekoWindowControlBound === '1', closeBound: button('close').dataset.nekoWindowControlBound === '1' }; })()");
+}
+
+async function clickWindowControl(win, controlName) {
+  const selector = '[data-neko-window-control="' + controlName + '"]';
+  const script = "(() => { const button = document.querySelector(" + JSON.stringify(selector) + "); if (!button || button.dataset.nekoWindowControlBound !== '1') throw new Error('window-control-not-ready:' + " + JSON.stringify(controlName) + "); button.click(); return true; })()";
+  return win.webContents.executeJavaScript(script);
+}
+
+async function runWindowControlStep(win, eventName, label, predicate, action) {
+  let observed = false;
+  win.once(eventName, () => { observed = true; });
+  await action();
+  await waitForWindowState(win, label, (candidate) => observed && predicate(candidate));
+  return observed;
+}
+
+async function readMaximizeDisplayState(win) {
+  return win.webContents.executeJavaScript("(async () => ({ bridgeMaximized: await window.nekoWindowControl.isMaximized(), documentMaximized: document.documentElement.classList.contains('neko-window-maximized'), maximizeBound: document.querySelector('[data-neko-window-control=' + JSON.stringify('maximize') + ']').dataset.nekoWindowControlBound === '1' }))()");
+}
+
+// Drive the real title-bar bindings and verify native BrowserWindow state/events, not only IPC success.
+async function exerciseWindowControls(win) {
+  const bindings = await waitForWindowControls(win);
+  if (!bindings.hasRuntime || !bindings.minimizeBound || !bindings.maximizeBound || !bindings.closeBound) {
+    throw new Error('window-controls-bindings-missing');
+  }
+
+  const minimizeEvent = await runWindowControlStep(
+    win,
+    'minimize',
+    'native-minimize-timeout',
+    (candidate) => candidate.isMinimized(),
+    () => clickWindowControl(win, 'minimize'),
+  );
+
+  let restoreResult = null;
+  const restoreEvent = await runWindowControlStep(
+    win,
+    'restore',
+    'native-restore-timeout',
+    (candidate) => !candidate.isMinimized(),
+    async () => {
+      restoreResult = await win.webContents.executeJavaScript("(async () => window.nekoWindowControl.restore())()");
+    },
+  );
+  if (!restoreResult || !restoreResult.ok) throw new Error('native-restore-rejected');
+
+  const initialMaximized = win.isMaximized();
+  const firstMaximizeEvent = await runWindowControlStep(
+    win,
+    initialMaximized ? 'unmaximize' : 'maximize',
+    'native-maximize-toggle-timeout',
+    (candidate) => candidate.isMaximized() === !initialMaximized,
+    () => clickWindowControl(win, 'maximize'),
+  );
+  const afterFirstToggle = await readMaximizeDisplayState(win);
+
+  const secondMaximizeEvent = await runWindowControlStep(
+    win,
+    initialMaximized ? 'maximize' : 'unmaximize',
+    'native-maximize-restore-timeout',
+    (candidate) => candidate.isMaximized() === initialMaximized,
+    () => clickWindowControl(win, 'maximize'),
+  );
+  const afterSecondToggle = await readMaximizeDisplayState(win);
+
+  return {
+    ...bindings,
+    minimizeEvent,
+    restoreEvent,
+    restoreResult,
+    initialMaximized,
+    firstMaximizeEvent,
+    secondMaximizeEvent,
+    afterFirstToggle,
+    afterSecondToggle,
+  };
+}
+
+// Close through the real title-bar button. The closed event is the reopening gate because renderer IPC can race teardown.
+async function closeInitialTheaterFromControl(win) {
+  phase = 'WAIT_INITIAL_CLOSED';
+  await new Promise((resolve, reject) => {
+    const closeTimer = setTimeout(() => reject(new Error('theater-close-timeout')), 5000);
+    win.once('closed', () => {
+      clearTimeout(closeTimer);
+      closeObserved = true;
+      const parent = BrowserWindow.getAllWindows().find((candidate) => isPetBackendWindow(candidate));
+      if (!parent || parent.isDestroyed()) {
+        reject(new Error('pet-window-closed-with-theater'));
+        return;
+      }
+      phase = 'OPEN_REOPEN';
+      // Reopen only after the original child is gone, preserving the real child-window lifecycle.
+      void openTheaterFromPet(parent);
+      resolve();
+    });
+    void win.webContents.executeJavaScript("(() => { const button = document.querySelector('.theater-close-btn'); if (!button || button.dataset.nekoWindowControlBound !== '1') throw new Error('close-control-not-ready'); button.click(); return true; })()").catch((error) => {
+      if (!closeObserved) {
+        clearTimeout(closeTimer);
+        reject(error);
+      }
+    });
+  });
+}
+
+async function readNormalChatIsolation() {
+  const chat = await waitFor(
+    'normal-chat-window-timeout',
+    () => BrowserWindow.getAllWindows().find((candidate) => isNormalChatWindow(candidate)),
+    8000,
+  );
+  return chat.webContents.executeJavaScript("(async () => { const deadline = Date.now() + 5000; while (Date.now() < deadline) { if (document.querySelector('[data-aux-window]')) return { hasNormalChatRoot: true, hasTheaterRoot: !!document.querySelector('[data-theater-app]'), hasTheaterScript: Array.from(document.scripts).some((item) => item.src.includes('/static/js/theater.js')) }; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('normal-chat-dom-timeout'); })()");
+}
+
+// First child starts and submits; its reload restores. A separately created child must then restore again.
 async function inspectTheaterWindow(win) {
   if (finished || !win || win.isDestroyed()) return;
-  theaterLoadCount += 1;
   try {
-    if (theaterLoadCount === 1) {
-      const started = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate, label) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error(label); }; await waitFor(() => document.querySelectorAll('#theater-story-select option').length > 0 && !document.querySelector('#theater-start-btn').disabled, 'start-ready-timeout'); document.querySelector('#theater-start-btn').click(); await waitFor(() => !document.querySelector('#theater-input').disabled && localStorage.getItem('neko.theater.activeSession.v1') === 'electron_restore_session', 'start-session-timeout'); const input = document.querySelector('#theater-input'); input.value = '请先检查折叠便笺'; document.querySelector('#theater-input-form').requestSubmit(); await waitFor(() => !input.disabled && document.querySelector('#theater-log').innerText.includes('请先检查折叠便笺') && document.querySelector('#theater-log').innerText.includes('我听见你说要检查便笺了，我们现在就一起看。'), 'submit-input-timeout'); return { submittedLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1') }; })()");
+    if (phase === 'WAIT_INITIAL_LOAD') {
+      initialTheaterWindowId = win.id;
+      const started = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate, label) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error(label); }; await waitFor(() => document.querySelectorAll('#theater-story-select option').length > 0 && !document.querySelector('#theater-start-btn').disabled, 'start-ready-timeout'); document.querySelector('#theater-start-btn').click(); await waitFor(() => !document.querySelector('#theater-input').disabled && localStorage.getItem('neko.theater.activeSession.v1') === 'electron_restore_session', 'start-session-timeout'); const input = document.querySelector('#theater-input'); input.value = '请先检查折叠便笺'; document.querySelector('#theater-input-form').requestSubmit(); await waitFor(() => !input.disabled && document.querySelector('#theater-log').innerText.includes('请先检查折叠便笺') && document.querySelector('#theater-log').innerText.includes('我听见你说要检查便笺了，我们现在就一起看。'), 'submit-input-timeout'); return { submittedLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1'), modePointer: localStorage.getItem('neko.theater.activeMode.v1') }; })()");
       if (!started.submittedLog.includes('第一次启动的公开对白。')
           || !started.submittedLog.includes('请先检查折叠便笺')
           || !started.submittedLog.includes('我听见你说要检查便笺了，我们现在就一起看。')
-          || started.sessionPointer !== 'electron_restore_session') {
+          || started.sessionPointer !== 'electron_restore_session'
+          || started.modePointer !== 'script') {
         finish(4, { error: 'initial-session-state-mismatch', ...started });
         return;
       }
       submittedLogBeforeReload = started.submittedLog;
-      // 使用真实 webContents.reload 模拟桌面窗口刷新，保留同一 Electron storage partition。
+      // Keep the same BrowserWindow reload check before proving close-and-reopen on a new child.
+      phase = 'WAIT_RELOAD_LOAD';
       win.webContents.reload();
       return;
     }
 
-    const result = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('restore-timeout'); }; await waitFor(() => !document.querySelector('#theater-input').disabled && document.querySelector('#theater-log').innerText.includes('我听见你说要检查便笺了，我们现在就一起看。')); const metrics = await fetch('/__smoke-metrics').then((response) => response.json()); return { href: location.href, hasTheaterRoot: !!document.querySelector('[data-theater-app]'), hasHostClose: !!(window.nekoHost && typeof window.nekoHost.closeWindow === 'function'), hasMinimize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.minimize === 'function'), hasMaximize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.maximize === 'function'), hasMaximizedProbe: !!(window.nekoWindowControl && typeof window.nekoWindowControl.isMaximized === 'function'), restoredLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1'), startRequests: metrics.startRequests, stateRequests: metrics.stateRequests, activeRequests: metrics.activeRequests, turnRequests: metrics.turnRequests, lastTurnRequest: metrics.lastTurnRequest }; })()");
+    if (phase === 'WAIT_RELOAD_LOAD') {
+      if (win.id !== initialTheaterWindowId) throw new Error('reload-created-a-different-window');
+      const reloaded = await readRestoredTheaterState(win);
+      metricsAfterReload = { stateRequests: reloaded.stateRequests };
+      windowControlResult = await exerciseWindowControls(win);
+      await closeInitialTheaterFromControl(win);
+      return;
+    }
+
+    if (phase !== 'WAIT_REOPEN_LOAD') return;
+    if (win.id === initialTheaterWindowId) throw new Error('reopen-reused-closed-window');
+    reopenedTheaterWindowId = win.id;
+    const result = await readRestoredTheaterState(win);
     result.submittedLogBeforeReload = submittedLogBeforeReload;
+    result.initialTheaterWindowId = initialTheaterWindowId;
+    result.reopenedTheaterWindowId = reopenedTheaterWindowId;
+    result.closeObserved = closeObserved;
+    result.reloadStateRequests = metricsAfterReload && metricsAfterReload.stateRequests;
+    result.windowControls = windowControlResult;
     const parent = BrowserWindow.getAllWindows().find((candidate) => isPetBackendWindow(candidate));
     result.parentIsClean = !!parent && await parent.webContents.executeJavaScript("!document.querySelector('[data-theater-app]') && !Array.from(document.scripts).some((item) => item.src.includes('/static/js/theater.js'))");
+    result.parentSurvivedClose = !!parent && !parent.isDestroyed();
+    result.normalChat = await readNormalChatIsolation();
+    const controlsPassed = result.windowControls
+      && result.windowControls.minimizeEvent
+      && result.windowControls.restoreEvent
+      && result.windowControls.firstMaximizeEvent
+      && result.windowControls.secondMaximizeEvent
+      && result.windowControls.afterFirstToggle.bridgeMaximized === !result.windowControls.initialMaximized
+      && result.windowControls.afterFirstToggle.documentMaximized === !result.windowControls.initialMaximized
+      && result.windowControls.afterSecondToggle.bridgeMaximized === result.windowControls.initialMaximized
+      && result.windowControls.afterSecondToggle.documentMaximized === result.windowControls.initialMaximized;
     const ok = result.hasTheaterRoot
       && result.hasHostClose
       && result.hasMinimize
       && result.hasMaximize
       && result.hasMaximizedProbe
+      && result.theaterMode === 'script'
+      && result.modePointer === 'script'
       && result.parentIsClean
+      && result.parentSurvivedClose
+      && result.normalChat.hasNormalChatRoot
+      && !result.normalChat.hasTheaterRoot
+      && !result.normalChat.hasTheaterScript
+      && result.closeObserved
+      && result.initialTheaterWindowId !== result.reopenedTheaterWindowId
+      && controlsPassed
       && result.sessionPointer === 'electron_restore_session'
       && result.startRequests === 1
       && result.turnRequests === 1
+      && result.freeStartRequests === 0
+      && result.freeStateRequests === 0
+      && result.freeActiveRequests === 1
+      && result.freeTurnRequests === 0
+      && result.systemStatusRequests >= 1
+      && result.chatPageRequests >= 1
       && result.lastTurnRequest
       && result.lastTurnRequest.session_id === 'electron_restore_session'
       && result.lastTurnRequest.input_kind === 'free_input'
       && result.lastTurnRequest.message === '请先检查折叠便笺'
       && result.lastTurnRequest.base_revision === 0
       && result.lastTurnRequest.client_turn_id.startsWith('turn_web_')
-      && result.stateRequests >= 1;
+      && result.stateRequests > result.reloadStateRequests;
     finish(ok ? 0 : 4, result);
   } catch (error) {
-    finish(5, { error: 'inspect-theater-failed', detail: String(error && error.message || error) });
+    finish(5, { error: 'inspect-theater-failed', phase, detail: String(error && error.message || error) });
   }
 }
 
 app.on('browser-window-created', (_event, win) => {
   win.webContents.on('did-finish-load', () => {
-    const url = win.webContents.getURL();
-    if (url && url.includes('/theater')) {
+    if (isTheaterWindow(win)) {
       inspectTheaterWindow(win);
       return;
     }
@@ -332,7 +600,7 @@ setTimeout(() => {
       try { return win.webContents.getURL(); } catch (_) { return '<unreadable>'; }
     }),
   });
-}, 20000).unref();
+}, 35000).unref();
 `, 'utf8');
   return wrapperPath;
 }
@@ -360,7 +628,7 @@ async function runMainAppSmoke() {
       });
       let stdout = '';
       let stderr = '';
-      const timer = setTimeout(() => child.kill(), 30000);
+      const timer = setTimeout(() => child.kill(), 45000);
       child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
       child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
       child.on('close', (code, signal) => {
@@ -374,7 +642,7 @@ async function runMainAppSmoke() {
   }
 }
 
-test('Electron PC main app submits input and restores the theater session after a real child-window reload', {
+test('Electron PC main app preserves theater state across reload, native controls, and child-window reopen', {
   skip: process.env.NEKO_RUN_ELECTRON_MAIN_SMOKE === '1'
     ? false
     : 'set NEKO_RUN_ELECTRON_MAIN_SMOKE=1 to run the PC main-app theater smoke validation',
@@ -388,8 +656,10 @@ test('Electron PC main app submits input and restores the theater session after 
   assert.match(result.stdout, /"hasMinimize":true/);
   assert.match(result.stdout, /"hasMaximize":true/);
   assert.match(result.stdout, /"hasMaximizedProbe":true/);
-  // 玩家输入只提交一次；刷新后仍是同一 Session，并由公开状态接口重建已经提交的回复。
+  // 玩家输入只提交一次；刷新和关闭后的新子窗口都恢复同一公开 Session。
   assert.match(result.stdout, /"sessionPointer":"electron_restore_session"/);
+  assert.match(result.stdout, /"theaterMode":"script"/);
+  assert.match(result.stdout, /"modePointer":"script"/);
   assert.match(result.stdout, /"startRequests":1/);
   assert.match(result.stdout, /"turnRequests":1/);
   assert.match(result.stdout, /"input_kind":"free_input"/);
@@ -398,5 +668,20 @@ test('Electron PC main app submits input and restores the theater session after 
   assert.match(result.stdout, /"client_turn_id":"turn_web_[^"]+"/);
   assert.match(result.stdout, /"stateRequests":[1-9][0-9]*/);
   assert.match(result.stdout, /"parentIsClean":true/);
+  assert.match(result.stdout, /"parentSurvivedClose":true/);
+  assert.match(result.stdout, /"closeObserved":true/);
+  assert.match(result.stdout, /"minimizeEvent":true/);
+  assert.match(result.stdout, /"restoreEvent":true/);
+  assert.match(result.stdout, /"firstMaximizeEvent":true/);
+  assert.match(result.stdout, /"secondMaximizeEvent":true/);
+  // 首次空指针恢复会探测 Free Mode；后续全程必须不创建、读取或提交自由模式会话。
+  assert.match(result.stdout, /"freeStartRequests":0/);
+  assert.match(result.stdout, /"freeStateRequests":0/);
+  assert.match(result.stdout, /"freeActiveRequests":1/);
+  assert.match(result.stdout, /"freeTurnRequests":0/);
+  // 真实 storage gate 拉起的普通聊天窗口保持自己的 DOM，不接入小剧场脚本。
+  assert.match(result.stdout, /"chatPageRequests":[1-9][0-9]*/);
+  assert.match(result.stdout, /"hasNormalChatRoot":true/);
+  assert.match(result.stdout, /"hasTheaterScript":false/);
   assert.match(result.stdout, /我听见你说要检查便笺了，我们现在就一起看。/);
 });
