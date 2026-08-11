@@ -17,7 +17,7 @@ def _identity_name(identity: Any) -> str:
     """身份首段是作者角色名；没有独立名字时不做危险的全文猜测。"""  # noqa: DOCSTRING_CJK
 
     first = _NAME_SEPARATOR_RE.split(str(identity or "").strip(), maxsplit=1)[0].strip()
-    if not first or len(first) > 24 or any(char.isspace() for char in first):
+    if not first or len(first) > 24:
         return ""
     return first
 

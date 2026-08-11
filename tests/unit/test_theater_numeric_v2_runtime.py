@@ -130,6 +130,31 @@ async def test_numeric_v2_story_session_index_survives_runtime_recreation(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_story_restore_ignores_sessions_from_other_stories(tmp_path):
+    story = _branch_story()
+    other_story = deepcopy(story)
+    other_story["meta"]["story_id"] = "numeric_other_story"
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    other_runtime = NumericV2Runtime(NumericV2Engine.from_mapping(other_story), tmp_path)
+
+    await other_runtime.start_session(
+        session_id="runtime_other_story",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    current = await runtime.start_session(
+        session_id="runtime_current_story",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    restored = await runtime.restore_story_session()
+
+    assert restored is not None
+    assert restored.session.session_id == current.session.session_id
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_path):
     story = _branch_story()
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)

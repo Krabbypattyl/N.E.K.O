@@ -10,6 +10,7 @@ import pytest
 
 from services.theater import numeric_v2_actor, numeric_v2_evaluator
 from services.theater.numeric_v2_actor import NumericV2Actor, _parse_output
+from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator
 from services.theater.numeric_v2_runtime import (
     NumericV2Engine,
@@ -67,6 +68,21 @@ def test_numeric_v2_turn_request_rejects_input_over_token_limit():
             "base_revision": 0,
             "message": "测试 " * 141,
         })
+
+
+def test_numeric_v2_cast_projects_multi_word_source_names():
+    story = numeric_v2_story()
+    story["intro"]["player_identity"] = "John Smith，回乡整理旧屋的年轻男性。"
+    story["intro"]["catgirl_identity"] = "Mary Jane，经营花店、保留旧信的年轻女性。"
+
+    projected = NumericV2CastProjection.from_story(
+        story,
+        player_name="哥哥",
+        catgirl_name="测试猫娘",
+    ).intro(story)
+
+    assert projected["player_identity"].startswith("哥哥，")
+    assert projected["catgirl_identity"].startswith("测试猫娘，")
 
 
 def test_numeric_v2_actor_discards_invalid_dialogue_items_without_reassigning_speaker():
@@ -184,6 +200,8 @@ async def test_numeric_v2_actor_calls_once_and_only_returns_performance(monkeypa
     assert len(create_calls) == len(client.calls) == 1
     assert create_calls[0][1]["max_retries"] == 0
     prompt = "\n".join(str(message.content) for message in client.calls[0])
+    turn_payload = json.loads(client.calls[0][1].content.split("：\n", 1)[1])
+    assert {"route_changed", "turn_instruction", "recent_context", "minimum_turns_before_route"}.issubset(turn_payload)
     assert "我先听你说。" in prompt
     assert "不能创造新节点、路线、数值、事实或结局" in prompt
     assert "本剧男主由玩家扮演" in prompt

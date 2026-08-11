@@ -88,32 +88,59 @@ def _fit_json_content(
 ) -> str:
     """Keep a JSON prompt valid while fitting the complete serialized message."""
     budget = max(0, int(max_tokens))
-    item_limit = 8 if isinstance(payload, (dict, list)) else 0
-    for max_items in range(item_limit, -1, -1):
-        for field_budget in range(max(0, int(field_max_tokens)), -1, -1):
-            bounded = truncate_prompt_value(
-                payload,
-                max_tokens=field_budget,
-                max_items=max_items,
-            )
-            encoded = json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))
-            encoded_tokens = count_tokens(encoded)
+    if isinstance(payload, (dict, list)):
+        item_count = len(payload)
+        item_limits = list(dict.fromkeys([max(8, item_count), 16, *range(8, -1, -1)]))
+    else:
+        item_limits = [0]
+    field_limit = max(0, int(field_max_tokens))
+    field_budgets = list(dict.fromkeys([
+        field_limit,
+        *(max(0, field_limit // (2**step)) for step in range(1, 8)),
+        0,
+    ]))
+    encoded_cache: dict[tuple[int, int], tuple[str, int]] = {}
+    token_cache: dict[str, int] = {}
+
+    def _count(value: str) -> int:
+        if value not in token_cache:
+            token_cache[value] = count_tokens(value)
+        return token_cache[value]
+
+    def _prefix_budgets(limit: int) -> list[int]:
+        if limit <= 0:
+            return [0]
+        values = [limit, *range(max(0, limit - 16), limit)]
+        step = max(1, limit // 8)
+        values.extend(limit - step * index for index in range(1, 9))
+        values.append(0)
+        return list(dict.fromkeys(max(0, value) for value in values))
+
+    for max_items in item_limits:
+        for field_budget in field_budgets:
+            cache_key = (max_items, field_budget)
+            if cache_key not in encoded_cache:
+                bounded = truncate_prompt_value(
+                    payload,
+                    max_tokens=field_budget,
+                    max_items=max_items,
+                )
+                encoded = json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))
+                encoded_cache[cache_key] = (encoded, _count(encoded))
+            encoded, encoded_tokens = encoded_cache[cache_key]
             if encoded_tokens > budget:
                 continue
             prefix_budget = budget - encoded_tokens
-            candidate = truncate_to_tokens(prefix, prefix_budget) + encoded
-            if count_tokens(candidate) <= budget:
-                return candidate
-            for retry_budget in range(prefix_budget - 1, -1, -1):
+            for retry_budget in _prefix_budgets(prefix_budget):
                 candidate = truncate_to_tokens(prefix, retry_budget) + encoded
-                if count_tokens(candidate) <= budget:
+                if _count(candidate) <= budget:
                     return candidate
     empty = "[]" if isinstance(payload, list) else "{}"
-    if count_tokens(empty) > budget:
+    if _count(empty) > budget:
         return ""
-    for prefix_budget in range(budget, -1, -1):
+    for prefix_budget in _prefix_budgets(budget):
         candidate = truncate_to_tokens(prefix, prefix_budget) + empty
-        if count_tokens(candidate) <= budget:
+        if _count(candidate) <= budget:
             return candidate
     return empty
 

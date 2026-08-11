@@ -368,6 +368,7 @@ async def submit_numeric_input(request: Request):
             outcome=outcome,
             player_input=turn.message,
         )
+        _ensure_current_catgirl(current.session, config_manager)
         stored = await runtime.commit_turn(outcome, performance)
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)

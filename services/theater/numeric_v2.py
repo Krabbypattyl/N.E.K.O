@@ -308,6 +308,13 @@ class NumericV2Compiler:
                 maximum = definition.get("max")
                 if _is_int(minimum) and _is_int(maximum) and not minimum <= numeric <= maximum:
                     c.add("initial_metric_out_of_range", f"initial_state.metrics.{metric_id}", "初始状态数值越界。")
+                declared_initial = definition.get("initial")
+                if _is_int(declared_initial) and numeric != declared_initial:
+                    c.add(
+                        "initial_metric_value_mismatch",
+                        f"initial_state.metrics.{metric_id}",
+                        "初始状态数值必须与 metric_schema 的 initial 一致。",
+                    )
         return metric_ranges
 
     @staticmethod
@@ -455,6 +462,24 @@ class NumericV2Compiler:
                 minimum, maximum = metric_ranges[metric]
                 if minimum is not None and maximum is not None and not minimum <= number <= maximum:
                     c.add("route_threshold_out_of_range", f"{path}.value", "路线阈值超出 metric 范围。")
+                elif (
+                    minimum is not None
+                    and maximum is not None
+                    and operator in _COMPARATORS
+                    and not {
+                        "==": minimum <= number <= maximum,
+                        "!=": minimum < maximum,
+                        ">": maximum > number,
+                        "<": minimum < number,
+                        ">=": maximum >= number,
+                        "<=": minimum <= number,
+                    }[operator]
+                ):
+                    c.add(
+                        "route_condition_impossible",
+                        f"{path}.value",
+                        "路线条件在 metric 的声明范围内永远无法成立。",
+                    )
             signature_rows.append(f"{metric}:{operator}:{number}")
         return f"{mode}|{'|'.join(sorted(signature_rows))}"
 

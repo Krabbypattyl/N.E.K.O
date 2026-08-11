@@ -157,8 +157,12 @@ class NumericV2SessionStore:
         if self.root.is_dir():
             for path in self.root.glob("*.json"):
                 try:
+                    raw_payload = json.loads(path.read_text(encoding="utf-8"))
+                    raw_session = raw_payload.get("session") if isinstance(raw_payload, dict) else None
+                    if not isinstance(raw_session, dict) or str(raw_session.get("story_package_id") or "") != normalized_story_id:
+                        continue
                     stored = await self.load(path.stem)
-                except NumericV2StoreError:
+                except (OSError, ValueError):
                     continue
                 if stored is not None and stored.session.story_package_id == normalized_story_id:
                     candidates.append(stored)

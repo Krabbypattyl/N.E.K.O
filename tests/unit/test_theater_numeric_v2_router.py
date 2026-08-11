@@ -237,6 +237,47 @@ def test_numeric_v2_router_rejects_stale_or_ended_turn_before_evaluator(tmp_path
         assert after_end.json()["reason"] == "session_already_ended"
 
 
+def test_numeric_v2_router_rechecks_catgirl_before_commit(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    checks = 0
+    original_check = numeric_theater_router._ensure_current_catgirl
+
+    def reject_after_model(session, config_manager):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise ValueError("catgirl_changed_requires_new_session")
+        return original_check(session, config_manager)
+
+    monkeypatch.setattr(numeric_theater_router, "_ensure_current_catgirl", reject_after_model)
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "catgirl_commit_guard"},
+        )
+        assert started.status_code == 200
+
+        blocked = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "catgirl_commit_guard",
+                "client_turn_id": "catgirl_changed_during_model",
+                "base_revision": 0,
+                "message": "这一轮不应提交。",
+            },
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
+
+        restored = client.get(
+            "/api/theater-numeric/session/catgirl_commit_guard",
+            params={"story_id": "numeric_v2_contract"},
+        )
+        assert restored.status_code == 200
+        assert restored.json()["session"]["revision"] == 0
+
+
 def test_numeric_v2_router_replaces_session_when_catgirl_changed(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
 

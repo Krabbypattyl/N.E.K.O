@@ -756,6 +756,7 @@ async def test_free_actor_uses_conversation_tier_without_json_repair(monkeypatch
 @pytest.mark.asyncio
 async def test_free_actor_timeout_returns_unavailable_without_repair(monkeypatch):
     """自由 Actor 超时后直接失败，不追加 Repair 或第二次模型调用。"""  # noqa: DOCSTRING_CJK
+    invocations = 0
 
     class _SlowClient:
         async def __aenter__(self):
@@ -765,6 +766,8 @@ async def test_free_actor_timeout_returns_unavailable_without_repair(monkeypatch
             return False
 
         async def ainvoke(self, _messages):
+            nonlocal invocations
+            invocations += 1
             # 缩短测试预算，模拟供应商迟迟不返回；真实预算仍由生产常量控制。
             await asyncio.sleep(0.01)
             return type("Result", (), {"content": "不应被接受"})()
@@ -791,3 +794,4 @@ async def test_free_actor_timeout_returns_unavailable_without_repair(monkeypatch
         recent_turns=[],
     )
     assert result == {"ok": False, "reason": "free_actor_unavailable"}
+    assert invocations == 1
