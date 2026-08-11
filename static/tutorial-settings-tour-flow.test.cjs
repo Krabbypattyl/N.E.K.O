@@ -196,6 +196,9 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
         },
         waitForElement(resolveElement, timeoutMs) {
             calls.push(['wait-anchor', timeoutMs]);
+            const unresolvedAnchor = resolveElement();
+            calls.push(['anchor-unready', unresolvedAnchor]);
+            assert.equal(unresolvedAnchor, null);
             anchorReady = true;
             return Promise.resolve(resolveElement());
         },
@@ -268,6 +271,8 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
         ['prepare', 'day4_model_behavior'],
         ['get-panel', 'animation-settings'],
         ['wait-anchor', 1200],
+        ['get-panel', 'animation-settings'],
+        ['anchor-unready', null],
         ['get-panel', 'animation-settings'],
         ['collapse-except', null],
         ['highlight', 'day4_model_behavior-animation-settings-button', 'animation-settings-button', 'settings-button'],

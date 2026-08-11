@@ -2324,8 +2324,13 @@ def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
                     secondary: config.secondary || null,
                 };
             };
-            director.moveCursorToElement = async (element, durationMs) => {
-                calls.push({ type: 'move', id: element && element.id, durationMs });
+            director.moveCursorToElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    exactDuration: !!(options && options.exactDuration),
+                });
                 return true;
             };
             director.cursor = {
@@ -2378,6 +2383,12 @@ def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
         "persistentId": "live2d-btn-settings",
         "primaryId": "chat-settings-button",
     })
+    assert {
+        "type": "move",
+        "id": "live2d-btn-settings",
+        "durationMs": 760,
+        "exactDuration": True,
+    } in result
     assert {"type": "click"} in result
     assert any(call["type"] == "ellipse" and call["radiusX"] > 0 and call["radiusY"] > 0 for call in result)
 

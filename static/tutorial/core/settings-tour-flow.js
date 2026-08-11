@@ -241,9 +241,9 @@
                     id: scene.id + normalizedSchema.settingsCursorIdSuffix,
                     cursorAction: 'click',
                     cursorMoveDurationMs: normalizedSchema.settingsCursorMoveDurationMs,
-                    cursorClickDurationMs: normalizedSchema.settingsCursorClickDurationMs,
-                    exactDuration: normalizedSchema.exactCursorDuration === true
+                    cursorClickDurationMs: normalizedSchema.settingsCursorClickDurationMs
                 }, settingsButton, null, previousSceneId, {
+                    exactDuration: normalizedSchema.exactCursorDuration === true,
                     onClickStart: () => director.openSettingsPanel().catch((error) => {
                         console.warn(normalizedSchema.openFailureMessage, error);
                     })
