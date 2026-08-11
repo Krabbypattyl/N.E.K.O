@@ -13,6 +13,7 @@ from .numeric_v2 import NumericV2CompileError, NumericV2Compiler
 
 
 _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
 
 
 class NumericV2PackageError(ValueError):
@@ -33,6 +34,24 @@ class NumericV2PackageRegistry:
     def __init__(self, root: Path, compiler: NumericV2Compiler | None = None):
         self.root = Path(root)
         self.compiler = compiler or NumericV2Compiler()
+
+    def ensure_default_packages(self) -> None:
+        """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""
+
+        if self.root.is_dir() and any(self.root.glob("*.json")):
+            return
+        if not _DEFAULT_PACKAGE_ROOT.is_dir():
+            return
+        for source in sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json")):
+            try:
+                payload = json.loads(source.read_text(encoding="utf-8"))
+                compiled = self.compiler.compile(payload)
+                target = self.package_path(compiled.story_id)
+                if target.exists():
+                    continue
+                self.import_package(compiled.story)
+            except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
+                raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc
 
     def package_path(self, story_id: str) -> Path:
         if not isinstance(story_id, str) or not _STORY_ID_RE.fullmatch(story_id):

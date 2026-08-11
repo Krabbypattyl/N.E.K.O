@@ -62,7 +62,9 @@ def _numeric_root(config_manager: Any) -> Path:
 
 
 def _registry(config_manager: Any) -> NumericV2PackageRegistry:
-    return NumericV2PackageRegistry(_numeric_root(config_manager) / "numeric_v2" / "packages")
+    registry = NumericV2PackageRegistry(_numeric_root(config_manager) / "numeric_v2" / "packages")
+    registry.ensure_default_packages()
+    return registry
 
 
 def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:

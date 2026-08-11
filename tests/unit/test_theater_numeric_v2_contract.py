@@ -287,3 +287,14 @@ def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
     assert not (tmp_path / "theater" / "numeric_v2" / "sessions").exists()
     with pytest.raises(NumericV2PackageExistsError):
         registry.import_package(numeric_v2_story())
+
+
+def test_numeric_v2_registry_seeds_default_story_into_empty_root(tmp_path):
+    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
+    registry = NumericV2PackageRegistry(package_root)
+
+    registry.ensure_default_packages()
+
+    packages = registry.list_packages()
+    assert [item["story_id"] for item in packages] == ["story_d079453b8e9f"]
+    assert (package_root / "story_d079453b8e9f.json").is_file()
