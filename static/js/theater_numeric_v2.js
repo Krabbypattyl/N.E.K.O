@@ -9,7 +9,7 @@
         input: '/api/theater-numeric/session/input',
         end: '/api/theater-numeric/session/end',
         active: '/api/theater-numeric/session/active',
-        session: '/api/theater-numeric/session/',
+        session: '/api/theater-numeric/session',
     };
     const SESSION_STORAGE_KEY = 'neko.theater.numeric.v2.session.v2';
     const STORY_STORAGE_KEY = 'neko.theater.numeric.v2.story.v2';
@@ -21,6 +21,7 @@
         scene: null,
         busy: false,
         inputClosed: false,
+        pendingTurn: null,
     };
 
     function $(id) {
@@ -47,6 +48,18 @@
             ? window.crypto.randomUUID()
             : Math.random().toString(36).slice(2) + Date.now().toString(36);
         return prefix + random;
+    }
+
+    function getPendingTurnId(message) {
+        const signature = JSON.stringify({ sessionId: state.sessionId, message: message });
+        if (state.pendingTurn && state.pendingTurn.signature === signature) return state.pendingTurn.id;
+        const id = createId('numeric_web_turn_');
+        state.pendingTurn = { id: id, signature: signature };
+        return id;
+    }
+
+    function clearPendingTurn(id) {
+        if (state.pendingTurn && state.pendingTurn.id === id) state.pendingTurn = null;
     }
 
     function rememberSession() {
@@ -343,7 +356,7 @@
         if (!state.sessionId || !state.storyId) return false;
         try {
             const result = await requestJson(
-                api.session + encodeURIComponent(state.sessionId)
+                api.session + '/' + encodeURIComponent(state.sessionId)
                 + '?story_id=' + encodeURIComponent(state.storyId)
             );
             if (!result || !result.ok) throw new Error('numeric_session_refresh_failed');
@@ -382,7 +395,7 @@
             renderStories();
             if (remembered.sessionId && state.storyId) {
                 const restored = await requestJson(
-                    api.session + encodeURIComponent(remembered.sessionId)
+                    api.session + '/' + encodeURIComponent(remembered.sessionId)
                     + '?story_id=' + encodeURIComponent(state.storyId)
                 );
                 if (restored && restored.ok) {
@@ -517,15 +530,16 @@
         const message = String(suggestedMessage || input.value || '').trim();
         if (!message) return;
         input.value = '';
+        const clientTurnId = getPendingTurnId(message);
+        const body = {
+            story_id: state.storyId,
+            session_id: state.sessionId,
+            client_turn_id: clientTurnId,
+            base_revision: state.revision,
+            message: message,
+        };
         setBusy(true);
         try {
-            const body = {
-                story_id: state.storyId,
-                session_id: state.sessionId,
-                client_turn_id: createId('numeric_web_turn_'),
-                base_revision: state.revision,
-                message: message,
-            };
             const result = await requestJson(api.input, { method: 'POST', body });
             if (!result || !result.ok) {
                 if (result && result.reason === 'numeric_base_revision_mismatch') {
@@ -535,6 +549,7 @@
                     if (refreshed) {
                         setStatus('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
                     }
+                    setBusy(false);
                     return;
                 } else if (
                     result
@@ -556,6 +571,7 @@
                 return;
             }
             applySnapshot(result);
+            clearPendingTurn(clientTurnId);
         } catch (_) {
             input.value = message;
             setStatus('theater.failed', '提交失败');

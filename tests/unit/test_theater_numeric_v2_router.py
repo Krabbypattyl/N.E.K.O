@@ -183,3 +183,97 @@ def test_numeric_v2_actor_failure_does_not_commit_half_turn(tmp_path, monkeypatc
         )
         assert restored.json()["session"]["revision"] == 0
         assert restored.json()["session"]["performance_history"] == []
+
+
+def test_numeric_v2_router_rejects_stale_or_ended_turn_before_evaluator(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("Evaluator must not run for a stale or ended session")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", fail_if_called)
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "router_precheck"},
+        )
+        assert started.status_code == 200
+
+        stale = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "router_precheck",
+                "client_turn_id": "stale_turn",
+                "base_revision": 1,
+                "message": "旧状态不能调用模型。",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["reason"] == "numeric_base_revision_mismatch"
+
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "router_precheck",
+                "base_revision": 0,
+            },
+        )
+        assert ended.status_code == 200
+
+        after_end = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "router_precheck",
+                "client_turn_id": "after_end",
+                "base_revision": 0,
+                "message": "已结束状态不能调用模型。",
+            },
+        )
+        assert after_end.status_code == 409
+        assert after_end.json()["reason"] == "session_already_ended"
+
+
+def test_numeric_v2_router_replaces_session_when_catgirl_changed(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    class _ChangedConfigManager(_ConfigManager):
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": "新猫娘",
+                "猫娘": {"新猫娘": {"昵称": "新猫娘", "人格": "测试人格"}},
+                "主人": {"昵称": "哥哥"},
+            }
+
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "catgirl_before_change"},
+        )
+        assert started.status_code == 200
+        monkeypatch.setattr(numeric_theater_router, "get_config_manager", lambda: _ChangedConfigManager(tmp_path))
+        blocked = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "catgirl_blocked"},
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
+
+        replaced = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "catgirl_replaced",
+                "replace_existing": True,
+            },
+        )
+        assert replaced.status_code == 200
+        assert replaced.json()["session"]["session_id"] == "catgirl_before_change"
+        payload = json.loads(
+            (tmp_path / "theater" / "numeric_v2" / "sessions" / "catgirl_before_change.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert payload["session"]["catgirl_binding"]["catgirl_name"] == "新猫娘"

@@ -7,17 +7,20 @@
 """提供本地轻量小剧场页面所需的 HTTP 接口。"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Request
 
 from services.theater import free_runtime, story_loader
+from services.theater.paths import theater_root
 from services.theater.tts_bridge import speak_committed_line
 from .shared_state import get_config_manager, get_session_manager
 
 
 router = APIRouter(tags=["theater"], prefix="/api/theater")
+logger = logging.getLogger(__name__)
 
 
 def _resolve_lanlan_name() -> str:
@@ -30,15 +33,8 @@ def _resolve_lanlan_name() -> str:
 
 
 def _theater_root() -> Path:
-    """解析小剧场私有运行目录，优先使用当前 app docs 目录。"""  # noqa: DOCSTRING_CJK
-    manager = get_config_manager()
-    app_docs_dir = getattr(manager, "app_docs_dir", None)
-    if app_docs_dir:
-        return Path(app_docs_dir) / "theater"
-    config_dir = getattr(manager, "config_dir", None)
-    if config_dir:
-        return Path(config_dir).parent / "theater"
-    return Path("data") / "theater"
+    """解析小剧场私有运行目录。"""  # noqa: DOCSTRING_CJK
+    return theater_root(get_config_manager())
 
 
 def _validate_theater_local_mutation(request: Request, data: dict[str, Any]):
@@ -113,7 +109,10 @@ async def list_theater_stories():
 @router.post("/free/session/start")
 async def start_free_theater_session(request: Request):
     """启动独立自由模式 Session，不触碰剧本模式 active 索引或账本。"""  # noqa: DOCSTRING_CJK
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
     if not isinstance(data, dict):
         data = {}
     validation_error = _validate_theater_local_mutation(request, data)
@@ -130,14 +129,20 @@ async def start_free_theater_session(request: Request):
         config_manager=get_config_manager(),
     )
     # 自由模式使用独立认领器接入现有播放器，不跨模式读取剧本 Session。
-    await _speak_free_committed_dialogue(result)
+    try:
+        await _speak_free_committed_dialogue(result)
+    except Exception:
+        logger.exception("Free theater TTS claim failed during session start")
     return result
 
 
 @router.post("/free/session/input")
 async def submit_free_theater_input(request: Request):
     """提交自由模式输入；服务端只保存沙盒 Session，不推进 Story v3。"""  # noqa: DOCSTRING_CJK
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
     if not isinstance(data, dict):
         data = {}
     validation_error = _validate_theater_local_mutation(request, data)
@@ -155,7 +160,10 @@ async def submit_free_theater_input(request: Request):
         expected_lanlan_name=_resolve_lanlan_name() or "Lan",
     )
     # 认领器只消费已提交的公开对白；失败时保留文字结果，不阻断自由回合。
-    await _speak_free_committed_dialogue(result)
+    try:
+        await _speak_free_committed_dialogue(result)
+    except Exception:
+        logger.exception("Free theater TTS claim failed during input")
     return result
 
 

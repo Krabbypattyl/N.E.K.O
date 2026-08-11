@@ -74,6 +74,34 @@ def reload_module(module_name: str):
     return importlib.reload(module)
 
 
+def _character_memory_theater_story() -> dict:
+    """返回角色生命周期测试需要的最小自由模式来源。"""
+    return {
+        "id": "character_memory_theater_story",
+        "story_revision": "character-memory-v1",
+        "title": "角色生命周期测试来源",
+        "theme": "验证角色切换与改名时的自由 Session 清理",
+        "fact_lifecycle_migration_status": "complete",
+        "scenario_card": {
+            "player_role": "测试玩家",
+            "catgirl_role": "测试猫娘",
+            "primary_goal": "验证 Session 生命周期",
+        },
+        "restrictions": [],
+        "runtime_guardrails": {},
+        "seed": {"forbidden_assumptions": []},
+        "initial_scene_id": "character_memory_opening",
+        "scenes": [
+            {
+                "id": "character_memory_opening",
+                "title": "测试房间",
+                "text": "测试灯光保持稳定，场景只用于创建自由 Session。",
+            }
+        ],
+        "narrative_nodes": [],
+    }
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancelled_thread_call_returns_retained_lock_transaction():
@@ -1384,15 +1412,23 @@ async def test_character_switch_clears_theater_session_for_outgoing_catgirl():
             theater_root = Path(cm.app_docs_dir) / "theater"
             # 该测试只验证角色切换清理生命周期；Actor 现在是开场事务的必需依赖，
             # 因此用合格演绎结果隔离用户 API 配置，避免把模型缺失误当成清理失败。
-            with patch.object(
-                free_runtime.llm,
-                "generate_free_turn_async",
-                new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
+            with (
+                patch.object(
+                    free_runtime.llm,
+                    "generate_free_turn_async",
+                    new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
+                ),
+                patch.object(
+                    free_runtime.story_loader,
+                    "load_story",
+                    new=AsyncMock(return_value=_character_memory_theater_story()),
+                ),
             ):
                 theater_session = await free_runtime.start_session(
                     theater_root,
                     lanlan_name=old_catgirl,
                 )
+            assert theater_session["ok"] is True, theater_session
             switch_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": new_catgirl})
             )
@@ -1712,15 +1748,23 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             theater_root = Path(cm.app_docs_dir) / "theater"
             # 改名测试不评估模型质量；固定一条合法 Actor 输出后，只观察
             # Session 是否随角色重命名按既有规则结束并清除恢复索引。
-            with patch.object(
-                theater_runtime.llm,
-                "generate_free_turn_async",
-                new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
+            with (
+                patch.object(
+                    theater_runtime.llm,
+                    "generate_free_turn_async",
+                    new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
+                ),
+                patch.object(
+                    theater_runtime.story_loader,
+                    "load_story",
+                    new=AsyncMock(return_value=_character_memory_theater_story()),
+                ),
             ):
                 theater_session = await theater_runtime.start_session(
                     theater_root,
                     lanlan_name="旧角色",
                 )
+            assert theater_session["ok"] is True, theater_session
 
             old_memory_dir = Path(cm.memory_dir) / "旧角色"
             old_memory_dir.mkdir(parents=True, exist_ok=True)

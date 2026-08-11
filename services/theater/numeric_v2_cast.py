@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, Mapping
 
+from .name_projection import replace_names
+
 
 _NAME_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
 
@@ -46,16 +48,11 @@ class NumericV2CastProjection:
         )
 
     def text(self, value: Any) -> str:
-        result = str(value or "")
         replacements = (
             (self.source_player_name, self.player_name),
             (self.source_catgirl_name, self.catgirl_name),
         )
-        # 长名字先替换，避免一个源名字是另一个名字前缀时产生半截结果。
-        for source, target in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
-            if source and source != target:
-                result = result.replace(source, target)
-        return result
+        return replace_names(value, replacements)
 
     def value(self, value: Any) -> Any:
         if isinstance(value, str):

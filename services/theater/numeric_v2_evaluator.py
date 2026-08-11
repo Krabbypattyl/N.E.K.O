@@ -12,11 +12,15 @@ from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
 from .numeric_v2_cast import NumericV2CastProjection
+from .llm_context import bound_prompt_messages, truncate_prompt_value
 from .numeric_v2_runtime import MetricChangeV2, NumericV2Engine, ScriptSessionV2
 
 
 NUMERIC_V2_EVALUATOR_TIMEOUT_SECONDS = 12.0
 NUMERIC_V2_EVALUATOR_MAX_OUTPUT_TOKENS = 420
+NUMERIC_V2_EVALUATOR_INPUT_MAX_TOKENS = 2600
+NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS = 180
+NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS = 140
 
 
 class NumericV2EvaluatorError(RuntimeError):
@@ -52,23 +56,38 @@ def _recent_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
     result = [{
         "phase": "opening",
         "player_input": "",
-        "narration": str(opening.get("narration") or "")[:500],
+        "narration": truncate_prompt_value(
+            str(opening.get("narration") or ""),
+            max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+        ),
         "dialogue": [
-            str(line.get("text") or "")[:300]
+            truncate_prompt_value(
+                str(line.get("text") or ""),
+                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+            )
             for line in opening.get("dialogue") or []
             if isinstance(line, Mapping)
-        ],
+        ][:8],
     }]
     for record in session.performance_history[-4:]:
         result.append({
             "phase": "turn",
-            "player_input": str(record.get("input_text") or "")[:500],
-            "narration": str(record.get("narration") or "")[:500],
+            "player_input": truncate_prompt_value(
+                str(record.get("input_text") or ""),
+                max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
+            ),
+            "narration": truncate_prompt_value(
+                str(record.get("narration") or ""),
+                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+            ),
             "dialogue": [
-                str(line.get("text") or "")[:300]
+                truncate_prompt_value(
+                    str(line.get("text") or ""),
+                    max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+                )
                 for line in record.get("dialogue") or []
                 if isinstance(line, Mapping)
-            ],
+            ][:8],
         })
     return result
 
@@ -99,13 +118,22 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
             continue
         result.append({
             "phase": "turn",
-            "player_input": str(record.get("input_text") or "")[:500],
-            "narration": str(record.get("narration") or "")[:500],
+            "player_input": truncate_prompt_value(
+                str(record.get("input_text") or ""),
+                max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
+            ),
+            "narration": truncate_prompt_value(
+                str(record.get("narration") or ""),
+                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+            ),
             "dialogue": [
-                str(line.get("text") or "")[:300]
+                truncate_prompt_value(
+                    str(line.get("text") or ""),
+                    max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+                )
                 for line in record.get("dialogue") or []
                 if isinstance(line, Mapping)
-            ],
+            ][:8],
         })
     return result[-8:]
 
@@ -129,10 +157,22 @@ def _story_beat_for_evaluator(
 
     projected = cast.value(beat)
     return {
-        "scene_anchor": _first_sentence(projected.get("summary")),
-        "pending_goals": list(projected.get("must_happen") or []),
-        "boundaries": list(projected.get("must_not_happen") or []),
-        "scene_direction": str(projected.get("transition_goal") or ""),
+        "scene_anchor": truncate_prompt_value(
+            _first_sentence(projected.get("summary")),
+            max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+        ),
+        "pending_goals": [
+            truncate_prompt_value(item, max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS)
+            for item in list(projected.get("must_happen") or [])[:8]
+        ],
+        "boundaries": [
+            truncate_prompt_value(item, max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS)
+            for item in list(projected.get("must_not_happen") or [])[:8]
+        ],
+        "scene_direction": truncate_prompt_value(
+            str(projected.get("transition_goal") or ""),
+            max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+        ),
     }
 
 
@@ -155,21 +195,30 @@ def _build_messages(
         increase_criteria = [
             {
                 "criterion_id": f"{metric_id}.increase.{index + 1}",
-                "text": cast.text(criterion),
+                "text": truncate_prompt_value(
+                    cast.text(criterion),
+                    max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+                ),
             }
             for index, criterion in enumerate(definition["increase_criteria"])
         ]
         decrease_criteria = [
             {
                 "criterion_id": f"{metric_id}.decrease.{index + 1}",
-                "text": cast.text(criterion),
+                "text": truncate_prompt_value(
+                    cast.text(criterion),
+                    max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+                ),
             }
             for index, criterion in enumerate(definition["decrease_criteria"])
         ]
         metrics.append({
             "id": metric_id,
             "name": definition["name"],
-            "description": cast.text(definition["description"]),
+            "description": truncate_prompt_value(
+                cast.text(definition["description"]),
+                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+            ),
             "current_band": _band_label(definition, session.metrics[metric_id]),
             "per_turn_limit": definition["per_turn_limit"],
             "increase_criteria": increase_criteria,
@@ -201,7 +250,10 @@ def _build_messages(
         "metrics": metrics,
         "recent_context": _recent_context(session),
         "current_scene_context": _current_scene_context(session),
-        "player_input": message,
+        "player_input": truncate_prompt_value(
+            message,
+            max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
+        ),
     }
     return [
         SystemMessage(content=system),
@@ -311,8 +363,13 @@ class NumericV2MetricEvaluator:
                 max_completion_tokens=NUMERIC_V2_EVALUATOR_MAX_OUTPUT_TOKENS,
             )
             async with client:
+                request_messages = bound_prompt_messages(
+                    _build_messages(engine, session, message),
+                    max_tokens=NUMERIC_V2_EVALUATOR_INPUT_MAX_TOKENS,
+                    field_max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+                )
                 response = await asyncio.wait_for(
-                    client.ainvoke(_build_messages(engine, session, message)),
+                    client.ainvoke(request_messages),
                     timeout=NUMERIC_V2_EVALUATOR_TIMEOUT_SECONDS,
                 )
         except asyncio.TimeoutError as exc:

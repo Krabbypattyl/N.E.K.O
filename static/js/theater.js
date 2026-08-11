@@ -13,6 +13,7 @@
     const FREE_ACTOR_UNAVAILABLE_REASON = 'free_actor_unavailable';
     const FREE_ROLE_CARD_INVALID_REASON = 'free_role_card_invalid';
     const TYPEWRITER_CHARACTER_DELAY_MS = 18;
+    const REQUEST_TIMEOUT_MS = 120000;
     const state = {
         sessionId: '',
         storyId: '',
@@ -61,7 +62,18 @@
         async function send() {
             const headers = { 'Content-Type': 'application/json' };
             if (method !== 'GET') Object.assign(headers, await getMutationHeaders());
-            return fetch(url, { method: method, headers: headers, body: serializedBody });
+            const controller = new AbortController();
+            const timer = window.setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
+            try {
+                return await fetch(url, {
+                    method: method,
+                    headers: headers,
+                    body: serializedBody,
+                    signal: controller.signal,
+                });
+            } finally {
+                window.clearTimeout(timer);
+            }
         }
         let response;
         try { response = await send(); } catch (error) {

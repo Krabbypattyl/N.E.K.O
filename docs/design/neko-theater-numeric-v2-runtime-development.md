@@ -236,9 +236,9 @@ Numeric v2 不使用 `interaction_rules`、`available_interaction_ids` 和正式
 - 来源节点存在两个或以上出口时，每条路线至少需要一个 `metric_compare` 条件；
 - 空条件不能在多出口分支中充当默认路线，避免分支选择依赖数组顺序或模型猜测。
 
-不支持模型公式、时间脚本或未声明字段。当前节点完成 `min_turns` 前不检查出口；达到后由状态
-引擎选择 route gate。条件未满足时继续留在当前幕；Actor 只负责执行已选中
-`transition_contract` 的表现。
+不支持模型公式、时间脚本或未声明字段。当前节点完成 `min_turns` 前不检查出口；达到后仍只有在
+Evaluator 明确返回 `scene_complete: true` 时，状态引擎才选择 route gate。条件未满足或当前幕未完成时
+继续留在当前幕；Actor 只负责执行已选中 `transition_contract` 的表现。
 
 ### 4.5 结局
 
@@ -277,6 +277,7 @@ Numeric v2 不使用 `interaction_rules`、`available_interaction_ids` 和正式
 
 ```json
 {
+  "scene_complete": false,
   "metric_changes": {
     "trust": {
       "delta": 4,
@@ -285,6 +286,10 @@ Numeric v2 不使用 `interaction_rules`、`available_interaction_ids` 和正式
   }
 }
 ```
+
+`scene_complete` 是必填布尔字段：只有当前幕的全部 `pending_goals` 已由最近证据或玩家本轮明确行动完成时
+才能为 `true`，否则必须为 `false`。Runtime 的默认安全值是 `false`，缺失或非布尔值直接拒绝；`min_turns`
+只定义最短停留时间，不能单独触发换幕。
 
 `metric_changes` 以 metric ID 为 key，因此同一 metric 每回合结构上最多出现一次。命中多条依据时，
 模型只选最直接的一条，不叠加 delta。模型不能返回 after value、route、Node、Edge、ending、
@@ -642,5 +647,5 @@ static/js/theater_numeric_v2.js             # 页面状态和恢复
 3. 默认单回合增加和减少上限均为 5，作者可在合同范围内调整。
 4. 所有 metric 对玩家隐藏。
 5. 非结局节点 `min_turns` 默认 2，可由作者在 1—20 内调整。
-6. 达到 `min_turns` 后检查 route gate；条件满足时在当前回合过渡，未满足时继续留在当前节点。
+6. 达到 `min_turns` 且 `scene_complete=true` 后检查 route gate；否则继续留在当前节点。
 7. Actor 推荐输入是软输出，允许 0—4 条，建议格式问题不回滚合法正文。

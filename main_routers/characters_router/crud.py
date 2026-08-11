@@ -1090,24 +1090,14 @@ async def set_current_catgirl(request: Request):
     return {"success": True}
 
 
-def _theater_root_for_config_manager(config_manager) -> Path:
-    """根据当前配置管理器解析小剧场私有运行目录。"""  # noqa: DOCSTRING_CJK
-    app_docs_dir = getattr(config_manager, "app_docs_dir", None)
-    if app_docs_dir:
-        return Path(app_docs_dir) / "theater"
-    config_dir = getattr(config_manager, "config_dir", None)
-    if config_dir:
-        return Path(config_dir).parent / "theater"
-    return Path("data") / "theater"
-
-
 async def _publish_character_switch_with_theater_boundary(config_manager, old_catgirl: str, publish) -> dict:
     """让当前猫娘发布与自由模式 Session 共享角色边界。"""  # noqa: DOCSTRING_CJK
     # Numeric v2 不维护按角色名的 active 索引；这里只清理自由模式沙盒。
     from services.theater import free_runtime
+    from services.theater.paths import theater_root
 
     return await free_runtime.publish_character_switch(
-        _theater_root_for_config_manager(config_manager),
+        theater_root(config_manager),
         old_lanlan_name=old_catgirl,
         publish=publish,
     )
@@ -1117,9 +1107,10 @@ async def _clear_theater_session_after_current_catgirl_rename(config_manager, ol
     """当前猫娘改名成功后结束旧自由 Session，避免留下不可恢复的 active key。"""  # noqa: DOCSTRING_CJK
     # 角色 Router 只按需依赖自由 Runtime，避免重新引入已删除的 Story v3 剧本 Runtime。
     from services.theater import free_runtime
+    from services.theater.paths import theater_root
 
     result = await free_runtime.clear_character_session(
-        _theater_root_for_config_manager(config_manager),
+        theater_root(config_manager),
         lanlan_name=old_catgirl,
     )
     return bool(result.get("cleared"))

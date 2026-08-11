@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from services.theater import numeric_v2_registry
 from services.theater.numeric_v2 import NumericV2CompileError, NumericV2Compiler
 from services.theater.numeric_v2_registry import (
     NumericV2PackageExistsError,
@@ -160,6 +161,19 @@ def test_numeric_v2_rejects_route_threshold_outside_metric_range():
     )
 
 
+def test_numeric_v2_rejects_overlapping_equal_priority_routes():
+    story = numeric_v2_story()
+    story["nodes"][0]["route_gates"][0]["priority"] = 10
+    story["nodes"][0]["route_gates"][1]["priority"] = 10
+    story["nodes"][0]["route_gates"][1]["conditions"]["all"][0]["op"] = ">="
+    story["nodes"][0]["route_gates"][1]["conditions"]["all"][0]["value"] = 60
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(issue.code == "overlapping_route_priority" for issue in caught.value.issues)
+
+
 def test_numeric_v2_rejects_player_visible_metric():
     story = numeric_v2_story()
     story["metric_schema"]["trust"]["visibility"] = "public"
@@ -298,3 +312,19 @@ def test_numeric_v2_registry_seeds_default_story_into_empty_root(tmp_path):
     packages = registry.list_packages()
     assert [item["story_id"] for item in packages] == ["story_d079453b8e9f"]
     assert (package_root / "story_d079453b8e9f.json").is_file()
+
+
+def test_numeric_v2_registry_falls_back_to_exclusive_creation(tmp_path, monkeypatch):
+    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
+    registry = NumericV2PackageRegistry(package_root)
+
+    def no_hard_links(*_args, **_kwargs):
+        raise OSError("hard links unavailable")
+
+    monkeypatch.setattr(numeric_v2_registry.os, "link", no_hard_links)
+    result = registry.import_package(numeric_v2_story())
+
+    assert result["story_id"] == "numeric_v2_contract"
+    assert (package_root / "numeric_v2_contract.json").is_file()
+    with pytest.raises(NumericV2PackageExistsError):
+        registry.import_package(numeric_v2_story())

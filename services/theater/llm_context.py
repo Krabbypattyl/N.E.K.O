@@ -35,7 +35,11 @@ def scoped_story_for_prompt(
     projected = dict(story)
     background = str(story.get("background") or story.get("world_seed") or "")
     if max_background_tokens is not None:
-        projected["background"] = truncate_to_tokens(background, max_background_tokens)
+        bounded = truncate_to_tokens(background, max_background_tokens)
+        projected["background"] = bounded
+        # Keep both legacy seed fields aligned so callers cannot accidentally
+        # bypass the bounded projection by reading world_seed.
+        projected["world_seed"] = bounded
     return projected
 
 
@@ -44,11 +48,77 @@ def _complete_model_text(
 ) -> str | None:
     """文本只有完整进入预算时才返回，避免把截断句交给模型。"""  # noqa: DOCSTRING_CJK
     text = str(value or "")
-    if max_chars is not None:
-        # 自由输入只需要本地字符预算，不因 tokenizer 缺失触发远程下载。
-        return text if len(text) <= max(0, int(max_chars)) else None
+    if max_chars is not None and len(text) > max(0, int(max_chars)):
+        return None
     bounded = truncate_to_tokens(text, max_tokens)
     return text if bounded == text else None
+
+
+def truncate_prompt_value(value: Any, *, max_tokens: int, max_items: int = 8) -> Any:
+    """递归限制会进入剧场 Prompt 的动态文本和集合大小。"""  # noqa: DOCSTRING_CJK
+    if isinstance(value, str):
+        return truncate_to_tokens(value, max_tokens)
+    if isinstance(value, dict):
+        return {
+            str(key): truncate_prompt_value(item, max_tokens=max_tokens, max_items=max_items)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            truncate_prompt_value(item, max_tokens=max_tokens, max_items=max_items)
+            for item in value[:max_items]
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            truncate_prompt_value(item, max_tokens=max_tokens, max_items=max_items)
+            for item in value[:max_items]
+        )
+    return value
+
+
+def bound_prompt_messages(
+    messages: list[Any], *, max_tokens: int, field_max_tokens: int
+) -> list[Any]:
+    """在保留消息结构的前提下限制模型消息中的动态文本。"""  # noqa: DOCSTRING_CJK
+    bounded_messages: list[Any] = []
+    for message in list(messages or []):
+        content = str(
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", "")
+        )
+        json_start = content.find("{")
+        bounded_content = content
+        if json_start >= 0:
+            prefix = content[:json_start]
+            try:
+                payload = json.loads(content[json_start:])
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, (dict, list)):
+                bounded_content = prefix + json.dumps(
+                    truncate_prompt_value(
+                        payload,
+                        max_tokens=field_max_tokens,
+                    ),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                bounded_content = truncate_to_tokens(content, max_tokens)
+        else:
+            bounded_content = truncate_to_tokens(content, max_tokens)
+
+        if isinstance(message, dict):
+            replacement = dict(message)
+            replacement["content"] = bounded_content
+        else:
+            try:
+                replacement = type(message)(content=bounded_content)
+            except TypeError:
+                replacement = message
+        bounded_messages.append(replacement)
+    return bounded_messages
 
 
 def _load_character_profile(

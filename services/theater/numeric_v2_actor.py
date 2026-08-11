@@ -11,13 +11,22 @@ from typing import Any, Mapping
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
-from .llm_context import THEATER_PERSONA_MAX_CHARS, _load_character_profile, _load_player_address
+from .llm_context import (
+    THEATER_PERSONA_MAX_CHARS,
+    _load_character_profile,
+    _load_player_address,
+    bound_prompt_messages,
+    truncate_prompt_value,
+)
 from .numeric_v2_cast import NumericV2CastProjection
 from .numeric_v2_runtime import NumericV2Engine, ScriptSessionV2, TurnOutcomeV2
 
 
 NUMERIC_V2_ACTOR_TIMEOUT_SECONDS = 35.0
 NUMERIC_V2_ACTOR_MAX_OUTPUT_TOKENS = 1100
+NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS = 3200
+NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS = 180
+NUMERIC_V2_ACTOR_PLAYER_INPUT_MAX_TOKENS = 140
 logger = logging.getLogger(__name__)
 
 
@@ -51,19 +60,38 @@ def _history(session: ScriptSessionV2) -> list[dict[str, Any]]:
     rows = [{
         "phase": "opening",
         "player_input": "",
-        "narration": str(opening.get("narration") or "")[:700],
+        "narration": truncate_prompt_value(
+            str(opening.get("narration") or ""),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
         "dialogue": [
-            str(item.get("text") or "")[:400]
+            truncate_prompt_value(
+                str(item.get("text") or ""),
+                max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+            )
             for item in opening.get("dialogue") or []
             if isinstance(item, Mapping)
-        ],
+        ][:8],
     }]
     for record in session.performance_history[-6:]:
         rows.append({
             "phase": "turn",
-            "player_input": str(record.get("input_text") or "")[:600],
-            "narration": str(record.get("narration") or "")[:700],
-            "dialogue": [str(item.get("text") or "")[:400] for item in record.get("dialogue") or [] if isinstance(item, Mapping)],
+            "player_input": truncate_prompt_value(
+                str(record.get("input_text") or ""),
+                max_tokens=NUMERIC_V2_ACTOR_PLAYER_INPUT_MAX_TOKENS,
+            ),
+            "narration": truncate_prompt_value(
+                str(record.get("narration") or ""),
+                max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+            ),
+            "dialogue": [
+                truncate_prompt_value(
+                    str(item.get("text") or ""),
+                    max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+                )
+                for item in record.get("dialogue") or []
+                if isinstance(item, Mapping)
+            ][:8],
         })
     return rows
 
@@ -73,11 +101,26 @@ def _beat_for_actor(cast: NumericV2CastProjection, beat: Mapping[str, Any]) -> d
 
     projected = cast.value(beat)
     return {
-        "opening_scene": _opening_anchor(projected.get("summary")),
-        "pending_goals": list(projected.get("must_happen") or []),
-        "boundaries": list(projected.get("must_not_happen") or []),
-        "scene_role_notes": str(projected.get("catgirl_situation") or ""),
-        "scene_direction": str(projected.get("transition_goal") or ""),
+        "opening_scene": truncate_prompt_value(
+            _opening_anchor(projected.get("summary")),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
+        "pending_goals": [
+            truncate_prompt_value(item, max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS)
+            for item in list(projected.get("must_happen") or [])[:8]
+        ],
+        "boundaries": [
+            truncate_prompt_value(item, max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS)
+            for item in list(projected.get("must_not_happen") or [])[:8]
+        ],
+        "scene_role_notes": truncate_prompt_value(
+            str(projected.get("catgirl_situation") or ""),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
+        "scene_direction": truncate_prompt_value(
+            str(projected.get("transition_goal") or ""),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
         "fact_rule": "pending_goals 与 scene_direction 都是尚未完成的作者目标，不是已经发生的事实。",
     }
 
@@ -150,7 +193,7 @@ def _system_prompt(
         "dialogue 每项只能是 {\"speaker_id\":\"active_catgirl\",\"text\":\"...\"}；"
         "dialogue.text 只能放猫娘实际说出口的完整话语，不得放动作、神态、旁白或未说完的半句话；所有动作写入 narration。"
         "suggested_inputs 提供 2 到 4 条玩家可直接说出或执行的自然语言，不剧透路线，也不得假定玩家做过 recent_context 中不存在的事。\n"
-        f"当前猫娘人格：{character_profile[:THEATER_PERSONA_MAX_CHARS]}"
+        f"当前猫娘人格：{truncate_prompt_value(character_profile, max_tokens=160)}"
     )
 
 
@@ -169,8 +212,14 @@ def _opening_messages(
     data = {
         "opening_phase": True,
         "visible_player_history": [],
-        "intro": cast.intro(engine.story),
-        "role_overlay": cast.value(engine.story["catgirl_binding"]["role_overlay"]),
+        "intro": truncate_prompt_value(
+            cast.intro(engine.story),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
+        "role_overlay": truncate_prompt_value(
+            cast.value(engine.story["catgirl_binding"]["role_overlay"]),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
         "current_story_beat": _opening_beat_for_actor(cast, node["story_beat"]),
         "instruction": (
             "这是玩家输入前的公开开场。只用环境和猫娘可见行动建立当下场景，再由猫娘主动说出第一句；"
@@ -216,7 +265,10 @@ def _turn_messages(
             if route_changed
             else None
         ),
-        "transition_contract": cast.value(outcome.transition_contract),
+        "transition_contract": truncate_prompt_value(
+            cast.value(outcome.transition_contract),
+            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+        ),
         "current_metric_bands": _band_projection(engine, outcome.session.metrics),
         "node_turn": session.node_turn_count + 1,
         "minimum_turns_before_route": int(source.get("min_turns") or 1),
@@ -228,7 +280,10 @@ def _turn_messages(
         ),
         "continuity_rule": "recent_context 是唯一已发生事实；节点目标不能覆盖或改写其中的时间、物品、行为与关系。",
         "recent_context": _history(session),
-        "player_input": player_input,
+        "player_input": truncate_prompt_value(
+            player_input,
+            max_tokens=NUMERIC_V2_ACTOR_PLAYER_INPUT_MAX_TOKENS,
+        ),
     }
     return [
         SystemMessage(content=_system_prompt(
@@ -366,7 +421,12 @@ class NumericV2Actor:
                 max_completion_tokens=NUMERIC_V2_ACTOR_MAX_OUTPUT_TOKENS,
             )
             async with client:
-                response = await asyncio.wait_for(client.ainvoke(messages), timeout=NUMERIC_V2_ACTOR_TIMEOUT_SECONDS)
+                request_messages = bound_prompt_messages(
+                    messages,
+                    max_tokens=NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS,
+                    field_max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+                )
+                response = await asyncio.wait_for(client.ainvoke(request_messages), timeout=NUMERIC_V2_ACTOR_TIMEOUT_SECONDS)
         except asyncio.TimeoutError as exc:
             logger.warning("Numeric v2 Actor failed: reason=numeric_v2_actor_timeout")
             raise NumericV2ActorError("numeric_v2_actor_timeout") from exc

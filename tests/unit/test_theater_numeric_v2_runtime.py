@@ -133,6 +133,34 @@ async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_restart_uses_a_new_session_id_and_preserves_ended_history(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    old = await runtime.start_session(
+        session_id="runtime_story_ended",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    ended = await runtime.end_session(
+        old.session.session_id,
+        base_revision=0,
+        reason="user_exit",
+    )
+    restarted = await runtime.restart_session(
+        session_id="runtime_story_reopened",
+        catgirl_binding={**_binding(), "catgirl_name": "NewLan"},
+        opening_performance=_opening(),
+    )
+
+    assert ended.session.status == "ended"
+    assert restarted.session.session_id == "runtime_story_reopened"
+    assert restarted.session.status == "active"
+    assert (tmp_path / "numeric_v2" / "sessions" / "runtime_story_ended.json").is_file()
+    restored = await runtime.restore_story_session()
+    assert restored is not None
+    assert restored.session.session_id == "runtime_story_reopened"
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_does_not_advance_when_min_turns_reached_but_scene_is_incomplete(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -216,7 +244,8 @@ async def test_numeric_v2_restore_rejects_tampered_ledger(tmp_path):
     path = runtime.store._path(committed.session.session_id)
     payload = deepcopy(__import__("json").loads(path.read_text(encoding="utf-8")))
     payload["ledger_events"][0]["after_metrics"]["trust"] = 99
+    payload["session"]["metrics"]["trust"] = 99
     path.write_text(__import__("json").dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="numeric_session_not_at_ledger_tail"):
+    with pytest.raises(ValueError, match="numeric_ledger_replay_mismatch"):
         await runtime.restore_session("runtime_tamper")

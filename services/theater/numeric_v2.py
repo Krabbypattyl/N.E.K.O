@@ -72,6 +72,69 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value == value.strip()
 
 
+def _condition_branches(conditions: Mapping[str, Any]) -> list[list[Mapping[str, Any]]]:
+    if not isinstance(conditions, Mapping):
+        return []
+    mode = "any" if "any" in conditions else "all"
+    rows = [row for row in conditions.get(mode) or [] if isinstance(row, Mapping)]
+    return [rows] if mode == "all" else [[row] for row in rows]
+
+
+def _conditions_overlap(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> bool:
+    """Return whether two route predicates can be true for one metric state."""
+
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return False
+    for left_branch in _condition_branches(left):
+        for right_branch in _condition_branches(right):
+            rows = [*left_branch, *right_branch]
+            by_metric: dict[str, list[Mapping[str, Any]]] = {}
+            for row in rows:
+                metric = str(row.get("metric") or "")
+                if metric not in metric_ranges or row.get("op") not in _COMPARATORS or not _is_int(row.get("value")):
+                    # Other validation reports the malformed condition; do not
+                    # add a secondary overlap error for the same malformed row.
+                    by_metric = {}
+                    break
+                by_metric.setdefault(metric, []).append(row)
+            if not by_metric and rows:
+                continue
+            possible = True
+            for metric, metric_rows in by_metric.items():
+                minimum, maximum = metric_ranges[metric]
+                if minimum is None or maximum is None:
+                    possible = False
+                    break
+                candidates = {minimum, maximum}
+                for row in metric_rows:
+                    threshold = int(row["value"])
+                    candidates.update({threshold - 1, threshold, threshold + 1})
+                if not any(
+                    minimum <= candidate <= maximum
+                    and all(
+                        {
+                            "==": candidate == int(row["value"]),
+                            "!=": candidate != int(row["value"]),
+                            ">": candidate > int(row["value"]),
+                            "<": candidate < int(row["value"]),
+                            ">=": candidate >= int(row["value"]),
+                            "<=": candidate <= int(row["value"]),
+                        }[str(row["op"])]
+                        for row in metric_rows
+                    )
+                    for candidate in candidates
+                ):
+                    possible = False
+                    break
+            if possible:
+                return True
+    return False
+
+
 class _Collector:
     """集中收集问题，避免遇到第一个错误就中断作者定位。"""
 
@@ -299,7 +362,7 @@ class NumericV2Compiler:
             # 同一节点出现多个出口时，所有路线仍必须用作者配置的数值明确区分。
             allow_empty_conditions = len(routes) == 1
             targets: list[str] = []
-            priorities: dict[int, set[str]] = {}
+            priorities: dict[int, list[tuple[str, dict[str, Any], str]]] = {}
             for route_index, route_raw in enumerate(routes):
                 route_path = f"{path}.route_gates[{route_index}]"
                 route = c.obj(route_raw, route_path)
@@ -320,10 +383,18 @@ class NumericV2Compiler:
                     allow_empty=allow_empty_conditions,
                 )
                 if priority is not None:
-                    priorities.setdefault(priority, set())
-                    if signature in priorities[priority]:
+                    same_priority = priorities.setdefault(priority, [])
+                    raw_conditions = route.get("conditions")
+                    conditions = raw_conditions if isinstance(raw_conditions, Mapping) else {}
+                    if any(existing_signature == signature for existing_signature, _conditions, _path in same_priority):
                         c.add("duplicate_route_priority", route_path, "同一来源节点存在同优先级且相同条件的路线。")
-                    priorities[priority].add(signature)
+                    elif any(
+                        _conditions_overlap(existing_conditions, conditions, metric_ranges)
+                        for existing_signature, existing_conditions, _path in same_priority
+                        if existing_signature != "invalid" and signature != "invalid"
+                    ):
+                        c.add("overlapping_route_priority", route_path, "同一来源节点存在同优先级且条件重叠的路线。")
+                    same_priority.append((signature, dict(conditions), route_path))
                 NumericV2Compiler._validate_transition(c, route.get("transition_contract"), f"{route_path}.transition_contract")
             if node_id:
                 route_targets[node_id] = targets

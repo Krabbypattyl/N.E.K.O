@@ -142,6 +142,8 @@ def build_theater_free_turn_messages(
     card_description = str(active_card.get("description") or "").strip()
     card_scenario = str(active_card.get("scenario") or story.get("theme") or "").strip()
     title = str(active_card.get("story_title") or story.get("title") or "").strip()
+    background = str(story.get("background") or "").strip()
+    world_seed = str(story.get("world_seed") or background).strip()
     system_prompt = "\n\n".join(
         [
             THEATER_FREE_SYSTEM_PROMPT,
@@ -159,6 +161,10 @@ def build_theater_free_turn_messages(
         "[Role Card Scenario]",
         f"Title: {title}",
         f"Scenario: {card_scenario}",
+        "",
+        "[Story Context]",
+        f"Background: {background}",
+        f"World Seed: {world_seed}",
     ]
     world_info = active_card.get("world_info")
     if isinstance(world_info, list):

@@ -66,6 +66,8 @@ def test_theater_page_uses_free_idempotency_and_does_not_submit_choice_contract(
     assert "input_kind: 'free_input'" in script
     assert "choice_id" not in script
     assert "modeApiFor" not in script
+    assert "neko.theater.free.activeSession.v1" in script
+    assert "REQUEST_TIMEOUT_MS = 120000" in script
 
 
 def test_theater_page_keeps_identity_card_and_stage_toggle():

@@ -63,10 +63,20 @@ def main() -> int:
     except NumericV2PackageExistsError:
         print(json.dumps({"success": False, "error": {"code": "numeric_v2_story_exists"}}))
         return 4
-    except (NumericV2PackageError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except NumericV2PackageError as exc:
         print(json.dumps({
             "success": False,
             "error": {"code": str(exc) or "numeric_v2_validation_failed"},
+        }, ensure_ascii=False))
+        return 5
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        # Keep the CLI contract stable and do not expose local paths or parser text.
+        print(json.dumps({
+            "success": False,
+            "error": {
+                "code": "numeric_v2_source_read_failed",
+                "details": {"exception": type(exc).__name__},
+            },
         }, ensure_ascii=False))
         return 5
 

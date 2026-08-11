@@ -8,6 +8,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from utils.tokenize import truncate_to_tokens
+
 # 自由 Runtime 单独依赖 Free Seed 投影，完整 Story 只用于来源校验和 revision 恢复。
 from . import (
     fact_lifecycle,
@@ -557,11 +559,11 @@ async def submit_input(
         restore_error = _restore_error(session, story)
         if restore_error:
             return {"ok": False, "reason": restore_error}
-        if session.get("ended_at"):
-            return {"ok": False, "reason": "session_ended"}
         previous = session.get("turn_results_by_client_id") or {}
         if turn_id in previous:
             return deepcopy(previous[turn_id])
+        if session.get("ended_at"):
+            return {"ok": False, "reason": "session_ended"}
         revision = session_store.state_revision(session)
         if base_revision != revision:
             return {
@@ -617,6 +619,11 @@ async def submit_input(
             return response
         if not normalized_message:
             return {"ok": False, "reason": "invalid_free_input"}
+        if truncate_to_tokens(
+            normalized_message,
+            llm.THEATER_FREE_CURRENT_MESSAGE_MAX_TOKENS,
+        ) != normalized_message:
+            return {"ok": False, "reason": "free_input_too_long"}
         source_scene = _scene_for_session(story, session)
         if not source_scene:
             return {"ok": False, "reason": "story_has_no_initial_scene"}

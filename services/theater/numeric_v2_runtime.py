@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 import re
 from pathlib import Path
 from typing import Any, Mapping
+
+from utils.tokenize import truncate_to_tokens
 
 from .numeric_v2 import CompiledNumericV2Package, NumericV2Compiler
 from .numeric_v2_store import (
@@ -19,6 +22,7 @@ from .numeric_v2_store import (
 SESSION_SCHEMA = "neko.script.session.numeric.v2"
 LEDGER_EVENT_SCHEMA = "neko.script.ledger_event.numeric.v2"
 PERFORMANCE_RECORD_SCHEMA = "neko.script.performance_record.numeric.v2"
+NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS = 140
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPARATORS = {
     "==": lambda left, right: left == right,
@@ -116,6 +120,8 @@ class TurnRequestV2:
         )
         if request.base_revision < 0 or not request.message:
             raise NumericV2RuntimeError("numeric_turn_request_invalid")
+        if truncate_to_tokens(request.message, NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS) != request.message:
+            raise NumericV2RuntimeError("numeric_turn_input_too_long")
         return request
 
 
@@ -323,6 +329,7 @@ class NumericV2Engine:
             "route_status": route_status,
             "scene_complete": scene_complete,
             "node_turn_count": next_turn_count,
+            "status": next_status,
         }
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
 
@@ -373,6 +380,14 @@ class NumericV2Runtime:
     async def restore_story_session(self) -> NumericV2StoredSession | None:
         return await self.store.restore_story_session(self.engine.story_id)
 
+    @asynccontextmanager
+    async def story_session_guard(self):
+        async with self.store.story_session_guard(self.engine.story_id):
+            yield
+
+    async def restore_story_session_unlocked(self) -> NumericV2StoredSession | None:
+        return await self.store._restore_story_session_unlocked(self.engine.story_id)
+
     async def restart_session(
         self,
         *,
@@ -385,7 +400,10 @@ class NumericV2Runtime:
             catgirl_binding=catgirl_binding,
             opening_performance=opening_performance,
         )
-        stored = await self.store.replace(session)
+        try:
+            stored = await self.store.replace(session)
+        except NumericV2SessionNotFoundError:
+            stored = await self.store.create(session)
         await self.store.set_story_session_id(self.engine.story_id, session.session_id)
         return stored
 

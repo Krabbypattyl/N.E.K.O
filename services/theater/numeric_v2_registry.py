@@ -129,6 +129,29 @@ class NumericV2PackageRegistry:
                 os.link(temporary_path, target)
             except FileExistsError as exc:
                 raise NumericV2PackageExistsError("numeric_v2_story_exists") from exc
+            except OSError:
+                # Some user-selected filesystems do not support hard links.
+                # Fall back to exclusive creation without ever replacing a
+                # target that another process may have created concurrently.
+                try:
+                    target_fd = os.open(
+                        target,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                except FileExistsError as exc:
+                    raise NumericV2PackageExistsError("numeric_v2_story_exists") from exc
+                try:
+                    with os.fdopen(target_fd, "wb") as target_file:
+                        target_file.write(compiled.json_bytes)
+                        target_file.flush()
+                        os.fsync(target_file.fileno())
+                except Exception:
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
+                    raise
         except NumericV2PackageError:
             raise
         except OSError as exc:

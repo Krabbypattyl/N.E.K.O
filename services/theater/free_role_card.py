@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .name_projection import replace_names
+
 
 # 自由角色卡只属于当前 Free Session，和普通猫娘角色卡、Story Package 分开版本化。
 FREE_ROLE_CARD_SCHEMA_VERSION = "neko_theater_free_role_card_v1"
@@ -154,18 +156,12 @@ def bind_role_card_to_current_catgirl(
     )
     replace_pairs = list(dict.fromkeys(replace_pairs))
     for field in ("first_mes", "scenario", "mes_example"):
-        value = str(normalized.get(field) or "")
-        for old, new in replace_pairs:
-            value = value.replace(old, new)
-        normalized[field] = value
+        normalized[field] = replace_names(normalized.get(field), replace_pairs)
     world_info = normalized.get("world_info")
     if isinstance(world_info, list):
         rewritten_world_info: list[str] = []
         for item in world_info:
-            value = str(item or "")
-            for old, new in replace_pairs:
-                value = value.replace(old, new)
-            rewritten_world_info.append(value)
+            rewritten_world_info.append(replace_names(item, replace_pairs))
         normalized["world_info"] = rewritten_world_info
 
     normalized["name"] = current_name

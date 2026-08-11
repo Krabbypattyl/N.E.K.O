@@ -11,7 +11,11 @@ import pytest
 from services.theater import numeric_v2_actor, numeric_v2_evaluator
 from services.theater.numeric_v2_actor import NumericV2Actor, _parse_output
 from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator
-from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from services.theater.numeric_v2_runtime import (
+    NumericV2Engine,
+    NumericV2RuntimeError,
+    TurnRequestV2,
+)
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -54,6 +58,15 @@ def _session(engine: NumericV2Engine):
         },
         opening_performance={"narration": "开场", "dialogue": [], "suggested_inputs": []},
     )
+
+
+def test_numeric_v2_turn_request_rejects_input_over_token_limit():
+    with pytest.raises(NumericV2RuntimeError, match="numeric_turn_input_too_long"):
+        TurnRequestV2.from_mapping({
+            "client_turn_id": "long_input",
+            "base_revision": 0,
+            "message": "测试 " * 141,
+        })
 
 
 def test_numeric_v2_actor_discards_invalid_dialogue_items_without_reassigning_speaker():

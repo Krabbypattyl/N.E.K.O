@@ -37,6 +37,7 @@ from services.theater.numeric_v2_runtime import (
     NumericV2RuntimeError,
     TurnRequestV2,
 )
+from services.theater.paths import theater_root
 from services.theater.numeric_v2_store import (
     NumericV2SessionExistsError,
     NumericV2SessionNotFoundError,
@@ -51,14 +52,7 @@ router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
 
 def _numeric_root(config_manager: Any) -> Path:
     """v2 复用统一剧场根目录，但只访问 numeric_v2 私有子目录。"""
-
-    app_docs_dir = getattr(config_manager, "app_docs_dir", None)
-    if app_docs_dir:
-        return Path(app_docs_dir) / "theater"
-    config_dir = getattr(config_manager, "config_dir", None)
-    if config_dir:
-        return Path(config_dir).parent / "theater"
-    return Path("data") / "theater"
+    return theater_root(config_manager)
 
 
 def _registry(config_manager: Any) -> NumericV2PackageRegistry:
@@ -245,27 +239,32 @@ async def start_numeric_session(request: Request):
     replace_existing = payload.get("replace_existing") is True
     try:
         runtime = _runtime_for_story(config_manager, story_id)
-        existing = await runtime.restore_story_session()
-        if existing is not None:
-            _ensure_current_catgirl(existing.session, config_manager)
-            if not (replace_existing and existing.session.status == "ended"):
-                return {"ok": True, "resumed": True, **_numeric_payload(runtime, existing)}
-            # 重新开始复用同一个 Session 文件，不为同一剧本创建第二条记录。
-            opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
-            stored = await runtime.restart_session(
-                session_id=existing.session.session_id,
-                catgirl_binding=_current_catgirl_binding(config_manager),
-                opening_performance=opening,
-            )
-            session_id = existing.session.session_id
-        else:
-            # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
-            opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
-            stored = await runtime.start_session(
-                session_id=session_id,
-                catgirl_binding=_current_catgirl_binding(config_manager),
-                opening_performance=opening,
-            )
+        async with runtime.story_session_guard():
+            existing = await runtime.restore_story_session_unlocked()
+            binding = _current_catgirl_binding(config_manager)
+            if existing is not None:
+                binding_changed = dict(existing.session.catgirl_binding) != binding
+                if binding_changed and not replace_existing:
+                    _ensure_current_catgirl(existing.session, config_manager)
+                if not binding_changed and not (replace_existing and existing.session.status == "ended"):
+                    return {"ok": True, "resumed": True, **_numeric_payload(runtime, existing)}
+                # 重新开始复用同一个 Session 文件；角色变化时只有显式
+                # replace_existing 才允许用当前猫娘重建，避免旧绑定卡住入口。
+                opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+                stored = await runtime.restart_session(
+                    session_id=existing.session.session_id,
+                    catgirl_binding=binding,
+                    opening_performance=opening,
+                )
+                session_id = existing.session.session_id
+            else:
+                # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
+                opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+                stored = await runtime.start_session(
+                    session_id=session_id,
+                    catgirl_binding=binding,
+                    opening_performance=opening,
+                )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2SessionExistsError:
@@ -274,7 +273,11 @@ async def start_numeric_session(request: Request):
         return _error("numeric_v2_actor_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
-    except (NumericV2StoreError, NumericV2RuntimeError, ValueError) as exc:
+    except ValueError as exc:
+        if str(exc) == "catgirl_changed_requires_new_session":
+            return _error(str(exc), 409)
+        return _error(str(exc), 400)
+    except (NumericV2StoreError, NumericV2RuntimeError) as exc:
         return _error(str(exc), 400)
     await _speak_dialogue(config_manager, session_id=session_id, revision=0, dialogue=list(opening.get("dialogue") or []))
     return {"ok": True, **_numeric_payload(runtime, stored)}
@@ -337,6 +340,10 @@ async def submit_numeric_input(request: Request):
         # 幂等重放直接返回已提交快照，不能再次调用模型或重复结算。
         if turn.client_turn_id in current.session.processed_client_turn_ids:
             return {"ok": True, "idempotent_replay": True, **_numeric_payload(runtime, current)}
+        if current.session.status == "ended":
+            return _error("session_already_ended", 409)
+        if turn.base_revision != current.session.revision:
+            return _error("numeric_base_revision_mismatch", 409)
         evaluation = await NumericV2MetricEvaluator(config_manager).evaluate(
             engine=runtime.engine,
             session=current.session,
@@ -371,7 +378,11 @@ async def submit_numeric_input(request: Request):
         return _error("numeric_v2_actor_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
-    except (NumericV2RuntimeError, NumericV2StoreError, ValueError) as exc:
+    except ValueError as exc:
+        if str(exc) == "catgirl_changed_requires_new_session":
+            return _error(str(exc), 409)
+        return _error(str(exc), 400)
+    except (NumericV2RuntimeError, NumericV2StoreError) as exc:
         return _error(str(exc), 400)
     await _speak_dialogue(config_manager, session_id=session_id, revision=stored.session.revision, dialogue=list(performance.get("dialogue") or []))
     return {

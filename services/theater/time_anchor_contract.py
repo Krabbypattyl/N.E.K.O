@@ -7,7 +7,7 @@ from typing import Any
 
 
 TIME_ANCHOR_CONTRACT_VERSION = "time_anchor_v1"
-_DAY_RE = re.compile(r"(?P<number>三十一|三十|31|30)\s*(?:天|日)")
+_DAY_RE = re.compile(r"(?<![0-9０-９])(?P<number>三十一|三十|31|30)\s*(?:天|日)")
 _DEADLINE_MARKERS = (
     "停运",
     "关闭",
@@ -39,7 +39,7 @@ def numeric_time_anchor_issues(value: Any, path: str = "story") -> list[dict[str
         elif isinstance(item, str):
             for match in _DAY_RE.finditer(item):
                 raw = match.group("number")
-                number = 31 if raw == "三十一" else 30
+                number = 31 if raw in {"三十一", "31"} else 30
                 context = item[max(0, match.start() - 28) : match.end() + 28]
                 occurrences.append((number, context, item_path))
 

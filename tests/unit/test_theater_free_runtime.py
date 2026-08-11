@@ -14,6 +14,7 @@ from services.theater import (
     session_store,
     story_loader,
 )
+from services.theater.name_projection import replace_names
 from config.prompts.prompts_theater import (
     build_theater_free_turn_messages,
     build_theater_free_turn_prompts,
@@ -65,6 +66,18 @@ def test_free_output_contract_rejects_runtime_identifiers():
     assert _parse_free_output("　正文里不应出现 node_id 这样的内部字段") is None
 
 
+def test_name_projection_is_single_pass_and_ignores_empty_sources():
+    assert replace_names(
+        "顾映荷把小葵的伞递给哥哥。",
+        [("顾映荷", "小葵"), ("小葵", "哥哥"), ("", "错误替换")],
+    ) == "小葵把哥哥的伞递给哥哥。"
+
+
+def test_free_input_budget_rejects_text_over_token_limit():
+    """自由模式不能只依赖字符上限放行超出 token 预算的输入。"""
+    assert llm._complete_model_text("测试" * 141, 140, max_chars=560) is None
+
+
 def test_free_prompt_requires_plain_roleplay_text():
     """自由模式提示要求直接输出 RP-Hub 正文，不再要求临时状态 JSON。"""  # noqa: DOCSTRING_CJK
     system_prompt, user_prompt = build_theater_free_turn_prompts(
@@ -94,7 +107,12 @@ def test_free_messages_do_not_inject_fixed_roleplay_prelude():
     """自由消息只保留当前上下文，不注入固定的自问自答预热内容。"""
     messages = build_theater_free_turn_messages(
         lanlan_name="测试猫娘",
-        story={"title": "测试故事", "theme": "自由探索"},
+        story={
+            "title": "测试故事",
+            "theme": "自由探索",
+            "background": "只属于本剧本的背景锚点。",
+            "world_seed": "本剧本的世界种子。",
+        },
         scene={"title": "门廊", "text": "雨水沿着屋檐落下。"},
         user_message="我向她挥手。",
         recent_turns=[],
@@ -112,6 +130,8 @@ def test_free_messages_do_not_inject_fixed_roleplay_prelude():
     # 预热消息属于固定 Prompt 成本，不应混入自由模式的真实对话历史。
     assert "<difficulties>" not in contents
     assert "[RP-Hub READY]" not in contents
+    assert "Background: 只属于本剧本的背景锚点。" in contents
+    assert "World Seed: 本剧本的世界种子。" in contents
     assert messages[-1] == {"role": "user", "content": "我向她挥手。"}
 
 
@@ -617,6 +637,15 @@ async def test_free_session_is_isolated_and_idempotent(monkeypatch, tmp_path):
     )
     assert exited["can_resume"] is False
     assert "scenario_trace" not in exited
+    duplicate_exit = await free_runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="user_exit",
+        message="",
+        client_turn_id="free_exit_1",
+        base_revision=1,
+    )
+    assert duplicate_exit == exited
 
 
 @pytest.mark.asyncio

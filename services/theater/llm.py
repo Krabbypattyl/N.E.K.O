@@ -11,6 +11,7 @@ from config.prompts.prompts_theater import build_theater_free_turn_messages
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
+from utils.tokenize import count_tokens, truncate_to_tokens
 
 from . import observability
 from .llm_context import (
@@ -28,6 +29,10 @@ THEATER_FREE_TURN_TIMEOUT_SECONDS = 30.0
 THEATER_FREE_OUTPUT_MAX_TOKENS = 1400
 THEATER_FREE_CONTEXT_MAX_TOKENS = 700
 THEATER_FREE_INPUT_MAX_CHARS = 560
+THEATER_FREE_INPUT_MAX_TOKENS = 3200
+THEATER_FREE_SYSTEM_MAX_TOKENS = 900
+THEATER_FREE_CONTEXT_MESSAGE_MAX_TOKENS = 180
+THEATER_FREE_CURRENT_MESSAGE_MAX_TOKENS = 140
 logger = get_module_logger("services.theater.llm")
 
 
@@ -39,6 +44,68 @@ def _record_context_incomplete(*, responsibility: str, surface: str) -> None:
         result_kind="generation",
         outcome="context_incomplete",
     )
+
+
+def _message_content(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
+
+
+def _message_with_content(message: Any, content: str) -> Any:
+    if isinstance(message, dict):
+        result = dict(message)
+        result["content"] = content
+        return result
+    message_type = type(message)
+    try:
+        return message_type(content=content)
+    except TypeError:
+        return message
+
+
+def _bounded_messages(messages: list[Any] | None, *, max_tokens: int) -> list[Any]:
+    """按总 token 预算裁剪自由模式消息，并优先保留最新用户输入。"""  # noqa: DOCSTRING_CJK
+    source = list(messages or [])
+    if not source:
+        return []
+    selected: dict[int, str] = {}
+    remaining = max(0, int(max_tokens))
+
+    system_indexes = [
+        index
+        for index, message in enumerate(source)
+        if str(message.get("role") if isinstance(message, dict) else getattr(message, "role", "")) == "system"
+    ]
+    for index in system_indexes[:1]:
+        bounded = truncate_to_tokens(
+            _message_content(source[index]),
+            min(remaining, THEATER_FREE_SYSTEM_MAX_TOKENS),
+        )
+        selected[index] = bounded
+        remaining -= min(remaining, count_tokens(bounded))
+
+    last_index = len(source) - 1
+    if last_index not in selected:
+        current_budget = min(remaining, THEATER_FREE_CURRENT_MESSAGE_MAX_TOKENS)
+        # Reserve space for the current user turn before consuming older history.
+        current_content = _message_content(source[last_index])
+        current_bounded = truncate_to_tokens(current_content, current_budget)
+        selected[last_index] = current_bounded
+        remaining -= min(remaining, count_tokens(current_bounded))
+
+    for index in range(last_index - 1, -1, -1):
+        if index in selected or remaining <= 0:
+            continue
+        budget = min(remaining, THEATER_FREE_CONTEXT_MESSAGE_MAX_TOKENS)
+        bounded = truncate_to_tokens(_message_content(source[index]), budget)
+        selected[index] = bounded
+        remaining -= min(remaining, count_tokens(bounded))
+
+    return [
+        _message_with_content(message, selected.get(index, ""))
+        for index, message in enumerate(source)
+    ]
 
 
 async def generate_free_turn_async(
@@ -181,6 +248,10 @@ async def _invoke_model_once(
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_prompt),
                 ]
+            )
+            request_messages = _bounded_messages(
+                request_messages,
+                max_tokens=THEATER_FREE_INPUT_MAX_TOKENS,
             )
             response = await asyncio.wait_for(
                 client.ainvoke(request_messages),
