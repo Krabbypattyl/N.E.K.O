@@ -2825,16 +2825,13 @@
         "userExitEnded": "你已離開小劇場，本次離場不算作劇情結局。",
         "homeKicker": "N.E.K.O. 小劇場",
         "homeTitle": "選擇你的演繹方式",
-        "homeSubtitle": "進入由數值驅動的劇本，或讓角色卡陪你自由聊天。",
+        "homeSubtitle": "進入作者編排的劇本，或匯入角色卡自由聊天。",
         "homeScriptTitle": "劇本模式",
-        "homeScriptDescription": "匯入作者編排的節點、選擇、事件與狀態變化，讓你的輸入推動劇情。",
+        "homeScriptDescription": "💬 自由對話：不僅可以選 A/B/C，也可以自由輸入，即時改寫劇情。<br>🎭 性格演繹：千人千面！不同性格的貓娘，對同一句話給出截然不同的反應。<br>🌌 無限互動：你的每一句話都在創造獨一無二的故事。",
         "homeFreeTitle": "自由模式",
-        "homeFreeDescription": "參考 RP-Hub 角色卡，與貓娘進行不受劇本約束的聊天演繹。",
-        "homeEnter": "進入",
-        "homeGameplay": "玩法",
-        "homeGameplayText": "劇本模式中，作者預先設計世界、節點和數值；你可以點擊 Choice，也可以直接輸入行動，讓輸入共同推動下一步。自由模式只圍繞角色卡聊天，不寫入劇本狀態。",
-        "homeAdvantages": "專案優勢",
-        "homeAdvantagesText": "劇本狀態、自由聊天、長期記憶和角色卡彼此分開；既保留作者可控的劇情結構，也給玩家留下自然表達和臨場發揮的空間。"
+        "homeFreeDescription": "自由模式支援角色卡匯入，與貓娘進行不受劇本約束的聊天演繹。",
+        "homeFreeUnavailable": "尚未開放",
+        "homeEnter": "進入"
     },
     "voiceIdentity": {
         "pageTitle": "聲紋註冊面板（開發中）",

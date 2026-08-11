@@ -8,6 +8,7 @@
         start: '/api/theater-numeric/session/start',
         input: '/api/theater-numeric/session/input',
         end: '/api/theater-numeric/session/end',
+        active: '/api/theater-numeric/session/active',
         session: '/api/theater-numeric/session/',
     };
     const SESSION_STORAGE_KEY = 'neko.theater.numeric.v2.session.v2';
@@ -128,7 +129,7 @@
         const importInput = $('numeric-theater-import-input');
         const input = $('numeric-theater-input');
         const sendButton = $('numeric-theater-send-btn');
-        if (storySelect) storySelect.disabled = busy || hasSession;
+        if (storySelect) storySelect.disabled = busy || (hasSession && !state.inputClosed);
         if (startButton) startButton.disabled = busy || hasSession || !state.storyId;
         if (restartButton) {
             // 重新开始只在终局显示，并始终通过新 Session 启动，不清空旧存档文件。
@@ -355,6 +356,24 @@
         }
     }
 
+    async function restoreActiveSessionForStory() {
+        if (state.busy || state.sessionId || !state.storyId) return false;
+        setBusy(true);
+        try {
+            const result = await requestJson(
+                api.active + '?story_id=' + encodeURIComponent(state.storyId)
+            );
+            if (result && result.ok) {
+                applySnapshot(result);
+                return true;
+            }
+        } catch (_) {
+            setStatus('theater.failed', '刷新演出状态失败，请手动刷新后重试。');
+        }
+        setBusy(false);
+        return false;
+    }
+
     async function loadStories() {
         try {
             state.stories = await fetchStories();
@@ -372,6 +391,7 @@
                 }
                 forgetSession();
             }
+            if (await restoreActiveSessionForStory()) return;
             setStatus('theater.ready', '准备中');
             setBusy(false);
         } catch (_) {
@@ -433,15 +453,21 @@
         }
     }
 
-    async function startSession() {
-        if (state.busy || state.sessionId || !state.storyId) return;
+    async function startSession(options) {
+        const replaceExisting = Boolean(options && options.replaceExisting);
+        if (state.busy || (!replaceExisting && state.sessionId) || !state.storyId) return;
         setBusy(true);
         try {
+            const remembered = rememberedSession();
+            const sessionId = replaceExisting && remembered.storyId === state.storyId
+                ? (state.sessionId || remembered.sessionId || createId('numeric_web_session_'))
+                : createId('numeric_web_session_');
             const result = await requestJson(api.start, {
                 method: 'POST',
                 body: {
                     story_id: state.storyId,
-                    session_id: createId('numeric_web_session_'),
+                    session_id: sessionId,
+                    replace_existing: replaceExisting,
                 },
             });
             if (!result || !result.ok) throw new Error(result && result.reason || 'numeric_start_failed');
@@ -454,18 +480,9 @@
 
     async function restartSession() {
         if (state.busy || !state.inputClosed) return;
-        // 终局记录只读保留；清理浏览器活动指针后由 startSession 创建新的 Session ID。
-        forgetSession();
-        state.sessionId = '';
-        state.revision = null;
-        state.scene = null;
-        state.inputClosed = false;
-        const log = $('numeric-theater-log');
-        if (log) log.textContent = '';
-        renderScene(null);
         setStatus('theater.ready', '准备重新开始');
-        setBusy(false);
-        await startSession();
+        // 重新开始复用当前剧本唯一的 Session 文件，不保留第二份历史记录。
+        await startSession({ replaceExisting: true });
     }
 
     async function endSession() {
@@ -482,8 +499,7 @@
             });
             if (!result || !result.ok) throw new Error(result && result.reason || 'numeric_end_failed');
             applySnapshot(result);
-            // 结束后的历史仍留在当前画面，但不再作为下次加载时的活动 Session 恢复。
-            forgetSession();
+            // 结束后的唯一记录仍保留在服务端，重启 N.E.K.O 后仍能恢复到终局。
             state.sessionId = '';
             state.revision = null;
             state.inputClosed = true;
@@ -571,11 +587,19 @@
         });
         renderStageToggle(false);
         $('numeric-theater-story-select').addEventListener('change', function () {
-            if (state.sessionId || state.busy) {
+            if (state.busy || (state.sessionId && !state.inputClosed)) {
                 this.value = state.storyId;
                 return;
             }
+            forgetSession();
             state.storyId = this.value;
+            state.sessionId = '';
+            state.revision = null;
+            state.inputClosed = false;
+            state.scene = null;
+            const log = $('numeric-theater-log');
+            if (log) log.textContent = '';
+            renderScene(null);
             const selected = state.stories.find(function (story) {
                 return String(story.story_id || '') === state.storyId;
             });
@@ -585,6 +609,7 @@
             } catch (_) {
                 // 故事选择只影响当前页面，无法写入本地存储时不阻断使用。
             }
+            restoreActiveSessionForStory();
         });
         $('numeric-theater-start-btn').addEventListener('click', startSession);
         $('numeric-theater-end-btn').addEventListener('click', endSession);

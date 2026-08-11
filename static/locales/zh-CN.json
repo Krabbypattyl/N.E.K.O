@@ -2825,16 +2825,13 @@
         "userExitEnded": "你已离开小剧场，本次离场不算作剧情结局。",
         "homeKicker": "N.E.K.O. 小剧场",
         "homeTitle": "选择你的演绎方式",
-        "homeSubtitle": "一个入口，进入由数值驱动的剧本，或让角色卡陪你自由聊天。",
+        "homeSubtitle": "一个入口，进入作者编排的剧本，或导入角色卡自由聊天。",
         "homeScriptTitle": "剧本模式",
-        "homeScriptDescription": "导入作者编排的节点、选择、事件与状态变化，让你的输入推动剧情。",
+        "homeScriptDescription": "💬 自由对话：不仅可以选 A/B/C，而且可以自由输入，实时改写剧情。<br>🎭 性格演绎：千人千面！不同性格的猫娘，对同一句话给出截然不同的反应。<br>🌌 无限互动：你的每一句话都在创造独一无二的故事。",
         "homeFreeTitle": "自由模式",
-        "homeFreeDescription": "参考 RP-Hub 角色卡，与猫娘进行不受剧本约束的聊天演绎。",
-        "homeEnter": "进入",
-        "homeGameplay": "玩法",
-        "homeGameplayText": "剧本模式中，作者预先设计世界、节点和数值；你可以点击 Choice，也可以直接输入行动，让输入共同推动下一步。自由模式则只围绕角色卡进行聊天，不写入剧本状态。",
-        "homeAdvantages": "项目优势",
-        "homeAdvantagesText": "剧本状态、自由聊天、长期记忆和角色卡彼此分开；既保留作者可控的剧情结构，也给玩家留下自然表达和临场发挥的空间。"
+        "homeFreeDescription": "自由模式支持角色卡导入，与猫娘进行不受剧本约束的聊天演绎。",
+        "homeFreeUnavailable": "暂未开放",
+        "homeEnter": "进入"
     },
     "voiceIdentity": {
         "pageTitle": "声纹注册面板（开发中）",

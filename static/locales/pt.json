@@ -2825,16 +2825,13 @@
         "userExitEnded": "Você saiu do teatro. Isso não conta como um final da história.",
         "homeKicker": "Teatro N.E.K.O.",
         "homeTitle": "Escolha como quer interpretar",
-        "homeSubtitle": "Entre em um roteiro guiado por valores ou converse livremente usando um cartão de personagem.",
+        "homeSubtitle": "Entre em uma história criada pelo autor ou importe um cartão de personagem para conversar livremente.",
         "homeScriptTitle": "Modo roteiro",
-        "homeScriptDescription": "Importe nós, escolhas, eventos e mudanças de estado definidos pelo autor para que suas ações movam a história.",
+        "homeScriptDescription": "💬 Conversa livre: escolha A/B/C ou escreva livremente para reescrever a história em tempo real.<br>🎭 Interpretação de personalidade: cada gata tem uma personalidade, então as mesmas palavras podem receber reações completamente diferentes.<br>🌌 Interação sem limites: cada frase que você escreve cria uma história única.",
         "homeFreeTitle": "Modo livre",
-        "homeFreeDescription": "Use um cartão de personagem do RP-Hub para conversar sem ficar preso ao estado do roteiro.",
-        "homeEnter": "Entrar",
-        "homeGameplay": "Como jogar",
-        "homeGameplayText": "No modo roteiro, o autor define o mundo, os nós e os valores. Escolha uma opção ou digite uma ação para avançar. O modo livre usa apenas o cartão para conversar e não grava no estado do roteiro.",
-        "homeAdvantages": "Vantagens",
-        "homeAdvantagesText": "O estado do roteiro, o chat livre, a memória de longo prazo e os cartões ficam separados, preservando o controle do autor e a liberdade do jogador."
+        "homeFreeDescription": "O modo livre permite importar cartões de personagem para conversar com a gata sem ficar preso ao roteiro.",
+        "homeFreeUnavailable": "Ainda não disponível",
+        "homeEnter": "Entrar"
     },
     "voiceIdentity": {
         "pageTitle": "Painel de cadastro de impressão vocal (em desenvolvimento)",

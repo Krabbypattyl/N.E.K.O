@@ -2825,16 +2825,13 @@
         "userExitEnded": "劇場を退出しました。物語の正式な結末ではありません。",
         "homeKicker": "N.E.K.O. 小劇場",
         "homeTitle": "演じ方を選んでください",
-        "homeSubtitle": "数値で動く脚本に入るか、キャラクターカードで自由に会話できます。",
+        "homeSubtitle": "作者が構成した物語に入るか、キャラクターカードを読み込んで自由に会話できます。",
         "homeScriptTitle": "脚本モード",
-        "homeScriptDescription": "作者が用意したノード、選択肢、イベント、状態変化を読み込み、入力で物語を進めます。",
+        "homeScriptDescription": "💬 自由な会話：A/B/Cを選ぶだけでなく、自由に入力してリアルタイムに物語を書き換えられます。<br>🎭 性格の演技：猫娘は一人ひとり違うため、同じ言葉にもまったく異なる反応を返します。<br>🌌 無限の交流：あなたの一言一言が、世界に一つだけの物語を作ります。",
         "homeFreeTitle": "自由モード",
-        "homeFreeDescription": "RP-Hub のキャラクターカードを参考に、脚本状態から独立して会話を演じます。",
-        "homeEnter": "入る",
-        "homeGameplay": "遊び方",
-        "homeGameplayText": "脚本モードでは作者が世界、ノード、数値を設計します。選択肢を押すことも、行動を直接入力することもできます。自由モードはキャラクターカードだけで会話し、脚本状態を書き換えません。",
-        "homeAdvantages": "特徴",
-        "homeAdvantagesText": "脚本状態、自由会話、長期記憶、キャラクターカードを分離し、作者の構成力とプレイヤーの自然な表現を両立します。"
+        "homeFreeDescription": "自由モードはキャラクターカードのインポートに対応し、脚本に縛られず猫娘と会話できます。",
+        "homeFreeUnavailable": "近日公開",
+        "homeEnter": "入る"
     },
     "voiceIdentity": {
         "pageTitle": "声紋登録パネル（開発中）",

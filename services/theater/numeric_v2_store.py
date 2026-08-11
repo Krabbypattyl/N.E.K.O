@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 STORE_SCHEMA = "neko.script.store.numeric.v2"
+STORY_SESSION_INDEX_SCHEMA = "neko.script.story_session_index.numeric.v2"
 
 
 class NumericV2StoreError(ValueError):
@@ -62,6 +63,114 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_session_id_invalid")
         return self.root / f"{session_id}.json"
 
+    @property
+    def _story_session_index_path(self) -> Path:
+        return self.root.parent / "story_sessions.json"
+
+    def _read_story_session_index(self) -> dict[str, str]:
+        path = self._story_session_index_path
+        if not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict) or payload.get("schema") != STORY_SESSION_INDEX_SCHEMA:
+            return {}
+        stories = payload.get("stories")
+        if not isinstance(stories, dict):
+            return {}
+        return {
+            str(story_id): str(session_id)
+            for story_id, session_id in stories.items()
+            if str(story_id).strip() and str(session_id).strip()
+        }
+
+    def _write_story_session_index(self, stories: Mapping[str, str]) -> None:
+        path = self._story_session_index_path
+        encoded = json.dumps(
+            {"schema": STORY_SESSION_INDEX_SCHEMA, "stories": dict(stories)},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent,
+                prefix=f".{path.stem}-",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary.write(encoded)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                temporary_path = Path(temporary.name)
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    async def get_story_session_id(self, story_id: str) -> str:
+        async with _lock(self._story_session_index_path):
+            return self._read_story_session_index().get(str(story_id or "").strip(), "")
+
+    async def set_story_session_id(self, story_id: str, session_id: str) -> None:
+        normalized_story_id = str(story_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_story_id or not normalized_session_id:
+            raise NumericV2StoreError("numeric_story_session_index_invalid")
+        async with _lock(self._story_session_index_path):
+            stories = self._read_story_session_index()
+            stories[normalized_story_id] = normalized_session_id
+            self._write_story_session_index(stories)
+
+    async def restore_story_session(self, story_id: str) -> NumericV2StoredSession | None:
+        """按剧本恢复唯一 Session；索引缺失时兼容扫描已有 Session 文件。"""
+
+        normalized_story_id = str(story_id or "").strip()
+        if not normalized_story_id:
+            return None
+        session_id = await self.get_story_session_id(normalized_story_id)
+        candidates: list[NumericV2StoredSession] = []
+        if self.root.is_dir():
+            for path in self.root.glob("*.json"):
+                try:
+                    stored = await self.load(path.stem)
+                except NumericV2StoreError:
+                    continue
+                if stored is not None and stored.session.story_package_id == normalized_story_id:
+                    candidates.append(stored)
+        if not candidates:
+            return None
+
+        restored = max(
+            candidates,
+            key=lambda item: (
+                item.session.revision,
+                int(item.session.session_id == session_id),
+                item.session.session_id,
+            ),
+        )
+        for candidate in candidates:
+            if candidate.session.session_id == restored.session.session_id:
+                continue
+            path = self._path(candidate.session.session_id)
+            async with _lock(path):
+                if not path.is_file():
+                    continue
+                try:
+                    current = self._read(path)
+                    self._validate_chain(current)
+                except NumericV2StoreError:
+                    continue
+                if current.session.story_package_id == normalized_story_id:
+                    path.unlink()
+        await self.set_story_session_id(normalized_story_id, restored.session.session_id)
+        return restored
+
     async def create(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
@@ -70,6 +179,18 @@ class NumericV2SessionStore:
             self.engine.validate_session(session)
             stored = NumericV2StoredSession(session, ())
             self._write(path, stored, exclusive=True)
+            return stored
+
+    async def replace(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
+        """重开同一剧本时复用唯一 Session 文件，避免产生第二条演绎记录。"""
+
+        path = self._path(session.session_id)
+        async with _lock(path):
+            if not path.is_file():
+                raise NumericV2SessionNotFoundError("numeric_session_not_found")
+            self.engine.validate_session(session)
+            stored = NumericV2StoredSession(session, ())
+            self._write(path, stored)
             return stored
 
     async def load(self, session_id: str) -> NumericV2StoredSession | None:

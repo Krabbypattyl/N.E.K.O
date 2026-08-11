@@ -2825,16 +2825,13 @@
         "userExitEnded": "You left the theater. This does not count as a story ending.",
         "homeKicker": "N.E.K.O. Theater",
         "homeTitle": "Choose how you want to perform",
-        "homeSubtitle": "Enter a number-driven script, or let a character card guide a free conversation.",
+        "homeSubtitle": "Enter an author-designed story, or import a character card for free conversation.",
         "homeScriptTitle": "Script mode",
-        "homeScriptDescription": "Import author-controlled nodes, choices, events, and state changes so your input can move the story forward.",
+        "homeScriptDescription": "💬 Free conversation: choose A/B/C or type freely to rewrite the story in real time.<br>🎭 Character-driven acting: every catgirl is different, so the same words can receive completely different reactions.<br>🌌 Unlimited interaction: every sentence you write creates a one-of-a-kind story.",
         "homeFreeTitle": "Free mode",
-        "homeFreeDescription": "Use an RP-Hub character card for an open-ended chat performance without script state.",
-        "homeEnter": "Enter",
-        "homeGameplay": "How it works",
-        "homeGameplayText": "In Script mode, the author defines the world, nodes, and values. Choose an option or type an action to help move the story forward. Free mode only uses the character card for conversation and does not write to script state.",
-        "homeAdvantages": "Why N.E.K.O.",
-        "homeAdvantagesText": "Script state, free chat, long-term memory, and character cards stay separate, preserving author control while leaving room for natural player expression."
+        "homeFreeDescription": "Free mode supports character card import for open-ended chat with the catgirl.",
+        "homeFreeUnavailable": "Not available yet",
+        "homeEnter": "Enter"
     },
     "voiceIdentity": {
         "pageTitle": "Voiceprint Registration Panel (In Development)",

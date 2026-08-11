@@ -90,6 +90,49 @@ async def test_numeric_v2_waits_for_min_turns_then_selects_route(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_story_session_index_survives_runtime_recreation(tmp_path):
+    story = _branch_story()
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_story_resume",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    restarted_runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    restored = await restarted_runtime.restore_story_session()
+
+    assert restored is not None
+    assert restored.session.session_id == stored.session.session_id
+    assert restored.session.revision == 0
+    index = (tmp_path / "numeric_v2" / "story_sessions.json").read_text(encoding="utf-8")
+    assert "runtime_story_resume" in index
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_path):
+    story = _branch_story()
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    await runtime.start_session(
+        session_id="runtime_story_old",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    newer = await runtime.start_session(
+        session_id="runtime_story_new",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    restored = await runtime.restore_story_session()
+
+    assert restored is not None
+    assert restored.session.session_id == newer.session.session_id
+    session_files = list((tmp_path / "numeric_v2" / "sessions").glob("*.json"))
+    assert [path.stem for path in session_files] == ["runtime_story_new"]
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_does_not_advance_when_min_turns_reached_but_scene_is_incomplete(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(

@@ -2825,16 +2825,13 @@
         "userExitEnded": "Has salido del teatro. Esto no cuenta como un final de la historia.",
         "homeKicker": "Teatro N.E.K.O.",
         "homeTitle": "Elige cómo quieres interpretar",
-        "homeSubtitle": "Entra en un guion guiado por valores o conversa libremente con una tarjeta de personaje.",
+        "homeSubtitle": "Entra en una historia creada por el autor o importa una tarjeta de personaje para conversar libremente.",
         "homeScriptTitle": "Modo guion",
-        "homeScriptDescription": "Importa nodos, elecciones, eventos y cambios de estado definidos por el autor para que tus acciones muevan la historia.",
+        "homeScriptDescription": "💬 Conversación libre: elige A/B/C o escribe libremente para reescribir la historia en tiempo real.<br>🎭 Interpretación de personalidad: cada chica gato es distinta, así que las mismas palabras pueden recibir reacciones completamente diferentes.<br>🌌 Interacción ilimitada: cada frase que escribes crea una historia única.",
         "homeFreeTitle": "Modo libre",
-        "homeFreeDescription": "Usa una tarjeta de personaje de RP-Hub para conversar sin quedar atado al estado del guion.",
-        "homeEnter": "Entrar",
-        "homeGameplay": "Cómo se juega",
-        "homeGameplayText": "En el modo guion, el autor define el mundo, los nodos y los valores. Elige una opción o escribe una acción para avanzar. El modo libre solo usa la tarjeta para conversar y no escribe en el estado del guion.",
-        "homeAdvantages": "Ventajas",
-        "homeAdvantagesText": "El estado del guion, el chat libre, la memoria a largo plazo y las tarjetas permanecen separados, combinando control autoral y libertad de expresión."
+        "homeFreeDescription": "El modo libre admite la importación de tarjetas de personaje para conversar sin restricciones de guion con la chica gato.",
+        "homeFreeUnavailable": "Aún no disponible",
+        "homeEnter": "Entrar"
     },
     "voiceIdentity": {
         "pageTitle": "Panel de registro de huella vocal (en desarrollo)",

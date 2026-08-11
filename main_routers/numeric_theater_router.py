@@ -240,18 +240,30 @@ async def start_numeric_session(request: Request):
     if not story_id or not session_id:
         return _error("story_id_and_session_id_required", 400)
     config_manager = get_config_manager()
+    replace_existing = payload.get("replace_existing") is True
     try:
         runtime = _runtime_for_story(config_manager, story_id)
-        # 重复 Session ID 在调用 Actor 前直接拒绝，避免无意义的模型消耗。
-        if await runtime.restore_session(session_id) is not None:
-            return _error("numeric_session_exists", 409)
-        # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
-        opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
-        stored = await runtime.start_session(
-            session_id=session_id,
-            catgirl_binding=_current_catgirl_binding(config_manager),
-            opening_performance=opening,
-        )
+        existing = await runtime.restore_story_session()
+        if existing is not None:
+            _ensure_current_catgirl(existing.session, config_manager)
+            if not (replace_existing and existing.session.status == "ended"):
+                return {"ok": True, "resumed": True, **_numeric_payload(runtime, existing)}
+            # 重新开始复用同一个 Session 文件，不为同一剧本创建第二条记录。
+            opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+            stored = await runtime.restart_session(
+                session_id=existing.session.session_id,
+                catgirl_binding=_current_catgirl_binding(config_manager),
+                opening_performance=opening,
+            )
+            session_id = existing.session.session_id
+        else:
+            # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
+            opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+            stored = await runtime.start_session(
+                session_id=session_id,
+                catgirl_binding=_current_catgirl_binding(config_manager),
+                opening_performance=opening,
+            )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2SessionExistsError:
@@ -264,6 +276,24 @@ async def start_numeric_session(request: Request):
         return _error(str(exc), 400)
     await _speak_dialogue(config_manager, session_id=session_id, revision=0, dialogue=list(opening.get("dialogue") or []))
     return {"ok": True, **_numeric_payload(runtime, stored)}
+
+
+@router.get("/session/active")
+async def get_active_numeric_session(story_id: str):
+    config_manager = get_config_manager()
+    try:
+        runtime = _runtime_for_story(config_manager, str(story_id or "").strip())
+        stored = await runtime.restore_story_session()
+        if stored is None:
+            return _error("numeric_session_not_found", 404)
+        _ensure_current_catgirl(stored.session, config_manager)
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    except NumericV2StoreError as exc:
+        return _error(str(exc), 422)
+    except ValueError as exc:
+        return _error(str(exc), 409)
+    return {"ok": True, "resumed": True, **_numeric_payload(runtime, stored)}
 
 
 @router.get("/session/{session_id}")

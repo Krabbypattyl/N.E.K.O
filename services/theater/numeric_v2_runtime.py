@@ -366,7 +366,28 @@ class NumericV2Runtime:
             catgirl_binding=catgirl_binding,
             opening_performance=opening_performance,
         )
-        return await self.store.create(session)
+        stored = await self.store.create(session)
+        await self.store.set_story_session_id(self.engine.story_id, session.session_id)
+        return stored
+
+    async def restore_story_session(self) -> NumericV2StoredSession | None:
+        return await self.store.restore_story_session(self.engine.story_id)
+
+    async def restart_session(
+        self,
+        *,
+        session_id: str,
+        catgirl_binding: Mapping[str, Any],
+        opening_performance: Mapping[str, Any],
+    ) -> NumericV2StoredSession:
+        session = self.engine.create_session(
+            session_id=session_id,
+            catgirl_binding=catgirl_binding,
+            opening_performance=opening_performance,
+        )
+        stored = await self.store.replace(session)
+        await self.store.set_story_session_id(self.engine.story_id, session.session_id)
+        return stored
 
     async def restore_session(self, session_id: str) -> NumericV2StoredSession | None:
         return await self.store.load(session_id)

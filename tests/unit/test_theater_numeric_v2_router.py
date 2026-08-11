@@ -89,6 +89,46 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert "林舟" not in json.dumps(body, ensure_ascii=False)
         assert "小岚" not in json.dumps(body, ensure_ascii=False)
 
+        resumed_start = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "http_v2_duplicate"},
+        )
+        assert resumed_start.status_code == 200
+        assert resumed_start.json()["resumed"] is True
+        assert resumed_start.json()["session"]["session_id"] == "http_v2"
+
+        active = client.get(
+            "/api/theater-numeric/session/active",
+            params={"story_id": "numeric_v2_contract"},
+        )
+        assert active.status_code == 200
+        assert active.json()["session"]["session_id"] == "http_v2"
+        assert len(list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))) == 1
+
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "http_v2",
+                "base_revision": 0,
+            },
+        )
+        assert ended.status_code == 200
+        assert ended.json()["session"]["status"] == "ended"
+
+        restarted = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "http_v2_after_restart",
+                "replace_existing": True,
+            },
+        )
+        assert restarted.status_code == 200
+        assert restarted.json()["session"]["session_id"] == "http_v2"
+        assert restarted.json()["session"]["status"] == "active"
+        assert len(list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))) == 1
+
         submitted = client.post(
             "/api/theater-numeric/session/input",
             json={

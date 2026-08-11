@@ -1,4 +1,4 @@
-/* Numeric v2 使用沉浸式阅读器布局；所有覆盖仅作用于剧本模式，不改变自由模式。 */
+/* 两种小剧场模式共用沉浸式阅读器布局；API、Session 和演绎逻辑仍保持独立。 */
 .numeric-theater-shell {
     --numeric-reader: rgba(255, 255, 255, 0.94);
     --numeric-reader-soft: #f7fbfe;
@@ -476,7 +476,7 @@ html.dark .numeric-theater-console .theater-toolbar {
     padding: 0;
 }
 
-.numeric-theater-shell[data-stage-collapsed="true"] #numeric-theater-stage-toggle-label {
+.numeric-theater-shell[data-stage-collapsed="true"] .numeric-theater-stage-toggle-label {
     display: none;
 }
 
@@ -537,7 +537,7 @@ html.dark .numeric-theater-console .theater-toolbar {
         padding: 8px 12px;
     }
 
-    .numeric-theater-shell[data-stage-collapsed="true"] #numeric-theater-stage-toggle-label {
+    .numeric-theater-shell[data-stage-collapsed="true"] .numeric-theater-stage-toggle-label {
         display: inline;
     }
 

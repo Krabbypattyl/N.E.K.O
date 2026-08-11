@@ -61,6 +61,9 @@ def _install_routes(page: Page) -> None:
         if path.endswith("/api/theater-numeric/stories"):
             fulfill(route, {"ok": True, "stories": [STORY]})
             return
+        if path.endswith("/api/theater-numeric/session/active"):
+            fulfill(route, {"ok": False, "reason": "numeric_session_not_found"})
+            return
         if path.endswith("/api/theater-numeric/session/start"):
             fulfill(route, _snapshot(revision=0, history=[]))
             return
@@ -97,6 +100,7 @@ def test_numeric_v2_page_groups_each_turn_and_keeps_stage_collapsible(mock_page:
 
     expect(mock_page.locator("#numeric-theater-story-select option")).to_have_count(1)
     expect(mock_page.locator("#numeric-theater-intro-background")).to_contain_text("一封没有寄出的信")
+    expect(mock_page.locator(".numeric-theater-stage .theater-stage-toggle-icon")).to_have_text("←")
     stage_box = mock_page.locator(".numeric-theater-stage").bounding_box()
     console_box = mock_page.locator(".numeric-theater-console").bounding_box()
     assert stage_box and console_box and stage_box["x"] < console_box["x"]

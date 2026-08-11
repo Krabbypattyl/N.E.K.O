@@ -15,6 +15,33 @@ def _sources() -> tuple[str, str]:
     )
 
 
+def _home_source() -> str:
+    return (ROOT / "templates" / "theater_home.html").read_text(encoding="utf-8")
+
+
+def test_theater_mode_selection_copy_hides_internal_implementation_terms():
+    """模式选择页只介绍两种演绎方式，不暴露内部实现术语。"""
+    html = _home_source()
+    assert "数值" not in html
+    assert "RP-Hub" not in html
+    assert "项目优势" not in html
+    assert "homeAdvantages" not in html
+    assert 'href="/theater"' not in html
+    assert 'aria-disabled="true"' in html
+    assert 'data-i18n="theater.homeFreeUnavailable"' in html
+    assert "💬 自由对话" in html
+
+    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
+        payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
+        theater = payload["theater"]
+        assert "RP-Hub" not in theater["homeFreeDescription"]
+        assert "homeAdvantages" not in theater
+        assert "homeAdvantagesText" not in theater
+        assert theater["homeFreeUnavailable"]
+        assert "homeGameplay" not in theater
+        assert "homeGameplayText" not in theater
+
+
 def test_theater_page_is_free_only_and_keeps_role_card_entry():
     """默认 theater 页面只呈现自由模式和临时 RP-Hub 角色卡入口。"""  # noqa: DOCSTRING_CJK
     html, script = _sources()
@@ -57,9 +84,27 @@ def test_theater_page_keeps_identity_card_and_stage_toggle():
     assert "function initStageToggle()" in script
 
 
+def test_theater_page_reuses_numeric_reader_layout():
+    """自由页面复用剧本模式的阅读器布局，但保留自由模式自己的脚本入口。"""  # noqa: DOCSTRING_CJK
+    html, _script = _sources()
+    assert "/static/css/theater_numeric_v2.css" in html
+    assert "numeric-theater-shell" in html
+    assert "numeric-theater-stage" in html
+    assert "numeric-theater-console" in html
+    assert "numeric-theater-workspace" in html
+    assert ">←</span>" in html
+
+
 def test_theater_locales_remain_valid_json():
     """自由页面依赖的八份 locale 必须仍然可以解析。"""  # noqa: DOCSTRING_CJK
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
         payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
         assert payload["theater"]["freeMode"]
         assert payload["theater"]["roleCardImport"]
+
+
+def test_theater_popup_entry_opens_mode_selection():
+    """三套头像菜单的小剧场入口都先进入统一模式选择页。"""  # noqa: DOCSTRING_CJK
+    popup_config = (ROOT / "static" / "avatar" / "avatar-ui-popup-config.js").read_text(encoding="utf-8")
+    assert popup_config.count("url: '/theater-home'") == 3
+    assert "url: '/theater-numeric'" not in popup_config

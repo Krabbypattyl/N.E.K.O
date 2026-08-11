@@ -73,6 +73,22 @@
     transform: translateY(-4px);
 }
 
+.theater-mode-card-free[aria-disabled="true"] {
+    cursor: not-allowed;
+    opacity: 0.62;
+    filter: saturate(0.65);
+}
+
+.theater-mode-card-free[aria-disabled="true"] .theater-mode-card-action {
+    color: var(--theater-muted);
+}
+
+.theater-mode-card-free[aria-disabled="true"]:hover {
+    border-color: var(--theater-line);
+    box-shadow: var(--theater-shadow);
+    transform: none;
+}
+
 .theater-mode-card-script {
     background: linear-gradient(145deg, rgba(23, 167, 255, 0.14), var(--theater-panel) 62%);
 }
