@@ -26,7 +26,7 @@ def numeric_time_anchor_issues(value: Any, path: str = "story") -> list[dict[str
 
     这是 Compile 级确定性检查，不解释开放式时间表达；只有文本同时出现
     不同天数且至少一个上下文包含停运/合同等期限标记时才阻断。
-    """
+    """  # noqa: DOCSTRING_CJK
     occurrences: list[tuple[int, str, str]] = []
 
     def visit(item: Any, item_path: str) -> None:

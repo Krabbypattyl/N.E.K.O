@@ -26,7 +26,7 @@ THEATER_TEST_STORY_ID = "free_runtime_source"
 
 
 def _free_source_story() -> dict:
-    """自由 Runtime 测试直接构造最小来源，不再保留旧 Story 配置样本。"""
+    """自由 Runtime 测试直接构造最小来源，不再保留旧 Story 配置样本。"""  # noqa: DOCSTRING_CJK
 
     return {
         "id": THEATER_TEST_STORY_ID,
@@ -73,8 +73,29 @@ def test_name_projection_is_single_pass_and_ignores_empty_sources():
     ) == "小葵把哥哥的伞递给哥哥。"
 
 
+def test_name_projection_rejects_conflicting_source_names():
+    with pytest.raises(ValueError, match="conflicting_name_replacement"):
+        replace_names("原角色", [("原角色", "当前猫娘"), ("原角色", "玩家")])
+
+
+def test_free_role_card_rejects_conflicting_name_replacements():
+    with pytest.raises(free_role_card.FreeRoleCardContractError, match="冲突的名称替换"):
+        free_role_card.bind_role_card_to_current_catgirl(
+            {
+                "name": "原角色",
+                "description": "角色描述",
+                "first_mes": "原角色走进房间。",
+                "player_address": "原角色",
+                "player_role": "哥哥",
+            },
+            expected_name="当前猫娘",
+            character_profile="安静而认真。",
+            player_address="玩家",
+        )
+
+
 def test_free_input_budget_rejects_text_over_token_limit():
-    """自由模式不能只依赖字符上限放行超出 token 预算的输入。"""
+    """自由模式不能只依赖字符上限放行超出 token 预算的输入。"""  # noqa: DOCSTRING_CJK
     assert llm._complete_model_text("测试" * 141, 140, max_chars=560) is None
 
 
@@ -104,7 +125,7 @@ def test_free_prompt_requires_plain_roleplay_text():
 
 
 def test_free_messages_do_not_inject_fixed_roleplay_prelude():
-    """自由消息只保留当前上下文，不注入固定的自问自答预热内容。"""
+    """自由消息只保留当前上下文，不注入固定的自问自答预热内容。"""  # noqa: DOCSTRING_CJK
     messages = build_theater_free_turn_messages(
         lanlan_name="测试猫娘",
         story={
@@ -288,7 +309,7 @@ def test_free_response_projects_temporary_role_card_for_theater_header():
 
 
 def test_free_history_ignores_removed_structured_assistant_fields():
-    """自由历史只投影 free_text，不再恢复旧的旁白、对白和收束字段。"""
+    """自由历史只投影 free_text，不再恢复旧的旁白、对白和收束字段。"""  # noqa: DOCSTRING_CJK
 
     history = free_runtime._public_history(
         {
@@ -351,7 +372,7 @@ def test_free_prompt_uses_temporary_role_card_context():
 
 
 def test_free_role_card_binds_current_catgirl_and_native_rp_hub_messages():
-    """角色卡只提供世界素材，主角、人格和玩家称呼必须改为当前猫娘。"""
+    """角色卡只提供世界素材，主角、人格和玩家称呼必须改为当前猫娘。"""  # noqa: DOCSTRING_CJK
     bound = free_role_card.bind_role_card_to_current_catgirl(
         {
             "schema_version": free_role_card.FREE_ROLE_CARD_SCHEMA_VERSION,
@@ -417,7 +438,7 @@ def test_free_role_card_rejects_oversized_bound_field():
 
 
 def test_free_seed_only_keeps_opening_context():
-    """自由种子只保留开场上下文，不携带作者剧情图或正式账本。"""
+    """自由种子只保留开场上下文，不携带作者剧情图或正式账本。"""  # noqa: DOCSTRING_CJK
     story = {
         "id": "story_free_seed",
         "story_revision": "v1",
@@ -448,7 +469,7 @@ def test_free_seed_only_keeps_opening_context():
 
 
 def test_free_seed_rejects_author_graph_fields():
-    """自由种子合同拒绝把作者图字段伪装成自由模式输入。"""
+    """自由种子合同拒绝把作者图字段伪装成自由模式输入。"""  # noqa: DOCSTRING_CJK
     seed = {
         "schema_version": free_seed.FREE_SEED_SCHEMA_VERSION,
         "source_story_id": "story_free_seed",
@@ -526,6 +547,14 @@ async def test_free_session_is_isolated_and_idempotent(monkeypatch, tmp_path):
     # RP-Hub 的 first_mes 直接作为首条 assistant 消息，不再为了开场重复调用模型。
     assert started["free_history"][-1]["text"] == "临时角色在门口回头。"
     assert model_stories == []
+
+    second_window = await free_runtime.start_session(
+        root,
+        lanlan_name="测试猫娘",
+        story_id=THEATER_TEST_STORY_ID,
+        client_start_id="free_start_2",
+    )
+    assert second_window["session_id"] == started["session_id"]
 
     # 刷新恢复必须继续公开当前 Session 的临时角色卡，但不能允许另一只猫娘读取它。
     restored = await free_runtime.get_active_state(root, lanlan_name="测试猫娘")
@@ -726,7 +755,7 @@ async def test_free_actor_uses_conversation_tier_without_json_repair(monkeypatch
 
 @pytest.mark.asyncio
 async def test_free_actor_timeout_returns_unavailable_without_repair(monkeypatch):
-    """自由 Actor 超时后直接失败，不追加 Repair 或第二次模型调用。"""
+    """自由 Actor 超时后直接失败，不追加 Repair 或第二次模型调用。"""  # noqa: DOCSTRING_CJK
 
     class _SlowClient:
         async def __aenter__(self):

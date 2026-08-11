@@ -1,4 +1,4 @@
-"""验证 Numeric v2 最少回合、确定性路线与原子持久化。"""
+"""验证 Numeric v2 最少回合、确定性路线与原子持久化。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import pytest
 
+from services.theater import numeric_v2_store
 from services.theater.numeric_v2_runtime import (
     MetricChangeV2,
     NumericV2Engine,
@@ -87,6 +88,25 @@ async def test_numeric_v2_waits_for_min_turns_then_selects_route(tmp_path):
     assert second.route_status == "advanced"
     assert second.session.current_node_id == "ending_stay"
     assert second.session.status == "ended"
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_session_creation_falls_back_without_hardlinks(tmp_path, monkeypatch):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+
+    def reject_hardlink(*_args, **_kwargs):
+        raise OSError("hard links unsupported")
+
+    monkeypatch.setattr(numeric_v2_store.os, "link", reject_hardlink)
+
+    stored = await runtime.start_session(
+        session_id="runtime_no_hardlink",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    assert stored.session.session_id == "runtime_no_hardlink"
+    assert (tmp_path / "numeric_v2" / "sessions" / "runtime_no_hardlink.json").is_file()
 
 
 @pytest.mark.asyncio

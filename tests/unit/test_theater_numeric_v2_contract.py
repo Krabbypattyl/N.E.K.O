@@ -1,4 +1,4 @@
-"""Numeric v2 包合同、复验和独立安装目录测试。"""
+"""Numeric v2 包合同、复验和独立安装目录测试。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from services.theater.numeric_v2_registry import (
 
 
 def numeric_v2_story() -> dict:
-    """构造一个包含两条数值路线和两个结局的最小合法包。"""
+    """构造一个包含两条数值路线和两个结局的最小合法包。"""  # noqa: DOCSTRING_CJK
 
     metric = {
         "name": "信任度",
@@ -134,6 +134,17 @@ def test_numeric_v2_compiles_canonical_package():
     assert json.loads(compiled.json_bytes)["meta"]["story_id"] == "numeric_v2_contract"
 
 
+def test_numeric_v2_rejects_conflicting_identity_source_names():
+    story = numeric_v2_story()
+    story["intro"]["player_identity"] = "同名，玩家身份。"
+    story["intro"]["catgirl_identity"] = "同名，猫娘身份。"
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(issue.code == "intro_identity_names_conflict" for issue in error.value.issues)
+
+
 def test_numeric_v2_rejects_legacy_interaction_fields_and_band_gaps():
     story = numeric_v2_story()
     story["interaction_rules"] = []
@@ -185,7 +196,7 @@ def test_numeric_v2_rejects_player_visible_metric():
 
 
 def test_numeric_v2_accepts_metric_free_single_route_mainline():
-    """纯主线只有一个出口时，不要求作者为了编译虚构数值条件。"""
+    """纯主线只有一个出口时，不要求作者为了编译虚构数值条件。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["metric_schema"] = {}

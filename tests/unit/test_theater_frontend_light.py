@@ -20,7 +20,7 @@ def _home_source() -> str:
 
 
 def test_theater_mode_selection_copy_hides_internal_implementation_terms():
-    """模式选择页只介绍两种演绎方式，不暴露内部实现术语。"""
+    """模式选择页只介绍两种演绎方式，不暴露内部实现术语。"""  # noqa: DOCSTRING_CJK
     html = _home_source()
     assert "数值" not in html
     assert "RP-Hub" not in html
@@ -62,6 +62,8 @@ def test_theater_page_uses_free_idempotency_and_does_not_submit_choice_contract(
     _html, script = _sources()
     assert "client_start_id" in script
     assert "client_turn_id" in script
+    assert "pendingExit" in script
+    assert "getPendingExitId" in script
     assert "base_revision: state.stateRevision" in script
     assert "input_kind: 'free_input'" in script
     assert "choice_id" not in script

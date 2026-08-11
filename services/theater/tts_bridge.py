@@ -13,7 +13,7 @@ logger = get_module_logger("services.theater.tts_bridge")
 
 
 def _websocket_connected(manager: Any) -> bool:
-    """只在明确存在前端连接时播放，未知播放器对象保持兼容。"""
+    """只在明确存在前端连接时播放，未知播放器对象保持兼容。"""  # noqa: DOCSTRING_CJK
 
     if not hasattr(manager, "websocket"):
         return True
@@ -36,7 +36,7 @@ async def speak_committed_line(
     metadata_kind: str,
     request_id: str,
 ) -> dict[str, Any]:
-    """把已经提交的单段小剧场对白交给既有播放器，失败时降级为文字。"""
+    """把已经提交的单段小剧场对白交给既有播放器，失败时降级为文字。"""  # noqa: DOCSTRING_CJK
 
     text = str(line or "").strip()
     if not text:

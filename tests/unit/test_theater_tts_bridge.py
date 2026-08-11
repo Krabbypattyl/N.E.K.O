@@ -93,7 +93,7 @@ async def test_free_tts_bridge_skips_when_current_catgirl_changed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_shared_tts_bridge_speaks_committed_numeric_dialogue(monkeypatch):
-    """Numeric v2 可以复用现有播放器桥接而不读取自由 Session。"""
+    """Numeric v2 可以复用现有播放器桥接而不读取自由 Session。"""  # noqa: DOCSTRING_CJK
 
     manager = _FakeManager()
     result = await tts_bridge.speak_committed_line(

@@ -1,4 +1,4 @@
-"""Numeric v2 Story Package 的独立安全注册表。"""
+"""Numeric v2 Story Package 的独立安全注册表。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -17,26 +17,26 @@ _DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
 
 
 class NumericV2PackageError(ValueError):
-    """Numeric v2 包无法复验或写入。"""
+    """Numeric v2 包无法复验或写入。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageExistsError(NumericV2PackageError):
-    """目标 story_id 已存在，默认不允许覆盖。"""
+    """目标 story_id 已存在，默认不允许覆盖。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageNotFoundError(NumericV2PackageError):
-    """指定 Numeric v2 包不存在。"""
+    """指定 Numeric v2 包不存在。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageRegistry:
-    """只管理 ``numeric_v2/packages``，不读取 v1 包或 Session。"""
+    """只管理 ``numeric_v2/packages``，不读取 v1 包或 Session。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, root: Path, compiler: NumericV2Compiler | None = None):
         self.root = Path(root)
         self.compiler = compiler or NumericV2Compiler()
 
     def ensure_default_packages(self) -> None:
-        """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""
+        """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""  # noqa: DOCSTRING_CJK
 
         if self.root.is_dir() and any(self.root.glob("*.json")):
             return
@@ -75,7 +75,7 @@ class NumericV2PackageRegistry:
         }
 
     def list_packages(self) -> list[dict[str, Any]]:
-        """只列出能够重新通过当前 v2 合同的包。"""
+        """只列出能够重新通过当前 v2 合同的包。"""  # noqa: DOCSTRING_CJK
 
         if not self.root.is_dir():
             return []
@@ -89,7 +89,7 @@ class NumericV2PackageRegistry:
         return result
 
     def load_engine(self, story_id: str):
-        """从 v2 私有目录加载确定性 Engine，不兼容旧包。"""
+        """从 v2 私有目录加载确定性 Engine，不兼容旧包。"""  # noqa: DOCSTRING_CJK
 
         from .numeric_v2_runtime import NumericV2Engine
 

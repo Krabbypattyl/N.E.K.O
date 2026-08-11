@@ -1,4 +1,4 @@
-"""验证 Numeric v2 两个模型角色都只调用一次且不越过职责边界。"""
+"""验证 Numeric v2 两个模型角色都只调用一次且不越过职责边界。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 

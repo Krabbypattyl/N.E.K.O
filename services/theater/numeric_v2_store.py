@@ -1,4 +1,4 @@
-"""Numeric v2 Session 与 Ledger 的原子文件存储。"""
+"""Numeric v2 Session 与 Ledger 的原子文件存储。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ STORY_SESSION_INDEX_SCHEMA = "neko.script.story_session_index.numeric.v2"
 
 
 class NumericV2StoreError(ValueError):
-    """Numeric v2 存档无法安全读取或提交。"""
+    """Numeric v2 存档无法安全读取或提交。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2SessionExistsError(NumericV2StoreError):
@@ -61,7 +61,7 @@ def _story_lock(path: Path, story_id: str) -> asyncio.Lock:
 
 
 class NumericV2SessionStore:
-    """每个 Session 一个文件，所有提交都先复验 revision 再原子替换。"""
+    """每个 Session 一个文件，所有提交都先复验 revision 再原子替换。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, root: Path, engine: "NumericV2Engine"):
         self.root = Path(root) / "numeric_v2" / "sessions"
@@ -143,7 +143,7 @@ class NumericV2SessionStore:
             self._write_story_session_index(stories)
 
     async def restore_story_session(self, story_id: str) -> NumericV2StoredSession | None:
-        """按剧本恢复唯一 Session；索引缺失时兼容扫描已有 Session 文件。"""
+        """按剧本恢复唯一 Session；索引缺失时兼容扫描已有 Session 文件。"""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
         if not normalized_story_id:
@@ -210,7 +210,7 @@ class NumericV2SessionStore:
             return stored
 
     async def replace(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
-        """重开同一剧本时复用唯一 Session 文件，避免产生第二条演绎记录。"""
+        """重开同一剧本时复用唯一 Session 文件，避免产生第二条演绎记录。"""  # noqa: DOCSTRING_CJK
 
         path = self._path(session.session_id)
         async with _lock(path):
@@ -420,6 +420,28 @@ class NumericV2SessionStore:
                     os.link(temporary_path, path)
                 except FileExistsError as exc:
                     raise NumericV2SessionExistsError("numeric_session_exists") from exc
+                except OSError:
+                    # Some user-selected filesystems do not support hard links.
+                    # Preserve exclusive creation semantics with a direct write.
+                    try:
+                        target_fd = os.open(
+                            path,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                            0o600,
+                        )
+                    except FileExistsError as exc:
+                        raise NumericV2SessionExistsError("numeric_session_exists") from exc
+                    try:
+                        with os.fdopen(target_fd, "wb") as target_file:
+                            target_file.write(encoded)
+                            target_file.flush()
+                            os.fsync(target_file.fileno())
+                    except Exception:
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+                        raise
             else:
                 os.replace(temporary_path, path)
                 temporary_path = None

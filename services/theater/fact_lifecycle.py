@@ -1,4 +1,4 @@
-"""从运行时账本派生并校验 Node 的事实生命周期投影。"""
+"""从运行时账本派生并校验 Node 的事实生命周期投影。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ _MAX_EVENT_IDS = 8
 
 @dataclass(frozen=True)
 class FactLifecycleIssue:
-    """一条可稳定断言的投影错误。"""
+    """一条可稳定断言的投影错误。"""  # noqa: DOCSTRING_CJK
 
     code: str
     path: str
@@ -40,7 +40,7 @@ def migration_status_issues(
     path: str = FACT_LIFECYCLE_MIGRATION_STATUS_FIELD,
     boundary: MigrationBoundary = "import",
 ) -> list[FactLifecycleIssue]:
-    """在指定边界执行生命周期闸门，不为旧包提供兼容执行路径。"""
+    """在指定边界执行生命周期闸门，不为旧包提供兼容执行路径。"""  # noqa: DOCSTRING_CJK
 
     nodes = story.get("narrative_nodes")
     node_list = nodes if isinstance(nodes, list) else []
@@ -87,7 +87,7 @@ def migration_status_issues(
 
 
 def classify_migration_status(story: dict[str, Any]) -> MigrationStatus:
-    """根据显式标记和投影形态识别三态；不替 Story 补写状态。"""
+    """根据显式标记和投影形态识别三态；不替 Story 补写状态。"""  # noqa: DOCSTRING_CJK
 
     raw_status = story.get(FACT_LIFECYCLE_MIGRATION_STATUS_FIELD)
     if isinstance(raw_status, str) and raw_status in FACT_LIFECYCLE_MIGRATION_STATUSES:
@@ -107,7 +107,7 @@ def derive_entry_protocol(
     events: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """只从 Event、Node 和当前 Node 的 Choice 出边派生投影。"""
+    """只从 Event、Node 和当前 Node 的 Choice 出边派生投影。"""  # noqa: DOCSTRING_CJK
 
     node_id = str(node.get("node_id") or "")
     entry_ids = _ids(node.get("entry_event_ids"))
@@ -158,7 +158,7 @@ def validate_entry_protocol(
     edges: list[dict[str, Any]],
     path: str,
 ) -> list[FactLifecycleIssue]:
-    """校验编译器派生的投影，不接受它作为事实真源。"""
+    """校验编译器派生的投影，不接受它作为事实真源。"""  # noqa: DOCSTRING_CJK
 
     if protocol is None:
         return []

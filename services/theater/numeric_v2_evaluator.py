@@ -1,4 +1,4 @@
-"""Numeric v2 单回合数值判定器。"""
+"""Numeric v2 单回合数值判定器。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS = 140
 
 
 class NumericV2EvaluatorError(RuntimeError):
-    """数值判定器无法提供合法候选。"""
+    """数值判定器无法提供合法候选。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2EvaluatorUnavailableError(NumericV2EvaluatorError):
@@ -37,7 +37,7 @@ class NumericV2EvaluatorOutputError(NumericV2EvaluatorError):
 
 @dataclass(frozen=True, slots=True)
 class NumericV2EvaluationResult:
-    """一次判定同时返回数值候选与本幕完成信号，不拥有路线选择权。"""
+    """一次判定同时返回数值候选与本幕完成信号，不拥有路线选择权。"""  # noqa: DOCSTRING_CJK
 
     metric_changes: tuple[MetricChangeV2, ...]
     scene_complete: bool
@@ -93,7 +93,7 @@ def _recent_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
 
 
 def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
-    """单独保留当前幕证据，避免较长互动把早期完成事项挤出最近四回合。"""
+    """单独保留当前幕证据，避免较长互动把早期完成事项挤出最近四回合。"""  # noqa: DOCSTRING_CJK
 
     result: list[dict[str, Any]] = []
     if session.node_turn_count > 0 and not session.performance_history:
@@ -153,7 +153,7 @@ def _story_beat_for_evaluator(
     cast: NumericV2CastProjection,
     beat: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """把作者章节计划标成待完成目标，避免模型把未来正文当作已发生事实。"""
+    """把作者章节计划标成待完成目标，避免模型把未来正文当作已发生事实。"""  # noqa: DOCSTRING_CJK
 
     projected = cast.value(beat)
     return {
@@ -338,7 +338,7 @@ async def _model_config(config_manager: Any) -> dict[str, Any]:
 
 
 class NumericV2MetricEvaluator:
-    """每回合最多调用模型一次，失败时不进入 Runtime 提交。"""
+    """每回合最多调用模型一次，失败时不进入 Runtime 提交。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, config_manager: Any):
         self.config_manager = config_manager

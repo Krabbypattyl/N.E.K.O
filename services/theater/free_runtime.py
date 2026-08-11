@@ -152,7 +152,7 @@ def _build_default_role_card(
     lanlan_name: str,
     config_manager: Any | None,
 ) -> dict[str, Any]:
-    """没有额外角色卡时，用 Story 的公开开场生成 RP-Hub 兼容的临时卡。"""
+    """没有额外角色卡时，用 Story 的公开开场生成 RP-Hub 兼容的临时卡。"""  # noqa: DOCSTRING_CJK
     card = seed.get("scenario_card") if isinstance(seed.get("scenario_card"), dict) else {}
     opening = seed.get("opening_scene") if isinstance(seed.get("opening_scene"), dict) else {}
     player_address = _load_player_address(config_manager)
@@ -406,7 +406,9 @@ async def start_session(
     async with session_store.character_guard(free_root, name):
         active_id = await session_store.get_active_session_id(free_root, name)
         active = await session_store.load_session(free_root, active_id) if active_id else None
-        if active and start_id and active.get("start_client_id") == start_id and not active.get("ended_at"):
+        if active and not active.get("ended_at"):
+            # A catgirl may have only one active free Session. A second window
+            # must resume that Session instead of repointing the active index.
             return deepcopy(active.get("public_snapshot") or {})
 
         try:

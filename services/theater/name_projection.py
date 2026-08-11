@@ -15,7 +15,9 @@ def replace_names(value: Any, replacements: Iterable[tuple[Any, Any]]) -> str:
         source_text = str(source or "")
         target_text = str(target or "")
         if source_text and source_text != target_text:
-            mapping.setdefault(source_text, target_text)
+            if source_text in mapping and mapping[source_text] != target_text:
+                raise ValueError("conflicting_name_replacement")
+            mapping[source_text] = target_text
     if not mapping:
         return text
     pattern = re.compile("|".join(

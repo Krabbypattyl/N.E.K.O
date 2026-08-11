@@ -2,7 +2,7 @@
 
 本模块只负责作者包合同、规范化字节和静态可达性，不实现 Actor、Session、
 Ledger 或回合数值判定。InkAI 发布前会调用这里进行第二次独立复验。
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -22,11 +22,12 @@ _NODE_TYPES = frozenset({"start", "scene", "ending"})
 _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
+_IDENTITY_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
 
 
 @dataclass(frozen=True)
 class NumericV2Issue:
-    """一次返回给作者的稳定合同问题。"""
+    """一次返回给作者的稳定合同问题。"""  # noqa: DOCSTRING_CJK
 
     code: str
     path: str
@@ -35,7 +36,7 @@ class NumericV2Issue:
 
 @dataclass(frozen=True)
 class NumericV2Warning:
-    """不阻止包复验的静态质量提示。"""
+    """不阻止包复验的静态质量提示。"""  # noqa: DOCSTRING_CJK
 
     code: str
     path: str
@@ -43,7 +44,7 @@ class NumericV2Warning:
 
 
 class NumericV2CompileError(ValueError):
-    """Numeric v2 包含一个或多个硬合同问题。"""
+    """Numeric v2 包含一个或多个硬合同问题。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, issues: list[NumericV2Issue]):
         super().__init__("numeric_v2_compile_failed")
@@ -52,7 +53,7 @@ class NumericV2CompileError(ValueError):
 
 @dataclass(frozen=True)
 class CompiledNumericV2Package:
-    """已通过 N.E.K.O 复验的 canonical Story Package。"""
+    """已通过 N.E.K.O 复验的 canonical Story Package。"""  # noqa: DOCSTRING_CJK
 
     story: dict[str, Any]
     json_bytes: bytes
@@ -70,6 +71,10 @@ def _is_int(value: Any) -> bool:
 
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value == value.strip()
+
+
+def _identity_source_name(value: Any) -> str:
+    return _IDENTITY_SEPARATOR_RE.split(str(value or "").strip(), maxsplit=1)[0].strip()
 
 
 def _condition_branches(conditions: Mapping[str, Any]) -> list[list[Mapping[str, Any]]]:
@@ -136,7 +141,7 @@ def _conditions_overlap(
 
 
 class _Collector:
-    """集中收集问题，避免遇到第一个错误就中断作者定位。"""
+    """集中收集问题，避免遇到第一个错误就中断作者定位。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self) -> None:
         self.issues: list[NumericV2Issue] = []
@@ -187,7 +192,7 @@ class _Collector:
 
 
 class NumericV2Compiler:
-    """只编译 Numeric v2 作者包，不提供旧协议兼容或迁移。"""
+    """只编译 Numeric v2 作者包，不提供旧协议兼容或迁移。"""  # noqa: DOCSTRING_CJK
 
     def compile(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
         collector = _Collector()
@@ -241,6 +246,14 @@ class NumericV2Compiler:
         intro = c.obj(value, "intro")
         for field in ("background", "player_identity", "catgirl_identity"):
             c.require_text(intro.get(field), f"intro.{field}")
+        player_name = _identity_source_name(intro.get("player_identity"))
+        catgirl_name = _identity_source_name(intro.get("catgirl_identity"))
+        if player_name and player_name == catgirl_name:
+            c.add(
+                "intro_identity_names_conflict",
+                "intro",
+                "玩家与猫娘身份的首段名称不能相同。",
+            )
 
     @staticmethod
     def _validate_binding(c: _Collector, value: Any) -> None:

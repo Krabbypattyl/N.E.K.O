@@ -495,7 +495,7 @@ def _validate_scene_prop_references(
     SceneSpec 是当前舞台唯一可见性来源。道具引用必须通过显式 ``prop_refs``
     或已登记目录 label 解析为稳定 ID；不对自然语言正文做词汇猜测，避免把
     某个题材的名词黑名单误当成跨剧本合同。
-    """
+    """  # noqa: DOCSTRING_CJK
 
     raw_catalog = story.get("stage_props") or []
     if not isinstance(raw_catalog, list):
@@ -1329,7 +1329,7 @@ def _validate_state_effects(
     effect_ids: set[str],
     owner: str,
 ) -> None:
-    """验证有限 StateEffect，并把证据限定在当前 Node/Edge 的实际 Event。"""
+    """验证有限 StateEffect，并把证据限定在当前 Node/Edge 的实际 Event。"""  # noqa: DOCSTRING_CJK
     if effects is None:
         return
     if not isinstance(effects, list) or len(effects) > _BEAT_LIST_MAX_ITEMS:
@@ -2066,7 +2066,7 @@ def _target_only_choice_overlap(
     ``核对温湿度计当前读数`` versus ``温湿度计停驻在...``. Four-character
     contiguous fragments keep this a source/target fact comparison rather than
     a cross-story natural-language blacklist.
-    """
+    """  # noqa: DOCSTRING_CJK
 
     if candidate in target_context and candidate not in source_context:
         return candidate
@@ -2097,7 +2097,7 @@ def _target_only_environment_detail_overlap(
     its three-character fragments catches ordinary wording changes such as
     ``狼毫笔墨迹未干`` versus ``拾起狼毫笔`` without maintaining a cross-story
     object blacklist.
-    """
+    """  # noqa: DOCSTRING_CJK
 
     if not isinstance(target_scene, dict):
         return ""

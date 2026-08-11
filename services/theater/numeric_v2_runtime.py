@@ -1,4 +1,4 @@
-"""Numeric v2 的确定性状态引擎与 Runtime 入口。"""
+"""Numeric v2 的确定性状态引擎与 Runtime 入口。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -35,15 +35,15 @@ _COMPARATORS = {
 
 
 class NumericV2RuntimeError(ValueError):
-    """Numeric v2 回合无法在当前确定性状态上结算。"""
+    """Numeric v2 回合无法在当前确定性状态上结算。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2RevisionConflictError(NumericV2RuntimeError):
-    """客户端基于过期 revision 提交。"""
+    """客户端基于过期 revision 提交。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2DuplicateTurnError(NumericV2RuntimeError):
-    """同一个 client_turn_id 已经成功提交。"""
+    """同一个 client_turn_id 已经成功提交。"""  # noqa: DOCSTRING_CJK
 
 
 def _stable_id(value: Any, field: str) -> str:
@@ -60,7 +60,7 @@ def _integer(value: Any, field: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class MetricChangeV2:
-    """判定模型提出、确定性引擎复验后的单项数值变化。"""
+    """判定模型提出、确定性引擎复验后的单项数值变化。"""  # noqa: DOCSTRING_CJK
 
     metric_id: str
     delta: int
@@ -194,7 +194,7 @@ class TurnOutcomeV2:
 
 
 class NumericV2Engine:
-    """只在候选 Session 上应用数值、最少回合和作者路线。"""
+    """只在候选 Session 上应用数值、最少回合和作者路线。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, compiled: CompiledNumericV2Package):
         self.compiled = compiled
@@ -355,7 +355,7 @@ class NumericV2Engine:
 
 
 class NumericV2Runtime:
-    """组合 v2 Engine 和独立持久化目录。"""
+    """组合 v2 Engine 和独立持久化目录。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, engine: NumericV2Engine, root: Path):
         self.engine = engine

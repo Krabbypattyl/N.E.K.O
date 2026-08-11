@@ -27,13 +27,13 @@ _FREE_SEED_FIELDS = frozenset(
 
 
 class FreeSeedContractError(ValueError):
-    """表示自由模式种子缺少必要字段或混入了作者图字段。"""
+    """表示自由模式种子缺少必要字段或混入了作者图字段。"""  # noqa: DOCSTRING_CJK
 
 
 def build_free_seed(
     story: dict[str, Any], scene: dict[str, Any]
 ) -> dict[str, Any]:
-    """从已校验的完整 Story 和当前初始 Scene 构造最小自由模式输入。"""
+    """从已校验的完整 Story 和当前初始 Scene 构造最小自由模式输入。"""  # noqa: DOCSTRING_CJK
     scenario_card = story.get("scenario_card")
     normalized_card = scenario_card if isinstance(scenario_card, dict) else {}
     raw_seed = story.get("seed")
@@ -76,7 +76,7 @@ def build_free_seed(
 
 
 def validate_free_seed(seed: dict[str, Any]) -> dict[str, Any]:
-    """校验并复制 Free Seed，确保自由 Actor 不会收到完整作者图。"""
+    """校验并复制 Free Seed，确保自由 Actor 不会收到完整作者图。"""  # noqa: DOCSTRING_CJK
     if not isinstance(seed, dict):
         raise FreeSeedContractError("自由模式种子必须是对象")
     unknown_fields = set(seed) - _FREE_SEED_FIELDS

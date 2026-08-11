@@ -1,4 +1,4 @@
-"""Numeric v2 独立剧本 HTTP 接口。"""
+"""Numeric v2 独立剧本 HTTP 接口。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
 
 
 def _numeric_root(config_manager: Any) -> Path:
-    """v2 复用统一剧场根目录，但只访问 numeric_v2 私有子目录。"""
+    """v2 复用统一剧场根目录，但只访问 numeric_v2 私有子目录。"""  # noqa: DOCSTRING_CJK
     return theater_root(config_manager)
 
 
@@ -67,7 +67,7 @@ def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
 
 
 def _current_catgirl_binding(config_manager: Any) -> dict[str, str]:
-    """Session 只绑定服务端当前猫娘，客户端不能伪造人格。"""
+    """Session 只绑定服务端当前猫娘，客户端不能伪造人格。"""  # noqa: DOCSTRING_CJK
 
     characters = config_manager.load_characters()
     current_name = str(characters.get("当前猫娘") or "").strip() if isinstance(characters, dict) else ""
@@ -140,7 +140,7 @@ def _scene_projection(runtime: NumericV2Runtime, stored: Any) -> dict[str, Any]:
 
 
 def _public_session(session: Any) -> dict[str, Any]:
-    """隐藏 metric 原始值，只向页面提供恢复和回放需要的字段。"""
+    """隐藏 metric 原始值，只向页面提供恢复和回放需要的字段。"""  # noqa: DOCSTRING_CJK
 
     return {
         "schema": session.to_dict()["schema"],
@@ -178,6 +178,7 @@ async def _speak_dialogue(
     *,
     session_id: str,
     revision: int,
+    lanlan_name: str,
     dialogue: list[Mapping[str, Any]],
 ) -> None:
     text = "\n".join(str(line.get("text") or "").strip() for line in dialogue if line.get("speaker_id") == "active_catgirl" and str(line.get("text") or "").strip())
@@ -192,7 +193,7 @@ async def _speak_dialogue(
         text,
         session_id=session_id,
         state_revision=revision,
-        lanlan_name=current_name(),
+        lanlan_name=lanlan_name,
         resolve_current_catgirl=current_name,
         get_session_manager=get_session_manager,
         metadata_kind="theater_numeric_v2_dialogue",
@@ -279,7 +280,13 @@ async def start_numeric_session(request: Request):
         return _error(str(exc), 400)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
         return _error(str(exc), 400)
-    await _speak_dialogue(config_manager, session_id=session_id, revision=0, dialogue=list(opening.get("dialogue") or []))
+    await _speak_dialogue(
+        config_manager,
+        session_id=session_id,
+        revision=0,
+        lanlan_name=str(stored.session.catgirl_binding.get("catgirl_name") or ""),
+        dialogue=list(opening.get("dialogue") or []),
+    )
     return {"ok": True, **_numeric_payload(runtime, stored)}
 
 
@@ -384,7 +391,13 @@ async def submit_numeric_input(request: Request):
         return _error(str(exc), 400)
     except (NumericV2RuntimeError, NumericV2StoreError) as exc:
         return _error(str(exc), 400)
-    await _speak_dialogue(config_manager, session_id=session_id, revision=stored.session.revision, dialogue=list(performance.get("dialogue") or []))
+    await _speak_dialogue(
+        config_manager,
+        session_id=session_id,
+        revision=stored.session.revision,
+        lanlan_name=str(stored.session.catgirl_binding.get("catgirl_name") or ""),
+        dialogue=list(performance.get("dialogue") or []),
+    )
     return {
         "ok": True,
         "resolved_turn": {

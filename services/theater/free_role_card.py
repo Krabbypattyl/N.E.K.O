@@ -32,7 +32,7 @@ _MAX_WORLD_INFO_CHARS = 12000
 
 
 class FreeRoleCardContractError(ValueError):
-    """表示临时角色卡不满足自由 Session 的最小输入合同。"""
+    """表示临时角色卡不满足自由 Session 的最小输入合同。"""  # noqa: DOCSTRING_CJK
 
 
 def validate_role_card(
@@ -40,7 +40,7 @@ def validate_role_card(
     *,
     expected_name: str,
 ) -> dict[str, Any]:
-    """校验并复制临时角色卡，禁止借此覆盖其他猫娘或写入作者剧情图。"""
+    """校验并复制临时角色卡，禁止借此覆盖其他猫娘或写入作者剧情图。"""  # noqa: DOCSTRING_CJK
     if not isinstance(role_card, dict):
         raise FreeRoleCardContractError("自由角色卡必须是对象")
     unknown_fields = set(role_card) - _ROLE_CARD_FIELDS
@@ -98,7 +98,7 @@ def bind_role_card_to_current_catgirl(
     RP-Hub 角色卡的主角是卡片作者定义的角色；N.E.K.O 自由模式的主角必须
     始终是当前猫娘。因此这里先替换主角和玩家称呼，再交给合同校验，避免
     原卡中的角色名、关系称呼或性格摘要继续污染当前猫娘。
-    """
+    """  # noqa: DOCSTRING_CJK
     if not isinstance(role_card, dict):
         raise FreeRoleCardContractError("自由角色卡必须是对象")
 
@@ -155,14 +155,19 @@ def bind_role_card_to_current_catgirl(
         if value and value != current_player_address
     )
     replace_pairs = list(dict.fromkeys(replace_pairs))
-    for field in ("first_mes", "scenario", "mes_example"):
-        normalized[field] = replace_names(normalized.get(field), replace_pairs)
-    world_info = normalized.get("world_info")
-    if isinstance(world_info, list):
-        rewritten_world_info: list[str] = []
-        for item in world_info:
-            rewritten_world_info.append(replace_names(item, replace_pairs))
-        normalized["world_info"] = rewritten_world_info
+    try:
+        for field in ("first_mes", "scenario", "mes_example"):
+            normalized[field] = replace_names(normalized.get(field), replace_pairs)
+        world_info = normalized.get("world_info")
+        if isinstance(world_info, list):
+            rewritten_world_info: list[str] = []
+            for item in world_info:
+                rewritten_world_info.append(replace_names(item, replace_pairs))
+            normalized["world_info"] = rewritten_world_info
+    except ValueError as exc:
+        if str(exc) == "conflicting_name_replacement":
+            raise FreeRoleCardContractError("自由角色卡包含冲突的名称替换") from exc
+        raise
 
     normalized["name"] = current_name
     # 当前猫娘的人格摘要是唯一主角人设来源；角色卡 description 只保留简短身份。
@@ -181,7 +186,7 @@ def apply_role_card_to_seed(
     seed: dict[str, Any],
     role_card: dict[str, Any],
 ) -> dict[str, Any]:
-    """把临时角色卡投影到 Free Seed，只替换自由公开开场，不改完整 Story。"""
+    """把临时角色卡投影到 Free Seed，只替换自由公开开场，不改完整 Story。"""  # noqa: DOCSTRING_CJK
     projected = deepcopy(seed)
     projected["title"] = str(role_card.get("story_title") or projected.get("title") or "")
     projected["theme"] = str(role_card.get("scenario") or projected.get("theme") or "")

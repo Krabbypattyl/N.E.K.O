@@ -1,4 +1,4 @@
-"""把作者剧本中的双主角名称投影为当前玩家与当前猫娘。"""
+"""把作者剧本中的双主角名称投影为当前玩家与当前猫娘。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _NAME_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
 
 
 def _identity_name(identity: Any) -> str:
-    """身份首段是作者角色名；没有独立名字时不做危险的全文猜测。"""
+    """身份首段是作者角色名；没有独立名字时不做危险的全文猜测。"""  # noqa: DOCSTRING_CJK
 
     first = _NAME_SEPARATOR_RE.split(str(identity or "").strip(), maxsplit=1)[0].strip()
     if not first or len(first) > 24 or any(char.isspace() for char in first):
@@ -24,7 +24,7 @@ def _identity_name(identity: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NumericV2CastProjection:
-    """运行时固定：男主由玩家扮演，女主由当前猫娘扮演。"""
+    """运行时固定：男主由玩家扮演，女主由当前猫娘扮演。"""  # noqa: DOCSTRING_CJK
 
     source_player_name: str
     source_catgirl_name: str

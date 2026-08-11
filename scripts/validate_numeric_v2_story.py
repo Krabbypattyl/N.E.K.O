@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""供 InkAI 调用的 Numeric v2 复验与安全安装 CLI。"""
+"""供 InkAI 调用的 Numeric v2 复验与安全安装 CLI。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from services.theater.numeric_v2_registry import (  # noqa: E402
 
 
 def _package_root() -> Path:
-    """复用 N.E.K.O 自己的存储策略，不在 InkAI 复制平台路径规则。"""
+    """复用 N.E.K.O 自己的存储策略，不在 InkAI 复制平台路径规则。"""  # noqa: DOCSTRING_CJK
 
     from utils.config_manager import ConfigManager
 

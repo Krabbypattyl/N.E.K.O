@@ -1,4 +1,4 @@
-"""Numeric v2 演绎 Actor，只生成表现文本和玩家建议。"""
+"""Numeric v2 演绎 Actor，只生成表现文本和玩家建议。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class NumericV2ActorError(RuntimeError):
-    """Actor 无法提供可提交的演绎正文。"""
+    """Actor 无法提供可提交的演绎正文。"""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2ActorUnavailableError(NumericV2ActorError):
@@ -97,7 +97,7 @@ def _history(session: ScriptSessionV2) -> list[dict[str, Any]]:
 
 
 def _beat_for_actor(cast: NumericV2CastProjection, beat: Mapping[str, Any]) -> dict[str, Any]:
-    """只投影可演边界；完整章节正文是作者计划，不是当前已发生事实。"""
+    """只投影可演边界；完整章节正文是作者计划，不是当前已发生事实。"""  # noqa: DOCSTRING_CJK
 
     projected = cast.value(beat)
     return {
@@ -126,7 +126,7 @@ def _beat_for_actor(cast: NumericV2CastProjection, beat: Mapping[str, Any]) -> d
 
 
 def _opening_anchor(value: Any) -> str:
-    """只交付节点第一句，避免 Actor 一次演完整章。"""
+    """只交付节点第一句，避免 Actor 一次演完整章。"""  # noqa: DOCSTRING_CJK
 
     text = str(value or "").strip()
     endings = [index for mark in "。！？" if (index := text.find(mark)) >= 0]
@@ -134,7 +134,7 @@ def _opening_anchor(value: Any) -> str:
 
 
 def _opening_beat_for_actor(cast: NumericV2CastProjection, beat: Mapping[str, Any]) -> dict[str, Any]:
-    """开场只暴露首个可观察画面，不把整章事件误当成玩家已经经历的前史。"""
+    """开场只暴露首个可观察画面，不把整章事件误当成玩家已经经历的前史。"""  # noqa: DOCSTRING_CJK
 
     projected = _beat_for_actor(cast, beat)
     return {
@@ -347,13 +347,13 @@ async def _model_config(config_manager: Any) -> dict[str, Any]:
 
 
 class NumericV2Actor:
-    """Actor 每次调用只生成表现结果，不拥有 Session 写权限。"""
+    """Actor 每次调用只生成表现结果，不拥有 Session 写权限。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, config_manager: Any):
         self.config_manager = config_manager
 
     def _character_profile(self) -> str:
-        """只读取服务端当前猫娘的人格摘要，不接受客户端角色名。"""
+        """只读取服务端当前猫娘的人格摘要，不接受客户端角色名。"""  # noqa: DOCSTRING_CJK
 
         try:
             characters = self.config_manager.load_characters()

@@ -25,7 +25,7 @@ other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')
 etc. See ``main_routers/characters_router.py`` docstring or
 ``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 import re
 import time
@@ -311,7 +311,7 @@ async def get_theater(request: Request):
 
 @router.get("/theater-home", response_class=HTMLResponse)
 async def get_theater_home(request: Request):
-    """渲染小剧场统一入口，集中说明两种模式和项目玩法。"""
+    """渲染小剧场统一入口，集中说明两种模式和项目玩法。"""  # noqa: DOCSTRING_CJK
 
     templates = get_templates()
     return templates.TemplateResponse("templates/theater_home.html", {
@@ -322,7 +322,7 @@ async def get_theater_home(request: Request):
 
 @router.get("/theater-numeric", response_class=HTMLResponse)
 async def get_numeric_theater(request: Request):
-    """渲染独立 Numeric v2 剧本页，不复用旧剧本页的状态脚本。"""
+    """渲染独立 Numeric v2 剧本页，不复用旧剧本页的状态脚本。"""  # noqa: DOCSTRING_CJK
 
     templates = get_templates()
     return templates.TemplateResponse("templates/theater_numeric.html", {

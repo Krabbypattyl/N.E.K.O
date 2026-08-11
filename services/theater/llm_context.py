@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from utils.tokenize import truncate_to_tokens
+from utils.tokenize import count_tokens, truncate_to_tokens
 
 
 # 当前猫娘只读取短人格摘要；本地字符上限避免首次 tokenizer 下载阻塞开场。
@@ -59,9 +59,12 @@ def truncate_prompt_value(value: Any, *, max_tokens: int, max_items: int = 8) ->
     if isinstance(value, str):
         return truncate_to_tokens(value, max_tokens)
     if isinstance(value, dict):
+        items = list(value.items())
+        if len(items) > max_items:
+            items = items[: max(0, max_items - 1)] + (items[-1:] if max_items else [])
         return {
             str(key): truncate_prompt_value(item, max_tokens=max_tokens, max_items=max_items)
-            for key, item in value.items()
+            for key, item in items
         }
     if isinstance(value, list):
         return [
@@ -76,39 +79,113 @@ def truncate_prompt_value(value: Any, *, max_tokens: int, max_items: int = 8) ->
     return value
 
 
+def _fit_json_content(
+    prefix: str,
+    payload: dict[str, Any] | list[Any],
+    *,
+    max_tokens: int,
+    field_max_tokens: int,
+) -> str:
+    """Keep a JSON prompt valid while fitting the complete serialized message."""
+    budget = max(0, int(max_tokens))
+    item_limit = 8 if isinstance(payload, (dict, list)) else 0
+    for max_items in range(item_limit, -1, -1):
+        for field_budget in range(max(0, int(field_max_tokens)), -1, -1):
+            bounded = truncate_prompt_value(
+                payload,
+                max_tokens=field_budget,
+                max_items=max_items,
+            )
+            encoded = json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))
+            encoded_tokens = count_tokens(encoded)
+            if encoded_tokens > budget:
+                continue
+            prefix_budget = budget - encoded_tokens
+            candidate = truncate_to_tokens(prefix, prefix_budget) + encoded
+            if count_tokens(candidate) <= budget:
+                return candidate
+            for retry_budget in range(prefix_budget - 1, -1, -1):
+                candidate = truncate_to_tokens(prefix, retry_budget) + encoded
+                if count_tokens(candidate) <= budget:
+                    return candidate
+    empty = "[]" if isinstance(payload, list) else "{}"
+    if count_tokens(empty) > budget:
+        return ""
+    for prefix_budget in range(budget, -1, -1):
+        candidate = truncate_to_tokens(prefix, prefix_budget) + empty
+        if count_tokens(candidate) <= budget:
+            return candidate
+    return empty
+
+
+def _bounded_message_content(
+    content: str,
+    *,
+    max_tokens: int,
+    field_max_tokens: int,
+) -> str:
+    """Bound one message without cutting through a structured JSON payload."""
+    json_start = content.find("{")
+    if json_start >= 0:
+        prefix = content[:json_start]
+        try:
+            payload = json.loads(content[json_start:])
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, (dict, list)):
+            return _fit_json_content(
+                prefix,
+                payload,
+                max_tokens=max_tokens,
+                field_max_tokens=field_max_tokens,
+            )
+    return truncate_to_tokens(content, max(0, int(max_tokens)))
+
+
 def bound_prompt_messages(
     messages: list[Any], *, max_tokens: int, field_max_tokens: int
 ) -> list[Any]:
     """在保留消息结构的前提下限制模型消息中的动态文本。"""  # noqa: DOCSTRING_CJK
-    bounded_messages: list[Any] = []
-    for message in list(messages or []):
-        content = str(
-            message.get("content")
+    source = list(messages or [])
+    if not source:
+        return []
+    max_budget = max(0, int(max_tokens))
+    system_indexes = [
+        index
+        for index, message in enumerate(source)
+        if str(
+            message.get("role")
             if isinstance(message, dict)
-            else getattr(message, "content", "")
-        )
-        json_start = content.find("{")
-        bounded_content = content
-        if json_start >= 0:
-            prefix = content[:json_start]
-            try:
-                payload = json.loads(content[json_start:])
-            except (TypeError, ValueError):
-                payload = None
-            if isinstance(payload, (dict, list)):
-                bounded_content = prefix + json.dumps(
-                    truncate_prompt_value(
-                        payload,
-                        max_tokens=field_max_tokens,
-                    ),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            else:
-                bounded_content = truncate_to_tokens(content, max_tokens)
+            else getattr(message, "role", "")
+        ) == "system"
+    ]
+    ordered_indexes = system_indexes + [
+        index for index in reversed(range(len(source))) if index not in system_indexes
+    ]
+    bounded_contents: dict[int, str] = {}
+    remaining = max_budget
+    for position, index in enumerate(ordered_indexes):
+        slots_left = len(ordered_indexes) - position
+        if index in system_indexes:
+            budget = min(1000, remaining // max(1, slots_left))
         else:
-            bounded_content = truncate_to_tokens(content, max_tokens)
+            budget = remaining // max(1, slots_left) if slots_left > 1 else remaining
+        content = str(
+            source[index].get("content")
+            if isinstance(source[index], dict)
+            else getattr(source[index], "content", "")
+        )
+        bounded_content = _bounded_message_content(
+            content,
+            max_tokens=budget,
+            field_max_tokens=field_max_tokens,
+        )
+        bounded_contents[index] = bounded_content
+        remaining = max(0, remaining - count_tokens(bounded_content))
 
+    bounded_messages: list[Any] = []
+    for index, message in enumerate(source):
+        bounded_content = bounded_contents.get(index, "")
         if isinstance(message, dict):
             replacement = dict(message)
             replacement["content"] = bounded_content

@@ -75,7 +75,7 @@ def reload_module(module_name: str):
 
 
 def _character_memory_theater_story() -> dict:
-    """返回角色生命周期测试需要的最小自由模式来源。"""
+    """返回角色生命周期测试需要的最小自由模式来源。"""  # noqa: DOCSTRING_CJK
     return {
         "id": "character_memory_theater_story",
         "story_revision": "character-memory-v1",
@@ -1182,7 +1182,7 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
 def test_profile_rename_event_master_is_person_neutral():
     """主人改名记录进的是猫娘 persona 的 master section，读者是猫娘、
     改名的是用户。第一人称会让猫娘误以为是自己改名，所以这里去掉人称、
-    用中性陈述，既不能出现「我」也不带「你」。"""
+    用中性陈述，既不能出现「我」也不带「你」。"""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         PROFILE_RENAME_EVENT_FIELD_MASTER,
         PROFILE_RENAME_EVENT_TEXT_MASTER,
@@ -4765,7 +4765,7 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
 
     本用例验证 ``_ensure_engine_exists`` 检测到 cached vs expected 漂移
     后会 dispose 旧 engine + 用 expected 路径重建。
-    """
+    """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
     class _DummyEngine:
@@ -4837,7 +4837,7 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
 def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_path):
     """对偶用例：cached 与 expected 一致时 drift 检测不该误伤——cache 命中
     应仍然短路，不重建 engine。
-    """
+    """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
     class _DummyEngine:

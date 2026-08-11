@@ -26,6 +26,7 @@
         freeRoleCardName: '',
         playback: { active: false, skipRequested: false, epoch: 0 },
         pendingTurn: null,
+        pendingExit: null,
         pendingStart: null,
         generationLoadingRow: null,
     };
@@ -421,6 +422,17 @@
         if (state.pendingTurn && state.pendingTurn.id === id) state.pendingTurn = null;
     }
 
+    function getPendingExitId() {
+        if (state.pendingExit && state.pendingExit.sessionId === state.sessionId) return state.pendingExit.id;
+        const id = createId('exit_web_');
+        state.pendingExit = { id: id, sessionId: state.sessionId };
+        return id;
+    }
+
+    function clearPendingExit(id) {
+        if (state.pendingExit && state.pendingExit.id === id) state.pendingExit = null;
+    }
+
     function getPendingStartId() {
         const signature = JSON.stringify({ storyId: state.storyId, roleCard: state.freeRoleCard });
         if (state.pendingStart && state.pendingStart.signature === signature) return state.pendingStart.id;
@@ -574,6 +586,7 @@
     async function endSession() {
         if (state.busy || state.playback.active || !state.sessionId) return;
         const optimistic = appendTurn('user', t('theater.leaveAction', '离开小剧场'));
+        const clientTurnId = getPendingExitId();
         setBusy(true);
         try {
             const result = await requestJson(api.input, {
@@ -581,12 +594,13 @@
                 body: {
                     session_id: state.sessionId,
                     input_kind: 'user_exit',
-                    client_turn_id: createId('turn_web_'),
+                    client_turn_id: clientTurnId,
                     base_revision: state.stateRevision,
                 },
             });
             if (!result || !result.ok) throw new Error('exit');
             await applyPayload(result);
+            clearPendingExit(clientTurnId);
         } catch (_) {
             if (optimistic) optimistic.remove();
             setStatus('theater.failed', '离场失败');

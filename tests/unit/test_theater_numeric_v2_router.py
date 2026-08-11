@@ -1,4 +1,4 @@
-"""验证 Numeric v2 HTTP 纵向链路和失败不提交边界。"""
+"""验证 Numeric v2 HTTP 纵向链路和失败不提交边界。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from main_routers import numeric_theater_router
 from services.theater.numeric_v2_actor import NumericV2ActorError
@@ -277,3 +278,25 @@ def test_numeric_v2_router_replaces_session_when_catgirl_changed(tmp_path, monke
             )
         )
         assert payload["session"]["catgirl_binding"]["catgirl_name"] == "新猫娘"
+
+
+@pytest.mark.asyncio
+async def test_numeric_tts_uses_session_catgirl_binding(tmp_path, monkeypatch):
+    config = _ConfigManager(tmp_path)
+    captured = {}
+
+    async def capture_speech(*args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(numeric_theater_router, "speak_committed_line", capture_speech)
+
+    await numeric_theater_router._speak_dialogue(
+        config,
+        session_id="numeric_tts_binding",
+        revision=1,
+        lanlan_name="旧猫娘",
+        dialogue=[{"speaker_id": "active_catgirl", "text": "这句属于旧 Session。"}],
+    )
+
+    assert captured["lanlan_name"] == "旧猫娘"
