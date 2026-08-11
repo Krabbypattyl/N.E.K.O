@@ -32,7 +32,10 @@ test('SettingsTourFlow exposes declarative schemas for day four panel tours', ()
         panelMinDurationMs: 4200,
         openWithSettingsCursor: true,
         settingsCursorIdSuffix: '_settings_button',
-        settingsCursorMoveDurationMs: 560,
+        settingsCursorStartDelayMs: 300,
+        settingsCursorMoveDurationMs: 760,
+        settingsCursorClickDurationMs: 520,
+        exactCursorDuration: true,
         openFailureMessage: '[YuiGuide] 第4天对话设置打开设置面板失败:'
     });
     assert.deepEqual(flow.getPanelTourSchema({ id: 'day4_model_behavior' }), {
@@ -44,6 +47,7 @@ test('SettingsTourFlow exposes declarative schemas for day four panel tours', ()
         cursorMoveDurationMs: 620,
         collapseBeforeAnchorHighlight: true,
         openWithAnchorCursor: true,
+        waitForVisibleAnchor: true,
         panelEllipseDurationMs: 3200,
         panelMinDurationMs: 3200
     });
@@ -158,8 +162,14 @@ test('SettingsTourFlow owns day three personalization detail scene body after da
 
 test('SettingsTourFlow reuses day four animation panel from its anchor cursor click', async () => {
     const calls = [];
+    let anchorReady = false;
     const settingsButton = { id: 'settings-button' };
-    const animationButton = { id: 'animation-settings-button' };
+    const animationButton = {
+        id: 'animation-settings-button',
+        getBoundingClientRect() {
+            return { left: 100, top: 140, width: 120, height: 44 };
+        }
+    };
     const animationPanel = {
         id: 'animation-settings-panel',
         _anchorElement: animationButton,
@@ -183,6 +193,11 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
         getAvatarFloatingSidePanel(panelId) {
             calls.push(['get-panel', panelId]);
             return panelId === 'animation-settings' ? animationPanel : null;
+        },
+        waitForElement(resolveElement, timeoutMs) {
+            calls.push(['wait-anchor', timeoutMs]);
+            anchorReady = true;
+            return Promise.resolve(resolveElement());
         },
         collapseAvatarFloatingSidePanelsExcept(panel) {
             calls.push(['collapse-except', panel]);
@@ -223,6 +238,9 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
             return Promise.resolve(animationPanel);
         },
         getElementRect(target) {
+            if (target === animationButton) {
+                return anchorReady ? { left: 100, top: 140, width: 120, height: 44 } : null;
+            }
             return target.getBoundingClientRect();
         },
         cursor: {
@@ -248,6 +266,8 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
     assert.equal(result, true);
     assert.deepEqual(calls, [
         ['prepare', 'day4_model_behavior'],
+        ['get-panel', 'animation-settings'],
+        ['wait-anchor', 1200],
         ['get-panel', 'animation-settings'],
         ['collapse-except', null],
         ['highlight', 'day4_model_behavior-animation-settings-button', 'animation-settings-button', 'settings-button'],
@@ -1119,7 +1139,12 @@ test('SettingsTourFlow keeps panel ellipse alive for configured minimum duration
 test('SettingsTourFlow stops day four panel tour when anchor click makes scene stale', async () => {
     const calls = [];
     const settingsButton = { id: 'settings-button' };
-    const animationButton = { id: 'animation-settings-button' };
+    const animationButton = {
+        id: 'animation-settings-button',
+        getBoundingClientRect() {
+            return { left: 100, top: 140, width: 120, height: 44 };
+        }
+    };
     const animationPanel = {
         id: 'animation-settings-panel',
         _anchorElement: animationButton,
@@ -1141,6 +1166,9 @@ test('SettingsTourFlow stops day four panel tour when anchor click makes scene s
         },
         getAvatarFloatingSidePanel() {
             return animationPanel;
+        },
+        waitForElement(resolveElement) {
+            return Promise.resolve(resolveElement());
         },
         collapseAvatarFloatingSidePanelsExcept() {},
         applyGuideHighlights(config) {

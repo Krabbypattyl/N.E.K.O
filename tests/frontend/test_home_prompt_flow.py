@@ -2402,7 +2402,11 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
             };
             document.getElementById('animation-settings-panel')._anchorElement = document.getElementById('animation-settings-button');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+        script_names=(
+            "tutorial/yui-guide/overlay.js",
+            *_YUI_DIRECTOR_SCRIPTS,
+            "tutorial/yui-guide/days/day4-companion-guide.js",
+        ),
     )
 
     result = mock_page.evaluate(
@@ -2410,7 +2414,18 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
         async () => {
             window.__calls = [];
             const director = window.createYuiGuideDirector({ page: 'home' });
+            const modelBehaviorScene = window.YuiGuideDailyGuides[4].round.scenes.find(
+                (candidate) => candidate.id === 'day4_model_behavior'
+            );
             let releaseNarration;
+            director.currentSceneId = 'day4_chat_settings';
+            director.clearExternalizedChatGuideTarget = (options) => {
+                window.__calls.push({
+                    type: 'clear-external',
+                    clearCursor: !!(options && options.clearCursor),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor),
+                });
+            };
             director.appendGuideChatMessage = () => window.__calls.push({ type: 'message' });
             director.applyGuideEmotion = (emotion) => window.__calls.push({ type: 'emotion', emotion });
             director.enableInterrupts = () => window.__calls.push({ type: 'interrupts' });
@@ -2472,14 +2487,7 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
                 }, 20);
             });
 
-            await director.playAvatarFloatingScene({
-                id: 'day4_model_behavior',
-                text: '如果你想要看到更精致、细节更满满的我，或者想要更丝滑、更流畅的动作体验，都可以在这里进行调整哦！不管哪一种，我都会展现出最可爱的一面哒~',
-                voiceKey: 'avatar_floating_day4_model_behavior',
-                target: 'settings-sidepanel:animation-settings',
-                cursorAction: 'tour',
-                operation: 'show-settings-sidepanel:animation-settings',
-            }, 4, 2, 8);
+            await director.playAvatarFloatingScene(modelBehaviorScene, 4, 2, 8);
             return window.__calls;
         }
         """
@@ -2500,6 +2508,11 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
         ("highlight", "day4_model_behavior-animation-settings-button", "animation-settings-button", "live2d-btn-settings"),
         ("highlight", "day4_model_behavior-animation-settings-panel", "animation-settings-panel", "live2d-btn-settings"),
     ]
+    assert {
+        "type": "clear-external",
+        "clearCursor": True,
+        "preservePcOverlayCursor": True,
+    } in result
     assert result.index({"type": "move", "id": "animation-settings-button", "durationMs": 620}) < result.index({
         "type": "api:ensureSidePanel",
         "panelType": "animation-settings",
