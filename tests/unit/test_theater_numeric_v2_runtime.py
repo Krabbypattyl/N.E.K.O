@@ -329,3 +329,29 @@ async def test_numeric_v2_restore_rejects_tampered_ledger(tmp_path):
 
     with pytest.raises(ValueError, match="numeric_ledger_replay_mismatch"):
         await runtime.restore_session("runtime_tamper")
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_restore_rejects_truncated_performance_history(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_truncated_performance",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    outcome = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("turn_1", 0, "先聊聊。"),
+        (),
+    )
+    committed = await runtime.commit_turn(outcome, _performance("好。"))
+    path = runtime.store._path(committed.session.session_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["session"]["performance_history"] = []
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_performance_history_mismatch",
+    ):
+        await runtime.restore_session("runtime_truncated_performance")

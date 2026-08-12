@@ -341,6 +341,8 @@ class NumericV2SessionStore:
             catgirl_binding=stored.session.catgirl_binding,
             opening_performance=stored.session.opening_performance,
         )
+        if len(stored.session.performance_history) != len(events):
+            raise NumericV2StoreError("numeric_performance_history_mismatch")
         for event_index, event in enumerate(events):
             expected_revision += 1
             if not isinstance(event, Mapping):
@@ -427,8 +429,6 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_session_not_at_ledger_tail")
         if seen_turns != set(stored.session.processed_client_turn_ids):
             raise NumericV2StoreError("numeric_processed_turn_ids_mismatch")
-        if len(stored.session.performance_history) != len(events):
-            raise NumericV2StoreError("numeric_performance_history_mismatch")
         if not (
             replay_session.status == stored.session.status
             or (

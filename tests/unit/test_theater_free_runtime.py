@@ -491,6 +491,7 @@ def test_free_seed_only_keeps_opening_context():
         "story_revision": "v1",
         "title": "雨夜访客",
         "theme": "重新建立信任",
+        "background": "当前猫娘与男主在雨夜重逢。",
         "scenario_card": {
             "player_role": "访客",
             "catgirl_role": "等待消息的邻居",
@@ -509,10 +510,30 @@ def test_free_seed_only_keeps_opening_context():
 
     assert seed["schema_version"] == free_seed.FREE_SEED_SCHEMA_VERSION
     assert seed["opening_scene"] == scene
+    assert seed["background"] == story["background"]
     assert seed["scenario_card"]["primary_goal"] == "完成第一次交流"
     assert "narrative_nodes" not in seed
     assert "edges" not in seed
     assert "events" not in seed
+
+
+def test_free_default_role_card_projects_story_placeholders():
+    story = _free_source_story()
+    story.pop("theme")
+    story["background"] = "当前猫娘与男主住在云舒镇。"
+    story["scenes"][0]["text"] = "{{lanlan_name}}把钥匙递给男主。"
+    seed = free_seed.build_free_seed(story, story["scenes"][0])
+
+    projected = free_runtime._project_free_seed(seed, "小葵")
+    role_card = free_runtime._build_default_role_card(
+        projected,
+        lanlan_name="小葵",
+        config_manager=None,
+    )
+
+    assert projected["background"] == "小葵与你住在云舒镇。"
+    assert role_card["scenario"] == "小葵与你住在云舒镇。"
+    assert role_card["first_mes"] == "小葵把钥匙递给你。"
 
 
 def test_free_seed_derives_revision_for_story_without_explicit_revision():
@@ -816,6 +837,41 @@ async def test_free_start_retires_active_session_when_story_revision_changes(mon
     assert old["ended_at"] is not None
     active = await free_runtime.get_active_state(root, lanlan_name="测试猫娘")
     assert active["session_id"] == replacement["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_free_start_recovers_from_corrupt_active_session(monkeypatch, tmp_path):
+    story = _free_source_story()
+    story["background"] = "当前猫娘与男主住在云舒镇。"
+    story["scenes"][0]["text"] = "{{lanlan_name}}把钥匙递给男主。"
+
+    async def load_story(_story_id=None, **_kwargs):
+        return deepcopy(story)
+
+    monkeypatch.setattr(free_runtime.story_loader, "load_story", load_story)
+    root = tmp_path / "theater"
+    free_root = root / "free"
+    corrupt_session_id = "theater_00000000-0000-0000-0000-000000000000"
+    await session_store.set_active_session(free_root, "测试猫娘", corrupt_session_id)
+    corrupt_path = session_store.session_path(free_root, corrupt_session_id)
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_text("{", encoding="utf-8")
+
+    started = await free_runtime.start_session(
+        root,
+        lanlan_name="测试猫娘",
+        story_id=THEATER_TEST_STORY_ID,
+        client_start_id="recover_corrupt_active",
+    )
+
+    assert started["ok"] is True
+    assert started["session_id"] != corrupt_session_id
+    assert (
+        await session_store.get_active_session_id(free_root, "测试猫娘")
+        == started["session_id"]
+    )
+    saved = await session_store.load_session(free_root, started["session_id"])
+    assert saved["turns"][0]["free_text"] == "测试猫娘把钥匙递给你。"
 
 
 @pytest.mark.asyncio

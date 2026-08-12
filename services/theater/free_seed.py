@@ -19,6 +19,7 @@ _FREE_SEED_FIELDS = frozenset(
         "source_story_revision",
         "title",
         "theme",
+        "background",
         "scenario_card",
         "opening_scene",
         "restrictions",
@@ -70,6 +71,7 @@ def build_free_seed(
         "source_story_revision": story_revision(story),
         "title": str(story.get("title") or ""),
         "theme": str(story.get("theme") or ""),
+        "background": str(story.get("background") or ""),
         "scenario_card": {
             "player_role": str(
                 normalized_card.get("player_role") or "故事参与者"

@@ -155,6 +155,9 @@ async def load_session(root: Path, session_id: str) -> dict[str, Any] | None:
         data = await read_json_async(path)
     except FileNotFoundError:
         return None
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        # 损坏的单个 Session 视为不可恢复，让 active 指针走现有清理链路。
+        return None
     if not isinstance(data, dict):
         return None
     if data.get("schema_version") != SESSION_SCHEMA_VERSION:

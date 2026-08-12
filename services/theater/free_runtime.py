@@ -17,6 +17,7 @@ from . import (
     free_role_card,
     llm,
     session_store,
+    story_graph,
     story_loader,
 )
 from .llm_context import (
@@ -167,7 +168,7 @@ def _build_default_role_card(
             max_chars=THEATER_PERSONA_MAX_CHARS,
         ),
         "first_mes": str(opening.get("text") or "").strip(),
-        "scenario": str(seed.get("theme") or "").strip(),
+        "scenario": str(seed.get("theme") or seed.get("background") or "").strip(),
         "mes_example": "",
         "world_info": [],
         # 玩家称呼由当前猫娘配置决定；测试环境没有配置时才回退故事身份。
@@ -176,6 +177,19 @@ def _build_default_role_card(
         "story_title": str(seed.get("title") or "").strip(),
         "scenario_title": str(opening.get("title") or "").strip(),
     }
+
+
+def _project_free_seed(seed: dict[str, Any], lanlan_name: str) -> dict[str, Any]:
+    """在进入角色卡和模型前投影来源背景与开场，不改写已持久化正文。"""  # noqa: DOCSTRING_CJK
+    projected = deepcopy(seed)
+    projected["background"] = story_graph.render_story_text(
+        projected.get("background"),
+        lanlan_name,
+    )
+    opening = projected.get("opening_scene")
+    if isinstance(opening, dict):
+        opening["text"] = story_graph.render_story_text(opening.get("text"), lanlan_name)
+    return projected
 
 
 def _public_role_card(role_card: Any) -> dict[str, str] | None:
@@ -462,7 +476,7 @@ async def start_session(
             return {"ok": False, "reason": "story_has_no_initial_scene"}
         try:
             # 完整 Story 只负责来源校验；模型和自由 Session 只接收最小种子。
-            seed = free_seed.build_free_seed(story, scene)
+            seed = _project_free_seed(free_seed.build_free_seed(story, scene), name)
         except free_seed.FreeSeedContractError:
             return {"ok": False, "reason": "free_seed_invalid"}
         try:
@@ -664,7 +678,10 @@ async def submit_input(
             return {"ok": False, "reason": "story_has_no_initial_scene"}
         try:
             # 每轮按已保存的来源 revision 重建同一份最小种子，避免 Session 读取旧投影。
-            seed = free_seed.build_free_seed(story, source_scene)
+            seed = _project_free_seed(
+                free_seed.build_free_seed(story, source_scene),
+                str(session.get("lanlan_name") or ""),
+            )
         except free_seed.FreeSeedContractError:
             return {"ok": False, "reason": "free_seed_invalid"}
         active_role_card = session.get("role_card")

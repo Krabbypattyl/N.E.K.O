@@ -249,6 +249,8 @@ async def start_numeric_session(request: Request):
                     _ensure_current_catgirl(existing.session, config_manager)
                 if not binding_changed and not (replace_existing and existing.session.status == "ended"):
                     return {"ok": True, "resumed": True, **_numeric_payload(runtime, existing)}
+                if session_id == existing.session.session_id:
+                    return _error("numeric_replacement_session_id_must_differ", 400)
                 # 活跃 Session 的角色切换可以显式重建；已结束 Session 必须保留原账本。
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
                 if _current_catgirl_binding(config_manager) != binding:

@@ -377,6 +377,48 @@ def test_numeric_v2_router_replaces_session_when_catgirl_changed(tmp_path, monke
         assert blocked.status_code == 409
         assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
 
+        opening_before_replacement = (
+            numeric_theater_router.NumericV2Actor.generate_opening
+        )
+        opening_calls = []
+
+        async def unexpected_opening(*args, **kwargs):
+            opening_calls.append(True)
+            return _performance("不应生成开场。")
+
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2Actor,
+            "generate_opening",
+            unexpected_opening,
+        )
+        same_id = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "catgirl_before_change",
+                "replace_existing": True,
+            },
+        )
+        assert same_id.status_code == 400
+        assert same_id.json()["reason"] == "numeric_replacement_session_id_must_differ"
+        assert opening_calls == []
+        existing_path = (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "sessions"
+            / "catgirl_before_change.json"
+        )
+        existing_payload = json.loads(
+            existing_path.read_text(encoding="utf-8")
+        )
+        assert existing_payload["session"]["catgirl_binding"]["catgirl_name"] == "测试猫娘"
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2Actor,
+            "generate_opening",
+            opening_before_replacement,
+        )
+
         replaced = client.post(
             "/api/theater-numeric/session/start",
             json={
