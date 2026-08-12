@@ -37,8 +37,10 @@ def story_revision(story: dict[str, Any]) -> str:
     explicit_revision = str(story.get("story_revision") or "").strip()
     if explicit_revision:
         return explicit_revision
+    canonical_story = deepcopy(story)
+    canonical_story.pop("story_revision", None)
     canonical = json.dumps(
-        story,
+        canonical_story,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

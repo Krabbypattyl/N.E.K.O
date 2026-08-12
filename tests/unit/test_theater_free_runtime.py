@@ -516,16 +516,22 @@ def test_free_seed_only_keeps_opening_context():
 
 
 def test_free_seed_derives_revision_for_story_without_explicit_revision():
-    story = _free_source_story()
-    story.pop("story_revision")
-    scene = story["scenes"][0]
+    base = _free_source_story()
+    variants = [
+        {key: value for key, value in base.items() if key != "story_revision"},
+        {**base, "story_revision": None},
+        {**base, "story_revision": ""},
+        {**base, "story_revision": "   "},
+    ]
 
-    seed = free_seed.build_free_seed(story, scene)
-    changed_story = deepcopy(story)
+    revisions = {free_seed.story_revision(story) for story in variants}
+
+    assert len(revisions) == 1
+    assert next(iter(revisions)).startswith("content-")
+
+    changed_story = deepcopy(variants[0])
     changed_story["title"] = "修改后的来源"
-
-    assert seed["source_story_revision"].startswith("content-")
-    assert seed["source_story_revision"] != free_seed.story_revision(changed_story)
+    assert next(iter(revisions)) != free_seed.story_revision(changed_story)
 
 
 def test_free_seed_rejects_author_graph_fields():
