@@ -386,13 +386,29 @@ def test_numeric_v2_router_replaces_session_when_catgirl_changed(tmp_path, monke
             },
         )
         assert replaced.status_code == 200
-        assert replaced.json()["session"]["session_id"] == "catgirl_before_change"
+        assert replaced.json()["session"]["session_id"] == "catgirl_replaced"
         payload = json.loads(
-            (tmp_path / "theater" / "numeric_v2" / "sessions" / "catgirl_before_change.json").read_text(
+            (tmp_path / "theater" / "numeric_v2" / "sessions" / "catgirl_replaced.json").read_text(
                 encoding="utf-8"
             )
         )
         assert payload["session"]["catgirl_binding"]["catgirl_name"] == "新猫娘"
+        assert not (
+            tmp_path / "theater" / "numeric_v2" / "sessions" / "catgirl_before_change.json"
+        ).exists()
+
+        stale_tab = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "catgirl_before_change",
+                "client_turn_id": "stale_tab_turn",
+                "base_revision": 0,
+                "message": "旧页面不能推进新演绎。",
+            },
+        )
+        assert stale_tab.status_code == 404
+        assert stale_tab.json()["reason"] == "numeric_session_not_found"
 
 
 @pytest.mark.asyncio

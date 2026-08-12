@@ -70,6 +70,9 @@ def test_theater_page_uses_free_idempotency_and_does_not_submit_choice_contract(
     assert "modeApiFor" not in script
     assert "neko.theater.free.activeSession.v1" in script
     assert "REQUEST_TIMEOUT_MS = 120000" in script
+    assert "'session_story_revision_mismatch'" in script
+    assert "'session_invalid'" in script
+    assert script.count("await recoverUnavailableSession(result)") == 2
 
 
 def test_theater_page_keeps_identity_card_and_stage_toggle():
@@ -121,3 +124,6 @@ def test_numeric_restart_allocates_a_new_session_id():
     assert "options && options.replaceExisting) || state.replaceExisting" in script
     assert "catgirl_changed_requires_new_session" in script
     assert "const rememberedStory = state.stories.find" in script
+    assert "function recoverChangedCatgirlSession(result)" in script
+    assert script.count("recoverChangedCatgirlSession(result)") == 3
+    assert "numeric_v2_contract_invalid" in script

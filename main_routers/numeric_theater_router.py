@@ -261,12 +261,12 @@ async def start_numeric_session(request: Request):
                         opening_performance=opening,
                     )
                 else:
-                    stored = await runtime.restart_session(
-                        session_id=existing.session.session_id,
+                    stored = await runtime.replace_active_session(
+                        previous_session_id=existing.session.session_id,
+                        session_id=session_id,
                         catgirl_binding=binding,
                         opening_performance=opening,
                     )
-                    session_id = existing.session.session_id
             else:
                 # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)

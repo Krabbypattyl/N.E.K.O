@@ -225,6 +225,41 @@ class NumericV2SessionStore:
             self._write(path, stored)
             return stored
 
+    async def replace_active(
+        self,
+        previous_session_id: str,
+        session: "ScriptSessionV2",
+    ) -> NumericV2StoredSession:
+        """用新 ID 替换活动 Session，阻止旧页面误提交到重建后的演绎。"""  # noqa: DOCSTRING_CJK
+
+        previous_path = self._path(previous_session_id)
+        next_path = self._path(session.session_id)
+        if previous_path == next_path:
+            raise NumericV2StoreError("numeric_replacement_session_id_reused")
+        async with _lock(previous_path):
+            if not previous_path.is_file():
+                raise NumericV2SessionNotFoundError("numeric_session_not_found")
+            previous = self._read(previous_path)
+            if previous.session.status == "ended":
+                raise NumericV2StoreError("numeric_replacement_session_ended")
+            if previous.session.story_package_id != session.story_package_id:
+                raise NumericV2StoreError("numeric_replacement_story_mismatch")
+            async with _lock(next_path):
+                if next_path.exists():
+                    raise NumericV2SessionExistsError("numeric_session_exists")
+                self.engine.validate_session(session)
+                stored = NumericV2StoredSession(session, ())
+                self._write(next_path, stored, exclusive=True)
+                try:
+                    previous_path.unlink()
+                except OSError as exc:
+                    try:
+                        next_path.unlink()
+                    except OSError:
+                        pass
+                    raise NumericV2StoreError("numeric_session_replace_failed") from exc
+                return stored
+
     async def load(self, session_id: str) -> NumericV2StoredSession | None:
         path = self._path(session_id)
         async with _lock(path):

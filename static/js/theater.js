@@ -461,7 +461,14 @@
     }
 
     async function recoverUnavailableSession(result) {
-        const reasons = new Set(['stale_session', 'session_character_mismatch', 'session_ended', 'session_not_found']);
+        const reasons = new Set([
+            'stale_session',
+            'session_character_mismatch',
+            'session_ended',
+            'session_not_found',
+            'session_invalid',
+            'session_story_revision_mismatch',
+        ]);
         if (!result || !reasons.has(String(result.reason || ''))) return false;
         forgetSession();
         state.sessionId = '';
@@ -598,7 +605,13 @@
                     base_revision: state.stateRevision,
                 },
             });
-            if (!result || !result.ok) throw new Error('exit');
+            if (!result || !result.ok) {
+                if (await recoverUnavailableSession(result)) {
+                    if (optimistic) optimistic.remove();
+                    return;
+                }
+                throw new Error('exit');
+            }
             await applyPayload(result);
             clearPendingExit(clientTurnId);
         } catch (_) {

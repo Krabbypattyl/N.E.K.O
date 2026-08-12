@@ -391,6 +391,26 @@
         return false;
     }
 
+    function recoverChangedCatgirlSession(result) {
+        if (!result || result.reason !== 'catgirl_changed_requires_new_session') return false;
+        forgetSession();
+        state.sessionId = '';
+        state.revision = null;
+        state.inputClosed = false;
+        state.pendingTurn = null;
+        state.replaceExisting = true;
+        state.scene = null;
+        const log = $('numeric-theater-log');
+        if (log) log.textContent = '';
+        renderScene(null);
+        const selected = state.stories.find(function (story) {
+            return String(story.story_id || '') === state.storyId;
+        });
+        renderStoryIntro(selected && selected.intro);
+        setStatus('theater.ready', '准备中');
+        return true;
+    }
+
     async function loadStories() {
         try {
             state.stories = await fetchStories();
@@ -444,7 +464,11 @@
             if (!result || !result.ok) {
                 if (result && result.reason === 'numeric_story_exists') {
                     setImportFeedback('theater.importStoryConflict', '这个剧本已经存在，未覆盖原文件。');
-                } else if (result && result.reason === 'numeric_story_contract_invalid') {
+                } else if (
+                    result
+                    && (result.reason === 'numeric_story_contract_invalid'
+                        || result.reason === 'numeric_v2_contract_invalid')
+                ) {
                     setImportFeedback('theater.importStoryInvalid', '剧本格式未通过 Numeric v2 校验。');
                 } else {
                     setImportFeedback('theater.importStoryFailed', '剧本导入失败，请重试。');
@@ -524,7 +548,13 @@
                     base_revision: state.revision,
                 },
             });
-            if (!result || !result.ok) throw new Error(result && result.reason || 'numeric_end_failed');
+            if (!result || !result.ok) {
+                if (recoverChangedCatgirlSession(result)) {
+                    setBusy(false);
+                    return;
+                }
+                throw new Error(result && result.reason || 'numeric_end_failed');
+            }
             applySnapshot(result);
             // 结束后的唯一记录仍保留在服务端，重启 N.E.K.O 后仍能恢复到终局。
             state.sessionId = '';
@@ -556,7 +586,11 @@
         try {
             const result = await requestJson(api.input, { method: 'POST', body });
             if (!result || !result.ok) {
-                if (result && result.reason === 'numeric_base_revision_mismatch') {
+                if (recoverChangedCatgirlSession(result)) {
+                    input.value = message;
+                    setBusy(false);
+                    return;
+                } else if (result && result.reason === 'numeric_base_revision_mismatch') {
                     // 先恢复原始输入，再同步最新快照；玩家不需要手动复制刚才的内容。
                     input.value = message;
                     const refreshed = await refreshCurrentSession();
