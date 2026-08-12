@@ -159,11 +159,13 @@ async def submit_free_theater_input(request: Request):
         config_manager=get_config_manager(),
         expected_lanlan_name=_resolve_lanlan_name() or "Lan",
     )
-    # 认领器只消费已提交的公开对白；失败时保留文字结果，不阻断自由回合。
-    try:
-        await _speak_free_committed_dialogue(result)
-    except Exception:
-        logger.exception("Free theater TTS claim failed during input")
+    # 用户退出只改变 Session 生命周期，没有新的对白；不能把上一轮快照再次交给 TTS。
+    if (result.get("ending") or {}).get("reason") != "user_exit":
+        # 认领器只消费已提交的公开对白；失败时保留文字结果，不阻断自由回合。
+        try:
+            await _speak_free_committed_dialogue(result)
+        except Exception:
+            logger.exception("Free theater TTS claim failed during input")
     return result
 
 

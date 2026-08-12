@@ -132,3 +132,35 @@ async def test_shared_tts_bridge_skips_when_catgirl_resolution_fails():
 
     assert result == {"ok": True, "skipped": "project_tts_unavailable"}
     assert manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_free_input_exit_does_not_replay_previous_tts_line(monkeypatch):
+    class _Request:
+        async def json(self):
+            return {"input_kind": "user_exit"}
+
+    claimed = []
+
+    async def submit_input(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "session_id": "free_exit",
+            "state_revision": 2,
+            "free_text": "上一轮正文，不应再次播放。",
+            "ending": {"reason": "user_exit", "should_end_session": True},
+        }
+
+    async def speak(_response):
+        claimed.append(True)
+
+    monkeypatch.setattr(theater_router, "_validate_theater_local_mutation", lambda *_args: None)
+    monkeypatch.setattr(theater_router, "_theater_root", lambda: None)
+    monkeypatch.setattr(theater_router, "_resolve_lanlan_name", lambda: "测试猫娘")
+    monkeypatch.setattr(theater_router, "get_config_manager", lambda: None)
+    monkeypatch.setattr(theater_router.free_runtime, "submit_input", submit_input)
+    monkeypatch.setattr(theater_router, "_speak_free_committed_dialogue", speak)
+    result = await theater_router.submit_free_theater_input(_Request())
+
+    assert result["ending"]["reason"] == "user_exit"
+    assert claimed == []

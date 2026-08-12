@@ -762,6 +762,44 @@ async def test_free_active_session_is_scoped_by_catgirl(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_free_start_retires_active_session_when_story_revision_changes(monkeypatch, tmp_path):
+    story = _free_source_story()
+    current_story = deepcopy(story)
+
+    async def load_story(_story_id=None, **_kwargs):
+        return deepcopy(current_story)
+
+    async def load_story_exact(_story_id, **_kwargs):
+        return deepcopy(current_story)
+
+    monkeypatch.setattr(free_runtime.story_loader, "load_story", load_story)
+    monkeypatch.setattr(free_runtime.story_loader, "load_story_exact", load_story_exact)
+    root = tmp_path / "theater"
+    started = await free_runtime.start_session(
+        root,
+        lanlan_name="测试猫娘",
+        story_id=THEATER_TEST_STORY_ID,
+        client_start_id="stale_start",
+    )
+    current_story["story_revision"] = "free-source-2"
+
+    replacement = await free_runtime.start_session(
+        root,
+        lanlan_name="测试猫娘",
+        story_id=THEATER_TEST_STORY_ID,
+        client_start_id="replacement_start",
+    )
+
+    assert replacement["ok"] is True
+    assert replacement["session_id"] != started["session_id"]
+    old = await session_store.load_session(root / "free", started["session_id"])
+    assert old["end_reason"] == "session_story_revision_mismatch"
+    assert old["ended_at"] is not None
+    active = await free_runtime.get_active_state(root, lanlan_name="测试猫娘")
+    assert active["session_id"] == replacement["session_id"]
+
+
+@pytest.mark.asyncio
 async def test_free_actor_uses_conversation_tier_without_json_repair(monkeypatch):
     """自由 Actor 使用 conversation 槽位，一次调用直接接受纯文本。"""  # noqa: DOCSTRING_CJK
     calls: list[tuple[str, str]] = []

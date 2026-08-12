@@ -118,3 +118,6 @@ def test_numeric_restart_allocates_a_new_session_id():
     script = (ROOT / "static" / "js" / "theater_numeric_v2.js").read_text(encoding="utf-8")
     assert "const sessionId = createId('numeric_web_session_');" in script
     assert "state.sessionId || remembered.sessionId" not in script
+    assert "options && options.replaceExisting) || state.replaceExisting" in script
+    assert "catgirl_changed_requires_new_session" in script
+    assert "const rememberedStory = state.stories.find" in script

@@ -145,3 +145,54 @@ def test_numeric_v2_page_renders_terminal_ending(mock_page: Page, running_server
     expect(ending).to_contain_text("你们终于把未寄出的信读完")
     expect(mock_page.locator("#numeric-theater-input")).to_be_disabled()
     expect(mock_page.locator("#numeric-theater-choice-panel")).to_be_hidden()
+
+
+@pytest.mark.frontend
+def test_numeric_v2_page_replaces_changed_catgirl_session_and_falls_back_from_stale_story(
+    mock_page: Page, running_server: str
+):
+    """角色变化和失效本地 Story 指针都能回到可启动状态。"""  # noqa: DOCSTRING_CJK
+
+    start_bodies: list[dict] = []
+    mock_page.add_init_script(
+        "window.localStorage.setItem('neko.theater.numeric.v2.session.v2', 'old_session');"
+        "window.localStorage.setItem('neko.theater.numeric.v2.story.v2', 'deleted_story');"
+    )
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"ok": True, "stories": [STORY]}, ensure_ascii=False),
+            )
+            return
+        if path.endswith("/api/theater-numeric/session/active"):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {"ok": False, "reason": "catgirl_changed_requires_new_session"},
+                    ensure_ascii=False,
+                ),
+            )
+            return
+        if path.endswith("/api/theater-numeric/session/start"):
+            start_bodies.append(json.loads(request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(_snapshot(revision=0, history=[]), ensure_ascii=False),
+            )
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/theater-numeric", wait_until="domcontentloaded")
+    expect(mock_page.locator("#numeric-theater-story-select")).to_have_value(STORY["story_id"])
+    mock_page.locator("#numeric-theater-start-btn").click()
+    expect(mock_page.locator(".numeric-theater-response.opening")).to_be_visible()
+    assert start_bodies[0]["story_id"] == STORY["story_id"]
+    assert start_bodies[0]["replace_existing"] is True

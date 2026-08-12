@@ -22,6 +22,7 @@
         busy: false,
         inputClosed: false,
         pendingTurn: null,
+        replaceExisting: false,
     };
 
     function $(id) {
@@ -380,6 +381,9 @@
                 applySnapshot(result);
                 return true;
             }
+            if (result && result.reason === 'catgirl_changed_requires_new_session') {
+                state.replaceExisting = true;
+            }
         } catch (_) {
             setStatus('theater.failed', '刷新演出状态失败，请手动刷新后重试。');
         }
@@ -391,9 +395,15 @@
         try {
             state.stories = await fetchStories();
             const remembered = rememberedSession();
-            state.storyId = remembered.storyId || String(state.stories[0]?.story_id || '');
+            const rememberedStory = state.stories.find(function (story) {
+                return String(story.story_id || '') === remembered.storyId;
+            });
+            if (remembered.storyId && !rememberedStory) forgetSession();
+            state.storyId = rememberedStory
+                ? remembered.storyId
+                : String(state.stories[0]?.story_id || '');
             renderStories();
-            if (remembered.sessionId && state.storyId) {
+            if (remembered.sessionId && rememberedStory && state.storyId) {
                 const restored = await requestJson(
                     api.session + '/' + encodeURIComponent(remembered.sessionId)
                     + '?story_id=' + encodeURIComponent(state.storyId)
@@ -402,9 +412,12 @@
                     applySnapshot(restored);
                     return;
                 }
+                if (restored && restored.reason === 'catgirl_changed_requires_new_session') {
+                    state.replaceExisting = true;
+                }
                 forgetSession();
             }
-            if (await restoreActiveSessionForStory()) return;
+            if (!state.replaceExisting && await restoreActiveSessionForStory()) return;
             setStatus('theater.ready', '准备中');
             setBusy(false);
         } catch (_) {
@@ -467,7 +480,9 @@
     }
 
     async function startSession(options) {
-        const replaceExisting = Boolean(options && options.replaceExisting);
+        const replaceExisting = Boolean(
+            (options && options.replaceExisting) || state.replaceExisting
+        );
         if (state.busy || (!replaceExisting && state.sessionId) || !state.storyId) return;
         setBusy(true);
         try {
@@ -482,6 +497,7 @@
                 },
             });
             if (!result || !result.ok) throw new Error(result && result.reason || 'numeric_start_failed');
+            state.replaceExisting = false;
             applySnapshot(result);
         } catch (_) {
             setStatus('theater.failed', '启动失败');
@@ -611,6 +627,7 @@
             state.revision = null;
             state.inputClosed = false;
             state.scene = null;
+            state.replaceExisting = false;
             const log = $('numeric-theater-log');
             if (log) log.textContent = '';
             renderScene(null);

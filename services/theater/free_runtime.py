@@ -403,10 +403,46 @@ async def start_session(
     async with session_store.character_guard(free_root, name):
         active_id = await session_store.get_active_session_id(free_root, name)
         active = await session_store.load_session(free_root, active_id) if active_id else None
-        if active and not active.get("ended_at"):
-            # A catgirl may have only one active free Session. A second window
-            # must resume that Session instead of repointing the active index.
-            return deepcopy(active.get("public_snapshot") or {})
+        if active_id and active is None:
+            # 索引指向已删除或损坏的文件时，不能让它阻断后续开场。
+            await session_store.clear_active_session(free_root, name, active_id)
+        elif active and not active.get("ended_at"):
+            try:
+                active_story = await story_loader.load_story_exact(
+                    str(active.get("story_id") or "")
+                )
+                active_error = _restore_error(active, active_story)
+            except (FileNotFoundError, ValueError):
+                active_error = "session_story_revision_mismatch"
+            if not active_error:
+                # A catgirl may have only one active free Session. A second window
+                # must resume that Session instead of repointing the active index.
+                return deepcopy(active.get("public_snapshot") or {})
+
+            # 来源故事已删除或修改时，结束旧 Session 并清除 active 指针；旧文件仍保留
+            # 作为历史记录，但不能在下一次 Start 时反复恢复同一份失效快照。
+            now = _now_ms()
+            active["ended_at"] = now
+            active["end_reason"] = active_error
+            active["updated_at"] = now
+            snapshot = active.get("public_snapshot")
+            if isinstance(snapshot, dict):
+                snapshot = deepcopy(snapshot)
+                snapshot.update(
+                    {
+                        "can_resume": False,
+                        "session_lifecycle": "ended",
+                        "ending": {
+                            "should_offer_ending": False,
+                            "should_end_session": True,
+                            "reason": active_error,
+                            "ending_type": "none",
+                        },
+                    }
+                )
+                active["public_snapshot"] = snapshot
+            await session_store.save_session(free_root, active)
+            await session_store.clear_active_session(free_root, name, active_id)
 
         try:
             story = await story_loader.load_story(story_id)
