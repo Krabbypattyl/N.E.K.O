@@ -249,18 +249,29 @@ async def start_numeric_session(request: Request):
                     _ensure_current_catgirl(existing.session, config_manager)
                 if not binding_changed and not (replace_existing and existing.session.status == "ended"):
                     return {"ok": True, "resumed": True, **_numeric_payload(runtime, existing)}
-                # 重新开始复用同一个 Session 文件；角色变化时只有显式
-                # replace_existing 才允许用当前猫娘重建，避免旧绑定卡住入口。
+                # 活跃 Session 的角色切换可以显式重建；已结束 Session 必须保留原账本。
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
-                stored = await runtime.restart_session(
-                    session_id=existing.session.session_id,
-                    catgirl_binding=binding,
-                    opening_performance=opening,
-                )
-                session_id = existing.session.session_id
+                if _current_catgirl_binding(config_manager) != binding:
+                    raise ValueError("catgirl_changed_requires_new_session")
+                if existing.session.status == "ended":
+                    # 已结束记录是审计证据；重开必须创建新的 Session 文件，不能覆盖旧账本。
+                    stored = await runtime.start_session(
+                        session_id=session_id,
+                        catgirl_binding=binding,
+                        opening_performance=opening,
+                    )
+                else:
+                    stored = await runtime.restart_session(
+                        session_id=existing.session.session_id,
+                        catgirl_binding=binding,
+                        opening_performance=opening,
+                    )
+                    session_id = existing.session.session_id
             else:
                 # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+                if _current_catgirl_binding(config_manager) != binding:
+                    raise ValueError("catgirl_changed_requires_new_session")
                 stored = await runtime.start_session(
                     session_id=session_id,
                     catgirl_binding=binding,
@@ -372,7 +383,9 @@ async def submit_numeric_input(request: Request):
         stored = await runtime.commit_turn(outcome, performance)
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
-    except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError):
+    except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError) as exc:
+        if str(exc) == "session_already_ended":
+            return _error("session_already_ended", 409)
         return _error("numeric_base_revision_mismatch", 409)
     except NumericV2DuplicateTurnError:
         return _error("numeric_duplicate_client_turn_id", 409)

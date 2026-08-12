@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -137,21 +138,55 @@ async def test_numeric_v2_story_restore_ignores_sessions_from_other_stories(tmp_
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
     other_runtime = NumericV2Runtime(NumericV2Engine.from_mapping(other_story), tmp_path)
 
-    await other_runtime.start_session(
-        session_id="runtime_other_story",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
     current = await runtime.start_session(
         session_id="runtime_current_story",
         catgirl_binding=_binding(),
         opening_performance=_opening(),
     )
+    await other_runtime.start_session(
+        session_id="runtime_other_story",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["stories"].pop(story["meta"]["story_id"])
+    index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
 
     restored = await runtime.restore_story_session()
 
     assert restored is not None
     assert restored.session.session_id == current.session.session_id
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_commit_rejects_session_ended_during_model_wait(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_ended_during_turn",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    outcome = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("turn_after_end", 0, "这轮不应覆盖结束状态。"),
+        (),
+        scene_complete=False,
+    )
+    await runtime.end_session(
+        stored.session.session_id,
+        base_revision=0,
+        reason="user_exit",
+    )
+
+    with pytest.raises(numeric_v2_store.NumericV2StoreRevisionConflictError, match="session_already_ended"):
+        await runtime.commit_turn(outcome, _performance("不应提交。"))
+
+    restored = await runtime.restore_session(stored.session.session_id)
+    assert restored is not None
+    assert restored.session.status == "ended"
+    assert restored.session.revision == 0
 
 
 @pytest.mark.asyncio

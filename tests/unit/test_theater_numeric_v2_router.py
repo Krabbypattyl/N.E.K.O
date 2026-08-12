@@ -36,14 +36,14 @@ def _performance(text: str) -> dict:
     }
 
 
-def _client(tmp_path: Path, monkeypatch) -> TestClient:
+def _client(tmp_path: Path, monkeypatch, config_manager=None) -> TestClient:
     packages = tmp_path / "theater" / "numeric_v2" / "packages"
     packages.mkdir(parents=True)
     (packages / "numeric_v2_contract.json").write_text(
         json.dumps(numeric_v2_story(), ensure_ascii=False),
         encoding="utf-8",
     )
-    manager = _ConfigManager(tmp_path)
+    manager = config_manager or _ConfigManager(tmp_path)
     monkeypatch.setattr(numeric_theater_router, "get_config_manager", lambda: manager)
     monkeypatch.setattr(numeric_theater_router, "_validate_local_mutation_request", lambda *args, **kwargs: None)
 
@@ -126,15 +126,23 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
             },
         )
         assert restarted.status_code == 200
-        assert restarted.json()["session"]["session_id"] == "http_v2"
+        assert restarted.json()["session"]["session_id"] == "http_v2_after_restart"
         assert restarted.json()["session"]["status"] == "active"
-        assert len(list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))) == 1
+        assert len(list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))) == 2
+
+        ended_history = client.get(
+            "/api/theater-numeric/session/http_v2",
+            params={"story_id": "numeric_v2_contract"},
+        )
+        assert ended_history.status_code == 200
+        assert ended_history.json()["session"]["status"] == "ended"
+        assert ended_history.json()["session"]["performance_history"] == []
 
         submitted = client.post(
             "/api/theater-numeric/session/input",
             json={
                 "story_id": "numeric_v2_contract",
-                "session_id": "http_v2",
+                "session_id": "http_v2_after_restart",
                 "client_turn_id": "http_turn_1",
                 "base_revision": 0,
                 "message": "我先听你说。",
@@ -147,7 +155,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert result["suggested_inputs"] == ["继续听她说"]
 
         restored = client.get(
-            "/api/theater-numeric/session/http_v2",
+            "/api/theater-numeric/session/http_v2_after_restart",
             params={"story_id": "numeric_v2_contract"},
         )
         assert restored.status_code == 200
@@ -238,18 +246,35 @@ def test_numeric_v2_router_rejects_stale_or_ended_turn_before_evaluator(tmp_path
 
 
 def test_numeric_v2_router_rechecks_catgirl_before_commit(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
-    checks = 0
+    class _MutableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.current_name = "测试猫娘"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": self.current_name,
+                "猫娘": {self.current_name: {"昵称": self.current_name, "人格": "测试人格"}},
+                "主人": {"昵称": "哥哥"},
+            }
+
+    manager = _MutableConfigManager(tmp_path)
+    client = _client(tmp_path, monkeypatch, config_manager=manager)
+    events = []
     original_check = numeric_theater_router._ensure_current_catgirl
 
-    def reject_after_model(session, config_manager):
-        nonlocal checks
-        checks += 1
-        if checks == 2:
-            raise ValueError("catgirl_changed_requires_new_session")
+    def record_check(session, config_manager):
+        events.append("check")
         return original_check(session, config_manager)
 
-    monkeypatch.setattr(numeric_theater_router, "_ensure_current_catgirl", reject_after_model)
+    async def change_during_actor(*args, **kwargs):
+        events.append("actor")
+        manager.current_name = "新猫娘"
+        events.append("changed")
+        return _performance("这一轮不应提交。")
+
+    monkeypatch.setattr(numeric_theater_router, "_ensure_current_catgirl", record_check)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", change_during_actor)
     with client:
         started = client.post(
             "/api/theater-numeric/session/start",
@@ -269,13 +294,50 @@ def test_numeric_v2_router_rechecks_catgirl_before_commit(tmp_path, monkeypatch)
         )
         assert blocked.status_code == 409
         assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
+        assert events == ["check", "actor", "changed", "check"]
 
+        manager.current_name = "测试猫娘"
         restored = client.get(
             "/api/theater-numeric/session/catgirl_commit_guard",
             params={"story_id": "numeric_v2_contract"},
         )
         assert restored.status_code == 200
         assert restored.json()["session"]["revision"] == 0
+
+
+def test_numeric_v2_router_rechecks_catgirl_after_opening(tmp_path, monkeypatch):
+    class _MutableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.current_name = "测试猫娘"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": self.current_name,
+                "猫娘": {self.current_name: {"昵称": self.current_name, "人格": "测试人格"}},
+                "主人": {"昵称": "哥哥"},
+            }
+
+    manager = _MutableConfigManager(tmp_path)
+    client = _client(tmp_path, monkeypatch, config_manager=manager)
+    events = []
+
+    async def change_during_opening(*args, **kwargs):
+        events.append("actor")
+        manager.current_name = "新猫娘"
+        events.append("changed")
+        return _performance("开场不应写入旧角色。")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_opening", change_during_opening)
+    with client:
+        blocked = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "catgirl_opening_guard"},
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
+        assert events == ["actor", "changed"]
+        assert not list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))
 
 
 def test_numeric_v2_router_replaces_session_when_catgirl_changed(tmp_path, monkeypatch):

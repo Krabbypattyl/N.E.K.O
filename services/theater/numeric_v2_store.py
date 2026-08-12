@@ -246,6 +246,8 @@ class NumericV2SessionStore:
             current = self._read(path)
             if current.session.revision != int(ledger_event.get("base_revision", -1)):
                 raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+            if current.session.status == "ended":
+                raise NumericV2StoreRevisionConflictError("session_already_ended")
             if any(event.get("client_turn_id") == ledger_event.get("client_turn_id") for event in current.ledger_events):
                 raise NumericV2StoreRevisionConflictError("numeric_duplicate_client_turn_id")
             if session.revision != current.session.revision + 1:

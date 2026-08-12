@@ -81,8 +81,8 @@ def test_numeric_v2_cast_projects_multi_word_source_names():
         catgirl_name="测试猫娘",
     ).intro(story)
 
-    assert projected["player_identity"].startswith("哥哥，")
-    assert projected["catgirl_identity"].startswith("测试猫娘，")
+    assert projected["player_identity"] == "哥哥，回乡整理旧屋的年轻男性。"
+    assert projected["catgirl_identity"] == "测试猫娘，经营花店、保留旧信的年轻女性。"
 
 
 def test_numeric_v2_actor_discards_invalid_dialogue_items_without_reassigning_speaker():

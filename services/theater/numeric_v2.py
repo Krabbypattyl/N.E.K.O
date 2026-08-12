@@ -446,22 +446,30 @@ class NumericV2Compiler:
         if not rows and not allow_empty:
             c.add("route_condition_required", f"{route_path}.conditions.{mode}", "同一幕存在多个出口时，每条路线至少需要一个 metric 条件。")
         signature_rows: list[str] = []
+        can_check_compound = True
         for index, raw in enumerate(rows):
             path = f"{route_path}.conditions.{mode}[{index}]"
             condition = c.obj(raw, path)
             if condition.get("type") != "metric_compare":
                 c.add("invalid_condition_type", f"{path}.type", "第一版只支持 metric_compare。")
+                can_check_compound = False
             metric = c.require_id(condition.get("metric"), f"{path}.metric")
+            if not metric or metric not in metric_ranges:
+                can_check_compound = False
             if metric and metric not in metric_ranges:
                 c.add("unknown_metric", f"{path}.metric", "路线引用了未知 metric。")
             operator = condition.get("op")
             if operator not in _COMPARATORS:
                 c.add("invalid_metric_comparator", f"{path}.op", "不支持该比较符。")
+                can_check_compound = False
             number = c.require_int(condition.get("value"), f"{path}.value")
+            if number is None:
+                can_check_compound = False
             if metric in metric_ranges and number is not None:
                 minimum, maximum = metric_ranges[metric]
                 if minimum is not None and maximum is not None and not minimum <= number <= maximum:
                     c.add("route_threshold_out_of_range", f"{path}.value", "路线阈值超出 metric 范围。")
+                    can_check_compound = False
                 elif (
                     minimum is not None
                     and maximum is not None
@@ -481,6 +489,13 @@ class NumericV2Compiler:
                         "路线条件在 metric 的声明范围内永远无法成立。",
                     )
             signature_rows.append(f"{metric}:{operator}:{number}")
+        if len(rows) > 1 and can_check_compound:
+            if not _conditions_overlap(conditions, {"all": []}, metric_ranges):
+                c.add(
+                    "route_condition_impossible",
+                    f"{route_path}.conditions",
+                    "路线条件组合在 metric 的声明范围内永远无法同时成立。",
+                )
         return f"{mode}|{'|'.join(sorted(signature_rows))}"
 
     @staticmethod
