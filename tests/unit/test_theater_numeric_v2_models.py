@@ -70,6 +70,25 @@ def test_numeric_v2_turn_request_rejects_input_over_token_limit():
         })
 
 
+def test_numeric_v2_scene_context_starts_after_latest_node_reentry():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = replace(
+        _session(engine),
+        current_node_id="start",
+        node_turn_count=1,
+        performance_history=(
+            {"from_node_id": "start", "to_node_id": "start", "input_text": "旧访问"},
+            {"from_node_id": "other", "to_node_id": "start", "input_text": "重新进入"},
+            {"from_node_id": "start", "to_node_id": "start", "input_text": "本次访问"},
+        ),
+    )
+
+    context = numeric_v2_evaluator._current_scene_context(session)
+
+    assert [item["player_input"] for item in context] == ["重新进入", "本次访问"]
+    assert all(item["player_input"] != "旧访问" for item in context)
+
+
 def test_numeric_v2_cast_projects_multi_word_source_names():
     story = numeric_v2_story()
     story["intro"]["player_identity"] = "John Smith，回乡整理旧屋的年轻男性。"

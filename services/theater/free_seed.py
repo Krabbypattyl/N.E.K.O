@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
 from typing import Any
 
 
@@ -30,6 +32,20 @@ class FreeSeedContractError(ValueError):
     """表示自由模式种子缺少必要字段或混入了作者图字段。"""  # noqa: DOCSTRING_CJK
 
 
+def story_revision(story: dict[str, Any]) -> str:
+    """返回来源 Story 的稳定 revision；旧合法包缺省时使用内容哈希。"""  # noqa: DOCSTRING_CJK
+    explicit_revision = str(story.get("story_revision") or "").strip()
+    if explicit_revision:
+        return explicit_revision
+    canonical = json.dumps(
+        story,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"content-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
 def build_free_seed(
     story: dict[str, Any], scene: dict[str, Any]
 ) -> dict[str, Any]:
@@ -49,7 +65,7 @@ def build_free_seed(
     free_seed = {
         "schema_version": FREE_SEED_SCHEMA_VERSION,
         "source_story_id": str(story.get("id") or ""),
-        "source_story_revision": str(story.get("story_revision") or ""),
+        "source_story_revision": story_revision(story),
         "title": str(story.get("title") or ""),
         "theme": str(story.get("theme") or ""),
         "scenario_card": {

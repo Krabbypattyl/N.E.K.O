@@ -374,7 +374,7 @@ def _restore_error(session: dict[str, Any] | None, story: dict[str, Any]) -> str
         return "session_not_found"
     if session.get("mode") != "free":
         return "session_invalid"
-    if str(session.get("story_revision") or "") != str(story.get("story_revision") or ""):
+    if str(session.get("story_revision") or "") != free_seed.story_revision(story):
         return "session_story_revision_mismatch"
     if not isinstance(session.get("turns"), list):
         return "session_invalid"

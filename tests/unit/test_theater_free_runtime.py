@@ -515,6 +515,19 @@ def test_free_seed_only_keeps_opening_context():
     assert "events" not in seed
 
 
+def test_free_seed_derives_revision_for_story_without_explicit_revision():
+    story = _free_source_story()
+    story.pop("story_revision")
+    scene = story["scenes"][0]
+
+    seed = free_seed.build_free_seed(story, scene)
+    changed_story = deepcopy(story)
+    changed_story["title"] = "修改后的来源"
+
+    assert seed["source_story_revision"].startswith("content-")
+    assert seed["source_story_revision"] != free_seed.story_revision(changed_story)
+
+
 def test_free_seed_rejects_author_graph_fields():
     """自由种子合同拒绝把作者图字段伪装成自由模式输入。"""  # noqa: DOCSTRING_CJK
     seed = {
@@ -797,6 +810,48 @@ async def test_free_start_retires_active_session_when_story_revision_changes(mon
     assert old["ended_at"] is not None
     active = await free_runtime.get_active_state(root, lanlan_name="测试猫娘")
     assert active["session_id"] == replacement["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_free_start_accepts_story_without_explicit_revision(monkeypatch, tmp_path):
+    story = _free_source_story()
+    story.pop("story_revision")
+
+    async def load_story(_story_id=None, **_kwargs):
+        return deepcopy(story)
+
+    async def load_story_exact(_story_id, **_kwargs):
+        return deepcopy(story)
+
+    monkeypatch.setattr(free_runtime.story_loader, "load_story", load_story)
+    monkeypatch.setattr(free_runtime.story_loader, "load_story_exact", load_story_exact)
+
+    async def fake_free_turn(**_kwargs):
+        return _free_result()
+
+    monkeypatch.setattr(
+        free_runtime.llm,
+        "generate_free_turn_async",
+        fake_free_turn,
+    )
+    root = tmp_path / "theater"
+
+    started = await free_runtime.start_session(
+        root,
+        lanlan_name="测试猫娘",
+        story_id=THEATER_TEST_STORY_ID,
+        client_start_id="derived_revision_start",
+    )
+    resumed = await free_runtime.start_session(
+        root,
+        lanlan_name="测试猫娘",
+        story_id=THEATER_TEST_STORY_ID,
+        client_start_id="derived_revision_resume",
+    )
+    saved = await session_store.load_session(root / "free", started["session_id"])
+
+    assert resumed["session_id"] == started["session_id"]
+    assert saved["story_revision"] == free_seed.story_revision(story)
 
 
 @pytest.mark.asyncio

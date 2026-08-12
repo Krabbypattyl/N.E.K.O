@@ -93,11 +93,10 @@ def _recent_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
 
 
 def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
-    """单独保留当前幕证据，避免较长互动把早期完成事项挤出最近四回合。"""  # noqa: DOCSTRING_CJK
+    """只保留最近一次进入当前节点后的证据，避免循环访问串用旧目标。"""  # noqa: DOCSTRING_CJK
 
-    result: list[dict[str, Any]] = []
     if session.node_turn_count > 0 and not session.performance_history:
-        return result
+        return []
     if not session.performance_history:
         opening = session.opening_performance
         return [{
@@ -110,12 +109,37 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
                 if isinstance(line, Mapping)
             ],
         }]
-    for record in session.performance_history:
-        if session.current_node_id not in {
-            str(record.get("from_node_id") or ""),
-            str(record.get("to_node_id") or ""),
-        }:
+
+    current_node_id = str(session.current_node_id)
+    visit_records: list[dict[str, Any]] = []
+    entered_current_node = False
+    # 从尾部回溯到最近一次进入当前节点；节点再次循环时，之前访问的同名节点
+    # 证据必须被截断，不能把上一轮已经完成的目标投影到本次访问。
+    for record in reversed(session.performance_history):
+        from_node_id = str(record.get("from_node_id") or "")
+        to_node_id = str(record.get("to_node_id") or "")
+        if from_node_id == current_node_id and to_node_id == current_node_id:
+            visit_records.append(record)
             continue
+        if to_node_id == current_node_id and from_node_id != current_node_id:
+            visit_records.append(record)
+            entered_current_node = True
+        break
+
+    result: list[dict[str, Any]] = []
+    if not entered_current_node:
+        opening = session.opening_performance
+        result.append({
+            "phase": "opening",
+            "player_input": "",
+            "narration": str(opening.get("narration") or "")[:500],
+            "dialogue": [
+                str(line.get("text") or "")[:300]
+                for line in opening.get("dialogue") or []
+                if isinstance(line, Mapping)
+            ],
+        })
+    for record in reversed(visit_records):
         result.append({
             "phase": "turn",
             "player_input": truncate_prompt_value(
