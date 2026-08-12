@@ -443,7 +443,7 @@ class NumericV2Compiler:
             return "invalid"
         mode = modes[0]
         rows = c.array(conditions.get(mode), f"{route_path}.conditions.{mode}")
-        if not rows and not allow_empty:
+        if not rows and (not allow_empty or mode == "any"):
             c.add("route_condition_required", f"{route_path}.conditions.{mode}", "同一幕存在多个出口时，每条路线至少需要一个 metric 条件。")
         signature_rows: list[str] = []
         can_check_compound = True

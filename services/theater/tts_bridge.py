@@ -41,7 +41,11 @@ async def speak_committed_line(
     text = str(line or "").strip()
     if not text:
         return {"ok": True, "skipped": "empty_dialogue"}
-    current_name = str(resolve_current_catgirl() or "").strip() or "Lan"
+    try:
+        current_name = str(resolve_current_catgirl() or "").strip() or "Lan"
+    except Exception as exc:
+        logger.warning("小剧场 TTS 解析当前猫娘失败，降级为纯文字: %s", type(exc).__name__)
+        return {"ok": True, "skipped": "project_tts_unavailable"}
     if current_name != str(lanlan_name or "").strip():
         return {"ok": True, "skipped": "character_changed"}
     try:

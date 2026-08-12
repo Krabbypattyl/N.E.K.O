@@ -201,6 +201,16 @@ def test_numeric_v2_rejects_unsatisfiable_compound_route_condition():
     )
 
 
+def test_numeric_v2_rejects_empty_any_route_condition():
+    story = numeric_v2_story()
+    story["nodes"][0]["route_gates"][0]["conditions"] = {"any": []}
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(issue.code == "route_condition_required" for issue in caught.value.issues)
+
+
 def test_numeric_v2_rejects_mismatched_metric_initial_state():
     story = numeric_v2_story()
     story["initial_state"]["metrics"]["trust"] = 21

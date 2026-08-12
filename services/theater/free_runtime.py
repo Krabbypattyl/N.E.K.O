@@ -17,7 +17,6 @@ from . import (
     free_role_card,
     llm,
     session_store,
-    story_graph,
     story_loader,
 )
 from .llm_context import (
@@ -236,16 +235,15 @@ def _public_history(session: dict[str, Any], lanlan_name: str) -> list[dict[str,
             continue
         role = str(turn.get("role") or "")
         if role == "user":
-            text = story_graph.render_story_text(turn.get("text"), lanlan_name)
+            # Session 中的用户输入已经是运行时正文，不再套用来源故事的占位符投影。
+            text = str(turn.get("text") or "").strip()
             if text:
                 history.append({"role": "user", "text": text})
             continue
         if role != "assistant":
             continue
         # 自由历史只读取 RP-Hub 正文；用户消息仍使用 text，避免与正文源混淆。
-        free_text = story_graph.render_story_text(
-            turn.get("free_text"), lanlan_name
-        )
+        free_text = str(turn.get("free_text") or "").strip()
         if free_text:
             history.append({"role": "narrator", "text": free_text})
     return history
@@ -260,10 +258,9 @@ def _public_response(
 ) -> dict[str, Any]:
     """投影自由 Session；不公开作者图、Ledger、Node 或 Edge 字段。"""  # noqa: DOCSTRING_CJK
     lanlan_name = str(session.get("lanlan_name") or "Lan")
-    free_text = story_graph.render_story_text(
-        str(performance.get("text") or ""),
-        lanlan_name,
-    )
+    # 模型正文是已持久化的运行时文本；只在来源 Story 投影占位符，避免把“男主角”
+    # 等普通词或已经是当前名字的文本再次替换。
+    free_text = str(performance.get("text") or "").strip()
     lifecycle = "ended" if session.get("ended_at") else "active"
     return {
         "ok": True,

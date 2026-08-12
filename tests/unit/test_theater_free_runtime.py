@@ -308,6 +308,36 @@ def test_free_response_projects_temporary_role_card_for_theater_header():
     assert "closing_narration" not in response
 
 
+def test_free_runtime_preserves_persisted_text_without_source_projection():
+    response = free_runtime._public_response(
+        session={
+            "session_id": "free_text_session",
+            "story_id": "story_source",
+            "lanlan_name": "测试猫娘",
+            "state_revision": 0,
+        },
+        performance={"text": "测试猫娘今天很忙，男主角还在等候。"},
+        ending={"should_end_session": False},
+        can_resume=True,
+    )
+
+    assert response["free_text"] == "测试猫娘今天很忙，男主角还在等候。"
+
+    history = free_runtime._public_history(
+        {
+            "turns": [
+                {"role": "user", "text": "男主角只是故事里的普通称呼。"},
+                {"role": "assistant", "free_text": "测试猫娘今天很忙。"},
+            ]
+        },
+        "测试猫娘",
+    )
+    assert history == [
+        {"role": "user", "text": "男主角只是故事里的普通称呼。"},
+        {"role": "narrator", "text": "测试猫娘今天很忙。"},
+    ]
+
+
 def test_free_history_ignores_removed_structured_assistant_fields():
     """自由历史只投影 free_text，不再恢复旧的旁白、对白和收束字段。"""  # noqa: DOCSTRING_CJK
 
@@ -435,6 +465,23 @@ def test_free_role_card_rejects_oversized_bound_field():
             },
             expected_name="小葵",
         )
+
+
+def test_free_role_card_allows_missing_first_message_for_generated_opening():
+    card = free_role_card.validate_role_card(
+        {
+            "schema_version": free_role_card.FREE_ROLE_CARD_SCHEMA_VERSION,
+            "name": "小葵",
+            "description": "当前猫娘人格。",
+            "personality": "安静而认真。",
+            "scenario": "自由场景",
+            "player_address": "哥哥",
+            "player_role": "哥哥",
+        },
+        expected_name="小葵",
+    )
+
+    assert card["first_mes"] == ""
 
 
 def test_free_seed_only_keeps_opening_context():

@@ -106,12 +106,24 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert active.json()["session"]["session_id"] == "http_v2"
         assert len(list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))) == 1
 
+        old_turn = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "http_v2",
+                "client_turn_id": "old_turn_1",
+                "base_revision": 0,
+                "message": "这是旧会话的记录。",
+            },
+        )
+        assert old_turn.status_code == 200
+
         ended = client.post(
             "/api/theater-numeric/session/end",
             json={
                 "story_id": "numeric_v2_contract",
                 "session_id": "http_v2",
-                "base_revision": 0,
+                "base_revision": 1,
             },
         )
         assert ended.status_code == 200
@@ -136,7 +148,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         )
         assert ended_history.status_code == 200
         assert ended_history.json()["session"]["status"] == "ended"
-        assert ended_history.json()["session"]["performance_history"] == []
+        assert ended_history.json()["session"]["performance_history"][0]["input_text"] == "这是旧会话的记录。"
 
         submitted = client.post(
             "/api/theater-numeric/session/input",

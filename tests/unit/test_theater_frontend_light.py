@@ -112,3 +112,9 @@ def test_theater_popup_entry_opens_mode_selection():
     popup_config = (ROOT / "static" / "avatar" / "avatar-ui-popup-config.js").read_text(encoding="utf-8")
     assert popup_config.count("url: '/theater-home'") == 3
     assert "url: '/theater-numeric'" not in popup_config
+
+
+def test_numeric_restart_allocates_a_new_session_id():
+    script = (ROOT / "static" / "js" / "theater_numeric_v2.js").read_text(encoding="utf-8")
+    assert "const sessionId = createId('numeric_web_session_');" in script
+    assert "state.sessionId || remembered.sessionId" not in script

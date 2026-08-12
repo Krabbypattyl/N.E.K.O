@@ -471,10 +471,8 @@
         if (state.busy || (!replaceExisting && state.sessionId) || !state.storyId) return;
         setBusy(true);
         try {
-            const remembered = rememberedSession();
-            const sessionId = replaceExisting && remembered.storyId === state.storyId
-                ? (state.sessionId || remembered.sessionId || createId('numeric_web_session_'))
-                : createId('numeric_web_session_');
+            // 结束后的旧 Session 只用于恢复和审计；重开必须使用全新的 ID，避免覆盖历史记录。
+            const sessionId = createId('numeric_web_session_');
             const result = await requestJson(api.start, {
                 method: 'POST',
                 body: {
@@ -494,7 +492,7 @@
     async function restartSession() {
         if (state.busy || !state.inputClosed) return;
         setStatus('theater.ready', '准备重新开始');
-        // 重新开始复用当前剧本唯一的 Session 文件，不保留第二份历史记录。
+        // 重新开始创建新的进行中 Session，同时保留已结束的历史记录。
         await startSession({ replaceExisting: true });
     }
 

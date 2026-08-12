@@ -55,7 +55,7 @@ def validate_role_card(
     if not card_name or card_name != current_name:
         # 角色名必须由服务端当前猫娘绑定，不能让请求借角色卡切换 N.E.K.O 角色。
         raise FreeRoleCardContractError("自由角色卡名称必须匹配当前猫娘")
-    for field in ("description", "first_mes", "player_address", "player_role"):
+    for field in ("description", "player_address", "player_role"):
         value = str(normalized.get(field) or "").strip()
         if not value:
             raise FreeRoleCardContractError(f"自由角色卡缺少 {field}")
@@ -63,7 +63,7 @@ def validate_role_card(
             raise FreeRoleCardContractError(f"自由角色卡 {field} 过长")
         normalized[field] = value
 
-    for field in ("personality", "scenario", "mes_example", "story_title", "scenario_title"):
+    for field in ("first_mes", "personality", "scenario", "mes_example", "story_title", "scenario_title"):
         value = str(normalized.get(field) or "").strip()
         if len(value) > _MAX_FIELD_CHARS:
             raise FreeRoleCardContractError(f"自由角色卡 {field} 过长")
