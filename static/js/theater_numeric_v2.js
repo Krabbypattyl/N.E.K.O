@@ -5,6 +5,7 @@
     const api = {
         stories: '/api/theater-numeric/stories',
         importStory: '/api/theater-numeric/packages/import',
+        packages: '/api/theater-numeric/packages',
         start: '/api/theater-numeric/session/start',
         input: '/api/theater-numeric/session/input',
         end: '/api/theater-numeric/session/end',
@@ -29,9 +30,9 @@
         return document.getElementById(id);
     }
 
-    function t(key, fallback) {
+    function t(key, fallback, options) {
         if (typeof window.t === 'function') {
-            const value = window.t(key);
+            const value = window.t(key, options);
             if (value && value !== key) return value;
         }
         return fallback;
@@ -139,6 +140,7 @@
         const startButton = $('numeric-theater-start-btn');
         const restartButton = $('numeric-theater-restart-btn');
         const endButton = $('numeric-theater-end-btn');
+        const deleteButton = $('numeric-theater-delete-btn');
         const importButton = $('numeric-theater-import-btn');
         const importInput = $('numeric-theater-import-input');
         const input = $('numeric-theater-input');
@@ -146,12 +148,13 @@
         if (storySelect) storySelect.disabled = busy || (hasSession && !state.inputClosed);
         if (startButton) startButton.disabled = busy || hasSession || !state.storyId;
         if (restartButton) {
-            // 重新开始只在终局显示，并始终通过新 Session 启动，不清空旧存档文件。
+            // 重新开始只在终局显示，并用新 Session ID 原子替换当前角色的旧槽位。
             restartButton.hidden = !state.inputClosed;
             restartButton.disabled = busy || !state.inputClosed;
         }
         // 结束按钮只结束当前 Numeric Session，不删除剧本包和历史快照。
         if (endButton) endButton.disabled = busy || !hasSession || state.inputClosed;
+        if (deleteButton) deleteButton.disabled = busy || !state.storyId;
         if (importButton) importButton.disabled = busy;
         if (importInput) importInput.disabled = busy;
         if (input) input.disabled = busy || !hasSession || state.inputClosed;
@@ -306,11 +309,37 @@
         // 每次模型回应使用独立容器，把同一回合的旁白与对白固定在一起，避免视觉上串到相邻回合。
         const response = document.createElement('article');
         response.className = 'numeric-theater-response' + (opening ? ' opening' : '');
-        appendNarration(performance.narration, response);
-        (Array.isArray(performance.dialogue) ? performance.dialogue : []).forEach(function (line) {
-            // 猫娘对白不显示角色前缀，角色差异由对白颜色和数据来源表达。
-            appendLine('dialogue', String(line && line.text || ''), response);
-        });
+        function appendContent(container, parent) {
+            const content = Array.isArray(container && container.content) ? container.content : [];
+            if (content.length) {
+                content.forEach(function (block) {
+                    if (block && block.type === 'narration') {
+                        appendNarration(block.text, parent);
+                    } else if (block && block.type === 'dialogue') {
+                        appendLine('dialogue', String(block.text || ''), parent);
+                    }
+                });
+                return;
+            }
+            // 修复前的记录没有 content，继续按旧字段恢复，不重写历史顺序。
+            appendNarration(container && container.narration, parent);
+            (Array.isArray(container && container.dialogue) ? container.dialogue : []).forEach(function (line) {
+                appendLine('dialogue', String(line && line.text || ''), parent);
+            });
+        }
+        const segments = Array.isArray(performance.segments) ? performance.segments : [];
+        if (segments.length) {
+            // 换场按来源回应、过渡桥、目标开场的正式顺序回放，刷新后不能退化成扁平文本。
+            segments.forEach(function (segment) {
+                const phase = document.createElement('div');
+                phase.className = 'numeric-theater-transition-segment';
+                phase.dataset.transitionPhase = String(segment && segment.phase || '');
+                appendContent(segment, phase);
+                if (phase.childNodes.length) response.appendChild(phase);
+            });
+        } else {
+            appendContent(performance, response);
+        }
         if (response.childNodes.length) (target || $('numeric-theater-log')).appendChild(response);
     }
 
@@ -398,7 +427,7 @@
         state.revision = null;
         state.inputClosed = false;
         state.pendingTurn = null;
-        state.replaceExisting = true;
+        state.replaceExisting = false;
         state.scene = null;
         const log = $('numeric-theater-log');
         if (log) log.textContent = '';
@@ -432,12 +461,9 @@
                     applySnapshot(restored);
                     return;
                 }
-                if (restored && restored.reason === 'catgirl_changed_requires_new_session') {
-                    state.replaceExisting = true;
-                }
                 forgetSession();
             }
-            if (!state.replaceExisting && await restoreActiveSessionForStory()) return;
+            if (await restoreActiveSessionForStory()) return;
             setStatus('theater.ready', '准备中');
             setBusy(false);
         } catch (_) {
@@ -510,7 +536,7 @@
         if (state.busy || (!replaceExisting && state.sessionId) || !state.storyId) return;
         setBusy(true);
         try {
-            // 结束后的旧 Session 只用于恢复和审计；重开必须使用全新的 ID，避免覆盖历史记录。
+            // 新 ID 让旧页面失效；服务端会原子替换同一“剧本 × 角色”槽位。
             const sessionId = createId('numeric_web_session_');
             const result = await requestJson(api.start, {
                 method: 'POST',
@@ -532,8 +558,57 @@
     async function restartSession() {
         if (state.busy || !state.inputClosed) return;
         setStatus('theater.ready', '准备重新开始');
-        // 重新开始创建新的进行中 Session，同时保留已结束的历史记录。
+        // 重新开始创建新的进行中 Session，并替换当前角色的已结束记录。
         await startSession({ replaceExisting: true });
+    }
+
+    async function deleteStory() {
+        if (state.busy || !state.storyId) return;
+        const storyId = state.storyId;
+        setBusy(true);
+        try {
+            const preview = await requestJson(
+                api.packages + '/' + encodeURIComponent(storyId) + '/delete-preview'
+            );
+            if (!preview || !preview.ok) throw new Error('numeric_story_delete_preview_failed');
+            const activeNames = Array.isArray(preview.active_catgirl_names)
+                ? preview.active_catgirl_names.filter(Boolean)
+                : [];
+            const message = activeNames.length
+                ? t(
+                    'theater.deleteStoryActiveConfirm',
+                    '跟' + activeNames.join('、') + '的演绎还未结束，是否确认删除？',
+                    { names: activeNames.join('、') }
+                )
+                : t('theater.deleteStoryConfirm', '是否确认删除？');
+            if (!window.confirm(message)) {
+                setBusy(false);
+                return;
+            }
+            const result = await requestJson(
+                api.packages + '/' + encodeURIComponent(storyId),
+                { method: 'DELETE' }
+            );
+            if (!result || !result.ok) throw new Error('numeric_story_delete_failed');
+            forgetSession();
+            state.sessionId = '';
+            state.revision = null;
+            state.inputClosed = false;
+            state.pendingTurn = null;
+            state.replaceExisting = false;
+            state.scene = null;
+            const log = $('numeric-theater-log');
+            if (log) log.textContent = '';
+            renderScene(null);
+            state.stories = await fetchStories();
+            state.storyId = String(state.stories[0]?.story_id || '');
+            renderStories();
+            setStatus('theater.storyDeleted', '剧本已删除');
+            setBusy(false);
+        } catch (_) {
+            setStatus('theater.storyDeleteFailed', '删除剧本失败，请重试。');
+            setBusy(false);
+        }
     }
 
     async function endSession() {
@@ -551,6 +626,7 @@
             if (!result || !result.ok) {
                 if (recoverChangedCatgirlSession(result)) {
                     setBusy(false);
+                    await restoreActiveSessionForStory();
                     return;
                 }
                 throw new Error(result && result.reason || 'numeric_end_failed');
@@ -560,6 +636,11 @@
             state.sessionId = '';
             state.revision = null;
             state.inputClosed = true;
+            // 结束后普通“开始”和“重新开始”语义一致：都必须创建新 Session，
+            // 不能让后端恢复刚结束的只读快照。
+            state.replaceExisting = true;
+            const log = $('numeric-theater-log');
+            if (log) log.textContent = '';
             setStatus('theater.ended', '已结束');
             setBusy(false);
         } catch (_) {
@@ -589,6 +670,7 @@
                 if (recoverChangedCatgirlSession(result)) {
                     input.value = message;
                     setBusy(false);
+                    await restoreActiveSessionForStory();
                     return;
                 } else if (result && result.reason === 'numeric_base_revision_mismatch') {
                     // 先恢复原始输入，再同步最新快照；玩家不需要手动复制刚才的内容。
@@ -679,6 +761,7 @@
         $('numeric-theater-start-btn').addEventListener('click', startSession);
         $('numeric-theater-end-btn').addEventListener('click', endSession);
         $('numeric-theater-restart-btn').addEventListener('click', restartSession);
+        $('numeric-theater-delete-btn').addEventListener('click', deleteStory);
         $('numeric-theater-import-btn').addEventListener('click', function () {
             $('numeric-theater-import-input').click();
         });

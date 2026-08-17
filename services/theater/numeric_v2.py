@@ -19,6 +19,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPARATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
 _VISIBILITIES = frozenset({"hidden"})
 _NODE_TYPES = frozenset({"start", "scene", "ending"})
+MAX_RECOMMENDED_TURNS = 40
 _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
@@ -374,6 +375,24 @@ class NumericV2Compiler:
                 min_turns = c.require_int(node.get("min_turns"), f"{path}.min_turns")
                 if min_turns is not None and not 1 <= min_turns <= 20:
                     c.add("invalid_node_min_turns", f"{path}.min_turns", "最少演绎回合数必须位于 1..20。")
+                if "recommended_turns" in node:
+                    recommended_turns = c.require_int(
+                        node.get("recommended_turns"),
+                        f"{path}.recommended_turns",
+                    )
+                    if (
+                        recommended_turns is not None
+                        and (
+                            min_turns is None
+                            or recommended_turns < min_turns
+                            or recommended_turns > MAX_RECOMMENDED_TURNS
+                        )
+                    ):
+                        c.add(
+                            "invalid_node_recommended_turns",
+                            f"{path}.recommended_turns",
+                            f"建议收束回合数必须不小于 min_turns，且不能超过 {MAX_RECOMMENDED_TURNS}。",
+                        )
             NumericV2Compiler._validate_story_beat(c, node.get("story_beat"), f"{path}.story_beat")
             if any(field in node for field in ("choices", "available_interaction_ids", "edges")):
                 c.add("legacy_node_field_forbidden", path, "Numeric v2 节点不能包含旧 Choice、interaction 或 Edge 字段。")
@@ -604,5 +623,6 @@ __all__ = [
     "NumericV2Compiler",
     "NumericV2Issue",
     "NumericV2Warning",
+    "MAX_RECOMMENDED_TURNS",
     "STORY_SCHEMA",
 ]

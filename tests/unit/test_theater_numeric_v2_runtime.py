@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 
 import pytest
 
-from services.theater import numeric_v2_store
+from services.theater import numeric_v2_maintenance, numeric_v2_store
+from services.theater.numeric_v2_maintenance import (
+    QUARANTINE_FILE_LIMIT,
+    audit_numeric_v2_storage,
+)
+from services.theater.numeric_v2_registry import NumericV2PackageRegistry
+from services.theater.numeric_v2_store import update_numeric_v2_character_bindings
 from services.theater.numeric_v2_runtime import (
     MetricChangeV2,
     NumericV2Engine,
@@ -19,7 +26,8 @@ from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 def _binding() -> dict[str, str]:
     return {
-        "catgirl_id": "catgirl:Lan",
+        "character_id": "character_11111111111111111111111111111111",
+        "catgirl_id": "catgirl:character_11111111111111111111111111111111",
         "catgirl_name": "Lan",
         "player_address": "哥哥",
         "profile_revision": "characters:test",
@@ -40,6 +48,31 @@ def _performance(text: str) -> dict:
         "narration": "她认真听完。",
         "dialogue": [{"speaker_id": "active_catgirl", "text": text}],
         "suggested_inputs": [],
+    }
+
+
+def _transition_performance(target_node_id: str) -> dict:
+    return {
+        "suggested_inputs": [],
+        "segments": [
+            {
+                "phase": "source_response",
+                "content": [
+                    {"type": "narration", "text": "她回应后收住话题。"},
+                    {"type": "dialogue", "speaker_id": "active_catgirl", "text": "明天再说。"},
+                ],
+            },
+            {
+                "phase": "transition_bridge",
+                "content": [{"type": "narration", "text": "夜色过去。"}],
+            },
+            {
+                "phase": "target_opening",
+                "content": [{"type": "narration", "text": "第二天清晨，花店重新开门。"}],
+            },
+        ],
+        "transition_delivered": True,
+        "visible_node_id": target_node_id,
     }
 
 
@@ -92,6 +125,84 @@ async def test_numeric_v2_waits_for_min_turns_then_selects_route(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_route_change_requires_visible_transition_before_commit(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_transition_guard",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    first = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("transition_turn_1", 0, "我先听你说。"),
+        (),
+        scene_complete=False,
+    )
+    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
+    second = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("transition_turn_2", 1, "我答应把话说完。"),
+        (),
+        scene_complete=True,
+    )
+
+    with pytest.raises(ValueError, match="numeric_transition_performance_invalid"):
+        await runtime.commit_turn(second, _performance("旧场景继续。"))
+
+    committed = await runtime.commit_turn(
+        second,
+        _transition_performance(second.session.current_node_id),
+    )
+    restored = await runtime.restore_session(committed.session.session_id)
+
+    assert restored is not None
+    assert restored.session.current_node_id == second.session.current_node_id
+    assert restored.session.performance_history[-1]["visible_node_id"] == second.session.current_node_id
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_restore_accepts_legacy_route_performance_without_transition_segments(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_legacy_transition",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    first = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("legacy_transition_1", 0, "我先听你说。"),
+        (),
+        scene_complete=False,
+    )
+    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
+    second = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("legacy_transition_2", 1, "我答应把话说完。"),
+        (),
+        scene_complete=True,
+    )
+    committed = await runtime.commit_turn(
+        second,
+        _transition_performance(second.session.current_node_id),
+    )
+    path = runtime.store._path(committed.session.session_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    legacy = payload["session"]["performance_history"][-1]
+    legacy.pop("performance_contract_version")
+    legacy.pop("segments")
+    legacy.pop("transition_delivered")
+    legacy.pop("visible_node_id")
+    legacy["narration"] = "她回应后收住话题，夜色过去，第二天清晨花店重新开门。"
+    legacy["dialogue"] = [{"speaker_id": "active_catgirl", "text": "明天再说。"}]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    restored = await runtime.restore_session(committed.session.session_id)
+
+    assert restored is not None
+    assert restored.session.current_node_id == second.session.current_node_id
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_session_creation_falls_back_without_hardlinks(tmp_path, monkeypatch):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
 
@@ -121,13 +232,14 @@ async def test_numeric_v2_story_session_index_survives_runtime_recreation(tmp_pa
     )
 
     restarted_runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
-    restored = await restarted_runtime.restore_story_session()
+    restored = await restarted_runtime.restore_story_session(_binding())
 
     assert restored is not None
     assert restored.session.session_id == stored.session.session_id
     assert restored.session.revision == 0
     index = (tmp_path / "numeric_v2" / "story_sessions.json").read_text(encoding="utf-8")
     assert "runtime_story_resume" in index
+    assert '"character_11111111111111111111111111111111":"runtime_story_resume"' in index
 
 
 @pytest.mark.asyncio
@@ -135,6 +247,9 @@ async def test_numeric_v2_story_restore_ignores_sessions_from_other_stories(tmp_
     story = _branch_story()
     other_story = deepcopy(story)
     other_story["meta"]["story_id"] = "numeric_other_story"
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    registry.import_package(other_story)
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
     other_runtime = NumericV2Runtime(NumericV2Engine.from_mapping(other_story), tmp_path)
 
@@ -153,8 +268,13 @@ async def test_numeric_v2_story_restore_ignores_sessions_from_other_stories(tmp_
     index = json.loads(index_path.read_text(encoding="utf-8"))
     index["stories"].pop(story["meta"]["story_id"])
     index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    audit_numeric_v2_storage(
+        tmp_path,
+        registry,
+        character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
 
-    restored = await runtime.restore_story_session()
+    restored = await runtime.restore_story_session(_binding())
 
     assert restored is not None
     assert restored.session.session_id == current.session.session_id
@@ -192,6 +312,8 @@ async def test_numeric_v2_commit_rejects_session_ended_during_model_wait(tmp_pat
 @pytest.mark.asyncio
 async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_path):
     story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
     await runtime.start_session(
         session_id="runtime_story_old",
@@ -203,8 +325,19 @@ async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_pat
         catgirl_binding=_binding(),
         opening_performance=_opening(),
     )
+    (tmp_path / "numeric_v2" / "story_sessions.json").unlink()
+    old_path = tmp_path / "numeric_v2" / "sessions" / "runtime_story_old.json"
+    new_path = tmp_path / "numeric_v2" / "sessions" / "runtime_story_new.json"
+    os.utime(old_path, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(new_path, ns=(2_000_000_000, 2_000_000_000))
 
-    restored = await runtime.restore_story_session()
+    audit_numeric_v2_storage(
+        tmp_path,
+        registry,
+        character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    restored = await runtime.restore_story_session(_binding())
 
     assert restored is not None
     assert restored.session.session_id == newer.session.session_id
@@ -213,7 +346,100 @@ async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_restart_uses_a_new_session_id_and_preserves_ended_history(tmp_path):
+async def test_numeric_v2_startup_audit_migrates_legacy_name_slot(tmp_path):
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    legacy_binding = {
+        key: value
+        for key, value in _binding().items()
+        if key != "character_id"
+    }
+    legacy_binding["catgirl_id"] = "catgirl:Lan"
+    legacy_session = runtime.engine.create_session(
+        session_id="runtime_legacy_name_slot",
+        catgirl_binding=legacy_binding,
+        opening_performance=_opening(),
+    )
+    await runtime.store.create(legacy_session)
+
+    audit_numeric_v2_storage(
+        tmp_path,
+        registry,
+        character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+    restored = await runtime.restore_story_session(_binding())
+
+    assert restored is not None
+    assert restored.session.session_id == "runtime_legacy_name_slot"
+    assert restored.session.catgirl_binding == _binding()
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_startup_audit_bounds_corrupt_quarantine(tmp_path):
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    valid = await runtime.start_session(
+        session_id="runtime_valid_after_audit",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_root = tmp_path / "numeric_v2" / "sessions"
+    for index in range(QUARANTINE_FILE_LIMIT + 3):
+        (session_root / f"corrupt_{index}.json").write_text("{", encoding="utf-8")
+
+    result = audit_numeric_v2_storage(
+        tmp_path,
+        registry,
+        character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    assert result["quarantined"] == QUARANTINE_FILE_LIMIT + 3
+    assert len(list((tmp_path / "numeric_v2" / "quarantine").glob("*"))) == QUARANTINE_FILE_LIMIT
+    assert [path.stem for path in session_root.glob("*.json")] == [
+        valid.session.session_id
+    ]
+    restored = await runtime.restore_story_session(_binding())
+    assert restored is not None
+    assert restored.session.session_id == valid.session.session_id
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_recovers_prepared_story_delete_after_interruption(tmp_path):
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_delete_interrupted",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    numeric_v2_maintenance._prepare_delete_transaction(
+        tmp_path,
+        registry,
+        story["meta"]["story_id"],
+    )
+    await numeric_v2_store.delete_numeric_v2_sessions(
+        tmp_path,
+        story_id=story["meta"]["story_id"],
+    )
+    registry.delete_package(story["meta"]["story_id"])
+
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert registry.package_path(story["meta"]["story_id"]).is_file()
+    assert runtime.store._path(stored.session.session_id).is_file()
+    restored = await runtime.restore_story_session(_binding())
+    assert restored is not None
+    assert restored.session.session_id == stored.session.session_id
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_restart_replaces_ended_session_in_same_catgirl_slot(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     old = await runtime.start_session(
         session_id="runtime_story_ended",
@@ -227,17 +453,106 @@ async def test_numeric_v2_restart_uses_a_new_session_id_and_preserves_ended_hist
     )
     restarted = await runtime.restart_session(
         session_id="runtime_story_reopened",
-        catgirl_binding={**_binding(), "catgirl_name": "NewLan"},
+        catgirl_binding=_binding(),
         opening_performance=_opening(),
     )
 
     assert ended.session.status == "ended"
     assert restarted.session.session_id == "runtime_story_reopened"
     assert restarted.session.status == "active"
-    assert (tmp_path / "numeric_v2" / "sessions" / "runtime_story_ended.json").is_file()
-    restored = await runtime.restore_story_session()
+    assert not (tmp_path / "numeric_v2" / "sessions" / "runtime_story_ended.json").exists()
+    restored = await runtime.restore_story_session(_binding())
     assert restored is not None
     assert restored.session.session_id == "runtime_story_reopened"
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_preserves_one_session_per_story_and_catgirl(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    lan = await runtime.start_session(
+        session_id="runtime_lan",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    other_binding = {
+        **_binding(),
+        "character_id": "character_22222222222222222222222222222222",
+        "catgirl_id": "catgirl:character_22222222222222222222222222222222",
+        "catgirl_name": "Mio",
+        "profile_revision": "characters:mio",
+        "profile_hash": "sha256:mio",
+    }
+    mio = await runtime.start_session(
+        session_id="runtime_mio",
+        catgirl_binding=other_binding,
+        opening_performance=_opening(),
+    )
+
+    assert (await runtime.restore_story_session(_binding())).session.session_id == lan.session.session_id
+    assert (await runtime.restore_story_session(other_binding)).session.session_id == mio.session.session_id
+
+    restarted_lan = await runtime.restart_session(
+        session_id="runtime_lan_restarted",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    session_files = sorted(
+        path.stem
+        for path in (tmp_path / "numeric_v2" / "sessions").glob("*.json")
+    )
+    assert session_files == ["runtime_lan_restarted", "runtime_mio"]
+    assert (await runtime.restore_story_session(_binding())).session == restarted_lan.session
+    assert (await runtime.restore_story_session(other_binding)).session == mio.session
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_indexed_restore_does_not_scan_unrelated_session_files(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_indexed_only",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    corrupt_path = tmp_path / "numeric_v2" / "sessions" / "unrelated_corrupt.json"
+    corrupt_path.write_text("{", encoding="utf-8")
+
+    restored = await runtime.restore_story_session(_binding())
+
+    assert restored is not None
+    assert restored.session.session_id == stored.session.session_id
+    assert corrupt_path.read_text(encoding="utf-8") == "{"
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_character_id_survives_rename_but_blocks_same_name_reuse(
+    tmp_path,
+):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    original = await runtime.start_session(
+        session_id="runtime_character_identity",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    renamed_binding = {**_binding(), "catgirl_name": "Lan Renamed"}
+    await update_numeric_v2_character_bindings(
+        tmp_path,
+        character_id=_binding()["character_id"],
+        legacy_catgirl_name="Lan",
+        catgirl_binding=renamed_binding,
+    )
+
+    restored_after_rename = await runtime.restore_story_session(renamed_binding)
+    reused_name_binding = {
+        **_binding(),
+        "character_id": "character_33333333333333333333333333333333",
+        "catgirl_id": "catgirl:character_33333333333333333333333333333333",
+    }
+
+    assert restored_after_rename is not None
+    assert restored_after_rename.session.session_id == original.session.session_id
+    assert restored_after_rename.session.catgirl_binding == renamed_binding
+    assert await runtime.restore_story_session(reused_name_binding) is None
 
 
 @pytest.mark.asyncio

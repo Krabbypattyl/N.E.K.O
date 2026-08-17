@@ -170,7 +170,11 @@ def _bounded_message_content(
 
 
 def bound_prompt_messages(
-    messages: list[Any], *, max_tokens: int, field_max_tokens: int
+    messages: list[Any],
+    *,
+    max_tokens: int,
+    field_max_tokens: int,
+    system_max_tokens: int = 1000,
 ) -> list[Any]:
     """在保留消息结构的前提下限制模型消息中的动态文本。"""  # noqa: DOCSTRING_CJK
     source = list(messages or [])
@@ -194,7 +198,7 @@ def bound_prompt_messages(
     for position, index in enumerate(ordered_indexes):
         slots_left = len(ordered_indexes) - position
         if index in system_indexes:
-            budget = min(1000, remaining // max(1, slots_left))
+            budget = min(max(0, int(system_max_tokens)), remaining // max(1, slots_left))
         else:
             budget = remaining // max(1, slots_left) if slots_left > 1 else remaining
         content = str(

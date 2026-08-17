@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,8 +17,16 @@ from services.theater.numeric_v2_actor import (
     NumericV2ActorError,
     NumericV2ActorUnavailableError,
 )
-from services.theater.llm_context import _load_player_address
 from services.theater.numeric_v2_cast import NumericV2CastProjection
+from services.theater.numeric_v2_identity import (
+    numeric_v2_catgirl_binding,
+    numeric_v2_character_ids,
+)
+from services.theater.numeric_v2_maintenance import (
+    delete_numeric_v2_story_transactionally,
+    maintain_numeric_v2_storage_once,
+)
+from services.theater.numeric_v2_performance import performance_dialogue
 from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluatorError,
     NumericV2EvaluatorUnavailableError,
@@ -39,6 +47,7 @@ from services.theater.numeric_v2_runtime import (
 )
 from services.theater.paths import theater_root
 from services.theater.numeric_v2_store import (
+    list_numeric_v2_sessions,
     NumericV2SessionExistsError,
     NumericV2SessionNotFoundError,
     NumericV2StoreError,
@@ -55,35 +64,31 @@ def _numeric_root(config_manager: Any) -> Path:
     return theater_root(config_manager)
 
 
-def _registry(config_manager: Any) -> NumericV2PackageRegistry:
-    registry = NumericV2PackageRegistry(_numeric_root(config_manager) / "numeric_v2" / "packages")
-    registry.ensure_default_packages()
+async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
+    numeric_root = _numeric_root(config_manager)
+    registry = NumericV2PackageRegistry(numeric_root / "numeric_v2" / "packages")
+    character_ids_by_name = await asyncio.to_thread(
+        numeric_v2_character_ids,
+        config_manager,
+    )
+    await asyncio.to_thread(
+        maintain_numeric_v2_storage_once,
+        numeric_root,
+        registry,
+        character_ids_by_name=character_ids_by_name,
+    )
     return registry
 
 
-def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
-    engine = _registry(config_manager).load_engine(story_id)
+async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
+    engine = (await _registry(config_manager)).load_engine(story_id)
     return NumericV2Runtime(engine, _numeric_root(config_manager))
 
 
 def _current_catgirl_binding(config_manager: Any) -> dict[str, str]:
     """Session 只绑定服务端当前猫娘，客户端不能伪造人格。"""  # noqa: DOCSTRING_CJK
 
-    characters = config_manager.load_characters()
-    current_name = str(characters.get("当前猫娘") or "").strip() if isinstance(characters, dict) else ""
-    catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
-    profile = catgirls.get(current_name) if isinstance(catgirls, dict) else None
-    if not current_name or not isinstance(profile, dict):
-        raise ValueError("current_catgirl_unavailable")
-    canonical = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    profile_hash = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
-    return {
-        "catgirl_id": f"catgirl:{current_name}",
-        "catgirl_name": current_name,
-        "player_address": _load_player_address(config_manager) or "玩家",
-        "profile_revision": f"characters:{profile_hash.removeprefix('sha256:')[:16]}",
-        "profile_hash": profile_hash,
-    }
+    return numeric_v2_catgirl_binding(config_manager)
 
 
 def _ensure_current_catgirl(session: Any, config_manager: Any) -> None:
@@ -204,7 +209,8 @@ async def _speak_dialogue(
 @router.get("/stories")
 async def list_numeric_stories():
     try:
-        return {"ok": True, "stories": _registry(get_config_manager()).list_packages()}
+        registry = await _registry(get_config_manager())
+        return {"ok": True, "stories": registry.list_packages()}
     except Exception:
         return _error("numeric_story_list_failed", 500)
 
@@ -216,7 +222,8 @@ async def import_numeric_story(request: Request):
     if validation_error is not None:
         return validation_error
     try:
-        summary = _registry(get_config_manager()).import_package(payload)
+        registry = await _registry(get_config_manager())
+        summary = registry.import_package(payload)
     except NumericV2PackageExistsError:
         return _error("numeric_story_exists", 409)
     except NumericV2PackageError as exc:
@@ -224,6 +231,62 @@ async def import_numeric_story(request: Request):
     except (OSError, UnicodeError):
         return _error("numeric_story_import_failed", 500)
     return {"ok": True, "package": summary}
+
+
+@router.get("/packages/{story_id}/delete-preview")
+async def preview_numeric_story_delete(story_id: str):
+    config_manager = get_config_manager()
+    normalized_story_id = str(story_id or "").strip()
+    try:
+        registry = await _registry(config_manager)
+        registry.load_engine(normalized_story_id)
+        sessions = list_numeric_v2_sessions(
+            _numeric_root(config_manager),
+            story_id=normalized_story_id,
+        )
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    active_catgirl_names = sorted(
+        {
+            item["catgirl_name"]
+            for item in sessions
+            if item["status"] != "ended" and item["catgirl_name"]
+        }
+    )
+    return {
+        "ok": True,
+        "active_catgirl_names": active_catgirl_names,
+        "session_count": len(sessions),
+    }
+
+
+@router.delete("/packages/{story_id}")
+async def delete_numeric_story(story_id: str, request: Request):
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+    config_manager = get_config_manager()
+    normalized_story_id = str(story_id or "").strip()
+    try:
+        registry = await _registry(config_manager)
+        runtime = NumericV2Runtime(
+            registry.load_engine(normalized_story_id),
+            _numeric_root(config_manager),
+        )
+        async with runtime.story_session_guard():
+            deleted_session_count = await delete_numeric_v2_story_transactionally(
+                _numeric_root(config_manager),
+                registry,
+                normalized_story_id,
+            )
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    except NumericV2StoreError as exc:
+        return _error(str(exc), 500)
+    return {"ok": True, "deleted_session_count": deleted_session_count}
 
 
 @router.post("/session/start")
@@ -239,10 +302,10 @@ async def start_numeric_session(request: Request):
     config_manager = get_config_manager()
     replace_existing = payload.get("replace_existing") is True
     try:
-        runtime = _runtime_for_story(config_manager, story_id)
+        runtime = await _runtime_for_story(config_manager, story_id)
         async with runtime.story_session_guard():
-            existing = await runtime.restore_story_session_unlocked()
             binding = _current_catgirl_binding(config_manager)
+            existing = await runtime.restore_story_session_unlocked(binding)
             if existing is not None:
                 binding_changed = dict(existing.session.catgirl_binding) != binding
                 if binding_changed and not replace_existing:
@@ -251,24 +314,21 @@ async def start_numeric_session(request: Request):
                     return {"ok": True, "resumed": True, **_numeric_payload(runtime, existing)}
                 if session_id == existing.session.session_id:
                     return _error("numeric_replacement_session_id_must_differ", 400)
-                # 活跃 Session 的角色切换可以显式重建；已结束 Session 必须保留原账本。
-                opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+                # 同一角色卡配置变化时显式重建槽位；已结束的同绑定槽位可复用已提交开场。
+                if existing.session.status == "ended" and not binding_changed:
+                    # 同一角色重开同一剧本时复用已提交开场，避免一次无必要的模型调用
+                    # 让“重新开始”受临时模型故障影响。
+                    opening = existing.session.opening_performance
+                else:
+                    opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
                 if _current_catgirl_binding(config_manager) != binding:
                     raise ValueError("catgirl_changed_requires_new_session")
-                if existing.session.status == "ended":
-                    # 已结束记录是审计证据；重开必须创建新的 Session 文件，不能覆盖旧账本。
-                    stored = await runtime.start_session(
-                        session_id=session_id,
-                        catgirl_binding=binding,
-                        opening_performance=opening,
-                    )
-                else:
-                    stored = await runtime.replace_active_session(
-                        previous_session_id=existing.session.session_id,
-                        session_id=session_id,
-                        catgirl_binding=binding,
-                        opening_performance=opening,
-                    )
+                stored = await runtime.replace_active_session(
+                    previous_session_id=existing.session.session_id,
+                    session_id=session_id,
+                    catgirl_binding=binding,
+                    opening_performance=opening,
+                )
             else:
                 # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
@@ -298,7 +358,7 @@ async def start_numeric_session(request: Request):
         session_id=session_id,
         revision=0,
         lanlan_name=str(stored.session.catgirl_binding.get("catgirl_name") or ""),
-        dialogue=list(opening.get("dialogue") or []),
+        dialogue=performance_dialogue(opening),
     )
     return {"ok": True, **_numeric_payload(runtime, stored)}
 
@@ -307,8 +367,9 @@ async def start_numeric_session(request: Request):
 async def get_active_numeric_session(story_id: str):
     config_manager = get_config_manager()
     try:
-        runtime = _runtime_for_story(config_manager, str(story_id or "").strip())
-        stored = await runtime.restore_story_session()
+        runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
+        binding = _current_catgirl_binding(config_manager)
+        stored = await runtime.restore_story_session(binding)
         if stored is None:
             return _error("numeric_session_not_found", 404)
         _ensure_current_catgirl(stored.session, config_manager)
@@ -325,7 +386,7 @@ async def get_active_numeric_session(story_id: str):
 async def get_numeric_session(session_id: str, story_id: str):
     config_manager = get_config_manager()
     try:
-        runtime = _runtime_for_story(config_manager, str(story_id or "").strip())
+        runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
         stored = await runtime.restore_session(session_id)
         if stored is None:
             return _error("numeric_session_not_found", 404)
@@ -352,7 +413,7 @@ async def submit_numeric_input(request: Request):
     try:
         turn = TurnRequestV2.from_mapping(payload)
         config_manager = get_config_manager()
-        runtime = _runtime_for_story(config_manager, story_id)
+        runtime = await _runtime_for_story(config_manager, story_id)
         current = await runtime.restore_session(session_id)
         if current is None:
             return _error("numeric_session_not_found", 404)
@@ -382,7 +443,10 @@ async def submit_numeric_input(request: Request):
             player_input=turn.message,
         )
         _ensure_current_catgirl(current.session, config_manager)
-        stored = await runtime.commit_turn(outcome, performance)
+        # 删除剧本事务与正式提交共享 story guard；模型调用不占锁，删除若先
+        # 完成则本次提交安全失败，删除若回滚则提交基于恢复后的文件继续。
+        async with runtime.story_session_guard():
+            stored = await runtime.commit_turn(outcome, performance)
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError) as exc:
@@ -412,7 +476,7 @@ async def submit_numeric_input(request: Request):
         session_id=session_id,
         revision=stored.session.revision,
         lanlan_name=str(stored.session.catgirl_binding.get("catgirl_name") or ""),
-        dialogue=list(performance.get("dialogue") or []),
+        dialogue=performance_dialogue(performance),
     )
     return {
         "ok": True,
@@ -438,13 +502,18 @@ async def end_numeric_session(request: Request):
         return _error("numeric_session_end_request_invalid", 400)
     try:
         config_manager = get_config_manager()
-        runtime = _runtime_for_story(config_manager, story_id)
+        runtime = await _runtime_for_story(config_manager, story_id)
         current = await runtime.restore_session(session_id)
         if current is None:
             return _error("numeric_session_not_found", 404)
         # 结束操作同样复验当前猫娘，避免角色切换后继续改写旧人格 Session。
         _ensure_current_catgirl(current.session, config_manager)
-        stored = await runtime.end_session(session_id, base_revision=base_revision, reason="user_exit")
+        async with runtime.story_session_guard():
+            stored = await runtime.end_session(
+                session_id,
+                base_revision=base_revision,
+                reason="user_exit",
+            )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2StoreRevisionConflictError:

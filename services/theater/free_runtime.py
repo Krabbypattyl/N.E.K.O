@@ -48,7 +48,7 @@ async def publish_character_switch(
     publish: Callable[[], Awaitable[None]],
 ) -> dict[str, Any]:
     """在自由模式自己的 Session 边界内发布猫娘切换。"""  # noqa: DOCSTRING_CJK
-    # Numeric v2 没有共享 active 索引；这里仅处理自由模式沙盒，避免旧剧本 Runtime 借尸还魂。
+    # Numeric v2 按角色卡独立恢复；这里仅处理自由模式沙盒，避免两种模式串线。
     free_root = _free_root(root)
     normalized_name = str(old_lanlan_name or "").strip()
     while True:

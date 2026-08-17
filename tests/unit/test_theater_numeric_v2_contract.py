@@ -94,6 +94,7 @@ def numeric_v2_story() -> dict:
                 "type": "start",
                 "chapter": "重逢",
                 "min_turns": 2,
+                "recommended_turns": 4,
                 "story_beat": beat("玩家与猫娘在花店重新见面。"),
                 "route_gates": [
                     gate("to_stay", "ending_stay", ">=", 70, 20),
@@ -132,6 +133,23 @@ def test_numeric_v2_compiles_canonical_package():
     assert compiled.story["schema"] == "neko.story.numeric.v2"
     assert compiled.package_hash.startswith("sha256:")
     assert json.loads(compiled.json_bytes)["meta"]["story_id"] == "numeric_v2_contract"
+
+
+def test_numeric_v2_soft_pacing_budget_is_optional_and_validated():
+    story = numeric_v2_story()
+    story["nodes"][0].pop("recommended_turns")
+
+    assert "recommended_turns" not in NumericV2Compiler().compile(story).story["nodes"][0]
+
+    story["nodes"][0]["recommended_turns"] = 1
+    with pytest.raises(NumericV2CompileError) as below_minimum:
+        NumericV2Compiler().compile(story)
+    assert any(issue.code == "invalid_node_recommended_turns" for issue in below_minimum.value.issues)
+
+    story["nodes"][0]["recommended_turns"] = 41
+    with pytest.raises(NumericV2CompileError) as over_limit:
+        NumericV2Compiler().compile(story)
+    assert any(issue.code == "invalid_node_recommended_turns" for issue in over_limit.value.issues)
 
 
 def test_numeric_v2_rejects_conflicting_identity_source_names():
@@ -363,15 +381,18 @@ def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
         registry.import_package(numeric_v2_story())
 
 
-def test_numeric_v2_registry_seeds_default_story_into_empty_root(tmp_path):
+def test_numeric_v2_registry_marks_empty_defaults_initialized_without_bundled_story(tmp_path):
     package_root = tmp_path / "theater" / "numeric_v2" / "packages"
     registry = NumericV2PackageRegistry(package_root)
 
     registry.ensure_default_packages()
 
-    packages = registry.list_packages()
-    assert [item["story_id"] for item in packages] == ["story_d079453b8e9f"]
-    assert (package_root / "story_d079453b8e9f.json").is_file()
+    assert registry.list_packages() == []
+    assert (package_root / ".defaults_initialized").is_file()
+
+    registry.ensure_default_packages()
+
+    assert registry.list_packages() == []
 
 
 def test_numeric_v2_registry_falls_back_to_exclusive_creation(tmp_path, monkeypatch):

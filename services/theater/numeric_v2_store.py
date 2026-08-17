@@ -12,12 +12,14 @@ from pathlib import Path
 import tempfile
 from typing import Any, Mapping, TYPE_CHECKING
 
+from .numeric_v2_performance import valid_ordered_content
+
 if TYPE_CHECKING:
     from .numeric_v2_runtime import NumericV2Engine, ScriptSessionV2
 
 
 STORE_SCHEMA = "neko.script.store.numeric.v2"
-STORY_SESSION_INDEX_SCHEMA = "neko.script.story_session_index.numeric.v2"
+STORY_SESSION_INDEX_SCHEMA = "neko.script.story_session_index.numeric.v2.character-slots"
 
 
 class NumericV2StoreError(ValueError):
@@ -60,6 +62,299 @@ def _story_lock(path: Path, story_id: str) -> asyncio.Lock:
     return _STORY_LOCKS[key]
 
 
+def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema") != STORY_SESSION_INDEX_SCHEMA:
+        return {}
+    stories = payload.get("stories")
+    if not isinstance(stories, dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    for story_id, slots in stories.items():
+        normalized_story_id = str(story_id or "").strip()
+        if not normalized_story_id or not isinstance(slots, dict):
+            continue
+        normalized_slots = {
+            str(catgirl_name).strip(): str(session_id).strip()
+            for catgirl_name, session_id in slots.items()
+            if str(catgirl_name).strip() and str(session_id).strip()
+        }
+        if normalized_slots:
+            normalized[normalized_story_id] = normalized_slots
+    return normalized
+
+
+def _write_story_session_slots(
+    path: Path,
+    stories: Mapping[str, Mapping[str, str]],
+) -> None:
+    encoded = json.dumps(
+        {
+            "schema": STORY_SESSION_INDEX_SCHEMA,
+            "stories": {
+                str(story_id): dict(slots)
+                for story_id, slots in stories.items()
+                if slots
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.stem}-",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(encoded)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.stem}-",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(encoded)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _numeric_v2_session_root(theater_storage_root: Path) -> Path:
+    return Path(theater_storage_root) / "numeric_v2" / "sessions"
+
+
+def _session_matches_character(
+    binding: Mapping[str, Any],
+    character_id: str,
+    legacy_catgirl_name: str = "",
+) -> bool:
+    stored_character_id = str(binding.get("character_id") or "").strip()
+    if stored_character_id:
+        return stored_character_id == character_id
+    return bool(
+        legacy_catgirl_name
+        and str(binding.get("catgirl_name") or "").strip() == legacy_catgirl_name
+    )
+
+
+def _read_numeric_v2_session_summary(path: Path) -> dict[str, str] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
+        return None
+    raw_session = payload.get("session")
+    binding = raw_session.get("catgirl_binding") if isinstance(raw_session, dict) else None
+    if not isinstance(raw_session, dict) or not isinstance(binding, dict):
+        return None
+    return {
+        "session_id": str(raw_session.get("session_id") or path.stem),
+        "story_id": str(raw_session.get("story_package_id") or "").strip(),
+        "catgirl_name": str(binding.get("catgirl_name") or "").strip(),
+        "character_id": str(binding.get("character_id") or "").strip(),
+        "status": str(raw_session.get("status") or "active"),
+        "path": str(path),
+    }
+
+
+def list_numeric_v2_sessions(
+    theater_storage_root: Path,
+    *,
+    story_id: str = "",
+    character_id: str = "",
+    legacy_catgirl_name: str = "",
+) -> list[dict[str, str]]:
+    """按剧本或角色列出可识别的 Numeric v2 Session。"""  # noqa: DOCSTRING_CJK
+
+    normalized_story_id = str(story_id or "").strip()
+    normalized_character_id = str(character_id or "").strip()
+    normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+    root = _numeric_v2_session_root(theater_storage_root)
+    if not root.is_dir():
+        return []
+    result: list[dict[str, str]] = []
+    for path in sorted(root.glob("*.json")):
+        summary = _read_numeric_v2_session_summary(path)
+        if summary is None:
+            continue
+        if normalized_story_id and summary["story_id"] != normalized_story_id:
+            continue
+        binding_matches = (
+            not normalized_character_id
+            or summary["character_id"] == normalized_character_id
+            or (
+                not summary["character_id"]
+                and normalized_legacy_name
+                and summary["catgirl_name"] == normalized_legacy_name
+            )
+        )
+        if not binding_matches:
+            continue
+        result.append(summary)
+    return result
+
+
+async def delete_numeric_v2_sessions(
+    theater_storage_root: Path,
+    *,
+    story_id: str = "",
+    character_id: str = "",
+    legacy_catgirl_name: str = "",
+) -> list[dict[str, str]]:
+    """删除指定剧本或角色的 Session，并同步清理恢复索引。"""  # noqa: DOCSTRING_CJK
+
+    normalized_story_id = str(story_id or "").strip()
+    normalized_character_id = str(character_id or "").strip()
+    normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+    if (
+        not normalized_story_id
+        and not normalized_character_id
+        and not normalized_legacy_name
+    ):
+        raise NumericV2StoreError("numeric_session_delete_scope_required")
+    session_root = _numeric_v2_session_root(theater_storage_root)
+    index_path = session_root.parent / "story_sessions.json"
+    async with _lock(index_path):
+        candidates = list_numeric_v2_sessions(
+            theater_storage_root,
+            story_id=normalized_story_id,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+        )
+        deleted: list[dict[str, str]] = []
+        for candidate in candidates:
+            path = Path(candidate["path"])
+            async with _lock(path):
+                current = _read_numeric_v2_session_summary(path)
+                if current is None:
+                    continue
+                if normalized_story_id and current["story_id"] != normalized_story_id:
+                    continue
+                binding_matches = (
+                    not normalized_character_id
+                    or current["character_id"] == normalized_character_id
+                    or (
+                        not current["character_id"]
+                        and normalized_legacy_name
+                        and current["catgirl_name"] == normalized_legacy_name
+                    )
+                )
+                if not binding_matches:
+                    continue
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+                deleted.append(candidate)
+
+        stories = _read_story_session_slots(index_path)
+        if normalized_story_id:
+            stories.pop(normalized_story_id, None)
+        if normalized_character_id:
+            for current_story_id in list(stories):
+                stories[current_story_id].pop(normalized_character_id, None)
+                if not stories[current_story_id]:
+                    stories.pop(current_story_id)
+        if normalized_legacy_name:
+            deleted_session_ids = {item["session_id"] for item in deleted}
+            for current_story_id in list(stories):
+                stories[current_story_id] = {
+                    current_character_id: current_session_id
+                    for current_character_id, current_session_id in stories[
+                        current_story_id
+                    ].items()
+                    if current_session_id not in deleted_session_ids
+                }
+                if not stories[current_story_id]:
+                    stories.pop(current_story_id)
+        if index_path.is_file() or stories:
+            _write_story_session_slots(index_path, stories)
+        return deleted
+
+
+async def update_numeric_v2_character_bindings(
+    theater_storage_root: Path,
+    *,
+    character_id: str,
+    legacy_catgirl_name: str,
+    catgirl_binding: Mapping[str, Any],
+) -> int:
+    """角色卡改名时保留所有剧本进度，并更新持久化身份投影。"""  # noqa: DOCSTRING_CJK
+
+    normalized_character_id = str(character_id or "").strip()
+    if not normalized_character_id:
+        raise NumericV2StoreError("numeric_character_id_required")
+    session_root = _numeric_v2_session_root(theater_storage_root)
+    index_path = session_root.parent / "story_sessions.json"
+    candidates = list_numeric_v2_sessions(
+        theater_storage_root,
+        character_id=normalized_character_id,
+        legacy_catgirl_name=legacy_catgirl_name,
+    )
+    async with _lock(index_path):
+        stories = _read_story_session_slots(index_path)
+        updated = 0
+        for candidate in candidates:
+            path = Path(candidate["path"])
+            async with _lock(path):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise NumericV2StoreError("numeric_session_read_failed") from exc
+                raw_session = payload.get("session") if isinstance(payload, dict) else None
+                if not isinstance(raw_session, dict):
+                    raise NumericV2StoreError("numeric_session_payload_invalid")
+                raw_session["catgirl_binding"] = {
+                    str(key): str(value)
+                    for key, value in catgirl_binding.items()
+                }
+                _atomic_write_json_payload(path, payload)
+                story_id = str(raw_session.get("story_package_id") or "").strip()
+                session_id = str(raw_session.get("session_id") or path.stem).strip()
+                if story_id and session_id:
+                    stories.setdefault(story_id, {})[
+                        normalized_character_id
+                    ] = session_id
+                updated += 1
+        _write_story_session_slots(index_path, stories)
+        return updated
+
+
 class NumericV2SessionStore:
     """每个 Session 一个文件，所有提交都先复验 revision 再原子替换。"""  # noqa: DOCSTRING_CJK
 
@@ -82,126 +377,91 @@ class NumericV2SessionStore:
         async with _story_lock(self._story_session_index_path, normalized_story_id):
             yield
 
-    def _read_story_session_index(self) -> dict[str, str]:
-        path = self._story_session_index_path
-        if not path.is_file():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return {}
-        if not isinstance(payload, dict) or payload.get("schema") != STORY_SESSION_INDEX_SCHEMA:
-            return {}
-        stories = payload.get("stories")
-        if not isinstance(stories, dict):
-            return {}
-        return {
-            str(story_id): str(session_id)
-            for story_id, session_id in stories.items()
-            if str(story_id).strip() and str(session_id).strip()
-        }
+    def _read_story_session_index(self) -> dict[str, dict[str, str]]:
+        return _read_story_session_slots(self._story_session_index_path)
 
-    def _write_story_session_index(self, stories: Mapping[str, str]) -> None:
-        path = self._story_session_index_path
-        encoded = json.dumps(
-            {"schema": STORY_SESSION_INDEX_SCHEMA, "stories": dict(stories)},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=path.parent,
-                prefix=f".{path.stem}-",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary:
-                temporary.write(encoded)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-                temporary_path = Path(temporary.name)
-            os.replace(temporary_path, path)
-            temporary_path = None
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+    def _write_story_session_index(
+        self,
+        stories: Mapping[str, Mapping[str, str]],
+    ) -> None:
+        _write_story_session_slots(self._story_session_index_path, stories)
 
-    async def get_story_session_id(self, story_id: str) -> str:
+    async def get_story_session_id(self, story_id: str, character_id: str) -> str:
         async with _lock(self._story_session_index_path):
-            return self._read_story_session_index().get(str(story_id or "").strip(), "")
+            stories = self._read_story_session_index()
+            return stories.get(str(story_id or "").strip(), {}).get(
+                str(character_id or "").strip(),
+                "",
+            )
 
-    async def set_story_session_id(self, story_id: str, session_id: str) -> None:
+    async def set_story_session_id(
+        self,
+        story_id: str,
+        character_id: str,
+        session_id: str,
+    ) -> None:
         normalized_story_id = str(story_id or "").strip()
+        normalized_character_id = str(character_id or "").strip()
         normalized_session_id = str(session_id or "").strip()
-        if not normalized_story_id or not normalized_session_id:
+        if (
+            not normalized_story_id
+            or not normalized_character_id
+            or not normalized_session_id
+        ):
             raise NumericV2StoreError("numeric_story_session_index_invalid")
         async with _lock(self._story_session_index_path):
             stories = self._read_story_session_index()
-            stories[normalized_story_id] = normalized_session_id
+            stories.setdefault(normalized_story_id, {})[
+                normalized_character_id
+            ] = normalized_session_id
             self._write_story_session_index(stories)
 
-    async def restore_story_session(self, story_id: str) -> NumericV2StoredSession | None:
-        """按剧本恢复唯一 Session；索引缺失时兼容扫描已有 Session 文件。"""  # noqa: DOCSTRING_CJK
+    async def restore_story_session(
+        self,
+        story_id: str,
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> NumericV2StoredSession | None:
+        """按剧本和猫娘从恢复索引读取唯一 Session。"""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
-        if not normalized_story_id:
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        if not normalized_story_id or not normalized_character_id:
             return None
         async with self.story_session_guard(normalized_story_id):
-            return await self._restore_story_session_unlocked(normalized_story_id)
+            return await self._restore_story_session_unlocked(
+                normalized_story_id,
+                normalized_character_id,
+                normalized_legacy_name,
+            )
 
-    async def _restore_story_session_unlocked(self, normalized_story_id: str) -> NumericV2StoredSession | None:
-        session_id = await self.get_story_session_id(normalized_story_id)
-        candidates: list[NumericV2StoredSession] = []
-        if self.root.is_dir():
-            for path in self.root.glob("*.json"):
-                try:
-                    raw_payload = json.loads(path.read_text(encoding="utf-8"))
-                    raw_session = raw_payload.get("session") if isinstance(raw_payload, dict) else None
-                    if not isinstance(raw_session, dict) or str(raw_session.get("story_package_id") or "") != normalized_story_id:
-                        continue
-                    stored = await self.load(path.stem)
-                except (OSError, ValueError):
-                    continue
-                if stored is not None and stored.session.story_package_id == normalized_story_id:
-                    candidates.append(stored)
-        if not candidates:
-            return None
-
-        indexed = next(
-            (item for item in candidates if item.session.session_id == session_id),
-            None,
+    async def _restore_story_session_unlocked(
+        self,
+        normalized_story_id: str,
+        normalized_character_id: str,
+        normalized_legacy_name: str = "",
+    ) -> NumericV2StoredSession | None:
+        session_id = await self.get_story_session_id(
+            normalized_story_id,
+            normalized_character_id,
         )
-        active_candidates = [item for item in candidates if item.session.status != "ended"]
-        # 结束的索引只代表历史记录；如果同时存在新的 active Session，优先恢复
-        # active，避免旧索引阻断剧本继续演绎。
-        if indexed is not None and indexed.session.status == "ended" and active_candidates:
-            indexed = None
-        restored = indexed or max(
-            active_candidates or candidates,
-            key=lambda item: (item.session.revision, item.session.session_id),
-        )
-        for candidate in candidates:
-            if candidate.session.session_id == restored.session.session_id:
-                continue
-            # 已结束文件是历史证据，不能因为一次恢复扫描而删除；只收敛
-            # 明确属于同一故事的旧 active 重复记录。
-            if candidate.session.status == "ended":
-                continue
-            path = self._path(candidate.session.session_id)
-            async with _lock(path):
-                if not path.is_file():
-                    continue
-                try:
-                    current = self._read(path)
-                    self._validate_chain(current)
-                except NumericV2StoreError:
-                    continue
-                if current.session.story_package_id == normalized_story_id:
-                    path.unlink()
-        await self.set_story_session_id(normalized_story_id, restored.session.session_id)
-        return restored
+        if session_id:
+            try:
+                indexed = await self.load(session_id)
+            except NumericV2StoreError:
+                indexed = None
+            if (
+                indexed is not None
+                and indexed.session.story_package_id == normalized_story_id
+                and _session_matches_character(
+                    indexed.session.catgirl_binding,
+                    normalized_character_id,
+                    normalized_legacy_name,
+                )
+            ):
+                return indexed
+        return None
 
     async def create(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
         path = self._path(session.session_id)
@@ -230,35 +490,45 @@ class NumericV2SessionStore:
         previous_session_id: str,
         session: "ScriptSessionV2",
     ) -> NumericV2StoredSession:
-        """用新 ID 替换活动 Session，阻止旧页面误提交到重建后的演绎。"""  # noqa: DOCSTRING_CJK
+        """用新 ID 替换槽位 Session，阻止旧页面继续提交且不累积历史。"""  # noqa: DOCSTRING_CJK
 
         previous_path = self._path(previous_session_id)
         next_path = self._path(session.session_id)
         if previous_path == next_path:
             raise NumericV2StoreError("numeric_replacement_session_id_reused")
-        async with _lock(previous_path):
-            if not previous_path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            previous = self._read(previous_path)
-            if previous.session.status == "ended":
-                raise NumericV2StoreError("numeric_replacement_session_ended")
-            if previous.session.story_package_id != session.story_package_id:
-                raise NumericV2StoreError("numeric_replacement_story_mismatch")
-            async with _lock(next_path):
-                if next_path.exists():
-                    raise NumericV2SessionExistsError("numeric_session_exists")
-                self.engine.validate_session(session)
-                stored = NumericV2StoredSession(session, ())
-                self._write(next_path, stored, exclusive=True)
-                try:
-                    previous_path.unlink()
-                except OSError as exc:
+        index_path = self._story_session_index_path
+        async with _lock(index_path):
+            async with _lock(previous_path):
+                if not previous_path.is_file():
+                    raise NumericV2SessionNotFoundError("numeric_session_not_found")
+                previous = self._read(previous_path)
+                if previous.session.story_package_id != session.story_package_id:
+                    raise NumericV2StoreError("numeric_replacement_story_mismatch")
+                async with _lock(next_path):
+                    if next_path.exists():
+                        raise NumericV2SessionExistsError("numeric_session_exists")
+                    self.engine.validate_session(session)
+                    stored = NumericV2StoredSession(session, ())
+                    self._write(next_path, stored, exclusive=True)
+                    stories = self._read_story_session_index()
+                    previous_stories = deepcopy(stories)
+                    stories.setdefault(session.story_package_id, {})[
+                        str(session.catgirl_binding.get("character_id") or "")
+                    ] = session.session_id
                     try:
-                        next_path.unlink()
-                    except OSError:
-                        pass
-                    raise NumericV2StoreError("numeric_session_replace_failed") from exc
-                return stored
+                        self._write_story_session_index(stories)
+                        previous_path.unlink()
+                    except OSError as exc:
+                        try:
+                            self._write_story_session_index(previous_stories)
+                        except OSError:
+                            pass
+                        try:
+                            next_path.unlink()
+                        except OSError:
+                            pass
+                        raise NumericV2StoreError("numeric_session_replace_failed") from exc
+                    return stored
 
     async def load(self, session_id: str) -> NumericV2StoredSession | None:
         path = self._path(session_id)
@@ -268,6 +538,33 @@ class NumericV2SessionStore:
             stored = self._read(path)
             self._validate_chain(stored)
             return stored
+
+    async def update_catgirl_binding(
+        self,
+        session_id: str,
+        catgirl_binding: Mapping[str, Any],
+    ) -> NumericV2StoredSession:
+        """只迁移角色卡身份投影，不改变剧情、revision 或 Ledger。"""  # noqa: DOCSTRING_CJK
+
+        path = self._path(session_id)
+        async with _lock(path):
+            if not path.is_file():
+                raise NumericV2SessionNotFoundError("numeric_session_not_found")
+            current = self._read(path)
+            self._validate_chain(current)
+            migrated = NumericV2StoredSession(
+                replace(
+                    current.session,
+                    catgirl_binding={
+                        str(key): str(value)
+                        for key, value in catgirl_binding.items()
+                    },
+                ),
+                current.ledger_events,
+            )
+            self._validate_chain(migrated)
+            self._write(path, migrated)
+            return migrated
 
     async def commit(
         self,
@@ -414,6 +711,9 @@ class NumericV2SessionStore:
             performance = stored.session.performance_history[event_index]
             if not isinstance(performance, Mapping):
                 raise NumericV2StoreError("numeric_performance_record_invalid")
+            performance_contract_version = performance.get("performance_contract_version")
+            if performance_contract_version not in {None, 1, 2}:
+                raise NumericV2StoreError("numeric_performance_record_invalid")
             if (
                 performance.get("client_turn_id") != turn_id
                 or performance.get("revision") != expected_revision
@@ -421,6 +721,40 @@ class NumericV2SessionStore:
                 or performance.get("to_node_id") != expected_event["to_node_id"]
             ):
                 raise NumericV2StoreError("numeric_performance_record_mismatch")
+            if performance_contract_version == 2:
+                if expected_event["from_node_id"] == expected_event["to_node_id"]:
+                    if not valid_ordered_content(
+                        performance,
+                        require_narration=True,
+                        require_dialogue=True,
+                    ):
+                        raise NumericV2StoreError("numeric_performance_record_invalid")
+                else:
+                    segments = performance.get("segments")
+                    if (
+                        not isinstance(segments, list)
+                        or len(segments) != 3
+                        or not all(isinstance(segment, Mapping) for segment in segments)
+                        or [segment.get("phase") for segment in segments]
+                        != ["source_response", "transition_bridge", "target_opening"]
+                        or not valid_ordered_content(segments[0], require_dialogue=True)
+                        or not valid_ordered_content(segments[1], require_narration=True)
+                        or not valid_ordered_content(segments[2], require_narration=True)
+                    ):
+                        raise NumericV2StoreError("numeric_transition_performance_invalid")
+            if (
+                expected_event["from_node_id"] != expected_event["to_node_id"]
+                and performance_contract_version in {1, 2}
+            ):
+                segments = performance.get("segments")
+                if (
+                    performance.get("transition_delivered") is not True
+                    or performance.get("visible_node_id") != expected_event["to_node_id"]
+                    or not isinstance(segments, list)
+                    or [item.get("phase") for item in segments if isinstance(item, Mapping)]
+                    != ["source_response", "transition_bridge", "target_opening"]
+                ):
+                    raise NumericV2StoreError("numeric_transition_performance_invalid")
             replay_session = replayed.session
             expected_node = str(expected_event["to_node_id"])
             expected_metrics = dict(expected_event["after_metrics"])
@@ -492,6 +826,9 @@ class NumericV2SessionStore:
 
 
 __all__ = [
+    "delete_numeric_v2_sessions",
+    "list_numeric_v2_sessions",
+    "update_numeric_v2_character_bindings",
     "NumericV2SessionExistsError",
     "NumericV2SessionNotFoundError",
     "NumericV2SessionStore",

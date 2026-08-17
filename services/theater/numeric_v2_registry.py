@@ -14,6 +14,7 @@ from .numeric_v2 import NumericV2CompileError, NumericV2Compiler
 
 _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
+_DEFAULT_PACKAGES_INITIALIZED_MARKER = ".defaults_initialized"
 
 
 class NumericV2PackageError(ValueError):
@@ -38,20 +39,33 @@ class NumericV2PackageRegistry:
     def ensure_default_packages(self) -> None:
         """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""  # noqa: DOCSTRING_CJK
 
-        if self.root.is_dir() and any(self.root.glob("*.json")):
+        marker = self.root / _DEFAULT_PACKAGES_INITIALIZED_MARKER
+        if marker.is_file():
             return
-        if not _DEFAULT_PACKAGE_ROOT.is_dir():
-            return
-        for source in sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json")):
-            try:
-                payload = json.loads(source.read_text(encoding="utf-8"))
-                compiled = self.compiler.compile(payload)
-                target = self.package_path(compiled.story_id)
-                if target.exists():
-                    continue
-                self.import_package(compiled.story)
-            except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
-                raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            if not any(self.root.glob("*.json")) and _DEFAULT_PACKAGE_ROOT.is_dir():
+                for source in sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json")):
+                    payload = json.loads(source.read_text(encoding="utf-8"))
+                    compiled = self.compiler.compile(payload)
+                    target = self.package_path(compiled.story_id)
+                    if target.exists():
+                        continue
+                    self.import_package(compiled.story)
+            marker.touch(exist_ok=True)
+        except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
+            raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc
+
+    def delete_package(self, story_id: str) -> None:
+        """删除一个已安装剧本；Session 由调用方在同一业务动作中级联清理。"""  # noqa: DOCSTRING_CJK
+
+        target = self.package_path(story_id)
+        try:
+            target.unlink()
+        except FileNotFoundError as exc:
+            raise NumericV2PackageNotFoundError("numeric_story_not_found") from exc
+        except OSError as exc:
+            raise NumericV2PackageError("numeric_story_delete_failed") from exc
 
     def package_path(self, story_id: str) -> Path:
         if not isinstance(story_id, str) or not _STORY_ID_RE.fullmatch(story_id):

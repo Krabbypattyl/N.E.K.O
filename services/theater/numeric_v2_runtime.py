@@ -12,8 +12,8 @@ from typing import Any, Mapping
 from utils.tokenize import truncate_to_tokens
 
 from .numeric_v2 import CompiledNumericV2Package, NumericV2Compiler
+from .numeric_v2_performance import valid_ordered_content
 from .numeric_v2_store import (
-    NumericV2SessionNotFoundError,
     NumericV2SessionStore,
     NumericV2StoredSession,
 )
@@ -374,19 +374,67 @@ class NumericV2Runtime:
             opening_performance=opening_performance,
         )
         stored = await self.store.create(session)
-        await self.store.set_story_session_id(self.engine.story_id, session.session_id)
+        await self.store.set_story_session_id(
+            self.engine.story_id,
+            str(session.catgirl_binding.get("character_id") or ""),
+            session.session_id,
+        )
         return stored
 
-    async def restore_story_session(self) -> NumericV2StoredSession | None:
-        return await self.store.restore_story_session(self.engine.story_id)
+    async def restore_story_session(
+        self,
+        catgirl_binding: Mapping[str, Any],
+    ) -> NumericV2StoredSession | None:
+        stored = await self.store.restore_story_session(
+            self.engine.story_id,
+            str(catgirl_binding.get("character_id") or ""),
+            str(catgirl_binding.get("catgirl_name") or ""),
+        )
+        return await self._migrate_legacy_binding(stored, catgirl_binding)
 
     @asynccontextmanager
     async def story_session_guard(self):
         async with self.store.story_session_guard(self.engine.story_id):
             yield
 
-    async def restore_story_session_unlocked(self) -> NumericV2StoredSession | None:
-        return await self.store._restore_story_session_unlocked(self.engine.story_id)
+    async def restore_story_session_unlocked(
+        self,
+        catgirl_binding: Mapping[str, Any],
+    ) -> NumericV2StoredSession | None:
+        stored = await self.store._restore_story_session_unlocked(
+            self.engine.story_id,
+            str(catgirl_binding.get("character_id") or ""),
+            str(catgirl_binding.get("catgirl_name") or ""),
+        )
+        return await self._migrate_legacy_binding(stored, catgirl_binding)
+
+    async def _migrate_legacy_binding(
+        self,
+        stored: NumericV2StoredSession | None,
+        current_binding: Mapping[str, Any],
+    ) -> NumericV2StoredSession | None:
+        if stored is None or stored.session.catgirl_binding.get("character_id"):
+            return stored
+        legacy_expected = {
+            str(key): str(value)
+            for key, value in current_binding.items()
+            if key != "character_id"
+        }
+        legacy_expected["catgirl_id"] = (
+            f"catgirl:{current_binding.get('catgirl_name') or ''}"
+        )
+        if stored.session.catgirl_binding != legacy_expected:
+            return stored
+        migrated = await self.store.update_catgirl_binding(
+            stored.session.session_id,
+            current_binding,
+        )
+        await self.store.set_story_session_id(
+            self.engine.story_id,
+            str(current_binding.get("character_id") or ""),
+            migrated.session.session_id,
+        )
+        return migrated
 
     async def restart_session(
         self,
@@ -400,11 +448,22 @@ class NumericV2Runtime:
             catgirl_binding=catgirl_binding,
             opening_performance=opening_performance,
         )
-        try:
-            stored = await self.store.replace(session)
-        except NumericV2SessionNotFoundError:
+        existing = await self.restore_story_session(
+            session.catgirl_binding,
+        )
+        if existing is None:
             stored = await self.store.create(session)
-        await self.store.set_story_session_id(self.engine.story_id, session.session_id)
+        else:
+            stored = await self.store.replace_active(
+                existing.session.session_id,
+                session,
+            )
+        if existing is None:
+            await self.store.set_story_session_id(
+                self.engine.story_id,
+                str(session.catgirl_binding.get("character_id") or ""),
+                session.session_id,
+            )
         return stored
 
     async def replace_active_session(
@@ -421,7 +480,6 @@ class NumericV2Runtime:
             opening_performance=opening_performance,
         )
         stored = await self.store.replace_active(previous_session_id, session)
-        await self.store.set_story_session_id(self.engine.story_id, session.session_id)
         return stored
 
     async def restore_session(self, session_id: str) -> NumericV2StoredSession | None:
@@ -447,6 +505,20 @@ class NumericV2Runtime:
         outcome: TurnOutcomeV2,
         performance: Mapping[str, Any],
     ) -> NumericV2StoredSession:
+        route_changed = outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]
+        if route_changed:
+            segments = performance.get("segments")
+            if (
+                performance.get("transition_delivered") is not True
+                or performance.get("visible_node_id") != outcome.ledger_event["to_node_id"]
+                or not isinstance(segments, list)
+                or [item.get("phase") for item in segments if isinstance(item, Mapping)]
+                != ["source_response", "transition_bridge", "target_opening"]
+                or not valid_ordered_content(segments[0], require_dialogue=True)
+                or not valid_ordered_content(segments[1], require_narration=True)
+                or not valid_ordered_content(segments[2], require_narration=True)
+            ):
+                raise NumericV2RuntimeError("numeric_transition_performance_invalid")
         record = {
             "schema": PERFORMANCE_RECORD_SCHEMA,
             "client_turn_id": outcome.ledger_event["client_turn_id"],
@@ -455,6 +527,8 @@ class NumericV2Runtime:
             "from_node_id": outcome.ledger_event["from_node_id"],
             "to_node_id": outcome.ledger_event["to_node_id"],
             **deepcopy(dict(performance)),
+            # 旧记录没有该标记；Store 只对新合同记录强制换场三段，保证历史 Session 可恢复。
+            "performance_contract_version": 2 if "content" in performance or route_changed else 1,
         }
         session = replace(
             outcome.session,

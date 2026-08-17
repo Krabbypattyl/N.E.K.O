@@ -74,6 +74,69 @@ def reload_module(module_name: str):
     return importlib.reload(module)
 
 
+@pytest.mark.unit
+def test_catgirl_character_ids_are_persisted_and_duplicate_ids_are_repaired(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    duplicate_id = "character_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    cm.save_characters(
+        {
+            "当前猫娘": "A",
+            "猫娘": {
+                "A": {"_reserved": {"character_id": duplicate_id}},
+                "B": {"_reserved": {"character_id": duplicate_id}},
+                "C": {},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+
+    migrated = cm.load_characters()
+    character_ids = [
+        migrated["猫娘"][name]["_reserved"]["character_id"]
+        for name in ("A", "B", "C")
+    ]
+
+    assert character_ids[0] == duplicate_id
+    assert len(set(character_ids)) == 3
+    assert all(value.startswith("character_") and len(value) == 42 for value in character_ids)
+    assert [
+        cm.load_characters()["猫娘"][name]["_reserved"]["character_id"]
+        for name in ("A", "B", "C")
+    ] == character_ids
+
+
+@pytest.mark.unit
+def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_blocked(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters(
+        {
+            "当前猫娘": "Legacy",
+            "猫娘": {"Legacy": {}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+        second = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+    assert first == second
+
+
 def _character_memory_theater_story() -> dict:
     """返回角色生命周期测试需要的最小自由模式来源。"""  # noqa: DOCSTRING_CJK
     return {
@@ -1359,6 +1422,38 @@ async def test_character_management_and_recent_save_regression():
             assert save_recent_result["success"] is True
             assert recent_path.is_file()
 
+            from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
+            from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+            numeric_runtime = NumericV2Runtime(
+                NumericV2Engine.from_mapping(numeric_v2_story()),
+                Path(cm.app_docs_dir) / "theater",
+            )
+            numeric_session = await numeric_runtime.start_session(
+                session_id="character_delete_numeric_session",
+                catgirl_binding={
+                    "character_id": cm.load_characters()["猫娘"]["测试角色"]["_reserved"]["character_id"],
+                    "catgirl_id": "catgirl:" + cm.load_characters()["猫娘"]["测试角色"]["_reserved"]["character_id"],
+                    "catgirl_name": "测试角色",
+                    "player_address": "哥哥",
+                    "profile_revision": "characters:test",
+                    "profile_hash": "sha256:test",
+                },
+                opening_performance={
+                    "narration": "开场。",
+                    "dialogue": [{"speaker_id": "active_catgirl", "text": "你好。"}],
+                    "suggested_inputs": [],
+                },
+            )
+            numeric_session_path = (
+                Path(cm.app_docs_dir)
+                / "theater"
+                / "numeric_v2"
+                / "sessions"
+                / f"{numeric_session.session.session_id}.json"
+            )
+            assert numeric_session_path.is_file()
+
             switch_back_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": initial_name})
             )
@@ -1370,6 +1465,7 @@ async def test_character_management_and_recent_save_regression():
             assert delete_result["success"] is True
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
             assert not (Path(cm.memory_dir) / "测试角色").exists()
+            assert not numeric_session_path.exists()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
 

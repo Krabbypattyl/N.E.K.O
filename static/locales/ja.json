@@ -2798,6 +2798,7 @@
         "importStoryRefreshFailed": "脚本はインポートされましたが、一覧を更新できませんでした。ページを再読み込みしてください。",
         "deleteStory": "脚本を削除",
         "deleteStoryConfirm": "選択した脚本を削除しますか？",
+        "deleteStoryActiveConfirm": "{{names}}との演技はまだ終了していません。それでも脚本を削除しますか？",
         "storyDeleted": "脚本を削除しました",
         "storyInUse": "この脚本は上演中です。終了してから削除してください。",
         "storyDeleteFailed": "脚本を削除できませんでした。もう一度お試しください。",

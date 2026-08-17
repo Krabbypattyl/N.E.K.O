@@ -2798,6 +2798,7 @@
         "importStoryRefreshFailed": "The script was imported, but the list could not refresh. Reload the page.",
         "deleteStory": "Delete script",
         "deleteStoryConfirm": "Delete the selected script?",
+        "deleteStoryActiveConfirm": "The performance with {{names}} has not ended. Delete this script anyway?",
         "storyDeleted": "Script deleted",
         "storyInUse": "This script is being performed. End the performance before deleting it.",
         "storyDeleteFailed": "The script could not be deleted. Please try again.",

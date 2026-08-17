@@ -2798,6 +2798,7 @@
         "importStoryRefreshFailed": "El guion se importó, pero no se pudo actualizar la lista. Recarga la página.",
         "deleteStory": "Eliminar guion",
         "deleteStoryConfirm": "¿Eliminar el guion seleccionado?",
+        "deleteStoryActiveConfirm": "La representación con {{names}} no ha terminado. ¿Eliminar el guion de todos modos?",
         "storyDeleted": "Guion eliminado",
         "storyInUse": "Este guion está en una representación. Termínala antes de eliminarlo.",
         "storyDeleteFailed": "No se pudo eliminar el guion. Inténtalo de nuevo.",

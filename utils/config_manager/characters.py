@@ -31,7 +31,11 @@ from .persona_payload import (
     _build_effective_character_payload,
     _resolve_effective_character_prompt,
 )
-from .reserved_schema import migrate_catgirl_reserved, validate_reserved_schema
+from .reserved_schema import (
+    ensure_catgirl_character_id,
+    migrate_catgirl_reserved,
+    validate_reserved_schema,
+)
 
 
 class CharactersMixin:
@@ -100,12 +104,18 @@ class CharactersMixin:
             catgirl_map = character_data.get("猫娘")
             if isinstance(catgirl_map, dict):
                 all_schema_errors: list[str] = []
+                used_character_ids: set[str] = set()
                 for name, catgirl_data in catgirl_map.items():
                     if not isinstance(catgirl_data, dict):
                         logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
                         continue
                     if migrate_catgirl_reserved(catgirl_data):
                         migrated = True
+                    _, character_id_changed = ensure_catgirl_character_id(
+                        catgirl_data,
+                        used_ids=used_character_ids,
+                    )
+                    migrated |= character_id_changed
                     reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
                     for err in reserved_errors:
                         all_schema_errors.append(f"{name}: {err}")
@@ -116,6 +126,14 @@ class CharactersMixin:
                     self.save_characters(character_data, character_json_path=character_json_path)
                     logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
                 except Exception as migrate_err:
+                    # character_id 即使在临时只读阶段也必须在本进程内保持稳定；
+                    # 否则每次 load 都会为同一张旧卡生成不同身份。后续正常写入会
+                    # 连同其它迁移结果一起持久化。
+                    with self._characters_cache_lock:
+                        self._characters_cache = deepcopy(character_data)
+                        self._characters_cache_mtime = loaded_mtime
+                        self._characters_cache_path = character_json_path
+                        self._characters_dirty = True
                     # 维护态（只读快照阶段）不能持久化，降级为 debug 日志
                     try:
                         from utils.cloudsave_runtime import MaintenanceModeError

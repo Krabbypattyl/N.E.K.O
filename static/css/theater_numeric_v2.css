@@ -357,6 +357,11 @@ html.dark .numeric-theater-console .theater-toolbar {
     line-height: 1.75;
 }
 
+/* 有序内容块允许“旁白 → 对白 → 旁白”连续出现，后续旁白需要重新留出段落呼吸。 */
+#numeric-theater-log .theater-turn.dialogue + .theater-turn-block.novel {
+    margin-top: 16px;
+}
+
 .numeric-theater-choice-panel {
     min-width: 0;
     max-height: 164px;

@@ -2798,6 +2798,7 @@
         "importStoryRefreshFailed": "O roteiro foi importado, mas a lista não pôde ser atualizada. Recarregue a página.",
         "deleteStory": "Excluir roteiro",
         "deleteStoryConfirm": "Excluir o roteiro selecionado?",
+        "deleteStoryActiveConfirm": "A atuação com {{names}} ainda não terminou. Excluir o roteiro mesmo assim?",
         "storyDeleted": "Roteiro excluído",
         "storyInUse": "Este roteiro está em execução. Encerre a apresentação antes de excluí-lo.",
         "storyDeleteFailed": "Não foi possível excluir o roteiro. Tente novamente.",

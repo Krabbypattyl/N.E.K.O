@@ -13,6 +13,7 @@ from utils.token_tracker import set_call_type
 
 from .numeric_v2_cast import NumericV2CastProjection
 from .llm_context import bound_prompt_messages, truncate_prompt_value
+from .numeric_v2_performance import performance_content_blocks
 from .numeric_v2_runtime import MetricChangeV2, NumericV2Engine, ScriptSessionV2
 
 
@@ -50,24 +51,27 @@ def _band_label(definition: Mapping[str, Any], value: int) -> str:
     return ""
 
 
+def _context_content(performance: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            **{"type": block["type"]},
+            **({"speaker_id": "active_catgirl"} if block["type"] == "dialogue" else {}),
+            "text": truncate_prompt_value(
+                block["text"],
+                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
+            ),
+        }
+        for block in performance_content_blocks(performance)
+    ][:16]
+
+
 def _recent_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
     # 玩家已经看到的开场是判定纠错真伪的首要证据，必须参与后续数值判断。
     opening = session.opening_performance
     result = [{
         "phase": "opening",
         "player_input": "",
-        "narration": truncate_prompt_value(
-            str(opening.get("narration") or ""),
-            max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
-        ),
-        "dialogue": [
-            truncate_prompt_value(
-                str(line.get("text") or ""),
-                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
-            )
-            for line in opening.get("dialogue") or []
-            if isinstance(line, Mapping)
-        ][:8],
+        "content": _context_content(opening),
     }]
     for record in session.performance_history[-4:]:
         result.append({
@@ -76,18 +80,7 @@ def _recent_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
                 str(record.get("input_text") or ""),
                 max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
             ),
-            "narration": truncate_prompt_value(
-                str(record.get("narration") or ""),
-                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
-            ),
-            "dialogue": [
-                truncate_prompt_value(
-                    str(line.get("text") or ""),
-                    max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
-                )
-                for line in record.get("dialogue") or []
-                if isinstance(line, Mapping)
-            ][:8],
+            "content": _context_content(record),
         })
     return result
 
@@ -102,12 +95,7 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
         return [{
             "phase": "opening",
             "player_input": "",
-            "narration": str(opening.get("narration") or "")[:500],
-            "dialogue": [
-                str(line.get("text") or "")[:300]
-                for line in opening.get("dialogue") or []
-                if isinstance(line, Mapping)
-            ],
+            "content": _context_content(opening),
         }]
 
     current_node_id = str(session.current_node_id)
@@ -132,12 +120,7 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
         result.append({
             "phase": "opening",
             "player_input": "",
-            "narration": str(opening.get("narration") or "")[:500],
-            "dialogue": [
-                str(line.get("text") or "")[:300]
-                for line in opening.get("dialogue") or []
-                if isinstance(line, Mapping)
-            ],
+            "content": _context_content(opening),
         })
     for record in reversed(visit_records):
         result.append({
@@ -146,18 +129,7 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
                 str(record.get("input_text") or ""),
                 max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
             ),
-            "narration": truncate_prompt_value(
-                str(record.get("narration") or ""),
-                max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
-            ),
-            "dialogue": [
-                truncate_prompt_value(
-                    str(line.get("text") or ""),
-                    max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
-                )
-                for line in record.get("dialogue") or []
-                if isinstance(line, Mapping)
-            ][:8],
+            "content": _context_content(record),
         })
     return result[-8:]
 

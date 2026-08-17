@@ -31,17 +31,12 @@ These documents preserve design intent and implementation context. They are grou
 
 ## N.E.K.O 小剧场当前记录
 
-当前实现基线依次为：统一开发方向 → Numeric v2 运行时合同 → 当前架构 → 双模式设计。代码和测试高于历史记录。
+N.E.K.O 仓库只维护以下两份小剧场开发文档。代码和测试高于文档；架构合同与真实表现不一致时，先把证据和解决方向记录到实测问题文档。
 
-- [统一开发方向](./neko-theater-development-direction)
-- [Numeric v2 生成、演绎架构与质量闭环](./neko-theater-numeric-v2-architecture-evaluation-loop)
-- [小剧场 Numeric v2 运行时开发文档](./neko-theater-numeric-v2-runtime-development)
-- [小剧场当前架构](./neko-theater-architecture)
-- [双模式设计与实施方案](./neko-theater-dual-mode)
-- [自由模式 Free Seed 开发文档](./neko-theater-free-seed-development)
-- [阶段 0 瘦身盘点](./neko-theater-phase0-slimming-inventory)
+- [小剧场架构开发文档](./neko-theater-architecture)
+- [小剧场实测问题描述以及解决方案](./neko-theater-issues-and-solutions)
 
-Numeric v2 的 InkAI 生成器方案位于 `InkAI-/docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md`。
+作者侧 Numeric v2 生成器的专项 DTO 与页面设计由 `NEKO_Numeric_drama` 仓库维护，不能覆盖 N.E.K.O Runtime 的权限和持久化合同。
 
 ## Product-flow and interaction records
 
