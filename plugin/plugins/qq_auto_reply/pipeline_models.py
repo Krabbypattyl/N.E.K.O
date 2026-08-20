@@ -102,7 +102,7 @@ class QQReplyRequest:
     # 群成员权限的接收边界快照。handler 排队/生成期间的升降权不得
     # 追溯改变已经说出的消息是否具有 owner trust 信号权限。
     group_speaker_permission_level_at_receipt: str | None = None
-    # 接收边界的通道观测快照（"napcat" / "open"）。纯诊断：只用于碰撞探测
+    # 接收边界的通道观测快照（"onebot" / "open"）。纯诊断：只用于碰撞探测
     # 与运维诊断，绝不参与任何键、账本分区、bind 判据或权限判定。
     speaker_channel_at_receipt: str | None = None
     # 接收边界的私聊 participant 记忆政策快照（语义同上，作用于非 admin
@@ -196,10 +196,6 @@ class QQReplyContext:
     # core memory 段是否含 participant 域：member 授权在生成前被撤销时
     # 该段（及混合域召回）要一并撤除。
     used_member_subject: bool = False
-    # 本轮召回通道：True=挂 recall_memory 工具、模型自主决定何时查（此时
-    # 构建期不做同步召回，recalled_memory_text 恒空）；False=线路不支持
-    # tool call（免费代理会静默丢 tools），回落到宿主生成前同步召回。
-    recall_via_tool: bool = False
     # 本轮上下文的唯一标识：投递钩子的幂等键。绝不能用 id(context)——
     # CPython 会把刚释放的同尺寸对象原样发回，下一轮的 context 常常拿到
     # 同一地址，幂等扫描会把新一轮的行误判成"已经补过了"。

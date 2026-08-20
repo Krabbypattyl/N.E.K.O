@@ -28,12 +28,31 @@ from plugin.sdk.shared.core.push_message_schema import (
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
-_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
-def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
+def validate_plugin_dir(
+    plugin_dir: Path,
+    *,
+    strict: bool = False,
+    require_matching_directory_name: bool = False,
+) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
+    config_example_path = plugin_dir / "config.example.toml"
+    config_example: dict[str, object] | None = None
+    if config_example_path.is_file():
+        try:
+            config_example = load_toml(config_example_path)
+        except Exception as exc:
+            issues.append(
+                (
+                    "error",
+                    "config.example.toml could not be read / "
+                    "无法读取 config.example.toml / "
+                    f"config.example.toml を読み取れません: {exc}",
+                )
+            )
+            return issues
     try:
         source = load_plugin_source(plugin_dir)
     except Exception:
@@ -50,9 +69,27 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
-
-    if source.plugin_id != plugin_dir.name and plugin_dir.name != _market_repo_name(source.plugin_id):
-        issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
+    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+        issues.append(
+            (
+                "warning",
+                f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}' / "
+                f"plugin.id '{source.plugin_id}' 与目录名 '{plugin_dir.name}' 不一致 / "
+                f"plugin.id '{source.plugin_id}' がディレクトリ名 '{plugin_dir.name}' と一致しません",
+            )
+        )
+    if config_example is not None:
+        _check_config_example_schema(config_example, issues)
+    elif "plugin_runtime" in source.plugin_toml or source.plugin_id in source.plugin_toml:
+        issues.append(
+            (
+                "warning",
+                "legacy runtime configuration in plugin.toml is supported; "
+                "move mutable defaults to config.example.toml / "
+                "仍兼容 plugin.toml 中的旧运行配置；请将可变默认值移到 config.example.toml / "
+                "plugin.toml の従来の実行設定は互換対応です。可変の既定値を config.example.toml に移してください",
+            )
+        )
 
     entry = source.entry_point
     if not entry:
@@ -82,8 +119,20 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     return issues
 
 
-def _market_repo_name(plugin_id: str) -> str:
-    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
+def _check_config_example_schema(
+    config: dict[str, object],
+    issues: list[tuple[str, str]],
+) -> None:
+    if "plugin" in config:
+        issues.append(
+            (
+                "error",
+                "config.example.toml must not contain [plugin] / "
+                "config.example.toml 不能包含 [plugin] / "
+                "config.example.toml に [plugin] を含めることはできません",
+            )
+        )
+    _check_runtime_table(config.get("plugin_runtime"), issues)
 
 
 def _check_plugin_toml_schema(

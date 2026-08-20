@@ -2128,7 +2128,7 @@ class UniversalTutorialManager {
             window.LanLan1.live2dModel = loadedModel;
             window.LanLan1.currentModel = loadedModel;
         }
-        if (typeof window.showLive2d === 'function') {
+        if (!deferRevealPrepared && typeof window.showLive2d === 'function') {
             window.showLive2d();
         }
         if (window.live2dManager && typeof window.live2dManager.resumeRendering === 'function') {
@@ -2485,6 +2485,7 @@ class UniversalTutorialManager {
         if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
             return;
         }
+        const preserveAvatarMotionOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         if (document.body && document.body.classList) {
             document.body.classList.remove('yui-guide-return-petal-fade');
         }
@@ -2512,8 +2513,10 @@ class UniversalTutorialManager {
             ) {
                 element.style.removeProperty('display');
             }
-            element.style.removeProperty('opacity');
-            element.style.removeProperty('transition');
+            if (!preserveAvatarMotionOpacity || (id !== 'live2d-container' && id !== 'live2d-canvas')) {
+                element.style.removeProperty('opacity');
+                element.style.removeProperty('transition');
+            }
             element.style.removeProperty('visibility');
             element.style.removeProperty('pointer-events');
         });
@@ -4387,6 +4390,52 @@ function dispatchStartupGreetingReleaseWithoutManager(reason, detail = {}) {
     return releaseDetail;
 }
 
+function rearmStartupGreetingWithoutManager(reason, detail = {}) {
+    window.isNekoHomeTutorialPending = true;
+    const rearmDetail = Object.assign({
+        released: false,
+        page: 'unknown',
+        reason: reason || 'tutorial-manager-initializing',
+        timestamp: Date.now()
+    }, detail || {});
+    try {
+        window.__NEKO_TUTORIAL_STARTUP_SETTLED__ = false;
+        delete window.__NEKO_STARTUP_GREETING_RELEASED__;
+        window.dispatchEvent(new CustomEvent(STARTUP_GREETING_RELEASE_EVENT, {
+            detail: rearmDetail
+        }));
+    } catch (error) {
+        console.warn('[Tutorial] 无管理器启动问候重新上锁失败:', error);
+    }
+    return rearmDetail;
+}
+
+function waitForActiveAutostartPromptClosed() {
+    const selector = '.modal-overlay-autostart-retention';
+    if (!document.querySelector(selector)) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+        let done = false;
+        const finish = function () {
+            if (done) return;
+            done = true;
+            window.removeEventListener('neko:decision-prompt-closed', onPromptClosed);
+            resolve();
+        };
+        const onPromptClosed = function (event) {
+            const detail = event && event.detail ? event.detail : {};
+            if (detail.skin === 'autostart-retention') {
+                finish();
+            }
+        };
+        window.addEventListener('neko:decision-prompt-closed', onPromptClosed);
+        if (!document.querySelector(selector)) {
+            finish();
+        }
+    });
+}
+
 async function destroyUniversalTutorialManagerInstance(reason = 'destroy') {
     const manager = window.universalTutorialManager;
     if (!manager) return;
@@ -4412,7 +4461,12 @@ function bindUniversalTutorialManagerResizeRetry() {
         window.removeEventListener('resize', retryUniversalTutorialManagerInit);
         window.__universalTutorialManagerResizeRetryBound = false;
         if (window.__universalTutorialManagerInitialized) return;
-        initUniversalTutorialManager().then(function (initialized) {
+        rearmStartupGreetingWithoutManager('tutorial-manager-resize-init', {
+            viewportWidth: window.innerWidth
+        });
+        waitForActiveAutostartPromptClosed().then(function () {
+            return initUniversalTutorialManager();
+        }).then(function (initialized) {
             if (initialized !== false) {
                 window.__universalTutorialManagerInitialized = true;
             }

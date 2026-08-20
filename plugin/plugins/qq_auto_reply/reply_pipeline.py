@@ -13,10 +13,6 @@ class QQReplyPipelineRunner:
         self.plugin = plugin
 
     async def run(self, request: QQReplyRequest) -> QQReplyOutcome:
-        # 群聊消息计数器（用于表情包间隔控制）
-        if request.is_group:
-            gid = str(request.group_id or "")
-            self.plugin._sticker_since[gid] = (self.plugin._sticker_since.get(gid) or 0) + 1
         decision = self._run_decision(request)
         decision_trace = QQPipelineStageTrace(
             stage="decision",
@@ -239,9 +235,8 @@ class QQReplyPipelineRunner:
         if url:
             ark_obj["ark"]["kv"].append({"key": "#URL#", "value": url})
 
-        from .qq_open_plat import QQOpenPlatformConnection
-        if not isinstance(self.plugin.qq_client, QQOpenPlatformConnection):
-            # NapCat / OneBot 不支持 Ark 卡片，降级为文本发送
+        if not getattr(self.plugin.qq_client, "supports_ark_cards", False):
+            # OneBot 后端不支持 Ark 卡片，降级为文本发送
             fallback = body_text or title or desc or ""
             if fallback:
                 await self.plugin._deliver_group_reply(
