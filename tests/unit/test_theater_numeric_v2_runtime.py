@@ -161,6 +161,58 @@ async def test_numeric_v2_route_change_requires_visible_transition_before_commit
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_route_change_accepts_empty_deduplicated_bridge(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_empty_transition_bridge",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    first = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("empty_bridge_1", 0, "我先听你说。"),
+        (),
+        scene_complete=False,
+    )
+    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
+    second = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("empty_bridge_2", 1, "我答应把话说完。"),
+        (),
+        scene_complete=True,
+    )
+    finalized = runtime.engine.finalize_transition_performance(
+        second,
+        {
+            "suggested_inputs": [],
+            "segments": [
+                {
+                    "phase": "source_response",
+                    "performance": "（收好旧信）那就明天再说。",
+                },
+                {
+                    "phase": "transition_bridge",
+                    "scene_narration": "",
+                },
+                {
+                    "phase": "target_opening",
+                    "performance": "（推开店门）早上好。",
+                },
+            ],
+        },
+        target_opening="第二天清晨，花店重新开门。",
+    )
+
+    committed = await runtime.commit_turn(second, finalized)
+    restored = await runtime.restore_session(committed.session.session_id)
+
+    assert restored is not None
+    transition = restored.session.performance_history[-1]
+    assert transition["segments"][1]["scene_narration"] == ""
+    assert transition["segments"][2]["scene_narration"] == "第二天清晨，花店重新开门。"
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_restore_accepts_legacy_route_performance_without_transition_segments(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(

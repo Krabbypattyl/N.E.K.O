@@ -507,6 +507,30 @@ class TimeIndexedMemory:
             self.store_conversation, event_id, messages, lanlan_name, timestamp
         )
 
+    def has_conversation_event(self, event_id: str, lanlan_name: str) -> bool:
+        """按稳定事件 ID 判断整批对话是否已经写入，供跨进程请求重试去重。"""  # noqa: DOCSTRING_CJK
+
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return False
+        except MaintenanceModeError:
+            raise
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        with self.engines[lanlan_name].connect() as conn:
+            return conn.execute(
+                text(f"SELECT 1 FROM {table_name} WHERE session_id = :session_id LIMIT 1"),
+                {"session_id": event_id},
+            ).fetchone() is not None
+
+    async def ahas_conversation_event(self, event_id: str, lanlan_name: str) -> bool:
+        """异步检查稳定事件 ID，避免在 memory_server 事件循环执行 SQLite。"""  # noqa: DOCSTRING_CJK
+
+        return await asyncio.to_thread(
+            self.has_conversation_event,
+            event_id,
+            lanlan_name,
+        )
+
     def _validate_table_name(self, table_name: str) -> str:
         """Validate that a table name is legal, guarding against SQL injection, meow~"""
         allowed_tables = {TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME}

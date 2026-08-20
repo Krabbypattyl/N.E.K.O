@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta
@@ -52,7 +53,7 @@ from utils.language_utils import (
     language_context,
     normalize_language_code,
 )
-from utils.llm_client import convert_to_messages
+from utils.llm_client import convert_to_messages, messages_to_dict
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
@@ -69,10 +70,34 @@ class HistoryRequest(BaseModel):
     input_history: str
     language: str | None = None
     render_language: str | None = None
+    idempotency_key: str | None = None
 
 
 class PromptLocalePreferenceRequest(BaseModel):
     language: str
+
+
+def _cache_event_id(lanlan_name: str, idempotency_key: str) -> str:
+    """把外部幂等键投影成固定长度的 time-indexed 事件 ID。"""  # noqa: DOCSTRING_CJK
+
+    digest = hashlib.sha256(
+        f"{lanlan_name}\x1f{idempotency_key}".encode("utf-8")
+    ).hexdigest()
+    return f"cache-idempotent-{digest}"
+
+
+def _contains_message_batch(history: list, batch: list) -> bool:
+    """检查完整消息批次是否已经连续出现，用于恢复 recent 写成但索引未提交的窗口。"""  # noqa: DOCSTRING_CJK
+
+    serialized_history = messages_to_dict(history)
+    serialized_batch = messages_to_dict(batch)
+    batch_size = len(serialized_batch)
+    if not batch_size or batch_size > len(serialized_history):
+        return False
+    return any(
+        serialized_history[index:index + batch_size] == serialized_batch
+        for index in range(len(serialized_history) - batch_size + 1)
+    )
 
 
 def _activate_request_language(language: str | None) -> str:
@@ -765,15 +790,57 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             input_history = convert_to_messages(json.loads(request.input_history))
             if not input_history:
                 return {"status": "cached", "count": 0}
+            idempotency_key = str(request.idempotency_key or "").strip()
+            if len(idempotency_key) > 160:
+                return {"status": "error", "message": "idempotency_key_too_long"}
+            stable_event_id = (
+                _cache_event_id(lanlan_name, idempotency_key)
+                if idempotency_key
+                else ""
+            )
+            if stable_event_id and await runtime.time_manager.ahas_conversation_event(
+                stable_event_id,
+                lanlan_name,
+            ):
+                return {"status": "already_cached", "count": len(input_history)}
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
-            uid = str(uuid4())
+            uid = stable_event_id or str(uuid4())
+            duplicate_request = False
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-                # store_conversation 必须在 lock 内、与 update_history 串行：和
-                # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+                # 锁内再次检查才能收住两个相同请求同时通过首轮检查的竞争窗口。
+                if stable_event_id and await runtime.time_manager.ahas_conversation_event(
+                    stable_event_id,
+                    lanlan_name,
+                ):
+                    duplicate_request = True
+                else:
+                    if stable_event_id:
+                        current_history = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name
+                        )
+                        # 如果上次在 recent 写成后中断，只补 time-indexed，不再追加正文。
+                        if not _contains_message_batch(current_history, input_history):
+                            await runtime.recent_history_manager.update_history(
+                                input_history,
+                                lanlan_name,
+                                compress=False,
+                            )
+                    else:
+                        await runtime.recent_history_manager.update_history(
+                            input_history,
+                            lanlan_name,
+                            compress=False,
+                        )
+                    # 稳定 event_id 是本批公开记忆的提交标记；写成后重试直接短路。
+                    await runtime.time_manager.astore_conversation(
+                        uid,
+                        input_history,
+                        lanlan_name,
+                    )
+            if duplicate_request:
+                return {"status": "already_cached", "count": len(input_history)}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(

@@ -6,80 +6,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="theater.title">小剧场 - Project N.E.K.O.</title>
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/css/theater.css?v={{ static_asset_version }}">
-    <link rel="stylesheet" href="/static/css/theater_numeric_v2.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/theater_selector.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
-    <script src="/static/js/theater.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
-    <main class="theater-shell numeric-theater-shell free-theater-shell" data-theater-app>
+    <main class="theater-selector-shell" data-theater-selector-app>
         <header class="theater-title-bar page-title-bar">
             <div class="theater-title-copy">
                 <h2 data-i18n="theater.title">小剧场</h2>
-                <span class="theater-mode-badge" id="theater-mode-badge" data-i18n="theater.freeMode">自由模式</span>
-                <div class="theater-status" id="theater-status" data-i18n="theater.ready" aria-live="polite">准备中</div>
+                <span class="theater-mode-badge" data-i18n="theater.scriptMode">剧本模式</span>
+                <div class="theater-status" id="theater-selector-status" role="status" aria-live="polite" data-i18n="theater.loading">正在准备舞台...</div>
             </div>
             <div class="neko-window-controls theater-window-controls">
-                <a class="theater-mode-link" href="/theater-home" data-i18n="theater.modeHome">模式选择</a>
                 <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化"><span class="neko-window-minimize-icon"></span></button>
                 <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化"><span class="neko-window-maximize-icon"></span></button>
                 <button type="button" class="neko-window-control-btn theater-close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"><span class="theater-close-icon" aria-hidden="true"></span></button>
             </div>
         </header>
-
-        <section class="theater-stage numeric-theater-stage" id="theater-stage" aria-live="polite">
-            <!-- 背景视频只提供舞台氛围，不参与自由模式状态或正文生成。 -->
-            <video class="theater-galaxy-video" id="theater-galaxy-video" src="/static/assets/theater/galaxy-flow-down-right-8s.mp4?v={{ static_asset_version }}" autoplay muted loop playsinline preload="auto" disablepictureinpicture aria-hidden="true" tabindex="-1"></video>
-            <div class="numeric-theater-stage-content">
-                <section class="theater-story-intro numeric-theater-intro" id="theater-story-intro" hidden aria-labelledby="theater-story-intro-title">
-                    <div class="theater-story-intro-heading">
-                        <p data-i18n="theater.storyIntroKicker">背景介绍</p>
-                        <h1 id="theater-story-intro-title"></h1>
+        <div class="theater-selector-layout">
+            <aside class="theater-story-library" aria-labelledby="theater-library-title">
+                <div class="theater-library-heading">
+                    <div><p data-i18n="theater.selectorKicker">STORY LIBRARY</p><h1 id="theater-library-title" data-i18n="theater.selectorTitle">选择一个剧本</h1></div>
+                    <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                    <input id="theater-import-input" type="file" accept="application/json,.json" hidden>
+                </div>
+                <div class="theater-story-list" id="theater-story-list" role="listbox" aria-label="选择小剧场故事" data-i18n-aria="theater.storyListAria"></div>
+                <div class="theater-empty-state" id="theater-empty-state" hidden>
+                    <strong data-i18n="theater.noStories">暂无可用剧本</strong>
+                    <p data-i18n="theater.noStoriesHint">导入一个 Numeric v2 剧本后即可开始。</p>
+                    <button type="button" class="theater-primary" id="theater-empty-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                </div>
+            </aside>
+            <section class="theater-story-detail" aria-labelledby="theater-detail-title">
+                <div class="theater-detail-placeholder" id="theater-detail-placeholder"><p data-i18n="theater.selectStoryHint">从左侧选择剧本，查看前情与角色身份。</p></div>
+                <div class="theater-detail-content" id="theater-detail-content" hidden>
+                    <div class="theater-detail-heading"><div><p id="theater-detail-meta"></p><h1 id="theater-detail-title"></h1></div><span class="theater-session-badge" id="theater-session-badge"></span></div>
+                    <div class="theater-detail-actions" aria-label="剧本操作" data-i18n-aria="theater.storyActionsAria">
+                        <p class="theater-session-hint" id="theater-session-hint" role="status" aria-live="polite"></p>
+                        <button type="button" class="theater-primary" id="theater-start-btn" data-i18n="theater.start">开始</button>
+                        <button type="button" class="theater-primary" id="theater-continue-btn" data-i18n="theater.continueSession">继续</button>
+                        <button type="button" class="theater-secondary theater-danger" id="theater-delete-btn" data-i18n="theater.deleteStory">删除剧本</button>
                     </div>
-                    <p class="theater-story-intro-background" id="theater-story-intro-background"></p>
-                    <dl class="theater-story-intro-roles">
-                        <div id="theater-player-role-row" hidden><dt data-i18n="theater.playerRoleLabel">你的身份</dt><dd id="theater-player-role"></dd></div>
-                        <div id="theater-catgirl-role-row" hidden><dt data-i18n="theater.catgirlRoleLabel">猫娘身份</dt><dd id="theater-catgirl-role"></dd></div>
-                        <div id="theater-story-goal-row" hidden><dt data-i18n="theater.storyGoalLabel">本剧目标</dt><dd id="theater-story-goal"></dd></div>
-                    </dl>
-                </section>
-            </div>
-            <div class="theater-stage-footer">
-                <div class="theater-stage-controls">
-                    <button type="button" class="theater-stage-toggle numeric-theater-stage-toggle" id="theater-stage-toggle" aria-controls="theater-story-intro theater-status" aria-expanded="true" data-i18n-title="theater.collapseStage" title="折叠舞台"><span class="theater-stage-toggle-icon" aria-hidden="true">←</span><span class="numeric-theater-stage-toggle-label" id="theater-stage-toggle-label" data-i18n="theater.collapseStage">折叠舞台</span></button>
+                    <div class="theater-inline-feedback" id="theater-inline-feedback" role="status" aria-live="polite" hidden></div>
+                    <article class="theater-intro-card theater-intro-background"><h2 data-i18n="theater.storyIntroKicker">故事前情</h2><p id="theater-detail-background"></p></article>
+                    <div class="theater-role-grid">
+                        <article class="theater-intro-card"><h2 data-i18n="theater.playerRoleLabel">你的剧情身份</h2><p id="theater-detail-player"></p></article>
+                        <article class="theater-intro-card"><h2 data-i18n="theater.catgirlRoleLabel">猫娘剧情身份</h2><p id="theater-detail-catgirl"></p></article>
+                    </div>
                 </div>
-            </div>
-        </section>
-
-        <section class="theater-console numeric-theater-console" aria-label="Theater controls">
-            <div class="theater-toolbar">
-                <select class="theater-story-select" id="theater-story-select" data-i18n-aria="theater.storySelect" aria-label="选择背景"></select>
-                <div class="numeric-theater-toolbar-actions">
-                    <!-- 当前暂时兼容 RP-Hub 导出的 JSON 结构；最终角色卡格式确定后只替换适配入口。 -->
-                    <button type="button" class="theater-secondary" id="theater-role-card-btn" data-i18n="theater.roleCardImport" data-i18n-aria="theater.roleCardImportAria" aria-label="导入 RP-Hub 角色卡 JSON" hidden>导入 RP-Hub 角色卡</button>
-                    <input type="file" id="theater-role-card-file" accept=".json,application/json" hidden aria-hidden="true">
-                    <span class="theater-role-card-name" id="theater-role-card-name" hidden aria-live="polite"></span>
-                    <button type="button" class="theater-primary" id="theater-start-btn" data-i18n="theater.start">开始自由演绎</button>
-                    <button type="button" class="theater-secondary" id="theater-end-btn" data-i18n="theater.end" disabled>结束</button>
-                </div>
-            </div>
-
-            <div class="theater-workspace numeric-theater-workspace">
-                <div class="theater-performance-column">
-                    <div class="theater-log" id="theater-log"></div>
-                    <div class="theater-playback-controls" id="theater-playback-controls" hidden><button type="button" class="theater-playback-skip" id="theater-skip-playback-btn" aria-controls="theater-log" data-i18n="theater.skipPlayback">显示全文</button></div>
-                    <aside class="theater-ending-panel" id="theater-ending-panel" hidden><strong id="theater-ending-title" data-i18n="theater.endingTitle">落幕状态</strong><p id="theater-ending-text"></p></aside>
-                </div>
-            </div>
-
-            <form class="theater-input-row" id="theater-input-form">
-                <input id="theater-input" type="text" data-i18n-placeholder="theater.inputPlaceholder" data-i18n-aria="theater.inputPlaceholder" placeholder="输入你想说的话，或用 *...* 描述动作" aria-label="输入动作和对白" autocomplete="off" disabled>
-                <button type="submit" id="theater-send-btn" data-i18n="theater.send" disabled>发送</button>
-            </form>
-        </section>
+            </section>
+        </div>
     </main>
+    <div class="theater-modal-backdrop" id="theater-modal" hidden>
+        <section class="theater-modal" role="dialog" aria-modal="true" aria-labelledby="theater-modal-title" aria-describedby="theater-modal-body" tabindex="-1">
+            <h2 id="theater-modal-title"></h2><p id="theater-modal-body"></p><div class="theater-modal-error" id="theater-modal-error" role="alert" hidden></div>
+            <div class="theater-modal-actions"><button type="button" class="theater-secondary" id="theater-modal-cancel"></button><button type="button" class="theater-primary" id="theater-modal-confirm"></button></div>
+        </section>
+    </div>
 </body>
 </html>

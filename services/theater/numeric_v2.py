@@ -24,6 +24,14 @@ _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
 _IDENTITY_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
+_PLAYER_OWNED_SUBJECT_RE = re.compile(
+    r"(?:^|[，,。！？；;：:])\s*(?:为了[^，,；;]{0,20}[，,]\s*)?"
+    r"(?:在|由|当|随着|经过|根据)?\s*(?:你|您|玩家|男主|哥哥|他|你们|双方|两人|共同)(?!的)"
+)
+_FORCED_PLAYER_ACTION_RE = re.compile(
+    r"(?:女主|猫娘|她).{0,20}(?:强迫|逼迫|迫使|强制|命令).{0,20}"
+    r"(?:你|您|玩家|男主|哥哥|他)"
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,14 @@ def _text(value: Any) -> bool:
 
 def _identity_source_name(value: Any) -> str:
     return _IDENTITY_SEPARATOR_RE.split(str(value or "").strip(), maxsplit=1)[0].strip()
+
+
+def _first_sentence(value: Any) -> str:
+    """只检查会被 Runtime 确定性交付的节点开场句。"""  # noqa: DOCSTRING_CJK
+
+    text = str(value or "").strip()
+    endings = [index for mark in "。！？" if (index := text.find(mark)) >= 0]
+    return text[:min(endings) + 1] if endings else text
 
 
 def _condition_branches(conditions: Mapping[str, Any]) -> list[list[Mapping[str, Any]]]:
@@ -349,8 +365,28 @@ class NumericV2Compiler:
     @staticmethod
     def _validate_story_beat(c: _Collector, value: Any, path: str) -> None:
         beat = c.obj(value, path)
-        c.require_text(beat.get("summary"), f"{path}.summary")
-        c.require_text_list(beat.get("must_happen"), f"{path}.must_happen", allow_empty=False)
+        summary = c.require_text(beat.get("summary"), f"{path}.summary")
+        if summary and _PLAYER_OWNED_SUBJECT_RE.search(_first_sentence(summary)):
+            c.add(
+                "player_owned_opening_forbidden",
+                f"{path}.summary",
+                "节点开场只能建立环境或猫娘可见行动，不得替玩家执行行动或决定。",
+            )
+        must_happen = c.require_text_list(
+            beat.get("must_happen"),
+            f"{path}.must_happen",
+            allow_empty=False,
+        )
+        for index, item in enumerate(must_happen):
+            if (
+                _PLAYER_OWNED_SUBJECT_RE.search(item)
+                or _FORCED_PLAYER_ACTION_RE.search(item)
+            ):
+                c.add(
+                    "player_owned_goal_forbidden",
+                    f"{path}.must_happen[{index}]",
+                    "幕目标必须由猫娘或环境主动呈现，不得预先规定玩家行动。",
+                )
         c.require_text_list(beat.get("must_not_happen"), f"{path}.must_not_happen", allow_empty=True)
         c.require_text(beat.get("catgirl_situation"), f"{path}.catgirl_situation")
         c.require_text(beat.get("transition_goal"), f"{path}.transition_goal")
@@ -521,7 +557,21 @@ class NumericV2Compiler:
     def _validate_transition(c: _Collector, value: Any, path: str) -> None:
         contract = c.obj(value, path)
         c.require_text(contract.get("reason"), f"{path}.reason")
-        c.require_text_list(contract.get("must_deliver"), f"{path}.must_deliver", allow_empty=False)
+        must_deliver = c.require_text_list(
+            contract.get("must_deliver"),
+            f"{path}.must_deliver",
+            allow_empty=False,
+        )
+        for index, item in enumerate(must_deliver):
+            if (
+                _PLAYER_OWNED_SUBJECT_RE.search(item)
+                or _FORCED_PLAYER_ACTION_RE.search(item)
+            ):
+                c.add(
+                    "player_owned_transition_forbidden",
+                    f"{path}.must_deliver[{index}]",
+                    "过渡合同不得把玩家尚未执行的行动写成必须交付的事实。",
+                )
         c.require_text_list(contract.get("must_preserve"), f"{path}.must_preserve", allow_empty=True)
         c.require_text(contract.get("tone"), f"{path}.tone")
 

@@ -12,7 +12,11 @@ from typing import Any, Mapping
 from utils.tokenize import truncate_to_tokens
 
 from .numeric_v2 import CompiledNumericV2Package, NumericV2Compiler
-from .numeric_v2_performance import valid_ordered_content
+from .numeric_v2_performance import (
+    valid_mixed_performance,
+    valid_ordered_content,
+    valid_scene_narration,
+)
 from .numeric_v2_store import (
     NumericV2SessionStore,
     NumericV2StoredSession,
@@ -333,6 +337,49 @@ class NumericV2Engine:
         }
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
 
+    def finalize_transition_performance(
+        self,
+        outcome: TurnOutcomeV2,
+        performance: Mapping[str, Any],
+        *,
+        target_opening: str,
+    ) -> dict[str, Any]:
+        """由 Runtime 注入目标开场原文，模型只负责三段换场中的演绎内容。"""  # noqa: DOCSTRING_CJK
+
+        target_node_id = str(outcome.ledger_event["to_node_id"])
+        if outcome.ledger_event["from_node_id"] == target_node_id:
+            return deepcopy(dict(performance))
+        segments = performance.get("segments")
+        if (
+            not valid_scene_narration({"scene_narration": target_opening})
+            or not isinstance(segments, list)
+            or len(segments) != 3
+            or not all(isinstance(item, Mapping) for item in segments)
+            or [item.get("phase") for item in segments]
+            != ["source_response", "transition_bridge", "target_opening"]
+            or set(segments[0]) != {"phase", "performance"}
+            or set(segments[1]) != {"phase", "scene_narration"}
+            or set(segments[2]) != {"phase", "performance"}
+            or not valid_mixed_performance(segments[0], require_dialogue=True)
+            # 去重后没有独立过渡事实时允许空桥段，前端直接展示 Runtime 目标开场。
+            or not valid_scene_narration(segments[1], allow_empty=True)
+            or not valid_mixed_performance(segments[2], require_dialogue=True)
+        ):
+            raise NumericV2RuntimeError("numeric_transition_performance_invalid")
+        result = deepcopy(dict(performance))
+        result["segments"] = [
+            deepcopy(dict(segments[0])),
+            deepcopy(dict(segments[1])),
+            {
+                "phase": "target_opening",
+                "scene_narration": target_opening.strip(),
+                "performance": str(segments[2]["performance"]).strip(),
+            },
+        ]
+        result["transition_delivered"] = True
+        result["visible_node_id"] = target_node_id
+        return result
+
     def _select_route(self, node: Mapping[str, Any], metrics: Mapping[str, int]) -> tuple[dict[str, Any] | None, str]:
         eligible = [route for route in node.get("route_gates", []) if self._conditions_match(route["conditions"], metrics)]
         if not eligible:
@@ -508,17 +555,55 @@ class NumericV2Runtime:
         route_changed = outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]
         if route_changed:
             segments = performance.get("segments")
+            new_contract = (
+                isinstance(segments, list)
+                and bool(segments)
+                and isinstance(segments[0], Mapping)
+                and "performance" in segments[0]
+            )
             if (
                 performance.get("transition_delivered") is not True
                 or performance.get("visible_node_id") != outcome.ledger_event["to_node_id"]
                 or not isinstance(segments, list)
                 or [item.get("phase") for item in segments if isinstance(item, Mapping)]
                 != ["source_response", "transition_bridge", "target_opening"]
-                or not valid_ordered_content(segments[0], require_dialogue=True)
-                or not valid_ordered_content(segments[1], require_narration=True)
-                or not valid_ordered_content(segments[2], require_narration=True)
+                or (
+                    new_contract
+                    and (
+                        set(segments[0]) != {"phase", "performance"}
+                        or set(segments[1]) != {"phase", "scene_narration"}
+                        or set(segments[2]) != {"phase", "scene_narration", "performance"}
+                        or not valid_mixed_performance(segments[0], require_dialogue=True)
+                        or not valid_scene_narration(segments[1], allow_empty=True)
+                        or not valid_scene_narration(segments[2])
+                        or not valid_mixed_performance(segments[2], require_dialogue=True)
+                    )
+                )
+                or (
+                    not new_contract
+                    and (
+                        not valid_ordered_content(segments[0], require_dialogue=True)
+                        or not valid_ordered_content(segments[1], require_narration=True)
+                        or not valid_ordered_content(segments[2], require_narration=True)
+                    )
+                )
             ):
                 raise NumericV2RuntimeError("numeric_transition_performance_invalid")
+        elif "performance" in performance and not valid_mixed_performance(
+            performance,
+            require_narration=True,
+            require_dialogue=True,
+        ):
+            raise NumericV2RuntimeError("numeric_performance_invalid")
+        new_contract = "performance" in performance or (
+            route_changed
+            and isinstance(performance.get("segments"), list)
+            and any(
+                isinstance(segment, Mapping)
+                and ("performance" in segment or "scene_narration" in segment)
+                for segment in performance["segments"]
+            )
+        )
         record = {
             "schema": PERFORMANCE_RECORD_SCHEMA,
             "client_turn_id": outcome.ledger_event["client_turn_id"],
@@ -527,8 +612,12 @@ class NumericV2Runtime:
             "from_node_id": outcome.ledger_event["from_node_id"],
             "to_node_id": outcome.ledger_event["to_node_id"],
             **deepcopy(dict(performance)),
-            # 旧记录没有该标记；Store 只对新合同记录强制换场三段，保证历史 Session 可恢复。
-            "performance_contract_version": 2 if "content" in performance or route_changed else 1,
+            # 旧记录没有该标记；版本 3 才强制混合正文合同，保证历史 Session 可恢复。
+            "performance_contract_version": (
+                3
+                if new_contract
+                else (2 if "content" in performance or route_changed else 1)
+            ),
         }
         session = replace(
             outcome.session,
@@ -538,6 +627,9 @@ class NumericV2Runtime:
 
     async def end_session(self, session_id: str, *, base_revision: int, reason: str) -> NumericV2StoredSession:
         return await self.store.end_session(session_id, base_revision=base_revision, reason=reason)
+
+    async def resume_session(self, session_id: str, *, base_revision: int) -> NumericV2StoredSession:
+        return await self.store.resume_session(session_id, base_revision=base_revision)
 
 
 __all__ = [

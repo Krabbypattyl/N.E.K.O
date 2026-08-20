@@ -85,6 +85,34 @@ const galgameOptionSchema = z.object({
   text: z.string().min(1),
 });
 
+const theaterHistoryEntrySchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(['player_action', 'narration', 'dialogue', 'ending']),
+  text: z.string(),
+  author: z.string().optional(),
+  displayKind: z.enum(['action', 'scene']).optional(),
+  status: z.enum(['streaming', 'sent']).optional(),
+});
+
+const theaterPresentationSchema = z.object({
+  active: z.boolean(),
+  phase: z.enum(['inactive', 'loading', 'performing', 'awaiting_player', 'evaluating', 'ending', 'ended', 'returning_selector']),
+  storyTitle: z.string().optional(),
+  currentBlock: z.object({
+    type: z.enum(['narration', 'dialogue']),
+    text: z.string(),
+    displayKind: z.enum(['action', 'scene']).optional(),
+  }).nullable().optional(),
+  history: z.array(theaterHistoryEntrySchema).optional(),
+  suggestedInputs: z.array(z.string()).optional(),
+  busy: z.boolean().optional(),
+  sessionEnded: z.boolean().optional(),
+  errorMessage: z.string().optional(),
+  draftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
+  ordinaryDraftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
+  presentationSeq: z.number().int().nonnegative().optional(),
+});
+
 // Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
 //
 // 当前 source：
@@ -242,6 +270,7 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonLabel: z.string().optional(),
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
+  theaterPresentation: theaterPresentationSchema.optional(),
   avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
   compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
   compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
@@ -299,6 +328,14 @@ export const chatWindowPropsSchema = z.object({
     .args(galgameOptionSchema)
     .returns(z.void())
     .optional(),
+  onTheaterSuggestedInputSelect: z.function()
+    .args(z.string())
+    .returns(z.void())
+    .optional(),
+  onTheaterEnd: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
@@ -321,6 +358,7 @@ export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
+export type TheaterPresentation = z.infer<typeof theaterPresentationSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];

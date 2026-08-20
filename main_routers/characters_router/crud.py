@@ -959,15 +959,6 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
         finally:
             release_character_recent_transaction(recent_transaction)
 
-    if is_current_catgirl:
-        try:
-            cleared = await _clear_theater_session_after_current_catgirl_rename(_config_manager, old_name)
-            if cleared:
-                logger.info("角色重命名：已结束旧名称 %s 下的小剧场 session", old_name)
-        except Exception as exc:
-            # 角色与记忆重命名已经提交，不能因附属 Theater 清理失败回滚另一套事务。
-            logger.warning("角色重命名后清理小剧场 session 失败: lanlan=%s err=%s", old_name, exc)
-
     # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
@@ -1046,15 +1037,9 @@ async def set_current_catgirl(request: Request):
         latest_characters['当前猫娘'] = catgirl_name
         await _config_manager.asave_characters(latest_characters)
 
-    theater_transition = None
-    if old_catgirl and old_catgirl != catgirl_name:
-        theater_transition = await _publish_character_switch_with_theater_boundary(
-            _config_manager,
-            old_catgirl,
-            _publish_current_catgirl,
-        )
-    else:
-        await _publish_current_catgirl()
+    # Numeric v2 以不可变 character_id 独立恢复；切换角色只发布当前配置，
+    # 不结束或删除其他角色的剧本进度。
+    await _publish_current_catgirl()
     # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
@@ -1085,16 +1070,6 @@ async def set_current_catgirl(request: Request):
             # game-route cleanup; the heartbeat sweep will eventually
             # clean up if this hook misses.
             logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
-
-        if theater_transition and theater_transition.get("cleared"):
-            logger.info("角色切换：已结束旧角色 %s 的小剧场 session", old_catgirl)
-        elif theater_transition and theater_transition.get("cleanup_error"):
-            # 配置已经在角色锁内发布，清理失败不能重复保存；后续 TTS 仍会按当前猫娘校验拒绝旧对白。
-            logger.warning(
-                "角色切换小剧场 session 清理失败: lanlan=%s err=%s",
-                old_catgirl,
-                theater_transition["cleanup_error"],
-            )
 
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
@@ -1141,32 +1116,6 @@ async def set_current_catgirl(request: Request):
         logger.warning("提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
 
     return {"success": True}
-
-
-async def _publish_character_switch_with_theater_boundary(config_manager, old_catgirl: str, publish) -> dict:
-    """让当前猫娘发布与自由模式 Session 共享角色边界。"""  # noqa: DOCSTRING_CJK
-    # Numeric v2 按角色卡独立恢复，不在切换时清理；这里只收束自由模式沙盒。
-    from services.theater import free_runtime
-    from services.theater.paths import theater_root
-
-    return await free_runtime.publish_character_switch(
-        theater_root(config_manager),
-        old_lanlan_name=old_catgirl,
-        publish=publish,
-    )
-
-
-async def _clear_theater_session_after_current_catgirl_rename(config_manager, old_catgirl: str) -> bool:
-    """当前猫娘改名成功后结束旧自由 Session，避免留下不可恢复的 active key。"""  # noqa: DOCSTRING_CJK
-    # 角色 Router 只按需依赖自由 Runtime，避免重新引入已删除的 Story v3 剧本 Runtime。
-    from services.theater import free_runtime
-    from services.theater.paths import theater_root
-
-    result = await free_runtime.clear_character_session(
-        theater_root(config_manager),
-        lanlan_name=old_catgirl,
-    )
-    return bool(result.get("cleared"))
 
 
 @router.post('/reload')

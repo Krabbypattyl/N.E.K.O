@@ -1,4 +1,4 @@
-"""验证自由页面不再携带 Story v3 剧本模式分支。"""  # noqa: DOCSTRING_CJK
+"""验证小剧场迁入 N.E.K.O 胶囊后的静态前端合同。"""  # noqa: DOCSTRING_CJK
 
 import json
 from pathlib import Path
@@ -7,123 +7,191 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _sources() -> tuple[str, str]:
-    """读取自由页面模板和唯一前端脚本。"""  # noqa: DOCSTRING_CJK
-    return (
-        (ROOT / "templates" / "theater.html").read_text(encoding="utf-8"),
-        (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8"),
-    )
+def _source(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
-def _home_source() -> str:
-    return (ROOT / "templates" / "theater_home.html").read_text(encoding="utf-8")
+def test_theater_page_is_numeric_story_selector_only():
+    html = _source("templates/theater.html")
+    script = _source("static/js/theater_selector.js")
 
-
-def test_theater_mode_selection_copy_hides_internal_implementation_terms():
-    """模式选择页只介绍两种演绎方式，不暴露内部实现术语。"""  # noqa: DOCSTRING_CJK
-    html = _home_source()
-    assert "数值" not in html
-    assert "RP-Hub" not in html
-    assert "项目优势" not in html
-    assert "homeAdvantages" not in html
-    assert 'href="/theater"' not in html
-    assert 'aria-disabled="true"' in html
-    assert 'data-i18n="theater.homeFreeUnavailable"' in html
-    assert "💬 自由对话" in html
-
-    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
-        payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
-        theater = payload["theater"]
-        assert "RP-Hub" not in theater["homeFreeDescription"]
-        assert "homeAdvantages" not in theater
-        assert "homeAdvantagesText" not in theater
-        assert theater["homeFreeUnavailable"]
-        assert "homeGameplay" not in theater
-        assert "homeGameplayText" not in theater
-
-
-def test_theater_page_is_free_only_and_keeps_role_card_entry():
-    """默认 theater 页面只呈现自由模式和临时 RP-Hub 角色卡入口。"""  # noqa: DOCSTRING_CJK
-    html, script = _sources()
-    assert 'id="theater-mode-badge"' in html
-    assert 'data-i18n="theater.freeMode"' in html
-    assert 'id="theater-role-card-file"' in html
-    assert "RP-Hub" in html and "RP-Hub" in script
-    assert 'id="theater-mode-select"' not in html
-    assert 'id="theater-delete-story-btn"' not in html
-    assert "/api/theater/free/session/start" in script
-    assert "/api/theater/free/session/input" in script
-    assert "free_history" in script
-    assert "/api/theater/session/" not in script
-
-
-def test_theater_page_uses_free_idempotency_and_does_not_submit_choice_contract():
-    """自由页面保留幂等和 revision，提交协议不再发送 Choice 字段。"""  # noqa: DOCSTRING_CJK
-    _html, script = _sources()
-    assert "client_start_id" in script
-    assert "client_turn_id" in script
-    assert "pendingExit" in script
-    assert "getPendingExitId" in script
-    assert "base_revision: state.stateRevision" in script
-    assert "input_kind: 'free_input'" in script
-    assert "choice_id" not in script
-    assert "modeApiFor" not in script
-    assert "neko.theater.free.activeSession.v1" in script
-    assert "REQUEST_TIMEOUT_MS = 120000" in script
-    assert "'session_story_revision_mismatch'" in script
-    assert "'session_invalid'" in script
-    assert script.count("await recoverUnavailableSession(result)") == 2
-
-
-def test_theater_page_keeps_identity_card_and_stage_toggle():
-    """自由页面仍展示来源背景、猫娘身份和可折叠舞台。"""  # noqa: DOCSTRING_CJK
-    html, script = _sources()
+    assert "data-theater-selector-app" in html
+    assert "/static/css/theater.css" not in html
+    assert "/static/css/theater_selector.css" in html
+    assert "/static/js/theater_selector.js" in html
     for element_id in (
-        "theater-story-intro",
-        "theater-story-intro-background",
-        "theater-player-role-row",
-        "theater-catgirl-role-row",
-        "theater-story-goal-row",
-        "theater-stage-toggle",
+        "theater-story-list",
+        "theater-detail-background",
+        "theater-detail-player",
+        "theater-detail-catgirl",
+        "theater-start-btn",
+        "theater-continue-btn",
+        "theater-delete-btn",
     ):
         assert f'id="{element_id}"' in html
-    assert "function renderStoryIntro(story, roleCard)" in script
-    assert "function initStageToggle()" in script
+
+    assert "/api/theater/free/" not in script
+    assert "theater-restart-btn" not in html
+    assert "theater-restart-btn" not in script
+    assert "RP-Hub" not in html
+    assert "free_history" not in script
 
 
-def test_theater_page_reuses_numeric_reader_layout():
-    """自由页面复用剧本模式的阅读器布局，但保留自由模式自己的脚本入口。"""  # noqa: DOCSTRING_CJK
-    html, _script = _sources()
-    assert "/static/css/theater_numeric_v2.css" in html
-    assert "numeric-theater-shell" in html
-    assert "numeric-theater-stage" in html
-    assert "numeric-theater-console" in html
-    assert "numeric-theater-workspace" in html
-    assert ">←</span>" in html
+def test_selector_hidden_states_and_placeholder_stay_compact():
+    css = _source("static/css/theater_selector.css")
+    # 样式源码允许为可维护性换行；断言只锁定最终 CSS 语义。
+    compact_css = "".join(css.split())
+
+    assert ".theater-selector-shell[hidden]{display:none!important}" in compact_css
+    assert ".theater-detail-placeholder{min-height:96px" in compact_css
+    assert ".theater-detail-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))" in compact_css
 
 
-def test_theater_locales_remain_valid_json():
-    """自由页面依赖的八份 locale 必须仍然可以解析。"""  # noqa: DOCSTRING_CJK
-    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
-        payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
-        assert payload["theater"]["freeMode"]
-        assert payload["theater"]["roleCardImport"]
+def test_selector_uses_two_stage_handoff_and_start_replacement():
+    script = _source("static/js/theater_selector.js")
+
+    assert "theater:launch-request" in script
+    assert "theater:launch-ready" in script
+    assert "theater:selector-ready" in script
+    assert "theater:post-end" in script
+    assert "开始新的演绎？" in script
+    assert "async function beginSession()" in script
+    assert "replace_existing: replaceExisting === true" in script
+    assert "persistent: true" in script
 
 
-def test_theater_popup_entry_opens_mode_selection():
-    """三套头像菜单的小剧场入口都先进入统一模式选择页。"""  # noqa: DOCSTRING_CJK
-    popup_config = (ROOT / "static" / "avatar" / "avatar-ui-popup-config.js").read_text(encoding="utf-8")
-    assert popup_config.count("url: '/theater-home'") == 3
+def test_capsule_runtime_separates_narration_and_dialogue_tts():
+    runtime = _source("static/app/app-theater-runtime.js")
+    buttons = _source("static/app/app-buttons.js")
+
+    assert "/session/speak-block" in runtime
+    assert "if (block.type === 'dialogue')" in runtime
+    assert "typeBlock(historyId, block, token)" in runtime
+    assert "playDialogue(group, item.block, item.blockIndex, revision, token)" in runtime
+    assert "if (speechPromise && !await speechPromise) return" in runtime
+    assert "theaterPresentation" in runtime
+    assert "window.nekoTheaterRuntime" in runtime
+    assert "var theaterRuntime = window.nekoTheaterRuntime" in buttons
+    assert "theaterRuntime.isActive()" in buttons
+    assert "handleComposerSubmit" in buttons
+
+
+def test_capsule_runtime_projects_narration_display_kind_from_performance_phase():
+    """动作或场景由 performance 位置确定，前端不能读取正文关键词猜测。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    assert "if (sceneNarration) blocks.push" in runtime
+    assert "sceneNarration === LEGACY_EMPTY_TRANSITION_BRIDGE" in runtime
+    schema = _source("frontend/react-neko-chat/src/message-schema.ts")
+    app = _source("frontend/react-neko-chat/src/App.tsx")
+
+    assert "function narrationDisplayKind(phase)" in runtime
+    assert "phase === 'ordinary' || phase === 'source_response'" in runtime
+    assert "performance.transition_delivered ? 'transition_bridge' : 'ordinary'" in runtime
+    assert "performanceHistoryGroups(session.opening_performance, 'opening')" in runtime
+    assert "displayKind: z.enum(['action', 'scene']).optional()" in schema
+    assert "function formatTheaterBlockText(" in app
+    assert "`（${normalized}）`" in app
+
+
+def test_capsule_runtime_streams_ordinary_performance_into_one_history_bubble():
+    """普通微动作与对白共用猫娘消息，场景旁白仍使用独立气泡。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    schema = _source("frontend/react-neko-chat/src/message-schema.ts")
+    app = _source("frontend/react-neko-chat/src/App.tsx")
+
+    assert "function performanceHistoryGroups(performance, fallbackPhase)" in runtime
+    assert "function mixedPerformanceBlocks(value, phase)" in runtime
+    assert "block.displayText = rawText" in runtime
+    assert "group.preserveSpacing ? '' : '\\n'" in runtime
+    assert "block.type === 'narration' && block.displayKind === 'scene'" in runtime
+    assert "groups.push({ type: 'narration'" in runtime
+    assert "TYPEWRITER_INTERVAL_MS" in runtime
+    assert "group.type === 'narration' ? 'scene' : undefined" in runtime
+    assert "'streaming'" in runtime
+    assert "completedEntry.status = 'sent'" in runtime
+    assert "status: z.enum(['streaming', 'sent']).optional()" in schema
+    assert "const compactMessagePreview = theaterActive" in app
+    assert "? null" in app
+    assert "status: entry.status" in app
+
+
+def test_capsule_runtime_shows_player_action_before_waiting_for_actor():
+    """推荐输入和手动输入都应先进入历史，再等待模型返回。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    submit_start = runtime.index("async function submit(text)")
+    optimistic_history = runtime.index(
+        "state.history.push(historyEntry(optimisticHistoryId",
+        submit_start,
+    )
+    actor_request = runtime.index("result = await requestJson(api.input", submit_start)
+
+    assert optimistic_history < actor_request
+    assert "state.history = state.history.filter(function (entry)" in runtime
+    assert "historyEntry(optimisticHistoryId, 'player_action', message, state.playerName)" in runtime
+    assert "group.type === 'dialogue' ? state.catgirlName : undefined" in runtime
+    assert "participants.player_name" in runtime
+    assert "participants.catgirl_name" in runtime
+
+
+def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
+    runtime = _source("static/app/app-theater-runtime.js")
+    geometry = _source("static/app/app-react-chat-window/geometry-and-messages.js")
+    css = _source("static/css/index.css")
+    compact_css = "".join(css.split())
+
+    assert "typeof window.showConfirm === 'function'" in runtime
+    assert "if (!confirmed || !state.active) return false" in runtime
+    assert "cancelText: t('common.cancel', '取消')" in runtime
+    assert "skin: 'theater'" in runtime
+    assert "onResolve: function (confirmed)" in runtime
+    assert "preparedSelector = openSelector()" in runtime
+    assert "returnToSelector(receipt, 'user-ended', preparedSelector)" in runtime
+    assert "restoreSelectorWindow(selectorTarget)" in runtime
+    assert "state.errorMessage = t('theater.endFailed'" in runtime
+    assert "return returnToSelector(state.pendingEnd, 'natural-ending-return')" in runtime
+    assert "modal-dialog-theater" in geometry
+    assert ".modal-overlay.modal-overlay-theater{background:transparent!important" in compact_css
+    assert ".modal-dialog-theater.modal-btn{min-width:112px;min-height:44px" in compact_css
+
+
+def test_theater_assets_are_scoped_to_selector_and_main_chat_hosts():
+    selector = _source("templates/theater.html")
+    index = _source("templates/index.html")
+    chat = _source("templates/chat.html")
+
+    assert "/static/js/theater_selector.js" in selector
+    assert "/static/app/app-theater-runtime.js" not in selector
+    assert "/static/app/app-theater-runtime.js" in index
+    assert "/static/app/app-theater-runtime.js" in chat
+    assert "/static/js/theater_selector.js" not in index
+    assert "/static/js/theater_selector.js" not in chat
+
+
+def test_theater_locales_remain_valid_and_aligned():
+    locales = ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW")
+    theater_keys = []
+    for locale in locales:
+        payload = json.loads(_source(f"static/locales/{locale}.json"))
+        theater = payload["theater"]
+        theater_keys.append(set(theater))
+        for key in (
+            "selectorTitle",
+            "continueSession",
+            "startAgainConfirmTitle",
+            "startAgainConfirmBody",
+            "rememberPerformanceTitle",
+            "memorySaving",
+            "performanceHistory",
+        ):
+            assert theater[key]
+    assert all(keys == theater_keys[0] for keys in theater_keys[1:])
+
+
+def test_theater_popup_entry_opens_story_selector():
+    popup_config = _source("static/avatar/avatar-ui-popup-config.js")
+    assert popup_config.count("url: '/theater'") == 3
+    assert "url: '/theater-home'" not in popup_config
     assert "url: '/theater-numeric'" not in popup_config
-
-
-def test_numeric_restart_allocates_a_new_session_id():
-    script = (ROOT / "static" / "js" / "theater_numeric_v2.js").read_text(encoding="utf-8")
-    assert "const sessionId = createId('numeric_web_session_');" in script
-    assert "state.sessionId || remembered.sessionId" not in script
-    assert "options && options.replaceExisting) || state.replaceExisting" in script
-    assert "catgirl_changed_requires_new_session" in script
-    assert "const rememberedStory = state.stories.find" in script
-    assert "function recoverChangedCatgirlSession(result)" in script
-    assert script.count("recoverChangedCatgirlSession(result)") == 3
-    assert "numeric_v2_contract_invalid" in script

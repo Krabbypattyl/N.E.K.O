@@ -6,16 +6,9 @@
 
 ## 1. 产品边界
 
-小剧场保留两种完全隔离的模式：
+小剧场只保留 Numeric v2 剧本模式。`/theater` 是唯一正式页面入口，只负责选剧、查看前情和角色身份以及开始或继续 Session；正式演绎在 N.E.K.O 本体胶囊与历史区中进行。旧 `/theater-home`、`/theater-numeric` 页面和自由模式的页面、API、Prompt、Session、Runtime 均已退役，不提供兼容重定向。
 
-| 模式 | 页面 | 服务端状态 | 持久化 |
-| --- | --- | --- | --- |
-| Numeric v2 剧本模式 | `/theater-numeric` | Story Package、Session、Ledger、表现历史 | `theater/numeric_v2/` |
-| 自由模式 | `/theater` | Free Session 与沙盒历史 | 自由模式私有目录 |
-
-`/theater-home` 只负责模式介绍和跳转，不在同一 Session 内切换模式。两种模式只共享当前猫娘配置与底层 TTS 播放桥，不共享 Prompt、Session、恢复指针、正式状态或演绎历史。
-
-自由模式继续作为角色卡聊天沙盒，不读取或推进 Numeric v2 的节点、数值、路线、Ledger 与结局，也不把临时聊天写成剧本事实。自由模式角色卡的最终专有格式尚未锁定，不能为了剧本模式提前固化。
+小剧场与普通聊天只共享当前猫娘配置、现有聊天宿主和底层 TTS 能力，不共享输入状态、草稿、历史、恢复指针或正式事实。剧场控制器只有在 Numeric v2 Session 激活且等待玩家输入时才能接管真实胶囊输入框；未激活时必须完全退出普通聊天链路。
 
 Numeric v2 的产品定位是：
 
@@ -41,7 +34,8 @@ Numeric v2 的产品定位是：
 | `numeric_v2_store.py` | Session、Ledger、表现历史和槽位索引的原子持久化 |
 | `numeric_v2_maintenance.py` | 冷启动审计、隔离区和可恢复删除事务 |
 | `main_routers/numeric_theater_router.py` | `/api/theater-numeric` 的 Numeric v2-only HTTP 入口 |
-| `static/js/theater_numeric_v2.js` | 剧本选择、恢复、输入、回放和结局展示 |
+| `static/js/theater_selector.js` | `/theater` 的剧本选择、导入、删除、开始和继续交接 |
+| `static/app/app-theater-runtime.js` | N.E.K.O 本体中的 Session 恢复、输入提交、内容块播放和结束流程 |
 | `services/theater/tts_bridge.py` | 已提交猫娘对白的共享 TTS 播放桥 |
 
 ```mermaid
@@ -159,17 +153,16 @@ Evaluator 输出严格限定为：
 
 ```json
 {
-  "content": [
-    {"type": "narration", "text": "第三人称环境与猫娘行动"},
-    {"type": "dialogue", "speaker_id": "active_catgirl", "text": "猫娘第一句对白"},
-    {"type": "narration", "text": "对白后的动作或神态"},
-    {"type": "dialogue", "speaker_id": "active_catgirl", "text": "猫娘第二句对白"}
-  ],
+  "performance": "（把咖啡推到玩家手边）先暖暖手。刚才那件事……（抬眼看向玩家）我答应了。",
   "suggested_inputs": ["玩家可以直接输入的普通自然语言"]
 }
 ```
 
-`content` 是 2—16 个有序内容块；旁白和多句对白按实际发生顺序穿插保存、恢复和显示，不能再把全部对白统一堆到旁白之后。普通回合至少包含一个旁白块和一句有效猫娘对白；非法 block、错误 speaker 或纯旁白输出都会阻止整回合提交，不再静默过滤成无对白记录。Actor 的旁白不能替玩家补写动作、姿势、心理或已完成事实；推荐输入不能绑定路线、泄漏条件或假定玩家已经做过某事。
+`performance` 是模型一次生成的完整演绎正文：全角中文括号内只允许猫娘或环境的即时微动作，括号外全部视为当前猫娘实际说出口的对白。动作与对白可以自然穿插，不限制固定对白句数，也不要求每句对白前机械添加动作。Runtime 在提交前校验括号成对、禁止嵌套并要求普通回合至少有一个微动作和有效对白；提交后按同一解析器确定性投影为内部 action/dialogue 片段，供历史展示、TTS、Evaluator、归档与近重复保护消费。Session 保存原始 `performance` 顺序，不保存第二份易漂移的解析结果；旧 `content`、`narration/dialogue` 记录继续由兼容读取器展开。
+
+推荐输入是点击后原样发送的玩家自然语言，不强制以“我”开头。纯动作省略玩家主语并从动作动词起笔；纯台词直接写玩家实际说出口的话；动作与台词混合时先写动作，再用中文引号标出台词。对白内部仍可按语义自然使用“我”等代词。推荐输入不得退化为“解释、询问、展示、选择”等编辑指令，也不由前端机械改写语态。
+
+旁白采用分层节奏：普通回合以对白为主体，每个括号只写一项动态微动作，目标长度不超过 18 个汉字或 12 个单词；不能写静态情绪解释、心理结论、关系评价，也不能压缩多个连续动作、未来剧情或整幕摘要。开场、`transition_bridge`、`target_opening` 和结局交付继续使用独立 `scene_narration`，保持原有场景旁白样式且不受微动作字数限制。实时演绎时，`performance` 按原始字符顺序在同一个猫娘历史消息气泡中逐字显示；Runtime 只把已经提交且位于括号外的对白片段依次交给 TTS。独立场景旁白继续使用 system 气泡且不进入 TTS。`min_turns` 仍只控制节点最早完成时间，`recommended_turns` 仍只提供软收束节奏，两者都不作为旁白字数配置。
 
 节点 `chapter` 标题作为 Actor 的软主题锚点：开场和未换场回合提供当前标题，换场回合同时提供来源与目标标题。标题只在玩家输入和已发生记录都没有明确对象、且存在多个同样成立的候选焦点时用于取舍。它不是已发生事实、幕完成条件或必须复述的文案，不能覆盖 `recent_context`、`pending_goals`、禁止事项或过渡合同。Evaluator 和 Runtime 不使用标题判定幕完成、路线或结局。
 
@@ -181,7 +174,7 @@ Evaluator 输出严格限定为：
 2. 用必要的时间、地点或行动桥接完成过渡合同；
 3. 建立目标节点 `opening_scene` 的现场，但不在同一回合演完整个目标节点。
 
-换场输出使用固定顺序的 `source_response`、`transition_bridge`、`target_opening` 三段结构，每段内部同样使用有序 `content`。`source_response` 至少包含一句直接回应玩家的对白；`target_opening` 的第一个旁白块必须以 Runtime 提供的目标 `opening_scene` 原文开头。解析器、Runtime 和 Store 分别校验三段完整性、可见目标节点与 Ledger `to_node_id` 一致。任一条件不满足时整回合不提交，前端按三段及段内内容块顺序连续展示，不额外暴露节点标题。新提交的 performance 带内部合同版本；旧 `narration/dialogue` 记录继续按原顺序恢复，不能因新增校验废掉既有 Session。
+换场输出继续使用固定顺序的 `source_response`、`transition_bridge`、`target_opening` 三段结构。`source_response.performance` 使用混合正文并至少包含一句直接回应玩家的对白；`transition_bridge.scene_narration` 只交代目标开场没有覆盖的必要时间、地点、行动或来源收束，去重后没有独立事实时允许为空且前端不显示占位旁白；`target_opening.scene_narration` 必须以 Runtime 提供的目标 `opening_scene` 原文开头，随后可用 `target_opening.performance` 交付目标场景中的猫娘动作与对白。解析器、Runtime 和 Store 分别校验三段完整性、可见目标节点与 Ledger `to_node_id` 一致。任一条件不满足时整回合不提交，前端按三段顺序连续展示，不额外暴露节点标题。新提交的 performance 使用内部合同版本 3；旧合同版本继续兼容恢复。
 
 节点 ID 已推进不等于玩家看见了换场。换场交付必须成为可验证的提交条件；仅把 `route_changed`、目标 beat 和过渡合同放进 Prompt 不足以保证一致性。实测证据和复测状态见[“正式节点已推进，但可见场景没有切换”](./neko-theater-issues-and-solutions.md#问题-1正式节点已推进但可见场景没有切换)。
 
@@ -200,10 +193,10 @@ Numeric v2 不增加独立记忆模型或第三次总结调用。Session 和 Led
 
 1. 玩家本轮输入完整优先，并作为 Human Prompt 的最后一个字段交付，避免末尾历史在注意力上覆盖当前要求；
 2. 最新一轮已提交表现在预算允许时原样保留，物品位置、状态、持有人、许可和末句对白不能与旧记录一起平均裁剪；
-3. 开场锚点其次，再从新到旧加入最多六轮历史；较早记录按完整句优先保留玩家输入、对白与首尾旁白；
+3. 当前节点本次访问的开场或进入该节点的换场记录其次；在预算内发送本次访问的全部前文，超出预算时再从最早回合开始按完整句降级，不能混入循环重访前的同名节点记录；Evaluator 读取跨节点记录时只投影 `target_opening`，不把属于上一幕的 `source_response`、换场桥或触发换场的旧玩家输入重复算作新幕事实；
 4. 任何降级都必须在完整句边界停止，不得向模型交付“虽然是”“如果你敢”等由程序截断的半句；
 5. 未换场回合只发送 `current_story_beat`，不发送重复的来源 beat、空目标 beat 和空过渡合同；换场时才发送来源、目标与过渡数据；
-6. Actor 总输入预算仍为 3200 Token，系统合同上限为 1400 Token；程序先计算本轮固定字段的实际占用，再把剩余预算分配给工作记忆，工作记忆最多 1000 Token；
+6. Actor 总输入预算为 4800 Token，系统合同上限为 1500 Token；程序先计算本轮固定字段的实际占用，再把剩余预算分配给当前场景前文，工作记忆最多 2200 Token；剧情字段仍按 180 Token 上限投影，已校验混合正文可使用更高的安全字段上限，不能被通用裁剪器截成半个动作或半句对白；
 7. 通用 `bound_prompt_messages` 只作为最后安全网。Actor 专用装箱完成后，它不应再改写最新回合；
 8. 若模型仍照搬上一轮全部对白，且本轮正文与上一轮达到高相似度，Actor 必须拒绝提交该结果。该保护不新增自动重试或模型调用，Session、Ledger 和 revision 保持原状。
 
@@ -229,9 +222,11 @@ Numeric v2 是由 AI 驱动的类 Galgame。角色卡切换的价值不能只体
 | `catgirl_binding.role_overlay` | `acting_context.story_role_context` | 如何进入故事及长期关系弧线，不定义基础性格 |
 | 当前节点 `story_beat.catgirl_situation` | `acting_context.current_scene_state` | 当前幕临时状态 |
 | 目标节点 `catgirl_situation` | `acting_context.target_scene_state` | 换场后临时状态 |
-| 当前隐藏 metric bands | `acting_context.relationship_state` | 调整关系姿态，不公开原始数值 |
+| 当前隐藏 metric bands | `acting_context.relationship_state` | 投影 band 名称与相对阶段；调整关系姿态，不公开原始数值和阈值 |
 
 `characters` 当前只要求是对象，Actor 不消费，不能把它启用为并行人格事实源。每轮 Actor 都从角色卡、当前节点和 Session metrics 确定性重建 `acting_context`；数值跨 band 或 Runtime 进入目标节点时自然得到新的临时状态，不改写角色卡、不持久化模型总结，也不需要“每幕重写人设”。
+
+对于好感、信任、亲密等关系型 metric，当前 band 同时是可见亲密度上限。最低阶段可以表现符合核心人格的礼貌、关心和有限软化，但不能提前演出暧昧、占有、依赖、伴侣式亲昵称呼或已经建立的亲密关系；中间阶段可以主动靠近，但不能直接演成倾心或永久绑定；最高阶段仍必须由已发生事实支撑。核心人格决定这些边界内的表达方式，不能用于越过关系阶段；低关系阶段也不能反向授权敌视、羞辱或威胁。Actor 只接收 band 名称和 `lowest / middle / highest` 相对阶段，不接收原始数值或阈值。
 
 Actor 使用以下无额外模型调用的软文风控制：
 
@@ -271,8 +266,8 @@ Story ID × 猫娘角色卡不可变 character_id
 - 删除角色卡后新建同名角色会得到新 ID，不能继承旧进度；
 - 关闭窗口或退出 N.E.K.O 不结束 Session，重启后恢复当前猫娘对应的剧本槽位；
 - 切换猫娘不删除其他猫娘的进度，切回后恢复各自槽位；
-- 终局和主动结束在当前槽位保留只读记录；
-- “重新开始”创建新 Session ID，并原子替换槽位旧文件；旧页面因 Session ID 失效不能继续提交，磁盘也不累积历史 Session；
+- 剧情终局在当前槽位保留只读记录；玩家主动退出写入 `ended_reason=user_exit`，不改变 Ledger、revision 和演绎历史，并可从选剧页原子恢复为 `active`；
+- 主动退出后同时提供“继续”和“开始”：继续恢复同一 Session，“开始”经确认后创建新 Session ID 并原子替换旧文件；剧情终局只提供“开始”；
 - 正常恢复只读取索引；Numeric v2 冷启动初始化或显式维护才全盘复验文件并重建索引；
 - 损坏、无主或重复文件移入有界隔离区，最多保留 6 份，不能阻断其他合法槽位恢复。
 
@@ -282,14 +277,14 @@ Story ID × 猫娘角色卡不可变 character_id
 
 ## 7. 前端与 TTS
 
-- 舞台显示背景介绍、玩家身份和猫娘身份，不显示节点标题、场景卡或隐藏状态；
-- 演绎区按开场、玩家原话、旁白、猫娘对白顺序回放；
-- 玩家输入和猫娘对白均使用可辨识的引号样式，猫娘对白不显示“猫娘：”前缀；
-- 服务端和 TTS 保存、播放无前端引号与角色标签的原始对白；
-- 推荐输入只回填或直接作为普通文本提交，不携带正式 Choice ID；
-- terminal scene 显示结局标题和摘要，并关闭输入、发送按钮和推荐输入；
+- `/theater` 选择页显示背景介绍、玩家身份和猫娘身份，不显示节点标题、场景卡或隐藏状态；
+- N.E.K.O 本体历史区按服务端已提交顺序播放玩家原话、场景旁白和猫娘演绎内容，不把剧场历史混入普通聊天消息；
+- 普通回合的括号微动作与对白保留在同一猫娘消息中，开场、换场和结局旁白使用独立 system 消息；
+- 只有猫娘对白进入 TTS，括号微动作和独立场景旁白不朗读；服务端只允许按已提交内容块坐标请求播放；
+- 推荐输入直接作为普通自然语言提交，不先回填输入框，也不携带正式 Choice ID；
+- terminal scene 关闭玩家输入和推荐输入，并引导返回选剧页；玩家主动结束先确认，再回到选剧页询问是否写入记忆；
 - 刷新只恢复已提交历史，不重播历史 TTS；
-- TTS 去重键包含模式、Session 与 revision，剧本和自由模式不能串播。
+- TTS 去重键包含 Session、revision 和内容块坐标，不能与普通聊天音频串播。
 
 ## 8. NEKO_Numeric_drama 生成器协作边界
 
@@ -336,7 +331,7 @@ Story ID × 猫娘角色卡不可变 character_id
 4. Session revision、幂等、并发提交、原子失败、重启恢复和跨剧本隔离；
 5. 角色改名、同名新角色、切换角色、重新开始、删剧本和删角色；
 6. 前端公开投影、刷新恢复、结局面板、输入关闭和隐藏数值隔离；
-7. 剧本模式与自由模式的 API、目录、Prompt、恢复指针和状态不串线；
+7. 剧场模式与普通聊天的输入、草稿、历史、音频和恢复链路不串线；
 8. 八语言用户文案 key 一致且 JSON 可解析；
 9. 真实前端模型回放按固定归因顺序记录在问题文档；
 10. 真实桌面 TTS 设备发声仍需人工验收，自动测试只能覆盖桥接和降级语义。

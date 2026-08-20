@@ -12,7 +12,11 @@ from pathlib import Path
 import tempfile
 from typing import Any, Mapping, TYPE_CHECKING
 
-from .numeric_v2_performance import valid_ordered_content
+from .numeric_v2_performance import (
+    valid_mixed_performance,
+    valid_ordered_content,
+    valid_scene_narration,
+)
 
 if TYPE_CHECKING:
     from .numeric_v2_runtime import NumericV2Engine, ScriptSessionV2
@@ -607,6 +611,28 @@ class NumericV2SessionStore:
             self._write(path, stored)
             return stored
 
+    async def resume_session(self, session_id: str, *, base_revision: int) -> NumericV2StoredSession:
+        """恢复玩家主动退出的 Session；剧情自然结局仍保持不可继续。"""  # noqa: DOCSTRING_CJK
+
+        path = self._path(session_id)
+        async with _lock(path):
+            if not path.is_file():
+                raise NumericV2SessionNotFoundError("numeric_session_not_found")
+            current = self._read(path)
+            if current.session.revision != base_revision:
+                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+            if current.session.status == "active":
+                return current
+            if current.session.status != "ended" or current.session.ended_reason != "user_exit":
+                raise NumericV2StoreError("numeric_session_not_resumable")
+            resumed = NumericV2StoredSession(
+                replace(current.session, status="active", ended_reason=None),
+                current.ledger_events,
+            )
+            self._validate_chain(resumed)
+            self._write(path, resumed)
+            return resumed
+
     def _read(self, path: Path) -> NumericV2StoredSession:
         from .numeric_v2_runtime import ScriptSessionV2
 
@@ -712,7 +738,7 @@ class NumericV2SessionStore:
             if not isinstance(performance, Mapping):
                 raise NumericV2StoreError("numeric_performance_record_invalid")
             performance_contract_version = performance.get("performance_contract_version")
-            if performance_contract_version not in {None, 1, 2}:
+            if performance_contract_version not in {None, 1, 2, 3}:
                 raise NumericV2StoreError("numeric_performance_record_invalid")
             if (
                 performance.get("client_turn_id") != turn_id
@@ -742,9 +768,35 @@ class NumericV2SessionStore:
                         or not valid_ordered_content(segments[2], require_narration=True)
                     ):
                         raise NumericV2StoreError("numeric_transition_performance_invalid")
+            if performance_contract_version == 3:
+                if expected_event["from_node_id"] == expected_event["to_node_id"]:
+                    if not valid_mixed_performance(
+                        performance,
+                        require_narration=True,
+                        require_dialogue=True,
+                    ):
+                        raise NumericV2StoreError("numeric_performance_record_invalid")
+                else:
+                    segments = performance.get("segments")
+                    if (
+                        not isinstance(segments, list)
+                        or len(segments) != 3
+                        or not all(isinstance(segment, Mapping) for segment in segments)
+                        or [segment.get("phase") for segment in segments]
+                        != ["source_response", "transition_bridge", "target_opening"]
+                        or set(segments[0]) != {"phase", "performance"}
+                        or set(segments[1]) != {"phase", "scene_narration"}
+                        or set(segments[2]) != {"phase", "scene_narration", "performance"}
+                        or not valid_mixed_performance(segments[0], require_dialogue=True)
+                        # 合同版本 3 允许去重后的空桥段；目标开场仍必须非空并由 Runtime 注入。
+                        or not valid_scene_narration(segments[1], allow_empty=True)
+                        or not valid_scene_narration(segments[2])
+                        or not valid_mixed_performance(segments[2], require_dialogue=True)
+                    ):
+                        raise NumericV2StoreError("numeric_transition_performance_invalid")
             if (
                 expected_event["from_node_id"] != expected_event["to_node_id"]
-                and performance_contract_version in {1, 2}
+                and performance_contract_version in {1, 2, 3}
             ):
                 segments = performance.get("segments")
                 if (

@@ -95,7 +95,7 @@ def numeric_v2_story() -> dict:
                 "chapter": "重逢",
                 "min_turns": 2,
                 "recommended_turns": 4,
-                "story_beat": beat("玩家与猫娘在花店重新见面。"),
+                "story_beat": beat("雨后的花店门铃轻轻响起。"),
                 "route_gates": [
                     gate("to_stay", "ending_stay", ">=", 70, 20),
                     gate("to_leave", "ending_leave", "<", 70, 10),
@@ -105,7 +105,7 @@ def numeric_v2_story() -> dict:
                 "id": "ending_stay",
                 "type": "ending",
                 "chapter": "决定",
-                "story_beat": beat("玩家决定留下来完成承诺。"),
+                "story_beat": beat("旧信与备用钥匙并排放在桌面上。"),
                 "route_gates": [],
                 "terminal": True,
                 "ending_id": "stay",
@@ -114,7 +114,7 @@ def numeric_v2_story() -> dict:
                 "id": "ending_leave",
                 "type": "ending",
                 "chapter": "决定",
-                "story_beat": beat("两人接受这次仍然会分别。"),
+                "story_beat": beat("雨停后的长街恢复了安静。"),
                 "route_gates": [],
                 "terminal": True,
                 "ending_id": "leave",
@@ -161,6 +161,76 @@ def test_numeric_v2_rejects_conflicting_identity_source_names():
         NumericV2Compiler().compile(story)
 
     assert any(issue.code == "intro_identity_names_conflict" for issue in error.value.issues)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "周末，男主开始清理堆积如山的快递纸箱。",
+        "连续几晚，你都在整理堆积如山的遗失物。",
+        "在决定离开后，两人登上了前往城市的列车。",
+    ],
+)
+def test_numeric_v2_rejects_target_opening_that_executes_player_action(summary):
+    story = numeric_v2_story()
+    story["nodes"][1]["story_beat"]["summary"] = summary
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "player_owned_opening_forbidden"
+        and issue.path == "nodes[1].story_beat.summary"
+        for issue in error.value.issues
+    )
+
+
+def test_numeric_v2_rejects_transition_that_delivers_player_action():
+    story = numeric_v2_story()
+    story["nodes"][0]["route_gates"][0]["transition_contract"]["must_deliver"] = [
+        "男主在打烊后展示一份商业改革计划书。",
+    ]
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "player_owned_transition_forbidden"
+        and issue.path == "nodes[0].route_gates[0].transition_contract.must_deliver[0]"
+        for issue in error.value.issues
+    )
+
+
+def test_numeric_v2_rejects_player_owned_scene_goal():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["must_happen"] = [
+        "男主展示合同并承诺留下。",
+    ]
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "player_owned_goal_forbidden"
+        and issue.path == "nodes[0].story_beat.must_happen[0]"
+        for issue in error.value.issues
+    )
+
+
+def test_numeric_v2_rejects_scene_goal_that_forces_player_action():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["must_happen"] = [
+        "女主强迫男主在契约上签字。",
+    ]
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "player_owned_goal_forbidden"
+        and issue.path == "nodes[0].story_beat.must_happen[0]"
+        for issue in error.value.issues
+    )
 
 
 def test_numeric_v2_rejects_legacy_interaction_fields_and_band_gaps():

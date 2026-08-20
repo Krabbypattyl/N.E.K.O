@@ -36,6 +36,8 @@ N.E.K.O 仓库只维护以下两份小剧场开发文档。代码和测试高于
 - [小剧场架构开发文档](./neko-theater-architecture)
 - [小剧场实测问题描述以及解决方案](./neko-theater-issues-and-solutions)
 
+当前另有一份迁移实施记录：[小剧场胶囊演绎迁移方案](./neko-theater-capsule-migration)。它用于追踪自由模式退役和胶囊迁移过程，不是第三份长期合同；现行产品与 Runtime 边界仍以架构开发文档为准。
+
 作者侧 Numeric v2 生成器的专项 DTO 与页面设计由 `NEKO_Numeric_drama` 仓库维护，不能覆盖 N.E.K.O Runtime 的权限和持久化合同。
 
 ## Product-flow and interaction records

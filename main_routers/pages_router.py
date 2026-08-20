@@ -192,13 +192,10 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/voice_identity.css",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
-    _PROJECT_ROOT / "static/css/theater.css",
-    _PROJECT_ROOT / "static/js/theater.js",
+    _PROJECT_ROOT / "static/css/theater_selector.css",
+    _PROJECT_ROOT / "static/js/theater_selector.js",
+    _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/vrm/motion/player.js",
-    # 小剧场三页共用同一版本号，确保统一入口和 Numeric v2 控件不会被旧缓存遮住。
-    _PROJECT_ROOT / "static/css/theater_home.css",
-    _PROJECT_ROOT / "static/css/theater_numeric_v2.css",
-    _PROJECT_ROOT / "static/js/theater_numeric_v2.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )
@@ -210,6 +207,7 @@ _REACT_CHAT_ASSET_VERSION_PATHS = (
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app/app-buttons.js",
+    _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cat1-chat-angry.gif",
     *sorted(_PROJECT_ROOT.glob("static/assets/avatar-tools/**/*.png")),
     *sorted(_PROJECT_ROOT.glob("static/sounds/avatar-tools/**/*.mp3")),
@@ -301,31 +299,9 @@ async def get_model_manager(request: Request):
 
 @router.get("/theater", response_class=HTMLResponse)
 async def get_theater(request: Request):
-    """Render the theater MVP page."""
+    """渲染唯一的 Numeric v2 剧本选择页。"""  # noqa: DOCSTRING_CJK
     templates = get_templates()
     return templates.TemplateResponse("templates/theater.html", {
-        "request": request,
-        **_static_assets_ctx(),
-    })
-
-
-@router.get("/theater-home", response_class=HTMLResponse)
-async def get_theater_home(request: Request):
-    """渲染小剧场统一入口，集中说明两种模式和项目玩法。"""  # noqa: DOCSTRING_CJK
-
-    templates = get_templates()
-    return templates.TemplateResponse("templates/theater_home.html", {
-        "request": request,
-        **_static_assets_ctx(),
-    })
-
-
-@router.get("/theater-numeric", response_class=HTMLResponse)
-async def get_numeric_theater(request: Request):
-    """渲染独立 Numeric v2 剧本页，不复用旧剧本页的状态脚本。"""  # noqa: DOCSTRING_CJK
-
-    templates = get_templates()
-    return templates.TemplateResponse("templates/theater_numeric.html", {
         "request": request,
         **_static_assets_ctx(),
     })

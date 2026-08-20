@@ -35,6 +35,7 @@ async def speak_committed_line(
     get_session_manager: Callable[[], Any],
     metadata_kind: str,
     request_id: str,
+    interrupt_audio: bool = True,
 ) -> dict[str, Any]:
     """把已经提交的单段小剧场对白交给既有播放器，失败时降级为文字。"""  # noqa: DOCSTRING_CJK
 
@@ -71,8 +72,7 @@ async def speak_committed_line(
             request_id=request_id,
             mirror_text=False,
             emit_turn_end_after=False,
-            # 新剧场对白拥有当前播放权，避免上一段对白覆盖当前演出。
-            interrupt_audio=True,
+            interrupt_audio=interrupt_audio,
         )
     except Exception as exc:
         logger.warning("小剧场 TTS 播放失败，降级为纯文字: %s", type(exc).__name__)

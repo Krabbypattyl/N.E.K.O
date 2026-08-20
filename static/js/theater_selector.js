@@ -1,0 +1,466 @@
+/** Numeric v2 剧本选择页：只管理剧本、Session 入口和结束后的记忆询问。 */
+(function () {
+    'use strict';
+
+    // 选择页不参与演绎推进；所有状态变化都提交给 Numeric v2 Runtime。
+    var api = {
+        stories: '/api/theater-numeric/stories',
+        importStory: '/api/theater-numeric/packages/import',
+        packages: '/api/theater-numeric/packages',
+        start: '/api/theater-numeric/session/start',
+        resume: '/api/theater-numeric/session/resume',
+        active: '/api/theater-numeric/session/active',
+        archive: '/api/theater-numeric/session/archive',
+        skipArchive: '/api/theater-numeric/session/archive/skip'
+    };
+    var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
+    // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
+    var state = { stories: [], storyId: '', session: null, busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
+    var modalResolve = null;
+    var modalPersistent = false;
+    var modalReturnFocus = null;
+
+    function $(id) { return document.getElementById(id); }
+    function t(key, fallback, options) {
+        if (typeof window.t === 'function') {
+            var value = window.t(key, options);
+            if (value && value !== key) return value;
+        }
+        return fallback;
+    }
+    function createId(prefix) {
+        var random = window.crypto && typeof window.crypto.randomUUID === 'function'
+            ? window.crypto.randomUUID()
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        return prefix + random;
+    }
+    function setStatus(key, fallback) {
+        var node = $('theater-selector-status');
+        node.textContent = t(key, fallback);
+        node.setAttribute('data-i18n', key);
+    }
+    function setFeedback(text, isError) {
+        var node = $('theater-inline-feedback');
+        node.hidden = !text;
+        node.textContent = text || '';
+        node.dataset.tone = isError ? 'error' : 'info';
+    }
+    // 所有本地修改请求复用主程序的 CSRF 请求头，不在剧场页另建安全协议。
+    async function mutationHeaders() {
+        var helper = window.nekoLocalMutationSecurity;
+        if (!helper || typeof helper.getMutationHeaders !== 'function') return {};
+        try { return await helper.getMutationHeaders(); } catch (_) { return {}; }
+    }
+    async function requestJson(url, options) {
+        var opts = options || {};
+        var method = opts.method || 'GET';
+        var serialized = Object.prototype.hasOwnProperty.call(opts, 'body') ? JSON.stringify(opts.body) : undefined;
+        async function send() {
+            var headers = { 'Content-Type': 'application/json' };
+            if (method !== 'GET') Object.assign(headers, await mutationHeaders());
+            return fetch(url, { method: method, headers: headers, body: serialized });
+        }
+        var response = await send();
+        if (response.status === 403 && method !== 'GET') {
+            var helper = window.nekoLocalMutationSecurity;
+            if (helper && typeof helper.refreshToken === 'function') {
+                await helper.refreshToken();
+                response = await send();
+            }
+        }
+        var data = await response.json().catch(function () { return {}; });
+        data._status = response.status;
+        return data;
+    }
+    function postMessage(message) {
+        var payload = Object.assign({ schema: MESSAGE_SCHEMA, source: 'theater-selector', timestamp: Date.now() }, message || {});
+        var sent = false;
+        if (state.channel) {
+            try { state.channel.postMessage(payload); sent = true; } catch (_) {}
+        }
+        if (window.opener && !window.opener.closed) {
+            try { window.opener.postMessage(payload, window.location.origin); sent = true; } catch (_) {}
+        }
+        return sent;
+    }
+    function setBusy(busy) {
+        state.busy = busy;
+        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-delete-btn'].forEach(function (id) {
+            var node = $(id);
+            if (node) node.disabled = busy;
+        });
+        renderActions();
+    }
+    function selectedStory() {
+        return state.stories.find(function (story) { return String(story.story_id || '') === state.storyId; }) || null;
+    }
+    function sessionKind() {
+        if (!state.session) return 'new';
+        if (state.session.status !== 'ended') return 'active';
+        return state.session.ended_reason === 'user_exit' ? 'paused' : 'ended';
+    }
+    // 玩家主动退出的记录允许继续或重新开始；剧情自然结局只能重新开始。
+    function renderActions() {
+        var kind = sessionKind();
+        var startButton = $('theater-start-btn');
+        var startKey = state.session ? 'theater.restartSession' : 'theater.start';
+        startButton.textContent = state.session
+            ? t(startKey, '重新开始')
+            : t(startKey, '开始');
+        startButton.setAttribute('data-i18n', startKey);
+        startButton.disabled = state.busy || !state.storyId || kind === 'active';
+        $('theater-continue-btn').disabled = state.busy || (kind !== 'active' && kind !== 'paused');
+        $('theater-delete-btn').disabled = state.busy || !state.storyId;
+        startButton.classList.toggle('is-current-primary', kind === 'new' || kind === 'ended');
+        $('theater-continue-btn').classList.toggle('is-current-primary', kind === 'active' || kind === 'paused');
+        $('theater-session-hint').textContent = kind === 'active'
+            ? t('theater.sessionHintActive', '演绎正在进行，点击“继续”返回演绎。')
+            : kind === 'paused'
+                ? t('theater.sessionHintPausedRestart', '上次演绎已退出，可以继续原进度或重新开始。')
+            : kind === 'ended'
+                ? t('theater.sessionHintEndedRestart', '本次演绎已结束，点击“重新开始”创建新的演绎。')
+                : t('theater.sessionHintNew', '点击“开始”创建本次演绎。');
+        var badge = $('theater-session-badge');
+        badge.textContent = kind === 'active'
+            ? t('theater.running', '演出中')
+            : kind === 'paused'
+                ? t('theater.paused', '已退出')
+            : kind === 'ended'
+                ? t('theater.ended', '已结束')
+                : t('theater.notStarted', '尚未开始');
+    }
+    function renderStories() {
+        var list = $('theater-story-list');
+        list.textContent = '';
+        $('theater-empty-state').hidden = state.stories.length > 0;
+        list.hidden = state.stories.length === 0;
+        state.stories.forEach(function (story, storyIndex) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'theater-story-card';
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-selected', String(String(story.story_id) === state.storyId));
+            button.dataset.storyId = String(story.story_id || '');
+            var title = document.createElement('strong');
+            title.textContent = String(story.title || story.story_id || '');
+            var meta = document.createElement('span');
+            meta.textContent = [story.author, story.language].filter(Boolean).join(' · ');
+            button.append(title, meta);
+            button.addEventListener('click', function () { selectStory(button.dataset.storyId); });
+            button.addEventListener('keydown', function (event) {
+                if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+                event.preventDefault();
+                var offset = event.key === 'ArrowDown' ? 1 : -1;
+                var next = list.children[(storyIndex + offset + state.stories.length) % state.stories.length];
+                if (next) { next.focus(); selectStory(next.dataset.storyId); }
+            });
+            list.appendChild(button);
+        });
+    }
+    function renderDetail() {
+        var story = selectedStory();
+        $('theater-detail-placeholder').hidden = !!story;
+        $('theater-detail-content').hidden = !story;
+        if (!story) return;
+        var intro = story.display_intro || {};
+        $('theater-detail-title').textContent = String(story.title || story.story_id || '');
+        $('theater-detail-meta').textContent = [story.author, story.language, 'rev.' + story.revision].filter(Boolean).join(' · ');
+        $('theater-detail-background').textContent = String(intro.background || '');
+        $('theater-detail-player').textContent = String(intro.player_identity || '');
+        $('theater-detail-catgirl').textContent = String(intro.catgirl_identity || '');
+        renderActions();
+    }
+    async function selectStory(storyId) {
+        if (state.busy || !storyId) return;
+        state.storyId = storyId;
+        state.session = null;
+        setFeedback('');
+        renderStories();
+        renderDetail();
+        setStatus('theater.loadingSession', '正在读取演绎进度...');
+        var result = await requestJson(api.active + '?story_id=' + encodeURIComponent(storyId));
+        if (state.storyId !== storyId) return;
+        if (result.ok && result.session) {
+            state.session = result.session;
+            if (result.session.status === 'ended' && result.end_receipt_id) {
+                if (result.archive_status === 'pending' || result.archive_status === 'writing') {
+                    state.pendingEnd = {
+                        story_id: storyId,
+                        session_id: result.session.session_id,
+                        revision: result.session.revision,
+                        end_receipt_id: result.end_receipt_id,
+                        archive_request_id: result.archive_request_id || ''
+                    };
+                } else if (state.pendingEnd && state.pendingEnd.end_receipt_id === result.end_receipt_id) {
+                    // 同一 revision 已记录或已跳过时不重复询问；继续产生新 revision 后会收到新回执。
+                    state.pendingEnd = null;
+                }
+            }
+        }
+        else if (result._status !== 404) setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+        renderDetail();
+        setStatus('theater.ready', '就绪');
+        var url = new URL(window.location.href);
+        url.searchParams.set('story_id', storyId);
+        window.history.replaceState(null, '', url.toString());
+        if (state.pendingEnd && state.pendingEnd.story_id === storyId) await maybePromptMemory();
+    }
+    // 页面只保留一个模态框实例；persistent 模式用于归档失败后的原地重试。
+    function showModal(options) {
+        var modal = $('theater-modal');
+        if (modal.hidden) {
+            modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }
+        $('theater-modal-title').textContent = options.title;
+        $('theater-modal-body').textContent = options.body;
+        $('theater-modal-error').hidden = true;
+        var cancel = $('theater-modal-cancel');
+        var confirm = $('theater-modal-confirm');
+        cancel.textContent = options.cancelLabel;
+        confirm.textContent = options.confirmLabel;
+        confirm.classList.toggle('theater-danger', options.danger === true);
+        modalPersistent = options.persistent === true;
+        modal.hidden = false;
+        // 初始焦点放在弹窗容器，避免第一个按钮在弹出瞬间出现误导性的选中描边；Tab 后仍保留按钮焦点环。
+        modal.querySelector('.theater-modal').focus();
+        return new Promise(function (resolve) { modalResolve = resolve; });
+    }
+    function restoreModalFocus() {
+        var target = modalReturnFocus;
+        modalReturnFocus = null;
+        if (target && target.isConnected && typeof target.focus === 'function') target.focus();
+    }
+    function closeModal(confirmed) {
+        if ($('theater-modal').hidden) return;
+        if (!modalPersistent) {
+            $('theater-modal').hidden = true;
+            restoreModalFocus();
+        }
+        var resolve = modalResolve;
+        modalResolve = null;
+        if (resolve) resolve(confirmed);
+    }
+    function hideModal() {
+        $('theater-modal').hidden = true;
+        modalPersistent = false;
+        modalResolve = null;
+        setModalBusy(false);
+        restoreModalFocus();
+    }
+    function setModalBusy(busy) {
+        $('theater-modal-cancel').disabled = busy;
+        $('theater-modal-confirm').disabled = busy;
+    }
+    // 启动演绎前必须等本体回执 launch-ready，避免选剧页先关闭导致快照丢失。
+    async function handoff(snapshot, action) {
+        var launchId = createId('theater_launch_');
+        var payload = {
+            action: 'theater:launch-request', launch_id: launchId, launch_action: action,
+            story_id: state.storyId, session_id: snapshot.session.session_id, revision: snapshot.session.revision
+        };
+        setStatus('theater.connectingNeko', '演出已准备好，正在连接 N.E.K.O 本体');
+        return new Promise(function (resolve) {
+            var settled = false;
+            function ready(event) {
+                var message = event && event.data;
+                if (!message || message.action !== 'theater:launch-ready' || message.launch_id !== launchId) return;
+                settled = true;
+                cleanup();
+                resolve(true);
+            }
+            function cleanup() {
+                window.removeEventListener('message', ready);
+                if (state.channel) state.channel.removeEventListener('message', ready);
+            }
+            window.addEventListener('message', ready);
+            if (state.channel) state.channel.addEventListener('message', ready);
+            postMessage(payload);
+            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 7000);
+        });
+    }
+    async function launchSnapshot(snapshot, action) {
+        var ready = await handoff(snapshot, action);
+        if (ready) { window.close(); return; }
+        setFeedback(t('theater.connectNekoFailed', '无法连接 N.E.K.O 本体，请保持本体开启后重试。'), true);
+        setStatus('theater.failed', '出错了');
+    }
+    async function startSession(replaceExisting) {
+        if (state.busy || !state.storyId) return;
+        setBusy(true); setFeedback('');
+        try {
+            var result = await requestJson(api.start, { method: 'POST', body: {
+                story_id: state.storyId, session_id: createId('numeric_capsule_session_'), replace_existing: replaceExisting === true
+            }});
+            if (!result.ok) throw new Error(result.reason || 'start_failed');
+            state.session = result.session;
+            renderActions();
+            await launchSnapshot(result, replaceExisting ? 'restart' : (result.resumed ? 'continue' : 'start'));
+        } catch (_) {
+            setFeedback(t('theater.startFailed', '启动演出失败，请重试。'), true);
+            setStatus('theater.failed', '出错了');
+        } finally { setBusy(false); }
+    }
+    async function continueSession() {
+        var kind = sessionKind();
+        if (!state.session || (kind !== 'active' && kind !== 'paused')) return;
+        setBusy(true);
+        try {
+            var result = kind === 'paused'
+                ? await requestJson(api.resume, { method: 'POST', body: {
+                    story_id: state.storyId,
+                    session_id: state.session.session_id,
+                    base_revision: state.session.revision
+                }})
+                : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?story_id=' + encodeURIComponent(state.storyId));
+            if (!result.ok) throw new Error(result.reason || 'restore_failed');
+            state.session = result.session;
+            renderActions();
+            await launchSnapshot(result, 'continue');
+        } catch (_) { setFeedback(t('theater.continueFailed', '继续演出失败，请重试。'), true); }
+        finally { setBusy(false); }
+    }
+    // “开始”同时承担首次创建和结束后再次开局；只有后者需要替换确认。
+    async function beginSession() {
+        if (sessionKind() === 'active') return;
+        if (sessionKind() === 'new') {
+            await startSession(false);
+            return;
+        }
+        var confirmed = await showModal({
+            title: t('theater.startAgainConfirmTitle', '开始新的演绎？'),
+            body: t('theater.startAgainConfirmBody', '这会用新的演绎替换当前角色的已结束记录。'),
+            cancelLabel: t('common.cancel', '取消'), confirmLabel: t('theater.start', '开始'), danger: true
+        });
+        if (confirmed) await startSession(true);
+    }
+    // 删除前由服务端汇总活跃角色，确认后再执行剧本包和 Session 的事务删除。
+    async function deleteStory() {
+        if (!state.storyId || state.busy) return;
+        setBusy(true);
+        try {
+            var preview = await requestJson(api.packages + '/' + encodeURIComponent(state.storyId) + '/delete-preview');
+            if (!preview.ok) throw new Error('preview_failed');
+            var names = Array.isArray(preview.active_catgirl_names) ? preview.active_catgirl_names.filter(Boolean) : [];
+            var body = names.length
+                ? t('theater.deleteStoryActiveConfirm', '跟' + names.join('、') + '的演绎还未结束，是否确认删除？', { names: names.join('、') })
+                : t('theater.deleteStoryConfirm', '是否确认删除？');
+            var confirmed = await showModal({ title: t('theater.deleteStory', '删除剧本'), body: body, cancelLabel: t('common.cancel', '取消'), confirmLabel: t('theater.deleteStory', '删除剧本'), danger: true });
+            if (!confirmed) return;
+            var result = await requestJson(api.packages + '/' + encodeURIComponent(state.storyId), { method: 'DELETE' });
+            if (!result.ok) throw new Error('delete_failed');
+            state.stories = state.stories.filter(function (story) { return String(story.story_id) !== state.storyId; });
+            state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null;
+            renderStories(); renderDetail();
+            if (state.storyId) await selectStory(state.storyId);
+            setStatus('theater.storyDeleted', '剧本已删除');
+        } catch (_) { setFeedback(t('theater.storyDeleteFailed', '剧本删除失败，请重试。'), true); }
+        finally { setBusy(false); }
+    }
+    async function importStory(file) {
+        if (!file || state.busy) return;
+        setBusy(true);
+        try {
+            var payload = JSON.parse(await file.text());
+            var result = await requestJson(api.importStory, { method: 'POST', body: payload });
+            if (!result.ok) throw new Error(result.reason || 'import_failed');
+            await loadStories(String(result.package.story_id || ''));
+            setFeedback(t('theater.importStorySuccess', '剧本导入成功。'));
+        } catch (_) { setFeedback(t('theater.importStoryInvalid', '剧本格式未通过 Numeric v2 校验。'), true); }
+        finally { $('theater-import-input').value = ''; setBusy(false); }
+    }
+    // 记忆询问只消费服务端结束回执，不接收浏览器自行拼接的演绎正文。
+    async function maybePromptMemory() {
+        var receipt = state.pendingEnd;
+        if (state.memoryPromptActive || !receipt || !state.session || state.session.status !== 'ended' || state.session.session_id !== receipt.session_id) return;
+        // 同一次结束归档的重试必须复用稳定 ID；旧回执没有服务端 ID 时只在首次询问生成一次。
+        if (!receipt.archive_request_id) receipt.archive_request_id = createId('theater_archive_');
+        state.memoryPromptActive = true;
+        try {
+            while (state.pendingEnd === receipt) {
+                var remember = await showModal({
+                    title: t('theater.rememberPerformanceTitle', '是否让 N.E.K.O 记下本次演绎内容？'),
+                    body: t('theater.rememberPerformanceBody', '只会记录公开的演绎摘要和最近片段，不包含隐藏数值与路线条件。'),
+                    cancelLabel: t('theater.skipMemory', '暂不记录'), confirmLabel: t('theater.saveMemory', '记下本次演绎'), persistent: true
+                });
+                var body = { story_id: receipt.story_id, session_id: receipt.session_id, revision: receipt.revision, end_receipt_id: receipt.end_receipt_id };
+                setModalBusy(true);
+                $('theater-modal-body').textContent = remember
+                    ? t('theater.memorySaving', '正在记录本次演绎...')
+                    : t('theater.memorySkipping', '正在保留本次选择...');
+                var result;
+                try {
+                    result = await requestJson(remember ? api.archive : api.skipArchive, {
+                        method: 'POST',
+                        body: Object.assign(body, remember ? { archive_request_id: receipt.archive_request_id } : {})
+                    });
+                } catch (_) {
+                    result = { ok: false };
+                }
+                setModalBusy(false);
+                if (!result.ok) {
+                    $('theater-modal-error').hidden = false;
+                    $('theater-modal-error').textContent = t('theater.memorySaveFailed', '演绎记录写入失败，请稍后重试。');
+                    continue;
+                }
+                state.pendingEnd = null;
+                hideModal();
+                if (remember) setFeedback(t('theater.memorySaved', '本次演绎已记下。'));
+                break;
+            }
+        } finally {
+            state.memoryPromptActive = false;
+        }
+    }
+    async function loadStories(preferredStoryId) {
+        setStatus('theater.loading', '正在准备舞台...');
+        var result = await requestJson(api.stories);
+        if (!result.ok || !Array.isArray(result.stories)) throw new Error('stories_failed');
+        state.stories = result.stories;
+        var queryStoryId = new URLSearchParams(window.location.search).get('story_id') || '';
+        state.storyId = preferredStoryId || queryStoryId || String((state.stories[0] || {}).story_id || '');
+        if (!state.stories.some(function (story) { return String(story.story_id) === state.storyId; })) state.storyId = String((state.stories[0] || {}).story_id || '');
+        renderStories(); renderDetail();
+        if (state.storyId) await selectStory(state.storyId); else setStatus('theater.ready', '就绪');
+    }
+    // 本体结束演绎后只传定位回执；选择页重新读取服务端状态再显示询问。
+    function handleCrossWindowMessage(event) {
+        if (event && event.origin && event.origin !== window.location.origin) return;
+        var message = event && event.data;
+        if (!message || typeof message !== 'object') return;
+        if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
+        if (message.action === 'theater:post-end' && message.story_id && message.session_id && message.end_receipt_id) {
+            state.pendingEnd = message;
+            selectStory(String(message.story_id));
+        }
+    }
+    function bindModalKeyboard() {
+        $('theater-modal-cancel').addEventListener('click', function () { closeModal(false); });
+        $('theater-modal-confirm').addEventListener('click', function () { closeModal(true); });
+        document.addEventListener('keydown', function (event) {
+            if ($('theater-modal').hidden) return;
+            if (event.key === 'Escape') { event.preventDefault(); closeModal(false); return; }
+            if (event.key !== 'Tab') return;
+            var buttons = [$('theater-modal-cancel'), $('theater-modal-confirm')].filter(function (node) { return !node.disabled; });
+            if (!buttons.length) return;
+            var index = buttons.indexOf(document.activeElement);
+            if (index < 0) { event.preventDefault(); buttons[event.shiftKey ? buttons.length - 1 : 0].focus(); return; }
+            if (event.shiftKey && (index <= 0)) { event.preventDefault(); buttons[buttons.length - 1].focus(); }
+            else if (!event.shiftKey && index === buttons.length - 1) { event.preventDefault(); buttons[0].focus(); }
+        });
+    }
+    document.addEventListener('DOMContentLoaded', function () {
+        if (typeof BroadcastChannel !== 'undefined') {
+            try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
+        }
+        window.addEventListener('message', handleCrossWindowMessage);
+        bindModalKeyboard();
+        $('theater-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
+        $('theater-empty-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
+        $('theater-import-input').addEventListener('change', function () { importStory(this.files && this.files[0]); });
+        $('theater-start-btn').addEventListener('click', beginSession);
+        $('theater-continue-btn').addEventListener('click', continueSession);
+        $('theater-delete-btn').addEventListener('click', deleteStory);
+        loadStories().catch(function () { setStatus('theater.failed', '出错了'); setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true); });
+        postMessage({ action: 'theater:selector-ready' });
+    });
+})();

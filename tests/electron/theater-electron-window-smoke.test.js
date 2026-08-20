@@ -38,7 +38,12 @@ function startSmokeServer() {
         return;
       }
       if (url.pathname === '/theater') {
-        res.end('<!doctype html><html><body data-theater-app><h1>theater child</h1></body></html>');
+        res.end('<!doctype html><html><body data-theater-selector-app><h1>theater child</h1><script src="/static/js/window_controls.js"></script></body></html>');
+        return;
+      }
+      if (url.pathname === '/static/js/window_controls.js') {
+        res.setHeader('content-type', 'application/javascript; charset=utf-8');
+        res.end(fs.readFileSync(path.join(repoRoot, 'static/js/window_controls.js'), 'utf8'));
         return;
       }
       res.statusCode = 404;
@@ -58,7 +63,7 @@ function startSmokeServer() {
 function writeSmokeApp(tempDir) {
   const mainPath = path.join(tempDir, 'main.js');
   fs.writeFileSync(mainPath, `
-const { app, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-software-rasterizer');
@@ -71,6 +76,18 @@ const baseUrl = process.env.NEKO_THEATER_SMOKE_BASE_URL;
 function registerSmokeIpcHandlers() {
   ipcMain.handle('get-dark-mode', () => false);
   ipcMain.handle('set-dark-mode', (_event, enabled) => !!enabled);
+  ipcMain.handle('neko:host:is-maximized', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return !!(win && !win.isDestroyed() && win.isMaximized());
+  });
+  ipcMain.handle('neko:host:restore-window', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false };
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return { ok: true };
+  });
   ipcMain.on('neko:input-region-backend', (event) => {
     event.returnValue = {
       backend: 'smoke',
@@ -105,25 +122,37 @@ app.whenReady().then(() => {
     parent.webContents.once('did-create-window', (childWindow) => {
       childWindow.webContents.once('did-finish-load', async () => {
         try {
+          await new Promise((resolve) => setTimeout(resolve, 1600));
+          parent.show();
+          parent.focus();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          const parentFocusedBeforeRestore = require('electron').BrowserWindow.getFocusedWindow() === parent;
+          await parent.webContents.executeJavaScript(
+            "window.__theaterChild.postMessage({ type: 'neko:restore-window' }, window.location.origin)"
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200));
           const result = await childWindow.webContents.executeJavaScript(String.raw\`
             ({
               href: location.href,
-              hasTheaterRoot: !!document.querySelector('[data-theater-app]'),
+              hasTheaterRoot: !!document.querySelector('[data-theater-selector-app]'),
               hasHostClose: !!(window.nekoHost && typeof window.nekoHost.closeWindow === 'function'),
               hasMinimize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.minimize === 'function'),
               hasMaximize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.maximize === 'function'),
               hasMaximizedProbe: !!(window.nekoWindowControl && typeof window.nekoWindowControl.isMaximized === 'function'),
             })
           \`);
+          result.isAlwaysOnTop = childWindow.isAlwaysOnTop();
+          result.parentFocusedBeforeRestore = parentFocusedBeforeRestore;
+          result.childFocusedAfterRestore = require('electron').BrowserWindow.getFocusedWindow() === childWindow;
           console.log('NEKO_THEATER_SMOKE_RESULT ' + JSON.stringify(result));
-          finish(result.hasTheaterRoot && result.hasHostClose && result.hasMinimize && result.hasMaximize && result.hasMaximizedProbe ? 0 : 4);
+          finish(result.hasTheaterRoot && result.hasHostClose && result.hasMinimize && result.hasMaximize && result.hasMaximizedProbe && !result.isAlwaysOnTop && result.parentFocusedBeforeRestore && result.childFocusedAfterRestore ? 0 : 4);
         } catch (error) {
           console.error('NEKO_THEATER_SMOKE_FAIL evaluate ' + (error && error.stack || error));
           finish(3);
         }
       });
     });
-    await parent.webContents.executeJavaScript("window.open('/theater', '_blank')");
+    await parent.webContents.executeJavaScript("window.__theaterChild = window.open('/theater', 'neko_theater')");
   });
 });
 
@@ -186,4 +215,7 @@ test('Electron theater child window receives host window-control bridges', {
   assert.match(result.stdout, /"hasMinimize":true/);
   assert.match(result.stdout, /"hasMaximize":true/);
   assert.match(result.stdout, /"hasMaximizedProbe":true/);
+  assert.match(result.stdout, /"isAlwaysOnTop":false/);
+  assert.match(result.stdout, /"parentFocusedBeforeRestore":true/);
+  assert.match(result.stdout, /"childFocusedAfterRestore":true/);
 });

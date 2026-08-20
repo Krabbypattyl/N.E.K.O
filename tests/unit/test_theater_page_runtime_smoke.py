@@ -33,21 +33,29 @@ def _text_for(client: TestClient, path: str) -> str:
     return response.text
 
 
-def test_theater_chat_and_subtitle_pages_render_without_cross_injection():
-    """验证 theater、chat、subtitle 可并行渲染，且小剧场资源不会注入聊天/字幕页面。"""  # noqa: DOCSTRING_CJK
+def test_theater_selector_and_capsule_runtime_assets_are_scoped():
+    """选择器只在 theater，胶囊编排器只进入聊天宿主，字幕页不被注入。"""  # noqa: DOCSTRING_CJK
     with _build_pages_client() as client:
         theater_html = _text_for(client, "/theater")
         chat_html = _text_for(client, "/chat")
         subtitle_html = _text_for(client, "/subtitle")
 
-    assert "data-theater-app" in theater_html
-    assert "/static/js/theater.js" in theater_html
-    assert "/static/css/theater.css" in theater_html
+    assert "data-theater-selector-app" in theater_html
+    assert "/static/js/theater_selector.js" in theater_html
+    assert "/static/css/theater.css" not in theater_html
+    assert "/static/app/app-theater-runtime.js" not in theater_html
 
     assert "react-chat-window-root" in chat_html
-    assert "/static/js/theater.js" not in chat_html
-    assert "data-theater-app" not in chat_html
+    assert "/static/app/app-theater-runtime.js" in chat_html
+    assert "/static/js/theater_selector.js" not in chat_html
 
     assert "subtitle-display" in subtitle_html
-    assert "/static/js/theater.js" not in subtitle_html
-    assert "data-theater-app" not in subtitle_html
+    assert "/static/app/app-theater-runtime.js" not in subtitle_html
+    assert "/static/js/theater_selector.js" not in subtitle_html
+
+
+def test_retired_theater_pages_are_not_registered():
+    """旧模式页不再保留重定向，避免重新形成第二套入口。"""  # noqa: DOCSTRING_CJK
+    registered_paths = {route.path for route in pages_router.router.routes}
+    assert "/theater-home" not in registered_paths
+    assert "/theater-numeric" not in registered_paths

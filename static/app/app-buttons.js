@@ -3307,6 +3307,17 @@
             var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots && !hasExtraImages) return;
+            var theaterRuntime = window.nekoTheaterRuntime;
+            if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                if (hasScreenshots || hasExtraImages) {
+                    window.showStatusToast(
+                        window.t ? window.t('theater.imagesUnavailable') : '小剧场演绎暂不支持图片输入',
+                        3500
+                    );
+                    return false;
+                }
+                return theaterRuntime.handleComposerSubmit(text);
+            }
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
                 return false;

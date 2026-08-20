@@ -176,7 +176,8 @@ async def delete_numeric_v2_story_transactionally(
         raise NumericV2StoreError("numeric_story_delete_backup_failed") from exc
     try:
         deleted = await delete_numeric_v2_sessions(theater_root, story_id=story_id)
-        registry.delete_package(story_id)
+        # Registry 删除包含文件替换，必须离开事件循环执行。
+        await asyncio.to_thread(registry.delete_package, story_id)
         manifest["state"] = "committed"
         await asyncio.to_thread(_atomic_write_manifest, manifest_path, manifest)
     except BaseException:

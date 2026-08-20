@@ -1,1 +1,1 @@
-"""Theater MVP runtime package."""
+"""Numeric v2 theater runtime package."""

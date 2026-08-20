@@ -1,4 +1,4 @@
-"""提供自由模式和 Numeric v2 共用的最小人格、文本预算辅助。"""  # noqa: DOCSTRING_CJK
+"""提供 Numeric v2 使用的人格读取与 Prompt 文本预算辅助。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -26,32 +26,6 @@ _THEATER_EXCLUDED_PERSONA_FIELDS = frozenset(
         "一句话台词",
     }
 )
-
-
-def scoped_story_for_prompt(
-    story: dict[str, Any], *, max_background_tokens: int | None = None
-) -> dict[str, Any]:
-    """只把自由模式种子投影给模型，并按调用方预算裁剪背景。"""  # noqa: DOCSTRING_CJK
-    projected = dict(story)
-    background = str(story.get("background") or story.get("world_seed") or "")
-    if max_background_tokens is not None:
-        bounded = truncate_to_tokens(background, max_background_tokens)
-        projected["background"] = bounded
-        # Keep both legacy seed fields aligned so callers cannot accidentally
-        # bypass the bounded projection by reading world_seed.
-        projected["world_seed"] = bounded
-    return projected
-
-
-def _complete_model_text(
-    value: Any, max_tokens: int, *, max_chars: int | None = None
-) -> str | None:
-    """文本只有完整进入预算时才返回，避免把截断句交给模型。"""  # noqa: DOCSTRING_CJK
-    text = str(value or "")
-    if max_chars is not None and len(text) > max(0, int(max_chars)):
-        return None
-    bounded = truncate_to_tokens(text, max_tokens)
-    return text if bounded == text else None
 
 
 def truncate_prompt_value(value: Any, *, max_tokens: int, max_items: int = 8) -> Any:
@@ -246,7 +220,7 @@ def _load_character_profile(
         return ""
     catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
     current_name = str(characters.get("当前猫娘") or "").strip() if isinstance(characters, dict) else ""
-    # 请求参数不能读取其他猫娘的人格，保证自由模式和剧本模式都绑定当前用户角色。
+    # 请求参数不能读取其他猫娘的人格，保证 Numeric v2 始终绑定当前用户角色。
     if not isinstance(catgirls, dict) or name != current_name or name not in catgirls:
         return ""
     if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:

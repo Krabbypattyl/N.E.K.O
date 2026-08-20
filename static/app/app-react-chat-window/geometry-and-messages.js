@@ -755,6 +755,7 @@
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
                 && !element.classList.contains('neko-idle-cat1-compact-mirror')
+                && !element.classList.contains('modal-dialog-theater')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
@@ -1547,6 +1548,8 @@
             onTranslateToggle: I.handleTranslateToggle,
             onGalgameModeToggle: I.handleGalgameModeToggle,
             onGalgameOptionSelect: I.handleGalgameOptionSelect,
+            onTheaterSuggestedInputSelect: I.handleTheaterSuggestedInputSelect,
+            onTheaterEnd: I.handleTheaterEnd,
             onChoiceSelect: I.handleChoiceSelect,
             onCompactChatStateChange: I.handleCompactChatStateChange,
             onCompactMinimizeRequest: I.handleCompactMinimizeRequest,

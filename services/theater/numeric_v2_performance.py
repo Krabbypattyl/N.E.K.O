@@ -8,8 +8,70 @@ from typing import Any, Mapping
 MAX_CONTENT_BLOCKS = 16
 
 
+def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
+    """把“括号微动作 + 括号外对白”解析成确定性的内部内容块。"""  # noqa: DOCSTRING_CJK
+
+    text = str(value or "").strip()
+    if not text:
+        return []
+    pairs = {"（": "）", "(": ")"}
+    openers = frozenset(pairs)
+    closers = frozenset(pairs.values())
+    blocks: list[dict[str, str]] = []
+    buffer: list[str] = []
+    expected_close = ""
+
+    def flush(block_type: str) -> bool:
+        segment = "".join(buffer).strip()
+        buffer.clear()
+        if not segment:
+            return block_type == "dialogue"
+        if block_type == "narration":
+            blocks.append({"type": "narration", "text": segment})
+        else:
+            blocks.append({
+                "type": "dialogue",
+                "speaker_id": "active_catgirl",
+                "text": segment,
+            })
+        return len(blocks) <= MAX_CONTENT_BLOCKS
+
+    for char in text:
+        if expected_close:
+            if char in openers:
+                # 微动作不允许嵌套括号，避免 TTS 边界和展示边界产生歧义。
+                return []
+            if char in closers:
+                if char != expected_close or not flush("narration"):
+                    return []
+                expected_close = ""
+                continue
+            buffer.append(char)
+            continue
+        if char in openers:
+            if not flush("dialogue"):
+                return []
+            expected_close = pairs[char]
+            continue
+        if char in closers:
+            return []
+        buffer.append(char)
+
+    if expected_close or not flush("dialogue"):
+        return []
+    return blocks
+
+
 def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
-    """优先读取新有序内容；旧记录退化为“旁白在前、对白在后”。"""  # noqa: DOCSTRING_CJK
+    """优先解析新混合正文；旧记录继续按原内容块或分离字段读取。"""  # noqa: DOCSTRING_CJK
+
+    if "scene_narration" in container or "performance" in container:
+        blocks: list[dict[str, str]] = []
+        scene_narration = str(container.get("scene_narration") or "").strip()
+        if scene_narration:
+            blocks.append({"type": "narration", "text": scene_narration})
+        blocks.extend(mixed_performance_blocks(container.get("performance")))
+        return blocks[:MAX_CONTENT_BLOCKS]
 
     raw_content = container.get("content")
     if isinstance(raw_content, list):
@@ -99,10 +161,47 @@ def valid_ordered_content(
     )
 
 
+def valid_mixed_performance(
+    container: Mapping[str, Any],
+    *,
+    require_narration: bool = False,
+    require_dialogue: bool = False,
+) -> bool:
+    """校验新合同的混合正文，并复用解析结果判断动作与对白是否齐全。"""  # noqa: DOCSTRING_CJK
+
+    raw = container.get("performance")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    blocks = mixed_performance_blocks(raw)
+    if not blocks:
+        return False
+    block_types = {block["type"] for block in blocks}
+    return (
+        (not require_narration or "narration" in block_types)
+        and (not require_dialogue or "dialogue" in block_types)
+    )
+
+
+def valid_scene_narration(
+    container: Mapping[str, Any],
+    *,
+    allow_empty: bool = False,
+) -> bool:
+    """场景旁白使用独立字段，不能夹带未声明的结构。"""  # noqa: DOCSTRING_CJK
+
+    return (
+        isinstance(container.get("scene_narration"), str)
+        and (allow_empty or bool(container["scene_narration"].strip()))
+    )
+
+
 __all__ = [
     "MAX_CONTENT_BLOCKS",
     "content_blocks",
+    "mixed_performance_blocks",
     "performance_content_blocks",
     "performance_dialogue",
+    "valid_mixed_performance",
     "valid_ordered_content",
+    "valid_scene_narration",
 ]

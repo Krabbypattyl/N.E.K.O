@@ -137,34 +137,6 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
     assert first == second
 
 
-def _character_memory_theater_story() -> dict:
-    """返回角色生命周期测试需要的最小自由模式来源。"""  # noqa: DOCSTRING_CJK
-    return {
-        "id": "character_memory_theater_story",
-        "story_revision": "character-memory-v1",
-        "title": "角色生命周期测试来源",
-        "theme": "验证角色切换与改名时的自由 Session 清理",
-        "fact_lifecycle_migration_status": "complete",
-        "scenario_card": {
-            "player_role": "测试玩家",
-            "catgirl_role": "测试猫娘",
-            "primary_goal": "验证 Session 生命周期",
-        },
-        "restrictions": [],
-        "runtime_guardrails": {},
-        "seed": {"forbidden_assumptions": []},
-        "initial_scene_id": "character_memory_opening",
-        "scenes": [
-            {
-                "id": "character_memory_opening",
-                "title": "测试房间",
-                "text": "测试灯光保持稳定，场景只用于创建自由 Session。",
-            }
-        ],
-        "narrative_nodes": [],
-    }
-
-
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancelled_thread_call_returns_retained_lock_transaction():
@@ -1596,130 +1568,6 @@ async def test_character_management_and_recent_save_regression():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_character_switch_clears_theater_session_for_outgoing_catgirl():
-    with TemporaryDirectory() as td:
-        cm = _make_config_manager(Path(td))
-        bootstrap_local_cloudsave_environment(cm)
-
-        async def _noop_init():
-            return None
-
-        async def _noop_any(*args, **kwargs):
-            return None
-
-        with patch("utils.config_manager._config_manager", cm):
-            init_shared_state(
-                role_state={},
-                steamworks=None,
-                templates=None,
-                config_manager=cm,
-                logger=None,
-                initialize_character_data=_noop_init,
-                switch_current_catgirl_fast=_noop_any,
-                init_one_catgirl=_noop_any,
-                remove_one_catgirl=_noop_any,
-            )
-
-            characters_router_module = reload_module("main_routers.characters_router")
-            from services.theater import free_runtime, session_store
-
-            characters = cm.load_characters()
-            old_catgirl = characters["当前猫娘"]
-            new_catgirl = "测试切换猫娘"
-            characters["猫娘"][new_catgirl] = copy.deepcopy(characters["猫娘"][old_catgirl])
-            cm.save_characters(characters)
-
-            theater_root = Path(cm.app_docs_dir) / "theater"
-            # 该测试只验证角色切换清理生命周期；Actor 现在是开场事务的必需依赖，
-            # 因此用合格演绎结果隔离用户 API 配置，避免把模型缺失误当成清理失败。
-            with (
-                patch.object(
-                    free_runtime.llm,
-                    "generate_free_turn_async",
-                    new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
-                ),
-                patch.object(
-                    free_runtime.story_loader,
-                    "load_story",
-                    new=AsyncMock(return_value=_character_memory_theater_story()),
-                ),
-            ):
-                theater_session = await free_runtime.start_session(
-                    theater_root,
-                    lanlan_name=old_catgirl,
-                )
-            assert theater_session["ok"] is True, theater_session
-            switch_result = await characters_router_module.set_current_catgirl(
-                _DummyRequest({"catgirl_name": new_catgirl})
-            )
-
-            free_root = theater_root / free_runtime.FREE_SESSION_ROOT_NAME
-            session = await session_store.load_session(free_root, theater_session["session_id"])
-            active_index = await session_store.load_active_sessions(free_root)
-            assert switch_result["success"] is True
-            assert cm.load_characters()["当前猫娘"] == new_catgirl
-            assert session["ended_at"]
-            assert active_index == {}
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_character_switch_reloads_config_after_theater_wait():
-    """等待小剧场边界后必须合并最新角色配置，不能覆盖并发更新。"""  # noqa: DOCSTRING_CJK
-    with TemporaryDirectory() as td:
-        cm = _make_config_manager(Path(td))
-        bootstrap_local_cloudsave_environment(cm)
-
-        async def _noop_init():
-            return None
-
-        async def _noop_any(*args, **kwargs):
-            return None
-
-        with patch("utils.config_manager._config_manager", cm):
-            init_shared_state(
-                role_state={},
-                steamworks=None,
-                templates=None,
-                config_manager=cm,
-                logger=None,
-                initialize_character_data=_noop_init,
-                switch_current_catgirl_fast=_noop_any,
-                init_one_catgirl=_noop_any,
-                remove_one_catgirl=_noop_any,
-            )
-            characters_router_module = reload_module("main_routers.characters_router")
-            characters = cm.load_characters()
-            old_catgirl = characters["当前猫娘"]
-            new_catgirl = "等待后切换猫娘"
-            characters["猫娘"][new_catgirl] = copy.deepcopy(characters["猫娘"][old_catgirl])
-            cm.save_characters(characters)
-
-            async def _mutate_during_theater_wait(_config_manager, _old_catgirl, publish):
-                """在发布回调前模拟另一请求新增角色并完成写盘。"""  # noqa: DOCSTRING_CJK
-                latest = await cm.aload_characters()
-                latest["猫娘"]["并发新增猫娘"] = copy.deepcopy(latest["猫娘"][old_catgirl])
-                await cm.asave_characters(latest)
-                await publish()
-                return {"cleared": False}
-
-            # 公开 Router 包只导出接口，切换函数的全局依赖实际定义在 crud 子模块。
-            with patch(
-                "main_routers.characters_router.crud._publish_character_switch_with_theater_boundary",
-                _mutate_during_theater_wait,
-            ):
-                result = await characters_router_module.set_current_catgirl(
-                    _DummyRequest({"catgirl_name": new_catgirl})
-                )
-
-            saved = cm.load_characters()
-            assert result["success"] is True
-            assert saved["当前猫娘"] == new_catgirl
-            assert "并发新增猫娘" in saved["猫娘"]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
 async def test_add_catgirl_rejects_unsafe_dot_profile_name():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -1959,32 +1807,9 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 )
             assert add_result["success"] is True
 
-            # 把待改名角色设为当前猫娘并启动演出，验证改名后不会遗留旧名称的恢复入口。
-            from services.theater import free_runtime as theater_runtime, session_store as theater_session_store
-
             characters = cm.load_characters()
             characters["当前猫娘"] = "旧角色"
             cm.save_characters(characters)
-            theater_root = Path(cm.app_docs_dir) / "theater"
-            # 改名测试不评估模型质量；固定一条合法 Actor 输出后，只观察
-            # Session 是否随角色重命名按既有规则结束并清除恢复索引。
-            with (
-                patch.object(
-                    theater_runtime.llm,
-                    "generate_free_turn_async",
-                    new=AsyncMock(return_value={"ok": True, "text": "场景开始。"}),
-                ),
-                patch.object(
-                    theater_runtime.story_loader,
-                    "load_story",
-                    new=AsyncMock(return_value=_character_memory_theater_story()),
-                ),
-            ):
-                theater_session = await theater_runtime.start_session(
-                    theater_root,
-                    lanlan_name="旧角色",
-                )
-            assert theater_session["ok"] is True, theater_session
 
             old_memory_dir = Path(cm.memory_dir) / "旧角色"
             old_memory_dir.mkdir(parents=True, exist_ok=True)
@@ -2020,13 +1845,6 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             saved_characters = cm.load_characters()
             assert "新角色" in saved_characters.get("猫娘", {})
             assert "旧角色" not in saved_characters.get("猫娘", {})
-            free_root = theater_root / theater_runtime.FREE_SESSION_ROOT_NAME
-            saved_theater_session = await theater_session_store.load_session(
-                free_root,
-                theater_session["session_id"],
-            )
-            assert saved_theater_session["ended_at"]
-            assert await theater_session_store.load_active_sessions(free_root) == {}
             saved_profile = saved_characters["猫娘"]["新角色"]
             assert "我的改名记录" not in saved_profile
             rename_events = saved_profile["_reserved"]["ai_context"]["rename_events"]

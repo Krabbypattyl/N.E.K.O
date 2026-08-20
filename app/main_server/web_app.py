@@ -190,7 +190,6 @@ from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
-from main_routers.theater_router import router as theater_router  # noqa
 from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
 from main_routers.system_router import router as system_router  # noqa
@@ -510,8 +509,6 @@ app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
-app.include_router(theater_router)
-# Numeric v2 使用独立前缀和状态链路，不能合并进旧 /api/theater 路由。
 app.include_router(numeric_theater_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
