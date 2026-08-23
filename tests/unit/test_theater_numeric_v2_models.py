@@ -87,6 +87,175 @@ def test_numeric_v2_actor_projects_relationship_band_stage_without_raw_values():
     )
 
 
+def test_numeric_v2_actor_combines_metric_and_scene_relationship_limits():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["catgirl_situation"] = (
+        "她在观察玩家是否可信。关系上限：亲密；称呼已知。"
+    )
+    engine = NumericV2Engine.from_mapping(story)
+
+    low = numeric_v2_actor._relationship_control(engine, story["nodes"][0], {"trust": 20})
+    high = numeric_v2_actor._relationship_control(engine, story["nodes"][0], {"trust": 80})
+
+    assert low["metric_ceiling"] == "guarded"
+    assert low["scene_ceiling"] == "intimate"
+    assert low["effective_stage"] == "guarded"
+    assert high["effective_stage"] == "intimate"
+    assert "主动撒娇" in "、".join(low["forbidden_behaviors"])
+    assert "无限授权" in "、".join(low["forbidden_behaviors"])
+    assert "讨好式乖巧" in low["response_contract"]
+    assert "保留判断、条件或边界" in low["response_contract"]
+    assert "推荐输入也必须保持戒备边界" in low["response_contract"]
+
+
+def test_numeric_v2_actor_relationship_semantics_do_not_use_keyword_regex_guards():
+    assert not hasattr(numeric_v2_actor, "_LOW_RELATION_OBEDIENCE_RE")
+    assert not hasattr(numeric_v2_actor, "_AUTONOMY_SURRENDER_RE")
+    assert not hasattr(numeric_v2_actor, "_LOW_RELATION_SUGGESTION_CONTACT_RE")
+    assert not hasattr(numeric_v2_actor, "_validate_relationship_performance")
+
+
+def test_numeric_v2_actor_drops_duplicate_transition_style_before_fixed_context_fails(monkeypatch):
+    prefix = "以下 JSON 是已确定性结算的本回合数据：\n"
+    system_prompt = "固定规则"
+    data = {
+        "route_changed": True,
+        "source_story_beat": "来源目标" * 80,
+        "style_instruction": "重复风格建议" * 80,
+        "recent_openings": [],
+        "recent_suggestions": [],
+        "recent_context": [],
+        "player_input": "继续。",
+    }
+    essential = dict(data)
+    essential.pop("source_story_beat")
+    essential.pop("style_instruction")
+    limit = count_tokens(system_prompt) + count_tokens(
+        prefix + json.dumps(essential, ensure_ascii=False, separators=(",", ":"))
+    )
+    monkeypatch.setattr(numeric_v2_actor, "NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS", limit)
+
+    fitted = numeric_v2_actor._fit_turn_prompt_data(
+        system_prompt=system_prompt,
+        human_prefix=prefix,
+        data=data,
+    )
+
+    assert "source_story_beat" not in fitted
+    assert "style_instruction" not in fitted
+    assert fitted["player_input"] == "继续。"
+
+
+def test_numeric_v2_actor_applies_new_relationship_band_on_next_turn():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["catgirl_situation"] = "关系上限：亲密。"
+    engine = NumericV2Engine.from_mapping(story)
+    session = _session(engine)
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("relationship_delay", 0, "我会尊重你的决定。"),
+        (),
+    )
+    outcome = replace(
+        outcome,
+        session=replace(outcome.session, metrics={"trust": 80}),
+    )
+
+    messages = numeric_v2_actor._turn_messages(
+        engine,
+        session,
+        outcome,
+        "我会尊重你的决定。",
+        "温柔但重视自主选择。",
+        "测试猫娘",
+        "哥哥",
+    )
+    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+
+    assert payload["acting_context"]["relationship_control"]["effective_stage"] == "guarded"
+    assert "服从性表述或交权" in payload["relationship_guard"]
+
+
+def test_numeric_v2_actor_projects_partial_goal_progress_and_last_question():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = replace(
+        _session(engine),
+        revision=1,
+        node_turn_count=1,
+        processed_client_turn_ids=("previous",),
+        scene_goal_evidence={"goal.1": (1,)},
+        performance_history=({
+            "revision": 1,
+            "from_node_id": "start",
+            "to_node_id": "start",
+            "input_text": "把旧信放到桌上。",
+            "performance": "（看向旧信）可以先告诉我它从哪里来吗？",
+        },),
+    )
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("goal_recovery", 1, "外面雨停了吗？"),
+        (),
+    )
+
+    messages = numeric_v2_actor._turn_messages(
+        engine,
+        session,
+        outcome,
+        "外面雨停了吗？",
+        "安静而认真。",
+        "测试猫娘",
+        "哥哥",
+    )
+    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+
+    assert payload["current_story_beat"]["goal_progress"]["goal.1"] == {
+        "status": "in_progress",
+        "evidence_revisions": [1],
+    }
+    assert payload["interaction_recovery"]["previous_catgirl_question"] == "可以先告诉我它从哪里来吗？"
+    assert "先直接回应当前 player_input" in payload["interaction_recovery"]["rule"]
+
+
+def test_numeric_v2_actor_inverts_negative_relationship_metric():
+    story = numeric_v2_story()
+    story["metric_schema"]["trust"]["relationship_effect"] = "negative"
+    story["nodes"][0]["story_beat"]["catgirl_situation"] = "关系上限：亲密。"
+    engine = NumericV2Engine.from_mapping(story)
+
+    control = numeric_v2_actor._relationship_control(engine, story["nodes"][0], {"trust": 80})
+
+    assert control["effective_stage"] == "guarded"
+
+
+def test_numeric_v2_actor_uses_target_scene_relationship_limit_after_transition():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["catgirl_situation"] = "关系上限：亲密。"
+    story["nodes"][1]["story_beat"]["catgirl_situation"] = "关系上限：戒备。"
+    engine = NumericV2Engine.from_mapping(story)
+    cast = NumericV2CastProjection.from_story(
+        story,
+        catgirl_name="测试猫娘",
+        player_name="哥哥",
+    )
+
+    context = numeric_v2_actor._acting_context(
+        engine,
+        cast,
+        story["nodes"][0],
+        {"trust": 80},
+        "温柔体贴。",
+        target=story["nodes"][1],
+    )
+
+    assert context["relationship_control"]["effective_stage"] == "intimate"
+    assert context["target_relationship_control"]["effective_stage"] == "guarded"
+    # 换场目标关系合同最后交付，确保目标开场不会沿用来源幕的亲密许可。
+    assert list(context).index("relationship_control") < list(context).index(
+        "target_relationship_control"
+    )
+
+
 def test_numeric_v2_turn_request_rejects_input_over_token_limit():
     with pytest.raises(NumericV2RuntimeError, match="numeric_turn_input_too_long"):
         TurnRequestV2.from_mapping({
@@ -234,6 +403,72 @@ def test_numeric_v2_evaluator_projects_only_target_opening_after_long_transition
     assert source_response not in messages[1].content
     assert transition_bridge not in messages[1].content
     assert "这是触发上一幕完成的玩家输入" not in messages[1].content
+
+
+def test_numeric_v2_evaluator_keeps_recorded_goal_evidence_outside_recent_window():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["must_happen"] = [
+        "测试猫娘摄入能量、理解生命，并提出跟随玩家外出。",
+    ]
+    engine = NumericV2Engine.from_mapping(story)
+    records = []
+    for revision in range(1, 7):
+        performance = (
+            "（接上能量电池）核心温度恢复正常。"
+            if revision == 1
+            else f"（检查第{revision}项数据）继续确认当前状态。"
+        )
+        records.append({
+            "revision": revision,
+            "from_node_id": "start",
+            "to_node_id": "start",
+            "input_text": f"继续第{revision}项检查",
+            "performance": performance,
+        })
+    session = replace(
+        _session(engine),
+        node_turn_count=6,
+        revision=6,
+        performance_history=tuple(records),
+        scene_goal_evidence={"goal.1": (1,)},
+    )
+
+    messages = numeric_v2_evaluator._build_messages(engine, session, "接下来谈谈生命和外出。")
+    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+
+    assert [item["revision"] for item in payload["recent_context"]] == [3, 4, 5, 6]
+    assert [item["revision"] for item in payload["retained_goal_context"]] == [1]
+    assert "接上能量电池" in json.dumps(payload["retained_goal_context"], ensure_ascii=False)
+
+
+def test_numeric_v2_evaluator_returns_validated_goal_evidence_revisions():
+    story = numeric_v2_story()
+    engine = NumericV2Engine.from_mapping(story)
+    session = replace(
+        _session(engine),
+        node_turn_count=1,
+        revision=1,
+        performance_history=({
+            "revision": 1,
+            "from_node_id": "start",
+            "to_node_id": "start",
+            "input_text": "先听你说明。",
+            "performance": "（取出旧信）这就是我一直保留的证据。",
+        },),
+    )
+
+    result = numeric_v2_evaluator._parse_output(
+        json.dumps({
+            "scene_complete": False,
+            "metric_changes": {},
+            "goal_evidence": {"goal.1": [1]},
+        }),
+        engine,
+        "请继续。",
+        session,
+    )
+
+    assert result.goal_evidence == {"goal.1": (1,)}
 
 
 def test_numeric_v2_cast_projects_multi_word_source_names():
@@ -424,6 +659,70 @@ def test_numeric_v2_actor_history_excludes_previous_scene_response_after_transit
     assert history[-1]["player_input"] == "端出做好的早餐"
 
 
+def test_numeric_v2_actor_history_drops_old_turns_without_truncating_retained_turn():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    older = {
+        "from_node_id": "start",
+        "to_node_id": "start",
+        "input_text": "较早输入必须整轮抛弃",
+        "performance": "（整理旧纸张）这是较早事实。" * 20,
+    }
+    latest = {
+        "from_node_id": "start",
+        "to_node_id": "start",
+        "input_text": "最新输入必须完整保留",
+        "performance": "（把完整记录推到桌边）这是最新事实，不能被截成半句。",
+    }
+    session = replace(
+        _session(engine),
+        node_turn_count=2,
+        performance_history=(older, latest),
+    )
+    latest_row = numeric_v2_actor._history_row(latest)
+    budget = numeric_v2_actor._json_tokens([latest_row])
+
+    history = numeric_v2_actor._history(session, max_tokens=budget)
+
+    assert history == [latest_row]
+    assert "较早输入必须整轮抛弃" not in json.dumps(history, ensure_ascii=False)
+    assert "…" not in json.dumps(history, ensure_ascii=False)
+
+
+def test_numeric_v2_actor_turn_fields_are_not_truncated():
+    story = numeric_v2_story()
+    role_overlay = "她暂时负责守护花店，但会完整保留每一条剧情身份事实。" * 6
+    scene_state = "她正在逐项核对桌上的旧信、钥匙和雨伞，并保持当前角色卡的表达方式。" * 6
+    goal = "测试猫娘完整说明旧信的来源、保存过程和当前归属，不得省略任何已经写入剧本的事实。" * 4
+    story["catgirl_binding"]["role_overlay"] = role_overlay
+    story["nodes"][0]["story_beat"]["catgirl_situation"] = scene_state
+    story["nodes"][0]["story_beat"]["must_happen"] = [goal]
+    engine = NumericV2Engine.from_mapping(story)
+    session = _session(engine)
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("full_actor_fields", 0, "请继续完整说明。"),
+        (),
+        scene_complete=False,
+    )
+    core_persona = "温柔、认真，并且会用完整句子表达自己的边界。" * 12
+
+    messages = numeric_v2_actor._turn_messages(
+        engine,
+        session,
+        outcome,
+        "请继续完整说明。",
+        core_persona,
+        "测试猫娘",
+        "哥哥",
+    )
+    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+
+    assert payload["acting_context"]["story_role_context"] == role_overlay.replace("小岚", "测试猫娘")
+    assert payload["acting_context"]["current_scene_state"] == scene_state.replace("小岚", "测试猫娘")
+    assert payload["acting_context"]["core_persona"] == core_persona
+    assert payload["current_story_beat"]["pending_goals"] == [goal.replace("小岚", "测试猫娘")]
+
+
 @pytest.mark.asyncio
 async def test_numeric_v2_evaluator_calls_once_and_cannot_see_routes(monkeypatch):
     story = numeric_v2_story()
@@ -433,8 +732,8 @@ async def test_numeric_v2_evaluator_calls_once_and_cannot_see_routes(monkeypatch
         "scene_complete": False,
         "metric_changes": {
             "trust": {
-            "delta": 2,
-            "criterion_id": "trust.increase.1",
+                "strength": "normal",
+                "criterion_id": "trust.increase.1",
             },
         }
     }, ensure_ascii=False))
@@ -449,6 +748,14 @@ async def test_numeric_v2_evaluator_calls_once_and_cannot_see_routes(monkeypatch
         engine=engine,
         session=_session(engine),
         message="我会留下来把话说完。",
+        recent_ledger_events=({
+            "result_revision": 1,
+            "metric_changes": [{
+                "metric_id": "trust",
+                "delta": 1,
+                "criterion": "玩家兑现对小岚的承诺",
+            }],
+        },),
     )
 
     assert evaluation.scene_complete is False
@@ -461,10 +768,14 @@ async def test_numeric_v2_evaluator_calls_once_and_cannot_see_routes(monkeypatch
     assert "玩家兑现对测试猫娘的承诺" in prompt
     assert "玩家兑现对小岚的承诺" not in prompt
     assert "trust.increase.1" in prompt
-    assert "每项数值每回合最多只能出现一次" in prompt
+    assert '"relationship_effect":"positive"' in prompt
+    assert '"criterion_id":"trust.increase.1","delta":1' in prompt
+    assert "只能选择 weak、normal、strong、decisive" in prompt
+    assert "每项数值每回合最多一次" in prompt
     assert "只有本幕所有 pending_goals" in prompt
     assert "玩家纠正最近演绎中的错误事实" in prompt
     assert "要求共同决定、核对事实或设置协作边界" in prompt
+    assert "笼统要求观察、检查、确认与保证安全" in prompt
     assert '"phase":"opening"' in prompt
     assert '"content":[{"type":"narration","text":"开场"}]' in prompt
     assert '"current_scene_context"' in prompt
@@ -742,9 +1053,8 @@ async def test_numeric_v2_actor_calls_once_and_only_returns_performance(monkeypa
     assert "source_response、transition_bridge、target_opening" in prompt
     assert "目标 opening_scene 由 Runtime 确定性交付" in prompt
     assert "括号外全部是当前猫娘实际说出口的对白" in prompt
-    assert "章节标题只是软主题锚点" in prompt
-    assert "多个同样成立的候选焦点" in prompt
-    assert "不能覆盖 player_input、recent_context" in prompt
+    assert "章节标题只作同等候选焦点间的软主题锚点" in prompt
+    assert "不得覆盖玩家输入、已发生记录、目标、边界和过渡合同" in prompt
     assert "text inside Chinese full-width parentheses is a visible micro-action" in prompt
     assert "do not target a fixed number of actions" in prompt
     assert "no longer than 18 CJK characters or 12 words" in prompt
@@ -771,23 +1081,32 @@ async def test_numeric_v2_actor_calls_once_and_only_returns_performance(monkeypa
     assert "普通回合顶层字段必须且只能是 performance:string" in prompt
     assert "opening_phase=true 时顶层字段必须且只能是 scene_narration:string" in prompt
     assert "route_changed=true 时顶层字段必须且只能是 segments:object[]" in prompt
+    assert "relationship_control.response_contract 是本轮正文和推荐输入的直接演绎合同" in prompt
+    assert "不能在写完越界内容后只用解释、标签或自我声明声称合规" in prompt
     assert "我也是被中介骗来的" not in prompt
     assert turn_payload["story_context"]["background"] == full_background
     assert turn_payload["story_context"]["player_identity"] == full_player_identity.replace("林舟", "哥哥", 1)
     acting_context = turn_payload["acting_context"]
     assert acting_context["core_persona"] == "安静而认真。"
+    # JSON 字段顺序也属于单次模型调用的提示优先级：关系合同必须在核心人格之后收口。
+    assert list(acting_context).index("core_persona") < list(acting_context).index(
+        "relationship_control"
+    )
     assert acting_context["story_identity"] == full_catgirl_identity.replace("小岚", "测试猫娘", 1)
     assert acting_context["story_role_context"] == "她既期待重逢，又担心玩家再次离开。"
     assert acting_context["current_scene_state"] == "她在观察玩家是否可信。"
     assert acting_context["target_scene_state"] == "她在观察玩家是否可信。"
-    assert acting_context["relationship_state"] == {
-        "trust": {"label": "戒备", "stage": "lowest"},
+    assert acting_context["relationship_control"]["effective_stage"] == "guarded"
+    assert acting_context["relationship_control"]["metric_states"]["trust"] == {
+        "effect": "positive",
+        "label": "戒备",
+        "stage": "guarded",
     }
     assert "核心人格决定表达方式" in acting_context["priority_rule"]
     assert "不能覆盖核心人格" in acting_context["priority_rule"]
-    assert "当前可见亲密度上限" in acting_context["modulation_rule"]
-    assert "不得主动暧昧、占有、依赖" in acting_context["modulation_rule"]
-    assert "甜美、温柔或粘人只决定表达方式" in acting_context["modulation_rule"]
+    assert "实际关系阶段是亲密行为的硬上限" in acting_context["modulation_rule"]
+    assert "forbidden_behaviors 不得被角色卡、剧情身份或推荐输入绕过" in acting_context["modulation_rule"]
+    assert "核心人格只决定许可行为的表达方式" in acting_context["modulation_rule"]
     assert "role_overlay" not in turn_payload
     assert "current_metric_bands" not in turn_payload
     assert "catgirl_expression_profile" not in turn_payload
@@ -1174,24 +1493,16 @@ async def test_numeric_v2_actor_working_memory_preserves_latest_turn_facts(monke
     payload = json.loads(client.calls[0][1].content.split("：\n", 1)[1])
     latest_memory = payload["recent_context"][-1]
     assert sum(count_tokens(message.content) for message in client.calls[0]) <= 4800
-    assert list(payload)[-9:] == [
-        "recent_openings",
-        "recent_suggestions",
-        "acting_context",
-        "style_instruction",
-        "response_instruction",
-        "suggestion_contract",
-        "player_input",
-        "suggestion_instruction",
-        "factual_guard",
-    ]
+    assert list(payload)[-1] == "factual_guard"
+    assert list(payload).index("relationship_guard") < list(payload).index("factual_guard")
+    assert "interaction_recovery" in payload
     assert payload["player_input"] == "指出毛巾太脏无法使用，再次尝试沟通"
     assert "先回应 player_input" in payload["response_instruction"]
     assert payload["acting_context"]["core_persona"] == "安静而认真。"
-    assert payload["acting_context"]["relationship_state"] == {
-        "trust": {"label": "戒备", "stage": "lowest"},
-    }
-    assert payload["recent_openings"][-1].startswith("测试猫娘像是被踩到了尾巴的猫")
+    assert payload["acting_context"]["relationship_control"]["effective_stage"] == "guarded"
+    assert payload["acting_context"]["relationship_control"]["metric_states"]["trust"]["label"] == "戒备"
+    # 超预算时防重复辅助信息先整组舍弃，不能挤占最新完整演绎事实。
+    assert payload["recent_openings"] == []
     assert "are allowed when natural" in payload["style_instruction"]
     assert "avoid repeating the same opening structure" in payload["style_instruction"]
     assert latest_memory["player_input"] == "那我得洗澡啊"
@@ -1204,6 +1515,10 @@ async def test_numeric_v2_actor_working_memory_preserves_latest_turn_facts(monke
         "那里有一条旧毛巾，虽然是干的，但肯定有霉味。你自己拿去擦擦，别指望我会给你找换洗的衣服。"
     )
     prompt = client.calls[0][1].content
+    assert "旧回合 0" not in prompt
+    for retained in payload["recent_context"][:-1]:
+        index = int(retained["player_input"].split()[-1])
+        assert retained == numeric_v2_actor._history_row(older[index])
     assert "落满灰尘的储物柜" in prompt
     assert "虽然是干的，但肯定有霉味" in prompt
     assert "你自己拿去擦擦" in prompt
@@ -1304,12 +1619,15 @@ def test_numeric_v2_actor_keeps_core_persona_above_story_personality_language():
     assert quiet_context["story_identity"] == lively_context["story_identity"]
     assert quiet_context["story_role_context"] == lively_context["story_role_context"]
     assert quiet_context["current_scene_state"] == "她正处于高度应激和防备状态。"
+    assert quiet_context["relationship_control"]["effective_stage"] == "guarded"
+    assert "trust" not in quiet_context["capability_state"]
     assert "剧情身份和临时状态不能覆盖核心人格" in quiet_context["priority_rule"]
-    assert "关系状态只能调整信任、距离、亲密度和主动性" in quiet_context["modulation_rule"]
+    assert "实际关系阶段是亲密行为的硬上限" in quiet_context["modulation_rule"]
     assert quiet_payload["player_input"] == lively_payload["player_input"] == "你愿意听我解释吗"
     assert list(quiet_payload)[-1] == list(lively_payload)[-1] == "factual_guard"
     system_prompt = quiet_messages[0].content
-    assert "只有 core_persona 可以决定用词攻击性" in system_prompt
+    assert "core_persona 决定用词、语气和情绪表达方式" in system_prompt
+    assert "suggested_inputs 也必须服从相同的关系上限" in system_prompt
     assert "不得使用羞辱、恐吓或身体伤害威胁" in system_prompt
     assert "惩罚性命令、债务羞辱、暴力后果或永久控制" in system_prompt
     assert "把地板舔干净" not in system_prompt
@@ -1436,10 +1754,12 @@ async def test_numeric_v2_opening_only_projects_public_scene_anchor(monkeypatch)
     assert '"visible_player_history":[]' in prompt
     assert '"current_chapter_title":"重逢"' in prompt
     assert '"core_persona":"安静而认真。"' in prompt
-    assert (
-        '"relationship_state":{"trust":{"label":"戒备","stage":"lowest"}}'
-        in prompt
-    )
+    assert opening_payload["acting_context"]["relationship_control"]["effective_stage"] == "guarded"
+    assert opening_payload["acting_context"]["relationship_control"]["metric_states"]["trust"]["label"] == "戒备"
+    # 开场与普通回合使用同一优先级，不能让角色卡关系词覆盖低关系合同。
+    assert list(opening_payload["acting_context"]).index("core_persona") < list(
+        opening_payload["acting_context"]
+    ).index("relationship_control")
     assert "The character card determines wording, sentence length, initiative" in prompt
     assert '"opening_scene":"雨刚停，花店门铃轻轻响起。"' in prompt
     assert "测试猫娘尚未提起旧日来信" not in prompt
@@ -1465,7 +1785,7 @@ async def test_numeric_v2_evaluator_rejects_criterion_id_from_another_metric(mon
         "scene_complete": False,
         "metric_changes": {
             "trust": {
-                "delta": 2,
+                "strength": "normal",
                 "criterion_id": "affection.increase.1",
             },
         }
@@ -1508,7 +1828,7 @@ def test_numeric_v2_evaluator_ignores_unknown_metric_and_keeps_scene_result():
             "scene_complete": True,
             "metric_changes": {
                 "unknown_metric": {
-                    "delta": 3,
+                    "strength": "strong",
                     "criterion_id": "unknown_metric.increase.1",
                 },
             },
@@ -1519,3 +1839,38 @@ def test_numeric_v2_evaluator_ignores_unknown_metric_and_keeps_scene_result():
 
     assert result.scene_complete is True
     assert result.metric_changes == ()
+
+
+def test_numeric_v2_evaluator_rejects_model_supplied_delta():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+
+    with pytest.raises(
+        numeric_v2_evaluator.NumericV2EvaluatorOutputError,
+        match="numeric_v2_evaluator_changes_invalid",
+    ):
+        numeric_v2_evaluator._parse_output(
+            json.dumps({
+                "scene_complete": False,
+                "metric_changes": {
+                    "trust": {
+                        "delta": 5,
+                        "criterion_id": "trust.increase.1",
+                    },
+                },
+            }),
+            engine,
+            "我会留下来。",
+        )
+
+
+def test_numeric_v2_evaluator_requires_strong_goal_anchors():
+    goal = "女主通过无线脉冲干扰无人机，使其短暂悬停或偏离轨迹。"
+
+    assert numeric_v2_evaluator._strong_goal_match(
+        goal,
+        "无人机正在重新校准，出口仍被封锁。",
+    ) is False
+    assert numeric_v2_evaluator._strong_goal_match(
+        goal,
+        "无线脉冲命中后，无人机短暂悬停。",
+    ) is True

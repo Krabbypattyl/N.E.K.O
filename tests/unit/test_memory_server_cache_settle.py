@@ -112,6 +112,315 @@ async def test_cache_endpoint_writes_time_indexed_db():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cache_preserves_theater_metadata_in_recent_and_time_index():
+    """剧场来源与片段类型必须同时进入近期记忆和时间索引。"""  # noqa: DOCSTRING_CJK
+    from app import memory_server
+    from utils.llm_client import is_theater_memory_message
+
+    metadata = {
+        "source": "theater_numeric_v2",
+        "session_id": "theater_session",
+        "story_title": "雨夜合租",
+        "parts": [
+            {"kind": "scene_narration", "phase": "opening", "text": "雨点敲在窗沿。"},
+        ],
+    }
+    payload = json.dumps([
+        {"role": "assistant", "content": "雨点敲在窗沿。", "metadata": metadata},
+        {"role": "user", "content": "把合同递过去。", "metadata": metadata},
+    ], ensure_ascii=False)
+    fake_time_manager = MagicMock()
+    fake_time_manager.astore_conversation = AsyncMock(return_value=None)
+    fake_recent_history_manager = MagicMock()
+    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
+    fake_spawn_outbox = AsyncMock(return_value=None)
+    clear_review = AsyncMock(return_value=None)
+
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
+         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
+         patch.object(memory_server.gates, "_aclear_review_clean", clear_review):
+        result = await memory_server.cache_conversation(
+            memory_server.HistoryRequest(input_history=payload),
+            "测试角色",
+        )
+
+    recent_messages = fake_recent_history_manager.update_history.await_args.args[0]
+    indexed_messages = fake_time_manager.astore_conversation.await_args.args[1]
+    assert result == {"status": "cached", "count": 2}
+    assert all(is_theater_memory_message(message) for message in recent_messages)
+    assert all(is_theater_memory_message(message) for message in indexed_messages)
+    assert recent_messages[0].metadata["parts"][0]["kind"] == "scene_narration"
+    # 虚构玩家发言不应让普通对话 review 重新进入待审状态。
+    clear_review.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cache_upserts_theater_episode_summary_instead_of_appending():
+    """剧场单集胶囊必须走 Session upsert，并把周目元数据同步进时间索引。"""  # noqa: DOCSTRING_CJK
+
+    from app import memory_server
+    from utils.llm_client import SystemMessage
+
+    metadata = {
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_rain",
+        "session_id": "theater_session",
+        "story_title": "雨夜合租",
+        "episode_status": "completed",
+        "ending_title": "雨停之后",
+        "episode_summary": "两人保住了共同的住处。",
+    }
+    payload = json.dumps([{
+        "role": "system",
+        "content": "两人保住了共同的住处。",
+        "metadata": metadata,
+    }], ensure_ascii=False)
+    stored = SystemMessage(
+        content="两人保住了共同的住处。",
+        metadata={**metadata, "run_index": 2, "story_run_count": 2},
+    )
+    fake_time_manager = MagicMock()
+    fake_time_manager.areconcile_theater_conversations = AsyncMock(
+        return_value={"removed": 0, "stored": 1}
+    )
+    fake_recent_history_manager = MagicMock()
+    fake_recent_history_manager.upsert_theater_episode = AsyncMock(return_value=stored)
+    fake_recent_history_manager.aget_recent_history = AsyncMock(return_value=[stored])
+    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
+    fake_spawn_outbox = AsyncMock(return_value=None)
+
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
+         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox):
+        result = await memory_server.cache_conversation(
+            memory_server.HistoryRequest(input_history=payload),
+            "测试角色",
+        )
+
+    assert result == {"status": "cached", "count": 1}
+    fake_recent_history_manager.upsert_theater_episode.assert_awaited_once()
+    fake_recent_history_manager.update_history.assert_not_awaited()
+    events = fake_time_manager.areconcile_theater_conversations.await_args.args[0]
+    event_id, indexed = events["story_rain"]
+    assert indexed[0].metadata["run_index"] == 2
+    assert indexed[0].metadata["story_run_count"] == 2
+    assert event_id.startswith("theater-story-")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_forget_theater_memory_rebuilds_remaining_story_index():
+    """忘记一个剧本后，其他剧本的有界时间索引必须保留。"""  # noqa: DOCSTRING_CJK
+
+    from app import memory_server
+    from utils.llm_client import SystemMessage
+
+    remaining = SystemMessage(content="另一个剧本摘要", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_keep",
+        "session_id": "session_keep",
+    })
+    fake_recent = MagicMock()
+    fake_recent.forget_theater_story = AsyncMock(return_value=2)
+    fake_recent.aget_recent_history = AsyncMock(return_value=[remaining])
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(
+        return_value={"removed": 77, "stored": 1}
+    )
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time):
+        result = await memory_server.forget_theater_memory(
+            "测试角色",
+            memory_server.TheaterMemoryForgetRequest(story_id="story_forget"),
+        )
+
+    assert result == {
+        "ok": True,
+        "removed_recent": 2,
+        "removed_time_index": 77,
+    }
+    events = fake_time.areconcile_theater_conversations.await_args.args[0]
+    assert list(events) == ["story_keep"]
+
+
+@pytest.mark.unit
+def test_theater_episode_upsert_merges_session_and_caps_story_runs():
+    """同 Session 只留一份，重复游玩只保留同剧本最近三个周目胶囊。"""  # noqa: DOCSTRING_CJK
+
+    from memory.recent import _merge_theater_episode_summary
+    from utils.llm_client import AIMessage, SystemMessage, message_metadata
+
+    history = []
+    for run in range(1, 5):
+        metadata = {
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story_rain",
+            "session_id": f"session_{run}",
+            "story_title": "雨夜合租",
+            "episode_status": "completed",
+            "ending_title": f"结局{run}",
+            "episode_summary": f"第{run}次演绎摘要。",
+        }
+        history, _ = _merge_theater_episode_summary(
+            history,
+            SystemMessage(content=f"第{run}次演绎摘要。", metadata=metadata),
+        )
+
+    assert len(history) == 3
+    assert [message_metadata(message)["session_id"] for message in history] == [
+        "session_2",
+        "session_3",
+        "session_4",
+    ]
+    assert [message_metadata(message)["run_index"] for message in history] == [2, 3, 4]
+    assert message_metadata(history[-1])["story_run_count"] == 4
+    assert message_metadata(history[-1])["ending_titles_seen"] == [
+        "结局1",
+        "结局2",
+        "结局3",
+        "结局4",
+    ]
+
+    # 兼容迁移：同一 Session 的旧版多条正文会被一条最新完成胶囊替换，且不增加周目数。
+    legacy = [
+        AIMessage(content="旧开场", metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "story_legacy",
+            "session_id": "legacy_session",
+            "story_title": "旧剧本",
+            "episode_status": "paused",
+        }),
+        AIMessage(content="旧结局正文", metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "story_legacy",
+            "session_id": "legacy_session",
+            "story_title": "旧剧本",
+            "episode_status": "completed",
+            "ending_title": "旧结局",
+            "ending_summary": "旧剧本已经完成。",
+        }),
+    ]
+    incoming = SystemMessage(content="更新后的摘要。", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_legacy",
+        "session_id": "legacy_session",
+        "story_title": "旧剧本",
+        "episode_status": "completed",
+        "ending_title": "旧结局",
+        "episode_summary": "更新后的摘要。",
+    })
+    migrated, _ = _merge_theater_episode_summary(legacy, incoming)
+    assert len(migrated) == 1
+    assert message_metadata(migrated[0])["run_index"] == 1
+    assert message_metadata(migrated[0])["story_run_count"] == 1
+
+
+@pytest.mark.unit
+def test_theater_episode_upsert_caps_all_stories_to_thirty():
+    """剧本数量增长时，剧场胶囊不能无上限挤压普通对话。"""  # noqa: DOCSTRING_CJK
+
+    from memory.recent import _merge_theater_episode_summary
+    from utils.llm_client import HumanMessage, SystemMessage, message_metadata
+
+    normal_message = HumanMessage(content="普通对话必须保留。")
+    history = [normal_message]
+    for index in range(35):
+        history, _ = _merge_theater_episode_summary(
+            history,
+            SystemMessage(content=f"剧本 {index} 摘要", metadata={
+                "source": "theater_numeric_v2",
+                "memory_tier": "episode_summary",
+                "message_kind": "episode_summary",
+                "story_id": f"story_{index}",
+                "session_id": f"session_{index}",
+                "story_title": f"剧本 {index}",
+                "episode_summary": f"剧本 {index} 摘要",
+            }),
+        )
+
+    theater_messages = [
+        message for message in history if message_metadata(message).get("source") == "theater_numeric_v2"
+    ]
+    assert len(theater_messages) == 30
+    assert message_metadata(theater_messages[0])["story_id"] == "story_5"
+    assert normal_message in history
+
+
+@pytest.mark.unit
+def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, monkeypatch):
+    """时间索引重建应删除旧剧场全文，同时保留普通对话。"""  # noqa: DOCSTRING_CJK
+
+    from sqlalchemy import create_engine, text
+
+    from config import TIME_ORIGINAL_TABLE_NAME
+    from memory.timeindex import TimeIndexedMemory
+    from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+    from utils.llm_client.history import SQLChatMessageHistory
+
+    db_path = tmp_path / "time_indexed.db"
+    connection_string = f"sqlite:///{db_path}"
+    normal = HumanMessage(content="普通对话")
+    legacy = AIMessage(content="旧版完整演绎正文", metadata={
+        "source": "theater_numeric_v2",
+        "story_id": "story_legacy",
+        "session_id": "legacy_session",
+    })
+    SQLChatMessageHistory(
+        connection_string=connection_string,
+        session_id="normal_event",
+        table_name=TIME_ORIGINAL_TABLE_NAME,
+    ).add_message(normal)
+    SQLChatMessageHistory(
+        connection_string=connection_string,
+        session_id="legacy_event",
+        table_name=TIME_ORIGINAL_TABLE_NAME,
+    ).add_message(legacy)
+    with create_engine(connection_string).begin() as connection:
+        connection.execute(text(
+            f"ALTER TABLE {TIME_ORIGINAL_TABLE_NAME} ADD COLUMN timestamp DATETIME"
+        ))
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.engines["测试角色"] = create_engine(connection_string)
+    manager.db_paths["测试角色"] = str(db_path)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _name: None)
+    monkeypatch.setattr(manager, "_ensure_engine_exists", lambda *_args, **_kwargs: True)
+    summary = SystemMessage(content="有界摘要", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_legacy",
+        "session_id": "new_session",
+    })
+
+    result = manager.reconcile_theater_conversations(
+        {"story_legacy": ("theater-story-stable", [summary])},
+        "测试角色",
+    )
+
+    with manager.engines["测试角色"].connect() as connection:
+        rows = connection.execute(text(
+            f"SELECT session_id, message FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id"
+        )).fetchall()
+    assert result == {"removed": 1, "stored": 1}
+    assert [row[0] for row in rows] == ["normal_event", "theater-story-stable"]
+    assert "普通对话" in rows[0][1]
+    assert "有界摘要" in rows[1][1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cache_idempotency_key_skips_duplicate_memory_batch():
     """稳定键重试只能写一次 recent、time-indexed 和后续信号。"""  # noqa: DOCSTRING_CJK
 
@@ -374,6 +683,42 @@ async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
     # 复读嗅探仍 per-turn 跑（与 ON-mode 同款）
     fake_persona_manager.arecord_mentions.assert_awaited()
     fake_reflection_engine.arecord_mentions.assert_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_post_turn_signals_excludes_theater_from_reality_signals():
+    """剧场批次只做持久化，不参与事实、反馈、复读或人格信号。"""  # noqa: DOCSTRING_CJK
+    from app import memory_server
+    from utils.llm_client import AIMessage, HumanMessage
+
+    metadata = {"source": "theater_numeric_v2", "session_id": "theater_session"}
+    payload_messages = [
+        HumanMessage(content="我在虚构剧情里住 302。", metadata=metadata),
+        AIMessage(content="这是我们的剧本住处。", metadata=metadata),
+    ]
+    fake_fact_store = MagicMock()
+    fake_fact_store.extract_facts = AsyncMock(return_value=[])
+    fake_persona_manager = MagicMock()
+    fake_persona_manager.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection_engine = MagicMock()
+    fake_reflection_engine.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection_engine.aload_surfaced = AsyncMock(return_value=[{"feedback": None}])
+    fake_reflection_engine.check_feedback = AsyncMock(return_value=[])
+    record_turn = MagicMock(return_value=None)
+
+    with patch.object(memory_server.runtime, "fact_store", fake_fact_store), \
+         patch.object(memory_server.runtime, "persona_manager", fake_persona_manager), \
+         patch.object(memory_server.runtime, "reflection_engine", fake_reflection_engine), \
+         patch.object(memory_server.signal_extraction, "_signal_check_record_turn", record_turn), \
+         patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
+        await memory_server._run_post_turn_signals(payload_messages, "测试角色")
+
+    fake_fact_store.extract_facts.assert_not_awaited()
+    fake_persona_manager.arecord_mentions.assert_not_awaited()
+    fake_reflection_engine.arecord_mentions.assert_not_awaited()
+    fake_reflection_engine.check_feedback.assert_not_awaited()
+    record_turn.assert_not_called()
 
 
 @pytest.mark.unit

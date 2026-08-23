@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 import json
 import logging
@@ -33,9 +33,17 @@ _COMPOUND_DISCLOSURE_PATTERN = re.compile(
 )
 _QUANTIFIED_VALUE_PATTERN = re.compile(
     r"[零〇一二两三四五六七八九十百千万\d]+(?:个)?"
-    r"(?:小时|分钟|天|周|月|年|次|份|瓶|人|项|区|倍|元|块)"
+    r"(?:小时|分钟|天|周|月|年|次|份|瓶|人|架|项|区|倍|元|块)"
 )
 _PERIOD_SCOPE_PATTERN = re.compile(r"每(?:日|天|周|月|年)")
+_IDENTIFIER_PATTERN = re.compile(
+    r"[A-Za-z][A-Za-z0-9_]{3,}|[A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)+"
+)
+_METRIC_STRENGTHS = frozenset({"weak", "normal", "strong", "decisive"})
+_GOAL_KEYWORD_STOPLIST = frozenset({
+    "女主", "男主", "猫娘", "玩家", "两人", "双方", "当前", "已经", "成功", "完成",
+    "尝试", "开始", "继续", "进行", "主动", "明确", "表现", "提出", "说明", "并且",
+})
 
 
 class NumericV2EvaluatorError(RuntimeError):
@@ -56,6 +64,8 @@ class NumericV2EvaluationResult:
 
     metric_changes: tuple[MetricChangeV2, ...]
     scene_complete: bool
+    # 只保存正式演绎记录的 revision，不保存模型改写的事实摘要。
+    goal_evidence: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 def _band_label(definition: Mapping[str, Any], value: int) -> str:
@@ -112,6 +122,7 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
     if not session.performance_history:
         opening = session.opening_performance
         return [{
+            "revision": 0,
             "phase": "opening",
             "player_input": "",
             "content": _context_content(opening),
@@ -137,6 +148,7 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
     if not entered_current_node:
         opening = session.opening_performance
         result.append({
+            "revision": 0,
             "phase": "opening",
             "player_input": "",
             "content": _context_content(opening),
@@ -146,14 +158,35 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
             str(record.get("to_node_id") or "") == current_node_id
             and str(record.get("from_node_id") or "") != current_node_id
         )
-        result.append({
+        projected_record = {
             # 触发换场的输入属于旧幕，不能作为新幕已经发生的玩家行为再次判定。
             "phase": "scene_entry" if entered_from_other_node else "turn",
             "player_input": "" if entered_from_other_node else str(record.get("input_text") or ""),
             "content": _context_content(record),
-        })
-    # 装箱器的单列表上限是 8；调用方会再拆成 8 条较早证据和 4 条最近证据。
-    return result[-12:]
+        }
+        revision = record.get("revision")
+        if isinstance(revision, int) and not isinstance(revision, bool):
+            projected_record["revision"] = revision
+        result.append(projected_record)
+    return result
+
+
+def _retained_goal_context(
+    session: ScriptSessionV2,
+    scene_context: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """按 Session 保存的记录版本恢复目标证据，避免被最近四轮窗口挤掉。"""  # noqa: DOCSTRING_CJK
+
+    retained_revisions = {
+        revision
+        for revisions in session.scene_goal_evidence.values()
+        for revision in revisions
+    }
+    return [
+        item
+        for item in scene_context
+        if item.get("revision") in retained_revisions
+    ]
 
 
 def _cast_for_session(
@@ -321,10 +354,148 @@ def _compound_disclosure_anchors(goal_text: str) -> list[tuple[str, ...]]:
     return anchors
 
 
+def _goal_keywords(goal_text: str) -> tuple[str, ...]:
+    """提取四字以上的词面锚点，避免常见双字词把无关回合标成证据。"""  # noqa: DOCSTRING_CJK
+
+    keywords: list[str] = []
+    for chunk in re.findall(r"[\u3400-\u9fff]{4,}", goal_text):
+        if chunk in _GOAL_KEYWORD_STOPLIST:
+            continue
+        for index in range(len(chunk) - 3):
+            token = chunk[index:index + 4]
+            if token not in _GOAL_KEYWORD_STOPLIST:
+                keywords.append(token)
+    return tuple(sorted(dict.fromkeys(keywords), key=len, reverse=True))
+
+
+def _strong_goal_match(goal_text: str, source_text: str) -> bool:
+    """只用明确原句、具体值或两个独立长锚点保留原始记录。"""  # noqa: DOCSTRING_CJK
+
+    normalized_source = str(source_text or "")
+    exact_anchors = [
+        *(left or right for left, right in _EXPLICIT_PHRASE_PATTERN.findall(goal_text)),
+        *_QUANTIFIED_VALUE_PATTERN.findall(goal_text),
+        *_IDENTIFIER_PATTERN.findall(goal_text),
+    ]
+    if any(anchor and anchor in normalized_source for anchor in exact_anchors):
+        return True
+    matched_keywords = {
+        keyword
+        for keyword in _goal_keywords(goal_text)
+        if keyword in normalized_source
+    }
+    return len(matched_keywords) >= 2
+
+
+def _deterministic_goal_evidence(
+    engine: NumericV2Engine,
+    session: ScriptSessionV2,
+) -> dict[str, tuple[int, ...]]:
+    """保留与目标有词面交集的原记录；最终完成度仍完全交给 Evaluator。"""  # noqa: DOCSTRING_CJK
+
+    cast = _cast_for_session(engine, session)
+    goals = _story_beat_for_evaluator(
+        cast,
+        engine.nodes[session.current_node_id]["story_beat"],
+    )["pending_goals"]
+    result: dict[str, tuple[int, ...]] = {}
+    for goal in goals:
+        goal_text = str(goal.get("text") or "")
+        revisions: list[int] = []
+        owner = str(goal.get("owner") or "unspecified")
+        for record in _current_scene_context(session):
+            revision = record.get("revision")
+            if not isinstance(revision, int) or isinstance(revision, bool):
+                continue
+            content = record.get("content") or []
+            if owner == "player":
+                sources = [str(record.get("player_input") or "")]
+            elif owner == "environment":
+                sources = [
+                    str(block.get("text") or "")
+                    for block in content
+                    if isinstance(block, Mapping) and block.get("type") == "narration"
+                ]
+            elif owner == "catgirl":
+                sources = [
+                    str(block.get("text") or "")
+                    for block in content
+                    if isinstance(block, Mapping)
+                ]
+            else:
+                sources = [
+                    str(record.get("player_input") or ""),
+                    *[
+                        str(block.get("text") or "")
+                        for block in content
+                        if isinstance(block, Mapping)
+                    ],
+                ]
+            normalized = "".join(sources)
+            if _strong_goal_match(goal_text, normalized):
+                revisions.append(revision)
+        if revisions:
+            # 单项目标最多保留最近四条完整事实；复合目标仍有空间跨轮保存子条件。
+            result[str(goal["goal_id"])] = tuple(dict.fromkeys(revisions))[-4:]
+    return result
+
+
+def _metric_strength_delta(limit: int, strength: str) -> int:
+    """把有限强度枚举确定性映射为作者声明的单回合限幅。"""  # noqa: DOCSTRING_CJK
+
+    normalized_limit = max(1, int(limit))
+    if strength == "weak":
+        return 1
+    if strength == "normal":
+        return max(1, (normalized_limit + 2) // 3)
+    if strength == "strong":
+        return max(1, (normalized_limit * 2 + 2) // 3)
+    return normalized_limit
+
+
+def _recent_metric_awards(
+    engine: NumericV2Engine,
+    ledger_events: tuple[Mapping[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """投影最近已经奖励的依据，阻止同类措辞连续刷同一数值。"""  # noqa: DOCSTRING_CJK
+
+    awards: list[dict[str, Any]] = []
+    for event in ledger_events[-4:]:
+        revision = event.get("result_revision")
+        for change in event.get("metric_changes") or []:
+            if not isinstance(change, Mapping):
+                continue
+            metric_id = str(change.get("metric_id") or "")
+            definition = engine.metric_schema.get(metric_id)
+            delta = change.get("delta")
+            criterion = str(change.get("criterion") or "")
+            if (
+                not isinstance(definition, Mapping)
+                or isinstance(delta, bool)
+                or not isinstance(delta, int)
+                or delta == 0
+            ):
+                continue
+            direction = "increase" if delta > 0 else "decrease"
+            try:
+                criterion_index = list(definition[f"{direction}_criteria"]).index(criterion)
+            except (KeyError, ValueError):
+                continue
+            awards.append({
+                "revision": revision,
+                "metric_id": metric_id,
+                "criterion_id": f"{metric_id}.{direction}.{criterion_index + 1}",
+                "delta": delta,
+            })
+    return awards
+
+
 def _build_messages(
     engine: NumericV2Engine,
     session: ScriptSessionV2,
     message: str,
+    *,
+    recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
 ) -> list[Any]:
     node = engine.nodes[session.current_node_id]
     cast = _cast_for_session(engine, session)
@@ -359,6 +530,7 @@ def _build_messages(
                 max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
             ),
             "current_band": _band_label(definition, session.metrics[metric_id]),
+            "relationship_effect": str(definition.get("relationship_effect") or "none"),
             "per_turn_limit": definition["per_turn_limit"],
             "increase_criteria": increase_criteria,
             "decrease_criteria": decrease_criteria,
@@ -368,9 +540,13 @@ def _build_messages(
         "只依据作者给出的数值含义和增减依据评估玩家本回合行为。"
         "不能返回节点、路线、结局、after 值或新数值。"
         "没有明确命中依据时返回空 object，不要为了推进剧情强行改变数值。"
-        "metric_changes 必须是以 metric_id 为 key 的 object，因此每项数值每回合最多只能出现一次。"
-        "同一项数值命中多条依据时，只选择与本回合玩家输入最直接的一条，不叠加 delta。"
+        "metric_changes 以 metric_id 为 key，每项数值每回合最多一次；命中多条依据时只选最直接的一条。"
         "criterion_id 必须直接选用对应数值、对应增减方向中给出的规则 ID。"
+        "不得输出 delta，只能选择 weak、normal、strong、decisive；服务端按 per_turn_limit 换算。"
+        "weak 只用于刚刚达到依据的轻微行为；normal 用于明确且有实际结果的行为；strong 必须具有新成本、新风险或重要兑现结果；"
+        "decisive 只用于不可逆或足以改变剧情局势的关键行为。普通礼貌、关心或允许对方选择通常只能是 weak。"
+        "relationship_effect 为 positive 或 negative 的关系数值必须强调新证据；recent_metric_awards 已经奖励过同一 criterion_id 时，"
+        "仅仅换一种说法、重复礼貌或继续同一种态度不能再次变化，除非本轮出现更高成本、明确兑现或新的可验证结果。"
         "玩家纠正最近演绎中的错误事实、询问证据、否认自己没有做过的事，不等于玩家说谎、推责或违约；"
         "除非 recent_context 能证明玩家自己前后矛盾，否则这类纠错不能命中负向依据。"
         "负向变化必须由玩家本轮明确实施的行为完整命中对应依据；仅仅提出不同意见、要求共同决定、核对事实或设置协作边界，"
@@ -388,29 +564,61 @@ def _build_messages(
         "不得因为玩家本轮再次追问、尚未达到 recommended_turns，或希望继续丰富对白而重复判为 false。"
         "只有本幕所有 pending_goals 都已按各自 owner 找到完整证据时，scene_complete 才能为 true；"
         "不能因为达到轮数、准备换场或目标看起来合理就判定完成，拿不准时必须为 false。"
-        "只能输出 JSON：{\"scene_complete\":布尔值,\"metric_changes\":{\"数值ID\":{\"delta\":整数,\"criterion_id\":\"规则ID\"}}}。"
+        "goal_evidence 用 goal_id 映射到演绎记录 revision 数组；只要某条已提交记录为该目标的任一子条件提供了实质证据就应记录，"
+        "不要求整项目标已经完成。只能引用输入上下文中真实存在的 revision，不能引用当前尚未生成的回合。"
+        "retained_goal_context 是前几轮已经确认相关的原始记录，与 recent_context 具有同等事实效力。"
+        "goal_evidence 只返回证明目标子条件所必需的最小 revision 集合；不要把所有提到相似名词的回合都列入。"
+        "只能输出 JSON：{\"scene_complete\":布尔值,\"metric_changes\":{\"数值ID\":{\"strength\":\"weak|normal|strong|decisive\",\"criterion_id\":\"规则ID\"}},"
+        "\"goal_evidence\":{\"goal.1\":[记录revision]}}。"
         "没有任何变化时 metric_changes 输出空 object。"
+        "没有相关目标证据时 goal_evidence 输出空 object。"
     )
     fixed_data = {
         "current_story_beat": _story_beat_for_evaluator(cast, node["story_beat"]),
         "node_turn": session.node_turn_count + 1,
         "metrics": metrics,
+        "recent_metric_awards": _recent_metric_awards(engine, recent_ledger_events),
         "player_input": truncate_prompt_value(
             message,
             max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
         ),
     }
     scene_context = _current_scene_context(session)
+    recent_context = scene_context[-4:]
+    recent_revisions = {
+        item.get("revision")
+        for item in recent_context
+        if isinstance(item.get("revision"), int)
+    }
+    retained_goal_context = [
+        item
+        for item in _retained_goal_context(session, scene_context)
+        if item.get("revision") not in recent_revisions
+    ]
+    retained_revisions = {
+        item.get("revision")
+        for item in retained_goal_context
+        if isinstance(item.get("revision"), int)
+    }
+    earlier_context = [
+        item
+        for item in scene_context[:-len(recent_context)] if recent_context
+        if item.get("revision") not in retained_revisions
+    ] if recent_context else []
     while True:
-        recent_context = scene_context[-4:]
-        earlier_context = scene_context[:-len(recent_context)] if recent_context else []
         data = {
             "current_story_beat": fixed_data["current_story_beat"],
             "node_turn": fixed_data["node_turn"],
             "metrics": fixed_data["metrics"],
+            "recent_metric_awards": fixed_data["recent_metric_awards"],
             "recent_context": recent_context,
+            "retained_goal_context": retained_goal_context,
             "current_scene_context": earlier_context,
             "player_input": fixed_data["player_input"],
+            "metric_evidence_guard": (
+                "只陈述目标、担忧，或笼统要求观察、检查、确认与保证安全，不等于已经执行作者依据中的具体行动或方案；"
+                "需要实际行动、分析、方案或结果的依据，必须能从玩家本轮原话中找到对应的具体做法或已完成结果，否则不得改变数值。"
+            ),
             # 完成守卫放在本轮输入之后，避免模型在读完玩家提案后把提案内容
             # 错算成猫娘已经交付的剧情事实。
             "scene_completion_guard": {
@@ -435,11 +643,11 @@ def _build_messages(
         if (
             sum(count_tokens(item.content) for item in messages)
             <= NUMERIC_V2_EVALUATOR_INPUT_MAX_TOKENS
-            or len(scene_context) <= 1
+            or not earlier_context
         ):
             return messages
-        # 只从最早回合开始整条丢弃，最新事实及每条记录内部文本都保持完整。
-        scene_context = scene_context[1:]
+        # 只从尚未标记为目标证据的最早回合开始整条丢弃；已确认目标证据和最近四轮均保持完整。
+        earlier_context = earlier_context[1:]
 
 
 def _parse_output(
@@ -454,7 +662,11 @@ def _parse_output(
         payload = json.loads(content)
     except (TypeError, ValueError) as exc:
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_invalid_json") from exc
-    if not isinstance(payload, dict) or set(payload) != {"scene_complete", "metric_changes"}:
+    if (
+        not isinstance(payload, dict)
+        or not {"scene_complete", "metric_changes"}.issubset(payload)
+        or not set(payload).issubset({"scene_complete", "metric_changes", "goal_evidence"})
+    ):
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_fields_invalid")
     scene_complete = payload.get("scene_complete")
     if not isinstance(scene_complete, bool):
@@ -471,12 +683,65 @@ def _parse_output(
                 session.revision,
             )
             scene_complete = False
+    raw_goal_evidence = payload.get("goal_evidence", {})
+    if not isinstance(raw_goal_evidence, Mapping):
+        raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
+    goal_evidence: dict[str, tuple[int, ...]] = {}
+    if raw_goal_evidence:
+        if session is None:
+            raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
+        goal_count = min(
+            8,
+            len(engine.nodes[session.current_node_id]["story_beat"].get("must_happen") or []),
+        )
+        valid_goal_ids = {f"goal.{index + 1}" for index in range(goal_count)}
+        valid_revisions = {
+            item.get("revision")
+            for item in _current_scene_context(session)
+            if isinstance(item.get("revision"), int)
+        }
+        for raw_goal_id, raw_revisions in raw_goal_evidence.items():
+            goal_id = str(raw_goal_id or "")
+            if (
+                goal_id not in valid_goal_ids
+                or not isinstance(raw_revisions, list)
+                or any(isinstance(item, bool) or not isinstance(item, int) for item in raw_revisions)
+            ):
+                raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
+            revisions = tuple(dict.fromkeys(raw_revisions))[-4:]
+            if len(revisions) > 8 or any(revision not in valid_revisions for revision in revisions):
+                raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
+            if revisions:
+                goal_evidence[goal_id] = revisions
+        if len({revision for revisions in goal_evidence.values() for revision in revisions}) > 8:
+            raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
+    if session is not None:
+        # 模型可能漏填部分目标证据；词面锚点只负责把原始记录带到后续回合，
+        # 不会把 scene_complete 改成 true，也不会生成新的事实文本。
+        deterministic_evidence = _deterministic_goal_evidence(engine, session)
+        merged_evidence: dict[str, tuple[int, ...]] = {}
+        retained_revisions: set[int] = set()
+        goal_ids = dict.fromkeys((*goal_evidence, *deterministic_evidence))
+        for goal_id in goal_ids:
+            revisions = tuple(sorted(dict.fromkeys((
+                *goal_evidence.get(goal_id, ()),
+                *deterministic_evidence.get(goal_id, ()),
+            ))))[-4:]
+            kept = tuple(
+                revision
+                for revision in revisions
+                if revision in retained_revisions or len(retained_revisions) < 8
+            )
+            if kept:
+                merged_evidence[goal_id] = kept
+                retained_revisions.update(kept)
+        goal_evidence = merged_evidence
     raw_changes = payload.get("metric_changes")
     if not isinstance(raw_changes, Mapping):
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_changes_invalid")
     restored_changes = []
     for raw_metric_id, item in raw_changes.items():
-        if not isinstance(item, Mapping) or set(item) != {"delta", "criterion_id"}:
+        if not isinstance(item, Mapping) or set(item) != {"strength", "criterion_id"}:
             raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_changes_invalid")
         metric_id = str(raw_metric_id or "")
         definition = engine.metric_schema.get(metric_id)
@@ -487,13 +752,19 @@ def _parse_output(
                 metric_id,
             )
             continue
-        delta = item.get("delta")
-        if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0:
-            raise NumericV2EvaluatorOutputError("metric_delta_invalid")
-        direction = "increase" if delta > 0 else "decrease"
         criterion_id = str(item.get("criterion_id") or "").strip()
-        prefix = f"{metric_id}.{direction}."
-        if not criterion_id.startswith(prefix):
+        strength = str(item.get("strength") or "")
+        if strength not in _METRIC_STRENGTHS:
+            raise NumericV2EvaluatorOutputError("metric_change_strength_invalid")
+        increase_prefix = f"{metric_id}.increase."
+        decrease_prefix = f"{metric_id}.decrease."
+        if criterion_id.startswith(increase_prefix):
+            direction = "increase"
+            prefix = increase_prefix
+        elif criterion_id.startswith(decrease_prefix):
+            direction = "decrease"
+            prefix = decrease_prefix
+        else:
             raise NumericV2EvaluatorOutputError("metric_change_criterion_id_invalid")
         try:
             criterion_index = int(criterion_id.removeprefix(prefix)) - 1
@@ -504,7 +775,12 @@ def _parse_output(
             raise NumericV2EvaluatorOutputError("metric_change_criterion_id_invalid")
         restored_changes.append({
             "metric_id": metric_id,
-            "delta": delta,
+            "delta": (
+                1 if direction == "increase" else -1
+            ) * _metric_strength_delta(
+                int(definition["per_turn_limit"][direction]),
+                strength,
+            ),
             # Ledger 保存作者原文；规则 ID 和角色名投影只属于模型输入层。
             "criterion": criterion,
             # 玩家原话已经由服务端持有，不让模型重复生成或改写证据。
@@ -519,6 +795,7 @@ def _parse_output(
     return NumericV2EvaluationResult(
         metric_changes=changes,
         scene_complete=scene_complete,
+        goal_evidence=goal_evidence,
     )
 
 
@@ -548,6 +825,7 @@ class NumericV2MetricEvaluator:
         engine: NumericV2Engine,
         session: ScriptSessionV2,
         message: str,
+        recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
     ) -> NumericV2EvaluationResult:
         config = await _model_config(self.config_manager)
         set_call_type("theater_numeric_v2_evaluator")
@@ -562,7 +840,12 @@ class NumericV2MetricEvaluator:
                 max_completion_tokens=NUMERIC_V2_EVALUATOR_MAX_OUTPUT_TOKENS,
             )
             async with client:
-                messages = _build_messages(engine, session, message)
+                messages = _build_messages(
+                    engine,
+                    session,
+                    message,
+                    recent_ledger_events=recent_ledger_events,
+                )
                 request_messages = bound_prompt_messages(
                     messages,
                     max_tokens=NUMERIC_V2_EVALUATOR_INPUT_MAX_TOKENS,

@@ -317,6 +317,51 @@ display:grid;
 grid-template-columns:repeat(2,minmax(0,1fr));
 gap:14px}
 
+.theater-memory-card{
+margin-top:14px}
+
+.theater-memory-heading{
+display:flex;
+align-items:flex-start;
+justify-content:space-between;
+gap:14px}
+
+.theater-memory-heading p{
+color:var(--theater-muted);
+font-size:.82rem}
+
+.theater-memory-heading button{
+flex:0 0 auto}
+
+.theater-memory-list{
+display:grid;
+gap:8px;
+margin-top:14px}
+
+.theater-memory-row{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:12px;
+padding:10px 12px;
+border:1px solid var(--theater-line);
+border-radius:12px;
+background:var(--theater-panel)}
+
+.theater-memory-row>div{
+display:grid;
+gap:3px}
+
+.theater-memory-row span,.theater-memory-empty{
+color:var(--theater-muted);
+font-size:.78rem}
+
+.theater-memory-empty{
+margin:14px 0 0!important}
+
+.theater-memory-pin{
+min-height:34px}
+
 .theater-detail-actions{
 display:grid;
 grid-template-columns:repeat(3,minmax(0,1fr));
@@ -441,6 +486,12 @@ border-radius:18px}
 
 .theater-role-grid,.theater-detail-actions{
 grid-template-columns:1fr}
+
+.theater-memory-heading{
+display:grid}
+
+.theater-memory-heading button{
+width:100%}
 
 }
 

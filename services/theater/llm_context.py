@@ -248,7 +248,8 @@ def _load_character_profile(
     profile = "\n".join(dict.fromkeys(lines))
     if max_chars is not None:
         return profile[: max(0, int(max_chars))]
-    return truncate_to_tokens(profile, 320)
+    # Actor 负责按完整事实和完整回合装箱；这里不再从人格事实中间截断文本。
+    return profile
 
 
 def _load_player_address(config_manager: Any | None) -> str:

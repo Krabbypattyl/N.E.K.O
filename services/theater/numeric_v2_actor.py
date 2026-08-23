@@ -16,11 +16,8 @@ from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens
 
 from .llm_context import (
-    THEATER_PERSONA_MAX_CHARS,
     _load_character_profile,
     _load_player_address,
-    bound_prompt_messages,
-    truncate_prompt_value,
 )
 from .numeric_v2_cast import NumericV2CastProjection
 from .numeric_v2_performance import (
@@ -34,10 +31,6 @@ from .numeric_v2_runtime import NumericV2Engine, ScriptSessionV2, TurnOutcomeV2
 NUMERIC_V2_ACTOR_TIMEOUT_SECONDS = 35.0
 NUMERIC_V2_ACTOR_MAX_OUTPUT_TOKENS = 1600
 NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS = 4800
-NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS = 180
-# Actor 自己负责按完整记录装箱；通用装箱器不得再次裁断背景、身份或历史事实。
-NUMERIC_V2_ACTOR_BOUND_FIELD_MAX_TOKENS = NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS
-NUMERIC_V2_ACTOR_PLAYER_INPUT_MAX_TOKENS = 140
 NUMERIC_V2_ACTOR_HISTORY_MAX_TOKENS = 2200
 NUMERIC_V2_ACTOR_REPEAT_SIMILARITY = 0.65
 NUMERIC_V2_ACTOR_SUGGESTION_REPEAT_SIMILARITY = 0.8
@@ -70,11 +63,10 @@ NUMERIC_V2_ACTOR_PERSONA_PRIORITY_RULE = (
     "核心用词、语气、句长、主动性和情绪表达方式；临时状态只能改变她此刻如何表达核心人格，不能把她改写成另一种人格。"
 )
 NUMERIC_V2_ACTOR_RELATIONSHIP_RULE = (
-    "关系状态只能调整信任、距离、亲密度和主动性，不能改变核心人格。"
-    "好感、信任、亲密等关系型 metric 的 stage 是当前可见亲密度上限：lowest 只允许基本礼貌、有限软化和保持距离，"
-    "不得主动暧昧、占有、依赖或使用伴侣式亲昵称呼；middle 可以主动关心和靠近，但不能直接演成已经倾心或永久绑定；"
-    "highest 仍须由 recent_context 中已发生的事实支撑。甜美、温柔或粘人只决定表达方式，不代表关系已经建立；"
-    "低关系阶段也不授权敌视、羞辱或威胁。"
+    "实际关系阶段是亲密行为的硬上限。relationship_control 决定距离、触碰、亲昵称呼、暧昧、依赖和关系承诺；"
+    "forbidden_behaviors 不得被角色卡、剧情身份或推荐输入绕过。核心人格只决定许可行为的表达方式；"
+    "亲密表现仍须有 recent_context 事实支撑，低关系阶段也不授权敌视、羞辱或威胁。"
+    "换幕时 source_response 使用 relationship_control，target_opening 使用 target_relationship_control。"
 )
 NUMERIC_V2_ACTOR_SUGGESTION_CONTRACT = (
     "suggested_inputs 必须是点击后原样发送的玩家自然语言。"
@@ -105,6 +97,67 @@ NUMERIC_V2_ACTOR_OUTPUT_SCHEMA_INSTRUCTION = (
     "target_opening，字段只能是 phase、performance。不要照抄任何其他剧本、人物、地点、物品或推荐语。"
 )
 logger = logging.getLogger(__name__)
+
+_RELATIONSHIP_STAGES = ("stranger", "guarded", "cooperative", "trusted", "intimate")
+_RELATIONSHIP_STAGE_LABELS = {
+    "陌生": "stranger",
+    "戒备": "guarded",
+    "合作": "cooperative",
+    "信赖": "trusted",
+    "亲密": "intimate",
+}
+_RELATIONSHIP_CEILING_RE = re.compile(
+    r"(?:开场)?关系上限\s*[：:]\s*(陌生|戒备|合作|信赖|亲密)"
+)
+_RELATIONSHIP_BEHAVIORS = {
+    "stranger": {
+        "allowed": ["基本礼貌", "核验身份", "保持明显距离", "只授予可随时撤销的单次许可"],
+        "forbidden": ["主动肢体接触", "主动撒娇或依赖", "使用亲昵称呼", "作出关系承诺", "交出核心权限或无条件服从"],
+    },
+    "guarded": {
+        "allowed": ["有限软化", "说明边界", "在安全距离内回应", "授予用途和范围明确的临时许可"],
+        "forbidden": ["主动肢体接触", "主动撒娇或依赖", "暧昧试探", "伴侣式称呼或承诺", "无限授权或放弃自主判断"],
+    },
+    "cooperative": {
+        "allowed": ["主动协作", "表达普通关心", "分享与当前任务有关的信息", "授予当前任务所需的有限权限"],
+        "forbidden": ["恋人式肢体接触", "主动撒娇或依赖", "占有式表达", "确认爱意或永久绑定", "永久授权或把个人安全完全托付"],
+    },
+    "trusted": {
+        "allowed": ["主动信任", "表达明确关心", "有限度靠近", "分享敏感信息但保留撤销权"],
+        "forbidden": ["未经铺垫的恋人式接触", "强依赖或占有", "直接确认相爱", "永久关系承诺", "放弃人格、自主权或全部控制权限"],
+    },
+    "intimate": {
+        "allowed": ["在已发生事实支撑下表达亲密", "自然使用已建立的亲昵称呼"],
+        "forbidden": ["超出已发生事实的关系结论", "替玩家作出亲密选择或承诺"],
+    },
+}
+_RELATIONSHIP_RESPONSE_CONTRACTS = {
+    "stranger": (
+        "只把玩家当作尚待核验的陌生人。回应以确认环境、身份和自身安全为主，保持明显距离与自主判断；"
+        "面对命令式输入，动作必须由猫娘自己的安全判断驱动，只描写暂停、观察、核验或追问原因等可见行为，"
+        "不能评价她是否听话、乖巧或顺从，也不能叙述成服从玩家或等待许可；"
+        "接受具体安全或维修建议时，只能基于自我保护需要，并明确表现核验、疑问或保留，不能写成取悦玩家的乖巧、顺从、撒娇或索取关心；"
+        "推荐输入也必须保持陌生人边界，只能建议非接触的说明、询问或设备检查，不能建议玩家触碰、按住、拖拽、拥抱或强制她行动。"
+    ),
+    "guarded": (
+        "可以礼貌和有限软化，但仍要保留判断、条件或边界。执行具体建议时说明它为何对当前安全或任务必要；"
+        "面对命令式输入，动作必须由猫娘自己的安全判断驱动，只描写暂停、观察、核验或追问原因等可见行为，"
+        "不能评价她是否听话、乖巧或顺从，也不能叙述成服从玩家或等待许可；"
+        "不能把一次配合扩大成对玩家的顺从，不能用讨好式乖巧、主动依赖、索取关心、暧昧试探或主动接触来表达角色卡的甜美；"
+        "推荐输入也必须保持戒备边界，只能建议非接触的说明、询问或设备检查，不能建议玩家触碰、按住、拖拽、拥抱或强制她行动。"
+    ),
+    "cooperative": (
+        "把玩家当作当前任务中的合作对象。可以主动提供信息和普通关心，但每项许可必须有用途、范围和撤销权；"
+        "不能把协作写成撒娇依赖、恋人式接触、占有或关系承诺。"
+    ),
+    "trusted": (
+        "可以表现明确信任、有限靠近和分享敏感信息，但必须由已发生事实支撑，并保留自主判断与撤销权；"
+        "不能直接确认相爱、永久绑定、强依赖或交出全部控制权。"
+    ),
+    "intimate": (
+        "可以在已发生事实支撑下自然表达亲密，但不能替玩家作出亲密选择、承诺永久关系，或放弃人格、自主权和核心控制权。"
+    ),
+}
 
 
 class NumericV2ActorError(RuntimeError):
@@ -144,6 +197,74 @@ def _band_projection(
     return result
 
 
+def _relationship_metric_stage(
+    definition: Mapping[str, Any],
+    value: int,
+) -> str:
+    """把作者声明的关系数值方向投影为统一关系阶段，不依赖数值名称。"""  # noqa: DOCSTRING_CJK
+
+    bands = list(definition.get("bands") or [])
+    band_index = 0
+    for index, band in enumerate(bands):
+        if int(band["min"]) <= int(value) <= int(band["max"]):
+            band_index = index
+            break
+    if len(bands) <= 1:
+        return "cooperative"
+    closeness = band_index / (len(bands) - 1)
+    if definition.get("relationship_effect") == "negative":
+        closeness = 1 - closeness
+    stage_index = min(4, 1 + int(closeness * 3))
+    return _RELATIONSHIP_STAGES[stage_index]
+
+
+def _relationship_control(
+    engine: NumericV2Engine,
+    node: Mapping[str, Any],
+    metrics: Mapping[str, int],
+) -> dict[str, Any]:
+    """合并数值阶段和当前幕上限，向 Actor 只暴露可演绎的关系边界。"""  # noqa: DOCSTRING_CJK
+
+    scene_text = str(node.get("story_beat", {}).get("catgirl_situation") or "")
+    ceiling_match = _RELATIONSHIP_CEILING_RE.search(scene_text)
+    scene_ceiling = (
+        _RELATIONSHIP_STAGE_LABELS[ceiling_match.group(1)]
+        if ceiling_match
+        else "intimate"
+    )
+    metric_states: dict[str, dict[str, str]] = {}
+    metric_ceiling = "intimate"
+    projections = _band_projection(engine, metrics)
+    for metric_id, definition in engine.metric_schema.items():
+        effect = str(definition.get("relationship_effect") or "none")
+        if effect not in {"positive", "negative"}:
+            continue
+        stage = _relationship_metric_stage(definition, int(metrics[metric_id]))
+        projection = projections[metric_id]
+        metric_states[metric_id] = {
+            "effect": effect,
+            "label": projection["label"],
+            "stage": stage,
+        }
+        if _RELATIONSHIP_STAGES.index(stage) < _RELATIONSHIP_STAGES.index(metric_ceiling):
+            metric_ceiling = stage
+    effective_stage = min(
+        (metric_ceiling, scene_ceiling),
+        key=_RELATIONSHIP_STAGES.index,
+    )
+    behaviors = _RELATIONSHIP_BEHAVIORS[effective_stage]
+    return {
+        "metric_ceiling": metric_ceiling,
+        "scene_ceiling": scene_ceiling,
+        "effective_stage": effective_stage,
+        "metric_states": metric_states,
+        "allowed_behaviors": list(behaviors["allowed"]),
+        "forbidden_behaviors": list(behaviors["forbidden"]),
+        "response_contract": _RELATIONSHIP_RESPONSE_CONTRACTS[effective_stage],
+        "rule": "effective_stage 是实际关系硬上限，禁止行为不得由角色卡风格、剧情身份或推荐输入绕过。",
+    }
+
+
 def _story_context_for_actor(
     cast: NumericV2CastProjection,
     story: Mapping[str, Any],
@@ -164,40 +285,49 @@ def _acting_context(
     metrics: Mapping[str, int],
     character_profile: str,
     *,
+    relationship_metrics: Mapping[str, int] | None = None,
     target: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # 临时剧情信息先作为局势输入，核心人格和优先规则最后出现，降低长上下文中被覆盖的概率。
+    # 剧情身份先提供局势，核心人格随后决定表达方式；关系合同最后收口可演行为，
+    # 避免角色卡中的粘人、撒娇等关系依赖特质在低关系阶段被直接照演。
+    # 本轮新产生的关系变化从下一轮开始影响演绎，避免一次行为跨 band 后
+    # 在同一句回复里突然从戒备跳到亲密；能力类数值仍使用结算后的状态。
+    relationship_control = _relationship_control(
+        engine,
+        node,
+        relationship_metrics if relationship_metrics is not None else metrics,
+    )
+    capability_state = {
+        metric_id: projection
+        for metric_id, projection in _band_projection(engine, metrics).items()
+        if engine.metric_schema[metric_id].get("relationship_effect", "none") == "none"
+    }
     context: dict[str, Any] = {
         "story_identity": cast.text(engine.story["intro"]["catgirl_identity"]),
-        "story_role_context": truncate_prompt_value(
-            _sentence_safe_text(
-                cast.value(engine.story["catgirl_binding"]["role_overlay"]),
-                max_tokens=70,
-            ),
-            max_tokens=70,
-        ),
-        "current_scene_state": truncate_prompt_value(
-            _sentence_safe_text(
-                cast.text(node["story_beat"].get("catgirl_situation")),
-                max_tokens=80,
-            ),
-            max_tokens=80,
-        ),
-        "relationship_state": _band_projection(engine, metrics),
+        "story_role_context": str(cast.value(engine.story["catgirl_binding"]["role_overlay"]) or ""),
+        "current_scene_state": cast.text(node["story_beat"].get("catgirl_situation")),
+        "capability_state": capability_state,
     }
     if target is not None:
-        context["target_scene_state"] = truncate_prompt_value(
-            _sentence_safe_text(
-                cast.text(target["story_beat"].get("catgirl_situation")),
-                max_tokens=80,
-            ),
-            max_tokens=80,
+        context["target_scene_state"] = cast.text(target["story_beat"].get("catgirl_situation"))
+        target_control = _relationship_control(
+            engine,
+            target,
+            relationship_metrics if relationship_metrics is not None else metrics,
         )
     context.update({
-        "core_persona": truncate_prompt_value(character_profile, max_tokens=160),
+        "core_persona": str(character_profile or ""),
         "priority_rule": NUMERIC_V2_ACTOR_PERSONA_PRIORITY_RULE,
+        "relationship_control": relationship_control,
         "modulation_rule": NUMERIC_V2_ACTOR_RELATIONSHIP_RULE,
     })
+    if target is not None:
+        context["target_relationship_control"] = {
+            "effective_stage": target_control["effective_stage"],
+            "allowed_behaviors": target_control["allowed_behaviors"],
+            "forbidden_behaviors": target_control["forbidden_behaviors"],
+            "response_contract": target_control["response_contract"],
+        }
     return context
 
 
@@ -320,27 +450,6 @@ def _shares_time_anchor(value: Any, references: list[str]) -> bool:
     )
 
 
-def _sentence_safe_text(value: Any, *, max_tokens: int) -> str:
-    text = str(value or "").strip()
-    budget = max(0, int(max_tokens))
-    if not text or budget <= 0:
-        return ""
-    if count_tokens(text) <= budget:
-        return text
-    units = _sentence_units(text)
-    if not units:
-        return ""
-    first = units[0]
-    last = units[-1]
-    if first != last:
-        combined = first + "…" + last
-        if count_tokens(combined) <= budget:
-            return combined
-        if count_tokens(last) <= budget:
-            return last
-    return first if count_tokens(first) <= budget else ""
-
-
 def _history_row(record: Mapping[str, Any]) -> dict[str, Any]:
     row: dict[str, Any] = {
         "phase": "turn",
@@ -391,81 +500,8 @@ def _current_scene_history_row(
     }
 
 
-def _compact_performance_text(value: Any, *, text_tokens: int) -> str:
-    """按完整动作和完整对白压缩混合正文，不能裁出半个括号。"""  # noqa: DOCSTRING_CJK
-
-    blocks = mixed_performance_blocks(value)
-    if not blocks:
-        return _sentence_safe_text(value, max_tokens=text_tokens)
-    narration_indexes = [
-        index for index, block in enumerate(blocks) if block["type"] == "narration"
-    ]
-    selected = {
-        index for index, block in enumerate(blocks) if block["type"] == "dialogue"
-    }
-    if narration_indexes:
-        selected.update({narration_indexes[0], narration_indexes[-1]})
-    compacted: list[dict[str, str]] = []
-    for index, block in enumerate(blocks):
-        if index not in selected:
-            continue
-        text = _sentence_safe_text(block["text"], max_tokens=text_tokens)
-        if text:
-            compacted.append({**block, "text": text})
-    return _blocks_to_performance(compacted)
-
-
-def _compact_history_row(row: Mapping[str, Any], *, max_tokens: int) -> dict[str, Any] | None:
-    budget = max(0, int(max_tokens))
-    for text_tokens in (80, 48, 32, 20, 12):
-        candidate: dict[str, Any] = {
-            "phase": str(row.get("phase") or "turn"),
-            "player_input": _sentence_safe_text(
-                row.get("player_input"),
-                max_tokens=min(NUMERIC_V2_ACTOR_PLAYER_INPUT_MAX_TOKENS, max(20, text_tokens * 2)),
-            ),
-        }
-        if isinstance(row.get("segments"), list):
-            segments = []
-            for raw_segment in row["segments"][:3]:
-                if not isinstance(raw_segment, Mapping):
-                    continue
-                segment = {"phase": str(raw_segment.get("phase") or "")}
-                scene_narration = _sentence_safe_text(
-                    raw_segment.get("scene_narration"),
-                    max_tokens=text_tokens,
-                )
-                performance = _compact_performance_text(
-                    raw_segment.get("performance"),
-                    text_tokens=text_tokens,
-                )
-                if scene_narration:
-                    segment["scene_narration"] = scene_narration
-                if performance:
-                    segment["performance"] = performance
-                if len(segment) > 1:
-                    segments.append(segment)
-            candidate["segments"] = segments
-        else:
-            scene_narration = _sentence_safe_text(
-                row.get("scene_narration"),
-                max_tokens=text_tokens,
-            )
-            performance = _compact_performance_text(
-                row.get("performance"),
-                text_tokens=text_tokens,
-            )
-            if scene_narration:
-                candidate["scene_narration"] = scene_narration
-            if performance:
-                candidate["performance"] = performance
-        if _json_tokens(candidate) <= budget:
-            return candidate
-    return None
-
-
 def _history(session: ScriptSessionV2, *, max_tokens: int) -> list[dict[str, Any]]:
-    """当前场景开场和前文优先，超预算时从最早完整回合开始降级。"""  # noqa: DOCSTRING_CJK
+    """只保留当前访问的连续完整后缀，预算不足时整轮舍弃较早记录。"""  # noqa: DOCSTRING_CJK
 
     budget = max(0, min(int(max_tokens), NUMERIC_V2_ACTOR_HISTORY_MAX_TOKENS))
     opening = {
@@ -493,30 +529,18 @@ def _history(session: ScriptSessionV2, *, max_tokens: int) -> list[dict[str, Any
     ]
     if not rows:
         rows = [opening]
-    priorities = [len(rows) - 1]
-    if len(rows) > 1:
-        priorities.append(0)
-        priorities.extend(range(len(rows) - 2, 0, -1))
-    selected: dict[int, dict[str, Any]] = {}
-
-    for priority_index, order in enumerate(priorities):
-        row = rows[order]
-        current_rows = [selected[index] for index in sorted(selected)]
-        full_candidate = [*current_rows, row]
-        if priority_index == 0 and _json_tokens(full_candidate) <= budget:
-            selected[order] = row
+    selected: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        candidate = [row, *selected]
+        if _json_tokens(candidate) <= budget:
+            selected = candidate
             continue
-
-        remaining = budget - _json_tokens(current_rows)
-        per_record_limit = remaining if priority_index == 0 else (120 if order == 0 else 180)
-        per_record_budget = min(per_record_limit, max(0, remaining - 4))
-        compact = _compact_history_row(row, max_tokens=per_record_budget)
-        if compact is not None:
-            candidate = [*current_rows, compact]
-            if _json_tokens(candidate) <= budget:
-                selected[order] = compact
-
-    return [selected[index] for index in sorted(selected)]
+        # 一旦某个较早回合放不下，更早记录也不再回填，避免留下时间断层。
+        break
+    if not selected and rows:
+        # 最新回合是当前回应的直接前提；它不能被静默抛弃，最终总预算检查会明确报错。
+        return [rows[-1]]
+    return selected
 
 
 def _recent_openings(session: ScriptSessionV2) -> list[str]:
@@ -547,6 +571,27 @@ def _recent_suggestions(session: ScriptSessionV2) -> list[str]:
             if text and text not in suggestions:
                 suggestions.append(text)
     return suggestions[:6]
+
+
+def _latest_catgirl_question(session: ScriptSessionV2) -> str:
+    """提取上一轮最后一个猫娘问题，只用于提醒 Actor 回收未解决互动。"""  # noqa: DOCSTRING_CJK
+
+    if not session.performance_history:
+        return ""
+    dialogue = [
+        str(block.get("text") or "").strip()
+        for block in performance_content_blocks(session.performance_history[-1])
+        if block.get("type") == "dialogue" and str(block.get("text") or "").strip()
+    ]
+    if not dialogue:
+        return ""
+    questions = [
+        unit
+        for text in dialogue
+        for unit in _sentence_units(text)
+        if "？" in unit or "?" in unit
+    ]
+    return questions[-1] if questions else ""
 
 
 def _deduplicate_recent_suggestions(
@@ -658,31 +703,28 @@ def _beat_for_actor(
     cast: NumericV2CastProjection,
     beat: Mapping[str, Any],
     *,
-    field_max_tokens: int = NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
+    goal_evidence: Mapping[str, tuple[int, ...]] | None = None,
 ) -> dict[str, Any]:
     """只投影可演边界；完整章节正文是作者计划，不是当前已发生事实。"""  # noqa: DOCSTRING_CJK
 
     projected = cast.value(beat)
+    pending_goals = [str(item) for item in projected.get("must_happen") or []]
+    evidence = goal_evidence or {}
     return {
-        "opening_scene": truncate_prompt_value(
-            _opening_anchor(
-                projected.get("summary"),
-                projected.get("catgirl_situation"),
-            ),
-            max_tokens=field_max_tokens,
+        "opening_scene": _opening_anchor(
+            projected.get("summary"),
+            projected.get("catgirl_situation"),
         ),
-        "pending_goals": [
-            truncate_prompt_value(item, max_tokens=field_max_tokens)
-            for item in list(projected.get("must_happen") or [])[:8]
-        ],
-        "boundaries": [
-            truncate_prompt_value(item, max_tokens=field_max_tokens)
-            for item in list(projected.get("must_not_happen") or [])[:8]
-        ],
-        "scene_direction": truncate_prompt_value(
-            str(projected.get("transition_goal") or ""),
-            max_tokens=field_max_tokens,
-        ),
+        "pending_goals": pending_goals,
+        "goal_progress": {
+            f"goal.{index + 1}": {
+                "status": "in_progress" if evidence.get(f"goal.{index + 1}") else "unstarted",
+                "evidence_revisions": list(evidence.get(f"goal.{index + 1}", ())),
+            }
+            for index in range(len(pending_goals))
+        },
+        "boundaries": [str(item) for item in projected.get("must_not_happen") or []],
+        "scene_direction": str(projected.get("transition_goal") or ""),
         "fact_rule": "pending_goals 与 scene_direction 都是尚未完成的作者目标，不是已经发生的事实。",
     }
 
@@ -787,15 +829,16 @@ def _system_prompt(
         "混合项用中文引号标出台词，对白可自然使用‘我’；不剧透路线，"
         "不得写成“解释、询问、表示、保证、提出、展示、选择”等操作说明；"
         "若输入含 suggestion_instruction，第一条必须直接推动其中的 pending_goals，不得延伸无关琐事。"
-        "current_chapter_title 与 target_chapter_title 中的章节标题只是软主题锚点，用来概括当前或目标场景的关注方向；"
-        "它不是已发生事实、完成条件或必须逐字复述的文案，不能覆盖 player_input、recent_context、pending_goals、boundaries 或 transition_contract。"
-        "只有同场景存在多个同样成立的候选焦点，且玩家输入与已发生记录都未明确对象时，才优先选择与适用章节标题直接相关的焦点。"
-        "换场时 source_response 参考 current_chapter_title，transition_bridge 和 target_opening 参考 target_chapter_title。"
+        "章节标题只作同等候选焦点间的软主题锚点，不是事实、完成条件或复述文案，且不得覆盖玩家输入、已发生记录、目标、边界和过渡合同；"
+        "换场时来源回应参考当前标题，过渡与目标开场参考目标标题。"
         "作者节点、禁止事项和过渡合同是硬边界；不能创造新节点、路线、数值、事实或结局，"
         "不能提到数值、阈值、章节切换、route、系统或提示词。"
         "acting_context.core_persona 是唯一核心人格；story_identity、story_role_context、current_scene_state、"
-        "target_scene_state 和 relationship_state 只能提供身份、处境与关系变化，不能覆盖核心人格。"
-        "只有 core_persona 可以决定用词攻击性、亲昵称呼和情绪表达方式；剧情层中的敌视、傲娇、强势、占有欲或恐惧只说明当前冲突与距离，不授权照搬相应攻击语气。"
+        "target_scene_state、capability_state 和 relationship_control 只能提供身份、处境、能力与关系边界，不能覆盖核心人格。"
+        "core_persona 决定用词、语气和情绪表达方式；relationship_control.effective_stage 决定亲密行为上限。"
+        "suggested_inputs 也必须服从相同的关系上限。"
+        "relationship_control.response_contract 是本轮正文和推荐输入的直接演绎合同，必须先按它选择回应姿态，再生成文字；"
+        "不能在写完越界内容后只用解释、标签或自我声明声称合规。最终 JSON 不输出关系检查、推理过程或内部标签。"
         "除非 core_persona 明确把暴力威胁规定为核心表达方式，否则不得使用羞辱、恐吓或身体伤害威胁；警惕、拒绝和边界必须改写成符合核心人格的表达。"
         "温柔、甜美或治愈型 core_persona 不得用惩罚性命令、债务羞辱、暴力后果或永久控制来表达警惕，"
         "只能说明当前担忧、可执行边界与核验要求。"
@@ -827,6 +870,69 @@ def _system_prompt(
     )
 
 
+def _messages_tokens(messages: list[Any]) -> int:
+    return sum(count_tokens(str(getattr(message, "content", ""))) for message in messages)
+
+
+def _ensure_actor_messages_fit(messages: list[Any]) -> list[Any]:
+    """固定剧情合同不做运行时截断，超出总预算时返回明确错误。"""  # noqa: DOCSTRING_CJK
+
+    if _messages_tokens(messages) > NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS:
+        raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
+    return messages
+
+
+def _fit_turn_prompt_data(
+    *,
+    system_prompt: str,
+    human_prefix: str,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """只删除辅助信息和最早完整回合，不修改任何保留文本。"""  # noqa: DOCSTRING_CJK
+
+    fitted = dict(data)
+
+    def tokens() -> int:
+        human = human_prefix + json.dumps(fitted, ensure_ascii=False, separators=(",", ":"))
+        return count_tokens(system_prompt) + count_tokens(human)
+
+    # 防重复辅助信息不属于剧情事实，优先整组舍弃。
+    for field_name in ("recent_openings", "recent_suggestions"):
+        if tokens() <= NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS:
+            return fitted
+        fitted[field_name] = []
+
+    history = list(fitted.get("recent_context") or [])
+    while tokens() > NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS and len(history) > 1:
+        history.pop(0)
+        fitted["recent_context"] = list(history)
+
+    if (
+        tokens() > NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS
+        and fitted.get("route_changed") is True
+    ):
+        # 路线已经由 Runtime 确定性完成，换场时来源幕完整目标属于已消费合同；
+        # 目标幕边界、过渡合同和当前玩家输入继续完整保留。
+        fitted.pop("source_story_beat", None)
+
+    if (
+        tokens() > NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS
+        and fitted.get("route_changed") is True
+    ):
+        # 换场的结构、人格和关系合同已分别存在于系统提示与 acting_context；
+        # style_instruction 是重复的表现建议，可整字段舍弃以保住两幕事实和过渡合同。
+        fitted.pop("style_instruction", None)
+
+    while tokens() > NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS and history:
+        history.pop(0)
+        fitted["recent_context"] = list(history)
+
+    if tokens() > NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS:
+        # 当前玩家输入、稳定背景、目标幕合同和角色上下文都不可静默删除或裁成半句。
+        raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
+    return fitted
+
+
 def _opening_messages(
     engine: NumericV2Engine,
     character_profile: str,
@@ -843,10 +949,7 @@ def _opening_messages(
         "opening_phase": True,
         "visible_player_history": [],
         "story_context": _story_context_for_actor(cast, engine.story),
-        "current_chapter_title": truncate_prompt_value(
-            cast.text(node.get("chapter")),
-            max_tokens=NUMERIC_V2_ACTOR_FIELD_MAX_TOKENS,
-        ),
+        "current_chapter_title": cast.text(node.get("chapter")),
         "current_story_beat": _opening_beat_for_actor(cast, node["story_beat"]),
         "acting_context": _acting_context(
             engine,
@@ -864,13 +967,13 @@ def _opening_messages(
         ),
         "suggestion_contract": NUMERIC_V2_ACTOR_SUGGESTION_CONTRACT,
     }
-    return [
+    return _ensure_actor_messages_fit([
         SystemMessage(content=_system_prompt(
             catgirl_name=catgirl_name,
             player_address=player_address,
         )),
         HumanMessage(content=json.dumps(data, ensure_ascii=False, separators=(",", ":"))),
-    ]
+    ])
 
 
 def _turn_messages(
@@ -894,10 +997,7 @@ def _turn_messages(
         catgirl_name=catgirl_name,
         player_address=player_address,
     )
-    current_player_input = truncate_prompt_value(
-        player_input,
-        max_tokens=NUMERIC_V2_ACTOR_PLAYER_INPUT_MAX_TOKENS,
-    )
+    current_player_input = str(player_input or "")
     soft_pacing = _soft_pacing(
         source,
         session.node_turn_count + 1,
@@ -905,10 +1005,7 @@ def _turn_messages(
     )
     data: dict[str, Any] = {
         "story_context": _story_context_for_actor(cast, engine.story),
-        "current_chapter_title": truncate_prompt_value(
-            cast.text(source.get("chapter")),
-            max_tokens=60,
-        ),
+        "current_chapter_title": cast.text(source.get("chapter")),
         "node_turn": session.node_turn_count + 1,
         "minimum_turns_before_route": int(source.get("min_turns") or 1),
         "route_changed": route_changed,
@@ -928,38 +1025,22 @@ def _turn_messages(
         target_beat = _beat_for_actor(cast, target["story_beat"])
         target_opening = target_beat["opening_scene"]
         data.update({
-            "target_chapter_title": truncate_prompt_value(
-                cast.text(target.get("chapter")),
-                max_tokens=60,
-            ),
-            "source_story_beat": _beat_for_actor(
+            "target_chapter_title": cast.text(target.get("chapter")),
+            "source_story_beat": _beat_for_actor(cast, source["story_beat"]),
+            "target_story_beat": _transition_beat_for_actor(cast, target["story_beat"]),
+            "runtime_target_opening": target_opening,
+            "transition_contract": _transition_contract_for_actor(
                 cast,
-                source["story_beat"],
-                field_max_tokens=100,
-            ),
-            "target_story_beat": truncate_prompt_value(
-                _transition_beat_for_actor(cast, target["story_beat"]),
-                max_tokens=100,
-            ),
-            "runtime_target_opening": truncate_prompt_value(
-                target_opening,
-                max_tokens=100,
-            ),
-            "transition_contract": truncate_prompt_value(
-                _transition_contract_for_actor(
-                    cast,
-                    outcome.transition_contract,
-                    target_opening=target_opening,
-                    target_goals=list(target_beat.get("pending_goals") or []),
-                ),
-                max_tokens=100,
+                outcome.transition_contract,
+                target_opening=target_opening,
+                target_goals=list(target_beat.get("pending_goals") or []),
             ),
         })
     else:
         data["current_story_beat"] = _beat_for_actor(
             cast,
             source["story_beat"],
-            field_max_tokens=100,
+            goal_evidence=session.scene_goal_evidence,
         )
 
     human_prefix = "以下 JSON 是已确定性结算的本回合数据：\n"
@@ -972,6 +1053,7 @@ def _turn_messages(
             source,
             outcome.session.metrics,
             character_profile,
+            relationship_metrics=session.metrics,
             target=target if route_changed else None,
         ),
         "style_instruction": NUMERIC_V2_ACTOR_STYLE_INSTRUCTION,
@@ -991,6 +1073,17 @@ def _turn_messages(
         "suggestion_contract": NUMERIC_V2_ACTOR_SUGGESTION_CONTRACT,
         "player_input": current_player_input,
     }
+    latest_question = _latest_catgirl_question(session)
+    if not route_changed and latest_question:
+        response_tail["interaction_recovery"] = {
+            "previous_catgirl_question": latest_question,
+            "rule": (
+                "先直接回应当前 player_input。若当前输入没有回答这个问题，且该问题仍服务于未完成目标，"
+                "可在回应后用一句不同措辞自然带回一次；不得忽略当前输入、逐字重复问题或连续追问。"
+                "猫娘或环境拥有的目标在条件具备时应实际行动，不能无限等待玩家重复许可；"
+                "只有玩家才能完成的行为必须留给 suggested_inputs。"
+            ),
+        }
     if not route_changed and soft_pacing["phase"] in {"focus", "closure"}:
         # 把推荐语的收束目标放在整个输入末尾，只引导玩家下一步，不替 Runtime 强制完成当前幕。
         response_tail["suggestion_instruction"] = {
@@ -999,12 +1092,17 @@ def _turn_messages(
                 "performance 仍须先直接回应紧邻的 player_input；"
                 "第一条 suggested_inputs 必须是玩家点击后可原样发送、并直接推动上述尚未完成目标的台词或即时动作；"
                 "把目标改写成玩家此刻能直接说或做的内容，不得写成操作说明，也不得只延伸当前琐事；"
-                "对照 recent_context 跳过已经发生的部分，直接触发目标中仍未出现的关键结果，不能只重复或推进复合目标的一小部分；"
+                "对照 current_story_beat.goal_progress 和 recent_context 跳过已经发生的部分，直接触发目标中仍未出现的关键结果，不能只重复或推进复合目标的一小部分；"
                 "如果目标需要猫娘许可、表态或决定，就让玩家直接请求该结果，并在台词中主动接受必要边界；"
                 "如果剧本只给出期限、金额、编号或条款类别却没有具体值，推荐语必须让玩家主动提出一个方案，不能让玩家追问不存在的标准答案。"
             ),
         }
-    # 事实保护必须始终位于输入末尾，避免被节奏或推荐语规则稀释。
+    response_tail["relationship_guard"] = (
+        "严格服从 acting_context.relationship_control 的关系硬上限。"
+        "陌生或戒备阶段禁止主动靠近、触碰玩家、服从性表述或交权，推荐输入也不得建议亲密接触；"
+        "合作阶段只能授予当前任务所需且可撤销的有限权限。"
+    )
+    # 事实保护必须始终位于输入末尾，避免被节奏、关系或推荐语规则稀释。
     response_tail["factual_guard"] = (
         "最后核对：如果上述已发生事实和当前节点没有明确给出姓名、日期、编号、期限、金额、地点来历或完整经历，"
         "本轮必须直接说明暂时无法确认，禁止用看似合理的细节补空白；‘说明期限、权责或条款’这类类别名称本身不提供任何具体值。"
@@ -1013,17 +1111,18 @@ def _turn_messages(
         "玩家提议、猫娘的担忧或‘可以’‘就这么定’等含糊确认都不能代替这项对白交付。"
         "引号只约束对应目标实际交付时的措辞，不要求本轮一次说完全部目标；仍须服从 soft_pacing，normal 阶段每轮最多新交付一项 pending_goal。"
         "生成前逐项检查 recent_context：已经在猫娘对白中出现过的引号内容视为已交付，本轮不得重复，必须改为推进下一项尚未出现的 pending_goal。"
+        "goal_progress 的 in_progress 只表示已有部分原始证据，不表示整个目标完成；必须承接已有部分并补齐缺失结果，不能从头复演。"
     )
-    empty_history = {**data, "recent_context": [], **response_tail}
-    fixed_tokens = count_tokens(
-        human_prefix + json.dumps(empty_history, ensure_ascii=False, separators=(",", ":"))
+    data["recent_context"] = _history(
+        session,
+        max_tokens=NUMERIC_V2_ACTOR_HISTORY_MAX_TOKENS,
     )
-    history_budget = min(
-        NUMERIC_V2_ACTOR_HISTORY_MAX_TOKENS,
-        max(0, NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS - count_tokens(system_prompt) - fixed_tokens - 24),
-    )
-    data["recent_context"] = _history(session, max_tokens=history_budget)
     data.update(response_tail)
+    data = _fit_turn_prompt_data(
+        system_prompt=system_prompt,
+        human_prefix=human_prefix,
+        data=data,
+    )
     return [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":"))),
@@ -1259,7 +1358,6 @@ class NumericV2Actor:
         return _load_character_profile(
             self.config_manager,
             current_name,
-            max_chars=THEATER_PERSONA_MAX_CHARS,
         )
 
     def _current_catgirl_name(self) -> str:
@@ -1273,12 +1371,15 @@ class NumericV2Actor:
         profile = self._character_profile()
         catgirl_name = self._current_catgirl_name()
         player_address = _load_player_address(self.config_manager)
-        performance = await self._invoke(_opening_messages(
-            engine,
-            profile,
-            catgirl_name,
-            player_address,
-        ), opening_required=True)
+        performance = await self._invoke(
+            _opening_messages(
+                engine,
+                profile,
+                catgirl_name,
+                player_address,
+            ),
+            opening_required=True,
+        )
         return performance
 
     async def generate_turn(
@@ -1296,6 +1397,8 @@ class NumericV2Actor:
             outcome.ledger_event["from_node_id"]
             != outcome.ledger_event["to_node_id"]
         )
+        source = engine.nodes[str(outcome.ledger_event["from_node_id"])]
+        target = engine.nodes[str(outcome.ledger_event["to_node_id"])]
         cast = NumericV2CastProjection.from_story(
             engine.story,
             player_name=player_address,
@@ -1303,7 +1406,7 @@ class NumericV2Actor:
         )
         target_beat = _beat_for_actor(
             cast,
-            engine.nodes[str(outcome.ledger_event["to_node_id"])]["story_beat"],
+            target["story_beat"],
         )
         target_opening = target_beat["opening_scene"]
         performance = await self._invoke(
@@ -1368,6 +1471,7 @@ class NumericV2Actor:
         target_goals: list[str] | None = None,
     ) -> dict[str, Any]:
         set_call_type("theater_numeric_v2_actor")
+        request_messages = _ensure_actor_messages_fit(messages)
         started_at = time.monotonic()
         config_finished_at = started_at
         client_finished_at = started_at
@@ -1388,17 +1492,6 @@ class NumericV2Actor:
                 )
                 client_finished_at = time.monotonic()
                 async with client:
-                    request_messages = bound_prompt_messages(
-                        messages,
-                        max_tokens=NUMERIC_V2_ACTOR_INPUT_MAX_TOKENS,
-                        # 背景、身份和 performance 已由 Actor 专用装箱控制，不能再按单字段截断。
-                        field_max_tokens=NUMERIC_V2_ACTOR_BOUND_FIELD_MAX_TOKENS,
-                        # 推荐输入的直接表达规则和完整 JSON 合同都属于不可裁剪规则，总输入预算仍保持 4800 不变。
-                        system_max_tokens=1900,
-                    )
-                    if [item.content for item in request_messages] != [item.content for item in messages]:
-                        # 宁可让本轮失败并保留玩家输入，也不能把残缺身份或半句历史交给 Actor。
-                        raise NumericV2ActorError("numeric_v2_actor_input_budget_exceeded")
                     response = await client.ainvoke(request_messages)
                     request_finished_at = time.monotonic()
                     parsed = _parse_output(

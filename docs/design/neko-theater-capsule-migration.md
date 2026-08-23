@@ -65,7 +65,7 @@
 | 输入提交 | `app-buttons.js` 给 `reactChatWindowHost.setOnComposerSubmit()` 绑定普通聊天发送 | 在统一发送入口增加“剧场激活时交给剧场控制器”的窄分流，不能覆盖或重复绑定宿主回调 |
 | 胶囊宿主 | `static/app/app-react-chat-window/*` 暴露 `openWindow`、`setViewProps`、草稿回滚等 API | 增加剧场表现 API，但保持普通聊天默认值完全不变 |
 | TTS | Numeric Router 当前把同回合全部对白用换行拼成一次 `speak_committed_line()` | 改为由本体按已提交 block 坐标逐句请求；不能继续整段拼接 |
-| 记忆写入 | 普通聊天每回合调用 memory server `/cache/{lanlan_name}`；小游戏归档会把有限公开尾部和一条结构化摘要交给同一入口 | 剧场新增服务端归档适配，复用 `/cache`，不让前端直写 `recent.json`，不在结束前台增加摘要模型调用 |
+| 记忆写入 | 普通聊天每回合调用 memory server `/cache/{lanlan_name}` | 剧场服务端从完整 Session 确定性生成一条单集摘要胶囊并复用 `/cache`；同 Session upsert，每个 Story 在 recent 与时间索引中都只保留最近三个周目，不让前端直写记忆文件，不在结束前台增加摘要模型调用 |
 | 头部气泡 | `avatar-reaction-bubble.js` 思考态显示“。。。”，其他状态只切换情绪主题 / 图案，不显示回复文本 | 保持气泡职责，不把剧场对白再复制到头部气泡 |
 | Live2D 情绪动作 | `live2d-emotion.js` 的 fallback 只改 `ParamAngleX/Y`，不是模型整体位移 | 新增剧场专属整体表现层，不能覆盖模型的用户位置与缩放 |
 | 跨窗口通信 | `app-interpage` 已使用 `BroadcastChannel('neko_page_channel')`，并有同源 `postMessage` 后备 | 增加剧场命名空间和确认回执，不复用教程专属 action |
@@ -540,19 +540,23 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 
 剧本选择页定位到刚结束的剧本后，使用页面现有对话框体系弹出模态询问：“是否让 N.E.K.O 记下本次演绎内容？”操作为“记下本次演绎”和“暂不记录”。焦点进入弹窗后先落在标题或正文，Tab 只在弹窗内循环；Esc、关闭按钮和明确点击“暂不记录”都表示拒绝写入，不能把关闭行为解释为同意。
 
-“记下本次演绎”表示写入一份紧凑、公开的剧场记忆，不是把 Session、Ledger 或完整隐藏状态复制进记忆目录。复用当前小游戏归档和普通聊天的 memory server `/cache/{lanlan_name}` 链路：
+“记下本次演绎”表示把公开演绎交给现有记忆系统管理，不是把 Session、Ledger 或完整隐藏状态复制进记忆目录。复用普通聊天的 memory server `/cache/{lanlan_name}` 链路：
 
 1. 剧本页调用新的剧场归档端点，只提交 `story_id`、`session_id`、结束 revision、`end_receipt_id` 和稳定 `archive_request_id`，不上传自行拼接的 transcript；
 2. 服务端重新读取已结束 Session，校验 Story、不可变 `character_id`、revision 和当前角色绑定；
-3. 服务端确定性生成一条公开摘要，并附带按完整回合裁剪的有限演绎尾部，再交给 `/cache/{lanlan_name}`；玩家行动映射为 `human`，猫娘对白映射为 `ai`，旁白和剧场归档摘要映射为 `system`，与现有记忆消息格式对齐；
-4. 摘要只允许包含剧本名、公开结局或结束位置、玩家公开行动、公开旁白和猫娘公开对白；隐藏数值、band、阈值、路线条件、Evaluator 原始结果、推荐输入和内部节点 ID 一律排除；
-5. 本次写入不在按钮前台新增摘要 LLM。后续事实提取、压缩和晋升继续由现有记忆系统的后台策略处理；
-6. 归档以 Session ID 与退出 revision 幂等，同一次退出的重复点击、刷新重试和迟到响应不能产生重复记忆；继续若产生新 revision，下一次退出生成新的回执；写入回执保存在独立归档状态中，不修改剧情事实与 Ledger；
-7. 写入期间弹窗按钮禁用并显示“正在记录…”；成功后关闭弹窗，在该剧本详情显示“本次演绎已记下”的就地成功反馈；失败时弹窗保留并提供“重试”“暂不记录”，不能绕过未决记忆选择直接恢复；
-8. 点击“暂不记录”只把本次 receipt 标记为 skipped，不删除 Session，也不影响从选剧页继续或重新开始；
-9. 页面刷新时可按 `end_receipt_id` 恢复 pending / writing / written / skipped 状态。若玩家直接关闭整个剧本窗口，不能后台默认写入；未决 receipt 下次回到该剧本页时可以继续询问。
+3. 完整玩家输入、旁白、转场、动作和猫娘对白先保存在 Session；玩家确认记忆后，服务端先原子写入不对列表暴露的待提交冷档案，memory server 成功后再发布到 `public_archives`。重新开始删除恢复槽位 Session 后，已确认记忆的旧周目仍可按 Story ID、Session ID 查阅，但不复制进普通 recent Prompt；
+4. 每次成功归档只确定性生成一条 `system` 单集摘要胶囊。`metadata.source=theater_numeric_v2`、`memory_tier=episode_summary`，并保存 Story、Session、剧本标题、暂停或结局状态、摘要和 revision 范围；胶囊不是玩家或猫娘的一句对白；
+5. 同一 Session 继续演绎后再次归档时，memory server 以 `story_id + session_id` upsert 原胶囊，暂停状态被最新完成状态替换，不生成第二份剧本标题或重复周目；
+6. 重新开始产生的新 Session 视为新周目。每个 Story 在近期工作记忆中只保留最近三个周目胶囊，全部 Story 合计最多三十条；`time_indexed.db` 以 recent 有界集合重建，删除旧版剧场全文和已淘汰事件。每个 Story × 角色默认保留最近五份未收藏完整档案，收藏档案额外保留；
+7. 单集摘要只使用玩家可见演绎和公开结局生成，不包含隐藏数值、band、阈值、路线条件、Evaluator 原始结果、推荐输入、内部节点 ID 或 Ledger；本次写入不在按钮前台新增摘要 LLM；
+8. 剧场胶囊必须从普通事实、反馈、自我披露、复读、人格提取和通用 history review 链路中隔离，不能把角色扮演内容晋升为现实事实；
+9. 写入期间弹窗按钮禁用并显示“正在记录…”；成功后关闭弹窗，在该剧本详情显示“本次演绎已记下”的就地成功反馈；失败时弹窗保留并提供“重试”“暂不记录”，不能绕过未决记忆选择直接恢复；
+10. 点击“暂不记录”销毁本次待提交档案并把 receipt 标记为 skipped，不删除 Session，也不影响从选剧页继续或重新开始；
+11. 页面刷新时可按 `end_receipt_id` 恢复 pending / writing / written / skipped 状态。若玩家直接关闭整个剧本窗口，不能后台默认写入；未决 receipt 下次回到该剧本页时可以继续询问。
 
-实现收口约束：`end_receipt_id` 与 `archive_request_id` 均由服务端根据 Story ID、Session ID、结束 revision 和不可变 `character_id` 确定性生成。前端只能保存并回传该 `archive_request_id`，失败重试不得重新生成。剧场服务调用 memory server `/cache/{lanlan_name}` 时把它作为 `idempotency_key` 传递；memory server 以稳定的 time-indexed 事件 ID 作为提交标记，并在提交标记缺失时先检查 recent 中是否已存在完整消息批次，从而收敛“recent 已写入但请求中断”和“响应丢失后重试”两类窗口。
+实现收口约束：`end_receipt_id` 与 `archive_request_id` 均由服务端根据 Story ID、Session ID、结束 revision 和不可变 `character_id` 确定性生成。前端只能保存并回传该 `archive_request_id`，失败重试不得重新生成。剧场服务先保存待提交冷档案，再调用 memory server `/cache/{lanlan_name}`；memory server 在同一角色 settle lock 内按 Session upsert recent 胶囊，然后以 recent 为基线重建全部剧场 time-indexed 事件。只有 memory server 成功且待提交档案已发布时，receipt 才进入 `written`。
+
+选剧页在身份介绍下方复用现有卡片样式显示冷档案摘要，提供“收藏 / 取消收藏”和“忘记该剧本”。忘记是显式破坏性操作：删除当前猫娘该 Story 的 recent 胶囊、time-indexed 剧场行、冷档案和旧回执，但保留剧本包与当前 Session。重开、删剧本和删角色时分别清理旧 Session 回执、Story 回执或角色回执；冷启动 GC 删除其余无主回执。
 
 这里复用 `/cache` 的业务写入能力，不能调用面向记忆浏览器整文件编辑的 `/api/memory/recent_file/save`，也不能由浏览器直接改 `recent.json`。角色名称发生变化时，服务端必须由 Session 的 `character_id` 解析当前角色和记忆目标，不能信任前端传来的猫娘名。
 
@@ -619,7 +623,7 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 | `frontend/react-neko-chat/src/CompactExportHistoryPanel.tsx` | 增加只读 `theater` 模式，保留气泡与滚动，隐藏选择和导出控件，使用正确 aria-label |
 | `frontend/react-neko-chat/src/styles.css` | 只补旁白语义和剧场历史模式的局部修饰及 reduced-motion；复用现有胶囊 / 历史 / GalGame 选项样式，不改共享定位基线 |
 | `main_routers/numeric_theater_router.py` | `/stories` 增加当前角色的 `display_intro`；停止整段自动 TTS；结束时生成 receipt；增加只朗读已提交 block 和归档已结束 Session 的接口 |
-| 剧场记忆归档适配 | 按小游戏归档范式生成公开摘要 + 有限尾部，幂等调用 memory server `/cache/{lanlan_name}`，不直写记忆文件 |
+| 剧场记忆归档适配 | 从完整 Session 生成单条单集摘要胶囊，按 Session 幂等 upsert 到 memory server `/cache/{lanlan_name}`，不直写记忆文件 |
 | `services/theater/numeric_v2_performance.py` | 提供稳定内容块坐标 / 兼容读取，支持对白 cue |
 | `services/theater/numeric_v2_actor.py` | 先落实括号微动作与独立场景旁白的 Prompt 边界；后续阶段再严格解析可选 `performance_cue`；新推荐输入收敛为 2—3 条，旧四条记录兼容显示前三条 |
 | Live2D manager 相关文件 | 增加模型专属外层表现容器和可取消效果 API |
@@ -737,8 +741,8 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 3. 清理后立即恢复普通聊天胶囊、普通历史、普通草稿和输入链，并重新打开或聚焦 `neko_theater` 剧本页；
 4. 剧本页收到并复验结束回执后定位到刚结束的 Story，再弹窗显示“记下本次演绎 / 暂不记录”；本体胶囊不出现该询问；
 5. 点击“暂不记录”、Esc 或弹窗关闭不产生 memory `/cache` 请求；直接关闭整个剧本窗口也不能后台默认写入；
-6. 点击“记下本次演绎”只归档公开摘要和有限完整尾部，不包含隐藏数值、条件、节点 ID、Evaluator 结果和推荐输入；
-7. 相同 Session 的同一退出 revision 重复点击、刷新或超时重试最多产生一份记忆；继续产生新 revision 后再次退出可生成新回执；写入失败可重试或跳过；
+6. 点击“记下本次演绎”只向日常记忆写入一条单集摘要胶囊；完整公开回合保留在 Theater `public_archives` 冷档案，摘要不包含隐藏数值、条件、节点 ID、Evaluator 结果和推荐输入；
+7. 相同 Session 的暂停、继续与完成归档始终 upsert 为一份最新记忆；重新开始的新 Session 作为新周目，同 Story 近期最多保留三个周目胶囊；重复点击、刷新或超时重试不能产生重复记忆，写入失败可重试或跳过；
 8. 记忆写入使用服务端 `/cache/{lanlan_name}` 适配，不调用 `/api/memory/recent_file/save`，不由浏览器直接写文件；
 9. 服务端主动退出的 Session 可在选剧页通过“继续”恢复同一进度，也可通过“开始”用新 Session ID 再次开局；剧情自然终局不能继续；
 10. 自由 API 返回 404，代码与测试中不存在 `/api/theater/free/*`、`free_runtime` 或自由模式恢复指针；

@@ -14,6 +14,7 @@ import time
 import uuid
 from typing import Any, Mapping
 
+from .numeric_v2_archive import NumericV2ArchiveStore
 from .numeric_v2_registry import NumericV2PackageRegistry
 from .numeric_v2_store import (
     NumericV2SessionStore,
@@ -22,6 +23,7 @@ from .numeric_v2_store import (
     _read_story_session_slots,
     _write_story_session_slots,
     delete_numeric_v2_sessions,
+    list_numeric_v2_public_archives,
     list_numeric_v2_sessions,
 )
 
@@ -76,6 +78,20 @@ def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any
         for backup in session_backup_root.glob("*.json"):
             shutil.copy2(backup, session_root / backup.name)
 
+    public_archive_root = _manifest_path(payload, "public_archive_root")
+    public_archive_backup_root = transaction_dir / "public_archives"
+    if public_archive_backup_root.is_dir() and public_archive_root is not None:
+        public_archive_root.mkdir(parents=True, exist_ok=True)
+        for backup in public_archive_backup_root.glob("*.json"):
+            shutil.copy2(backup, public_archive_root / backup.name)
+
+    receipt_root = _manifest_path(payload, "receipt_root")
+    receipt_backup_root = transaction_dir / "end_receipts"
+    if receipt_backup_root.is_dir() and receipt_root is not None:
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        for backup in receipt_backup_root.glob("*.json"):
+            shutil.copy2(backup, receipt_root / backup.name)
+
     index_target = _manifest_path(payload, "index_target")
     story_id = str(payload.get("story_id") or "").strip()
     if index_target is not None and story_id:
@@ -124,6 +140,8 @@ def _prepare_delete_transaction(
 ) -> tuple[Path, Path, dict[str, Any]]:
     package_target = registry.package_path(story_id)
     session_root = Path(theater_root) / "numeric_v2" / "sessions"
+    public_archive_root = Path(theater_root) / "numeric_v2" / "public_archives"
+    archive_store = NumericV2ArchiveStore(theater_root)
     index_target = Path(theater_root) / "numeric_v2" / "story_sessions.json"
     transaction_dir = (
         Path(theater_root)
@@ -139,6 +157,20 @@ def _prepare_delete_transaction(
             session_backup_root.mkdir(parents=True, exist_ok=True)
             source = Path(summary["path"])
             shutil.copy2(source, session_backup_root / source.name)
+        public_archive_backup_root = transaction_dir / "public_archives"
+        for summary in list_numeric_v2_public_archives(
+            theater_root,
+            story_id=story_id,
+        ):
+            public_archive_backup_root.mkdir(parents=True, exist_ok=True)
+            source = Path(summary["path"])
+            shutil.copy2(source, public_archive_backup_root / source.name)
+        receipt_backup_root = transaction_dir / "end_receipts"
+        for source in archive_store.receipt_paths_for_scope(story_id=story_id):
+            if not source.is_file():
+                continue
+            receipt_backup_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, receipt_backup_root / source.name)
         index_stories = _read_story_session_slots(index_target)
         manifest = {
             "schema": DELETE_TRANSACTION_SCHEMA,
@@ -146,6 +178,8 @@ def _prepare_delete_transaction(
             "story_id": story_id,
             "package_target": str(package_target),
             "session_root": str(session_root),
+            "public_archive_root": str(public_archive_root),
+            "receipt_root": str(archive_store.root),
             "index_target": str(index_target),
             "index_existed": index_target.is_file(),
             "index_story_slots": index_stories.get(story_id, {}),
@@ -176,6 +210,10 @@ async def delete_numeric_v2_story_transactionally(
         raise NumericV2StoreError("numeric_story_delete_backup_failed") from exc
     try:
         deleted = await delete_numeric_v2_sessions(theater_root, story_id=story_id)
+        await asyncio.to_thread(
+            NumericV2ArchiveStore(theater_root).delete_receipts,
+            story_id=story_id,
+        )
         # Registry 删除包含文件替换，必须离开事件循环执行。
         await asyncio.to_thread(registry.delete_package, story_id)
         manifest["state"] = "committed"
@@ -351,6 +389,15 @@ def maintain_numeric_v2_storage_once(
             theater_root,
             registry,
             character_ids_by_name=character_ids_by_name,
+        )
+        active_session_ids = {
+            item["session_id"]
+            for item in list_numeric_v2_sessions(theater_root)
+        }
+        result.update(
+            NumericV2ArchiveStore(theater_root).cleanup_receipts(
+                active_session_ids
+            )
         )
         _MAINTAINED_ROOTS.add(key)
         return result

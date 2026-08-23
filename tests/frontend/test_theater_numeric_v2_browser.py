@@ -62,6 +62,9 @@ def _install_selector_routes(
             else:
                 _fulfill(route, resume_result)
             return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": True, "archives": []})
+            return
         if path.endswith("/delete-preview"):
             _fulfill(route, {"ok": True, "active_catgirl_names": ["小葵"], "session_count": 1})
             return
@@ -98,6 +101,61 @@ def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: P
     intro_box = mock_page.locator(".theater-intro-background").bounding_box()
     assert actions_box is not None and intro_box is not None
     assert actions_box["y"] < intro_box["y"]
+
+
+@pytest.mark.frontend
+def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, running_server: str):
+    """选剧页用最小记录列表提供收藏与显式忘记入口。"""  # noqa: DOCSTRING_CJK
+
+    forgotten = {"value": False}
+    pinned = {"value": False}
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            _fulfill(route, {"ok": True, "stories": [STORY]})
+            return
+        if path.endswith("/api/theater-numeric/session/active"):
+            _fulfill(route, {"ok": False, "reason": "numeric_session_not_found"}, 404)
+            return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            archives = [] if forgotten["value"] else [{
+                "story_id": STORY["story_id"],
+                "session_id": "saved-session",
+                "revision": 8,
+                "episode_status": "completed",
+                "ending_title": "雨停之后",
+                "pinned": pinned["value"],
+            }]
+            _fulfill(route, {"ok": True, "archives": archives})
+            return
+        if path.endswith("/api/theater-numeric/memory/archive/pin"):
+            pinned["value"] = True
+            _fulfill(route, {"ok": True, "archive": {"session_id": "saved-session", "pinned": True}})
+            return
+        if path.endswith("/api/theater-numeric/memory/forget"):
+            forgotten["value"] = True
+            _fulfill(route, {"ok": True, "removed_archives": 1})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+
+    expect(mock_page.locator(".theater-memory-row")).to_have_count(1)
+    expect(mock_page.locator(".theater-memory-row strong")).to_have_text("雨停之后")
+    with mock_page.expect_request("**/api/theater-numeric/memory/archive/pin"):
+        mock_page.locator(".theater-memory-pin").click()
+    expect(mock_page.locator(".theater-memory-pin")).to_have_text("取消收藏")
+
+    mock_page.locator("#theater-forget-memory-btn").click()
+    expect(mock_page.locator("#theater-modal-title")).to_have_text("忘记该剧本？")
+    expect(mock_page.locator("#theater-modal-body")).to_contain_text("不会删除剧本或当前进度")
+    with mock_page.expect_request("**/api/theater-numeric/memory/forget"):
+        mock_page.locator("#theater-modal-confirm").click()
+    expect(mock_page.locator(".theater-memory-row")).to_have_count(0)
+    expect(mock_page.locator("#theater-inline-feedback")).to_contain_text("已忘记")
 
 
 @pytest.mark.frontend
@@ -254,6 +312,9 @@ def test_post_end_receipt_prompts_memory_on_selector_and_archives_once(
                 "archive_request_id": "theater_archive_browser_receipt",
                 "archive_status": archive_status["value"],
             })
+            return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": True, "archives": []})
             return
         if path.endswith("/api/theater-numeric/session/archive"):
             archive_calls.append(json.loads(request.post_data or "{}"))

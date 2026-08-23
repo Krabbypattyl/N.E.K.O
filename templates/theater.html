@@ -57,6 +57,14 @@
                         <article class="theater-intro-card"><h2 data-i18n="theater.playerRoleLabel">你的剧情身份</h2><p id="theater-detail-player"></p></article>
                         <article class="theater-intro-card"><h2 data-i18n="theater.catgirlRoleLabel">猫娘剧情身份</h2><p id="theater-detail-catgirl"></p></article>
                     </div>
+                    <article class="theater-intro-card theater-memory-card">
+                        <div class="theater-memory-heading">
+                            <div><h2 data-i18n="theater.savedPerformances">已保存的演绎</h2><p data-i18n="theater.savedPerformancesHint">默认保留最近 5 份完整记录，收藏的记录不会自动清理。</p></div>
+                            <button type="button" class="theater-secondary theater-danger" id="theater-forget-memory-btn" data-i18n="theater.forgetStoryMemory">忘记该剧本</button>
+                        </div>
+                        <div class="theater-memory-list" id="theater-memory-list"></div>
+                        <p class="theater-memory-empty" id="theater-memory-empty" data-i18n="theater.noSavedPerformances">暂无已保存的演绎记录。</p>
+                    </article>
                 </div>
             </section>
         </div>

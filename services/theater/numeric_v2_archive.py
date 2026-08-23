@@ -8,14 +8,18 @@ import json
 import os
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .numeric_v2_performance import performance_content_blocks
+from utils.llm_client import THEATER_MEMORY_SOURCE
+
+from .numeric_v2_performance import content_blocks, mixed_performance_blocks
 
 
 _RECEIPT_LOCKS: dict[str, threading.Lock] = {}
 _RECEIPT_LOCKS_GUARD = threading.Lock()
+PUBLIC_ARCHIVES_PER_STORY_CHARACTER = 5
 
 
 def _receipt_lock(path: Path) -> threading.Lock:
@@ -35,6 +39,7 @@ class NumericV2ArchiveStore:
 
     def __init__(self, theater_root: Path):
         self.root = Path(theater_root) / "numeric_v2" / "end_receipts"
+        self.public_archive_root = Path(theater_root) / "numeric_v2" / "public_archives"
 
     @staticmethod
     def _session_key(session_id: str) -> str:
@@ -47,6 +52,33 @@ class NumericV2ArchiveStore:
         if not receipt_id.startswith("theater_end_") or len(receipt_id) > 96:
             raise NumericV2ArchiveError("numeric_end_receipt_invalid")
         return self.root / f"{receipt_id}.json"
+
+    def _public_archive_path(self, session_id: str) -> Path:
+        return self.public_archive_root / f"{self._session_key(session_id)}.json"
+
+    def _staged_archive_path(self, receipt_id: str) -> Path:
+        # 待提交档案与回执同根，剧本删除事务可以使用同一份备份清单。
+        return self.root / f"staged-{self._receipt_path(receipt_id).stem}.json"
+
+    @staticmethod
+    def _matches_character(
+        payload: Mapping[str, Any],
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> bool:
+        stored_character_id = str(payload.get("character_id") or "").strip()
+        if character_id:
+            return stored_character_id == character_id or bool(
+                not stored_character_id
+                and legacy_catgirl_name
+                and str(payload.get("catgirl_name") or "").strip()
+                == legacy_catgirl_name
+            )
+        return bool(
+            not legacy_catgirl_name
+            or str(payload.get("catgirl_name") or "").strip()
+            == legacy_catgirl_name
+        )
 
     @staticmethod
     def _read(path: Path) -> dict[str, Any] | None:
@@ -85,11 +117,25 @@ class NumericV2ArchiveStore:
         session_path = self._session_path(session_id)
         with _receipt_lock(session_path):
             pointer = self._read(session_path)
+            previous_receipt_id = str((pointer or {}).get("receipt_id") or "")
             if pointer and pointer.get("receipt_id"):
                 existing = self.load(str(pointer["receipt_id"]))
                 # 同一 Session 可以多次退出后继续；只有相同 revision 才是同一次退出回执。
                 if existing is not None and existing.get("revision") == int(session.revision):
                     return existing
+            archived_through_revision = -1
+            if pointer is not None:
+                raw_archived_revision = pointer.get("archived_through_revision")
+                if isinstance(raw_archived_revision, int) and not isinstance(raw_archived_revision, bool):
+                    archived_through_revision = raw_archived_revision
+                elif pointer.get("receipt_id"):
+                    # 旧版指针没有归档水位；已成功的旧回执按其 revision 视为已归档，
+                    # 避免升级后续演时把同一批公开演绎再次写入猫娘记忆。
+                    previous = self.load(str(pointer["receipt_id"]))
+                    if previous is not None and previous.get("status") == "written":
+                        previous_revision = previous.get("revision")
+                        if isinstance(previous_revision, int) and not isinstance(previous_revision, bool):
+                            archived_through_revision = previous_revision
             # 回执和归档请求 ID 都由不可变结束事实确定，进程崩溃或并发创建后仍会收敛。
             seed = "\x1f".join(
                 (
@@ -110,13 +156,62 @@ class NumericV2ArchiveStore:
                 "catgirl_name": str(session.catgirl_binding.get("catgirl_name") or ""),
                 "status": "pending",
                 "archive_request_id": f"theater_archive_{digest}",
+                "archive_from_revision": max(1, archived_through_revision + 1),
+                "archive_through_revision": int(session.revision),
+                "include_opening": archived_through_revision < 0,
             }
             self._write(self._receipt_path(receipt["receipt_id"]), receipt)
-            self._write(session_path, {"receipt_id": receipt["receipt_id"]})
+            self._write(session_path, {
+                "receipt_id": receipt["receipt_id"],
+                "archived_through_revision": archived_through_revision,
+            })
+            if previous_receipt_id and previous_receipt_id != receipt["receipt_id"]:
+                # 新 revision 已接管唯一指针，旧回执和未提交档案不再可达。
+                previous_receipt = self.load(previous_receipt_id)
+                previous_public_exists = self._public_archive_path(session_id).is_file()
+                # 升级前可能已写入记忆却没有冷档案；这种旧 written
+                # 回执要留到重开补档完成，否则会失去唯一的兼容证据。
+                if (
+                    previous_receipt is None
+                    or previous_receipt.get("status") != "written"
+                    or previous_public_exists
+                ):
+                    for stale_path in (
+                        self._receipt_path(previous_receipt_id),
+                        self._staged_archive_path(previous_receipt_id),
+                    ):
+                        try:
+                            stale_path.unlink()
+                        except FileNotFoundError:
+                            pass
             return receipt
 
     def load(self, receipt_id: str) -> dict[str, Any] | None:
         return self._read(self._receipt_path(receipt_id))
+
+    def load_for_session(self, session_id: str) -> dict[str, Any] | None:
+        pointer = self._read(self._session_path(str(session_id)))
+        if not pointer or not pointer.get("receipt_id"):
+            return None
+        return self.load(str(pointer["receipt_id"]))
+
+    def has_written_receipt_for_session(self, session_id: str) -> bool:
+        """检查升级前遗留的 written 回执，供重开前补写冷档案。"""  # noqa: DOCSTRING_CJK
+
+        normalized_session_id = str(session_id or "").strip()
+        receipt_paths = self.root.glob("theater_end_*.json") if self.root.is_dir() else ()
+        for path in receipt_paths:
+            try:
+                receipt = self._read(path)
+            except NumericV2ArchiveError:
+                continue
+            if (
+                receipt is not None
+                and str(receipt.get("session_id") or "") == normalized_session_id
+                and receipt.get("status") == "written"
+            ):
+                return True
+        return False
 
     def update(self, receipt: Mapping[str, Any], *, status: str, archive_request_id: str = "") -> dict[str, Any]:
         if status not in {"pending", "writing", "written", "skipped"}:
@@ -126,6 +221,22 @@ class NumericV2ArchiveStore:
         if archive_request_id:
             updated["archive_request_id"] = archive_request_id
         self._write(self._receipt_path(str(updated.get("receipt_id") or "")), updated)
+        session_id = str(updated.get("session_id") or "")
+        if session_id:
+            session_path = self._session_path(session_id)
+            with _receipt_lock(session_path):
+                pointer = self._read(session_path) or {}
+                archived_through_revision = pointer.get("archived_through_revision", -1)
+                if not isinstance(archived_through_revision, int) or isinstance(archived_through_revision, bool):
+                    archived_through_revision = -1
+                if status == "written":
+                    completed_revision = updated.get("archive_through_revision", updated.get("revision"))
+                    if isinstance(completed_revision, int) and not isinstance(completed_revision, bool):
+                        archived_through_revision = max(archived_through_revision, completed_revision)
+                self._write(session_path, {
+                    "receipt_id": str(updated.get("receipt_id") or ""),
+                    "archived_through_revision": archived_through_revision,
+                })
         return updated
 
     async def acreate_or_get(self, session: Any) -> dict[str, Any]:
@@ -137,6 +248,9 @@ class NumericV2ArchiveStore:
         """异步读取结束回执。"""  # noqa: DOCSTRING_CJK
 
         return await asyncio.to_thread(self.load, receipt_id)
+
+    async def aload_for_session(self, session_id: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self.load_for_session, session_id)
 
     async def aupdate(
         self,
@@ -154,40 +268,634 @@ class NumericV2ArchiveStore:
             archive_request_id=archive_request_id,
         )
 
+    def write_public_archive(
+        self,
+        *,
+        title: str,
+        session: Any,
+        ending: Mapping[str, Any] | None,
+    ) -> int:
+        """原子保存完整公开演绎；隐藏 Runtime 状态不进入冷档案。"""  # noqa: DOCSTRING_CJK
+
+        archive_path = self._public_archive_path(str(session.session_id))
+        previous = self._read(archive_path) or {}
+        now = datetime.now(timezone.utc).isoformat()
+        archive = build_numeric_v2_public_archive(
+            title=title,
+            session=session,
+            ending=ending,
+        )
+        archive.update({
+            "created_at": str(previous.get("created_at") or now),
+            "updated_at": now,
+            # 同一 Session 暂停后再写入时不能丢失用户收藏标记。
+            "pinned": previous.get("pinned") is True,
+        })
+        self._write(archive_path, archive)
+        return self.prune_public_archives(
+            story_id=str(session.story_package_id),
+            character_id=str(session.catgirl_binding.get("character_id") or ""),
+            legacy_catgirl_name=str(session.catgirl_binding.get("catgirl_name") or ""),
+        )
+
+    def stage_public_archive(
+        self,
+        *,
+        receipt: Mapping[str, Any],
+        title: str,
+        session: Any,
+        ending: Mapping[str, Any] | None,
+    ) -> None:
+        """在记忆服务迁移前先保存可恢复的待提交公开档案。"""  # noqa: DOCSTRING_CJK
+
+        receipt_id = str(receipt.get("receipt_id") or "")
+        if str(receipt.get("session_id") or "") != str(session.session_id):
+            raise NumericV2ArchiveError("numeric_end_receipt_mismatch")
+        public_path = self._public_archive_path(str(session.session_id))
+        previous = self._read(public_path) or {}
+        now = datetime.now(timezone.utc).isoformat()
+        archive = build_numeric_v2_public_archive(
+            title=title,
+            session=session,
+            ending=ending,
+        )
+        archive.update({
+            "created_at": str(previous.get("created_at") or now),
+            "updated_at": now,
+            "pinned": previous.get("pinned") is True,
+        })
+        self._write(self._staged_archive_path(receipt_id), archive)
+
+    def commit_staged_public_archive(self, receipt: Mapping[str, Any]) -> int:
+        """记忆服务成功后原子发布待提交档案并执行保留策略。"""  # noqa: DOCSTRING_CJK
+
+        receipt_id = str(receipt.get("receipt_id") or "")
+        staged_path = self._staged_archive_path(receipt_id)
+        archive = self._read(staged_path)
+        if archive is None:
+            raise NumericV2ArchiveError("numeric_public_archive_stage_missing")
+        session_id = str(receipt.get("session_id") or "")
+        if str(archive.get("session_id") or "") != session_id:
+            raise NumericV2ArchiveError("numeric_end_receipt_mismatch")
+        self._write(self._public_archive_path(session_id), archive)
+        try:
+            staged_path.unlink()
+        except FileNotFoundError:
+            pass
+        return self.prune_public_archives(
+            story_id=str(archive.get("story_id") or ""),
+            character_id=str(archive.get("character_id") or ""),
+            legacy_catgirl_name=str(archive.get("catgirl_name") or ""),
+        )
+
+    def discard_staged_public_archive(self, receipt_id: str) -> None:
+        try:
+            self._staged_archive_path(receipt_id).unlink()
+        except FileNotFoundError:
+            pass
+
+    async def awrite_public_archive(
+        self,
+        *,
+        title: str,
+        session: Any,
+        ending: Mapping[str, Any] | None,
+    ) -> int:
+        return await asyncio.to_thread(
+            self.write_public_archive,
+            title=title,
+            session=session,
+            ending=ending,
+        )
+
+    async def astage_public_archive(self, **kwargs) -> None:
+        await asyncio.to_thread(self.stage_public_archive, **kwargs)
+
+    async def acommit_staged_public_archive(self, receipt: Mapping[str, Any]) -> int:
+        return await asyncio.to_thread(self.commit_staged_public_archive, receipt)
+
+    async def adiscard_staged_public_archive(self, receipt_id: str) -> None:
+        await asyncio.to_thread(self.discard_staged_public_archive, receipt_id)
+
+    def list_public_archives(
+        self,
+        *,
+        story_id: str = "",
+        character_id: str = "",
+        legacy_catgirl_name: str = "",
+    ) -> list[dict[str, Any]]:
+        """只返回冷档案摘要，列表接口不暴露完整演绎正文。"""  # noqa: DOCSTRING_CJK
+
+        normalized_story_id = str(story_id or "").strip()
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        if not self.public_archive_root.is_dir():
+            return []
+        archives: list[dict[str, Any]] = []
+        for path in self.public_archive_root.glob("*.json"):
+            try:
+                payload = self._read(path)
+                modified_ns = path.stat().st_mtime_ns
+            except (NumericV2ArchiveError, OSError):
+                continue
+            if (
+                payload is None
+                or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
+            ):
+                continue
+            if normalized_story_id and str(payload.get("story_id") or "") != normalized_story_id:
+                continue
+            if not self._matches_character(
+                payload,
+                normalized_character_id,
+                normalized_legacy_name,
+            ):
+                continue
+            ending = payload.get("ending") if isinstance(payload.get("ending"), dict) else {}
+            raw_revision = payload.get("revision")
+            revision = (
+                raw_revision
+                if isinstance(raw_revision, int) and not isinstance(raw_revision, bool)
+                else 0
+            )
+            archives.append({
+                "story_id": str(payload.get("story_id") or ""),
+                "session_id": str(payload.get("session_id") or ""),
+                "story_title": str(payload.get("story_title") or ""),
+                "character_id": str(payload.get("character_id") or ""),
+                "catgirl_name": str(payload.get("catgirl_name") or ""),
+                "revision": revision,
+                "episode_status": str(payload.get("episode_status") or "paused"),
+                "ending_title": str(ending.get("title") or ""),
+                "pinned": payload.get("pinned") is True,
+                "created_at": str(payload.get("created_at") or ""),
+                "updated_at": str(payload.get("updated_at") or ""),
+                "path": str(path),
+                "modified_ns": modified_ns,
+            })
+        archives.sort(
+            key=lambda item: (
+                str(item.get("updated_at") or ""),
+                int(item.get("modified_ns") or 0),
+                str(item.get("session_id") or ""),
+            ),
+            reverse=True,
+        )
+        return archives
+
+    def prune_public_archives(
+        self,
+        *,
+        story_id: str,
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> int:
+        """保留最近五份未收藏档案，收藏档案不计入自动淘汰额度。"""  # noqa: DOCSTRING_CJK
+
+        archives = self.list_public_archives(
+            story_id=story_id,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+        )
+        stale = [
+            archive
+            for archive in archives
+            if not archive["pinned"]
+        ][PUBLIC_ARCHIVES_PER_STORY_CHARACTER:]
+        removed = 0
+        for archive in stale:
+            try:
+                Path(str(archive["path"])).unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+        return removed
+
+    def set_public_archive_pinned(
+        self,
+        *,
+        story_id: str,
+        session_id: str,
+        character_id: str,
+        legacy_catgirl_name: str,
+        pinned: bool,
+    ) -> dict[str, Any]:
+        """只允许当前角色收藏自己在指定剧本中的冷档案。"""  # noqa: DOCSTRING_CJK
+
+        path = self._public_archive_path(str(session_id or "").strip())
+        payload = self._read(path)
+        if (
+            payload is None
+            or str(payload.get("story_id") or "") != str(story_id or "").strip()
+            or not self._matches_character(payload, character_id, legacy_catgirl_name)
+        ):
+            raise NumericV2ArchiveError("numeric_public_archive_not_found")
+        payload["pinned"] = pinned is True
+        # 收藏操作不改变演绎时间；否则取消收藏旧周目会把它误排成最新记录，
+        # 进而在保留策略中淘汰真正较新的演绎。
+        self._write(path, payload)
+        self.prune_public_archives(
+            story_id=str(payload.get("story_id") or ""),
+            character_id=str(payload.get("character_id") or ""),
+            legacy_catgirl_name=str(payload.get("catgirl_name") or ""),
+        )
+        return {"session_id": str(session_id), "pinned": payload["pinned"]}
+
+    def delete_public_archives(
+        self,
+        *,
+        story_id: str,
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> int:
+        removed = 0
+        for archive in self.list_public_archives(
+            story_id=story_id,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+        ):
+            try:
+                Path(str(archive["path"])).unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+        return removed
+
+    def receipt_paths_for_scope(
+        self,
+        *,
+        story_id: str = "",
+        character_id: str = "",
+        legacy_catgirl_name: str = "",
+    ) -> list[Path]:
+        """列出指定范围内的回执和 Session 指针，供事务备份与删除共用。"""  # noqa: DOCSTRING_CJK
+
+        normalized_story_id = str(story_id or "").strip()
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        if not self.root.is_dir():
+            return []
+        paths: set[Path] = set()
+        for path in self.root.glob("theater_end_*.json"):
+            try:
+                receipt = self._read(path)
+            except NumericV2ArchiveError:
+                continue
+            if receipt is None:
+                continue
+            if normalized_story_id and str(receipt.get("story_id") or "") != normalized_story_id:
+                continue
+            if not self._matches_character(
+                receipt,
+                normalized_character_id,
+                normalized_legacy_name,
+            ):
+                continue
+            paths.add(path)
+            staged_path = self._staged_archive_path(str(receipt.get("receipt_id") or ""))
+            if staged_path.is_file():
+                paths.add(staged_path)
+            session_id = str(receipt.get("session_id") or "").strip()
+            if session_id:
+                paths.add(self._session_path(session_id))
+        return sorted(paths)
+
+    def delete_receipts(
+        self,
+        *,
+        story_id: str = "",
+        character_id: str = "",
+        legacy_catgirl_name: str = "",
+    ) -> int:
+        if not any(
+            str(value or "").strip()
+            for value in (story_id, character_id, legacy_catgirl_name)
+        ):
+            raise NumericV2ArchiveError("numeric_receipt_delete_scope_required")
+        paths = self.receipt_paths_for_scope(
+            story_id=story_id,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+        )
+        removed = 0
+        for path in paths:
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+        return removed
+
+    def delete_session_receipts(self, session_id: str) -> int:
+        """重开替换旧 Session 后删除已失效回执。"""  # noqa: DOCSTRING_CJK
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return 0
+        removed = 0
+        receipt_paths = self.root.glob("theater_end_*.json") if self.root.is_dir() else ()
+        for path in receipt_paths:
+            try:
+                receipt = self._read(path)
+            except NumericV2ArchiveError:
+                continue
+            if receipt is None or str(receipt.get("session_id") or "") != normalized_session_id:
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+            staged_path = self._staged_archive_path(str((receipt or {}).get("receipt_id") or ""))
+            try:
+                staged_path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+        try:
+            self._session_path(normalized_session_id).unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+        return removed
+
+    def cleanup_receipts(self, active_session_ids: set[str]) -> dict[str, int]:
+        """冷启动清理无 Session 指向或已被新指针替换的回执。"""  # noqa: DOCSTRING_CJK
+
+        if not self.root.is_dir():
+            return {"receipts_removed": 0, "pointers_removed": 0}
+        normalized_active = {str(value) for value in active_session_ids if str(value)}
+        kept_receipt_ids: set[str] = set()
+        receipts_removed = 0
+        pointers_removed = 0
+        for pointer_path in self.root.glob("session-*.json"):
+            try:
+                pointer = self._read(pointer_path)
+            except NumericV2ArchiveError:
+                pointer = None
+            receipt_id = str((pointer or {}).get("receipt_id") or "")
+            try:
+                receipt = self.load(receipt_id) if receipt_id else None
+            except NumericV2ArchiveError:
+                receipt = None
+            session_id = str((receipt or {}).get("session_id") or "")
+            if receipt is not None and session_id in normalized_active:
+                kept_receipt_ids.add(receipt_id)
+                continue
+            try:
+                pointer_path.unlink()
+                pointers_removed += 1
+            except FileNotFoundError:
+                pass
+            if receipt is not None:
+                try:
+                    self._receipt_path(receipt_id).unlink()
+                    receipts_removed += 1
+                except FileNotFoundError:
+                    pass
+        for receipt_path in self.root.glob("theater_end_*.json"):
+            if receipt_path.stem in kept_receipt_ids:
+                continue
+            try:
+                receipt = self._read(receipt_path)
+            except NumericV2ArchiveError:
+                receipt = None
+            receipt_session_id = str((receipt or {}).get("session_id") or "")
+            if (
+                receipt is not None
+                and receipt.get("status") == "written"
+                and receipt_session_id in normalized_active
+                and not self._public_archive_path(receipt_session_id).is_file()
+            ):
+                # 保留尚未完成升级补档的兼容回执。
+                continue
+            try:
+                receipt_path.unlink()
+                receipts_removed += 1
+            except FileNotFoundError:
+                pass
+        for staged_path in self.root.glob("staged-theater_end_*.json"):
+            receipt_id = staged_path.stem.removeprefix("staged-")
+            if receipt_id in kept_receipt_ids:
+                continue
+            try:
+                staged_path.unlink()
+            except FileNotFoundError:
+                pass
+        return {
+            "receipts_removed": receipts_removed,
+            "pointers_removed": pointers_removed,
+        }
+
+
+def _visible_action(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    if (
+        (normalized.startswith("（") and normalized.endswith("）"))
+        or (normalized.startswith("(") and normalized.endswith(")"))
+    ):
+        return normalized
+    return f"（{normalized}）"
+
+
+def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tuple[list[dict[str, str]], str]:
+    """把一次已提交演绎投影成无文本标签的结构化记忆片段。"""  # noqa: DOCSTRING_CJK
+
+    parts: list[dict[str, str]] = []
+    chunks: list[str] = []
+    if "scene_narration" in container or "performance" in container:
+        scene_narration = str(container.get("scene_narration") or "").strip()
+        if scene_narration:
+            parts.append({"kind": "scene_narration", "phase": phase, "text": scene_narration})
+            chunks.append(scene_narration)
+        performance = str(container.get("performance") or "").strip()
+        if performance:
+            for block in mixed_performance_blocks(performance):
+                kind = "action" if block.get("type") == "narration" else "dialogue"
+                visible_text = _visible_action(block["text"]) if kind == "action" else block["text"]
+                parts.append({"kind": kind, "phase": phase, "text": visible_text})
+            chunks.append(performance)
+        return parts, "\n\n".join(chunks)
+
+    visible: list[str] = []
+    for block in content_blocks(container):
+        block_type = str(block.get("type") or "")
+        if block_type == "dialogue":
+            kind = "dialogue"
+            text = str(block.get("text") or "").strip()
+        else:
+            kind = "action" if phase in {"ordinary", "source_response"} else "scene_narration"
+            raw_text = str(block.get("text") or "").strip()
+            text = _visible_action(raw_text) if kind == "action" else raw_text
+        if not text:
+            continue
+        parts.append({"kind": kind, "phase": phase, "text": text})
+        visible.append(text)
+    return parts, "\n".join(visible)
+
+
+def _performance_memory_projection(
+    performance: Mapping[str, Any],
+    *,
+    fallback_phase: str,
+) -> tuple[list[dict[str, str]], str]:
+    raw_segments = performance.get("segments")
+    containers = raw_segments if isinstance(raw_segments, list) else [performance]
+    all_parts: list[dict[str, str]] = []
+    visible_chunks: list[str] = []
+    for raw_container in containers:
+        if not isinstance(raw_container, Mapping):
+            continue
+        phase = str(raw_container.get("phase") or fallback_phase).strip() or fallback_phase
+        parts, text = _performance_memory_parts(raw_container, phase=phase)
+        all_parts.extend(parts)
+        if text:
+            visible_chunks.append(text)
+    return all_parts, "\n\n".join(visible_chunks)
+
+
+def _episode_metadata(
+    *,
+    title: str,
+    session: Any,
+    ending: Mapping[str, Any] | None,
+    archive_from_revision: int,
+    archive_through_revision: int,
+    episode_summary: str,
+) -> dict[str, Any]:
+    ending_title = str((ending or {}).get("title") or "").strip()
+    ending_summary = str((ending or {}).get("summary") or "").strip()
+    return {
+        "source": THEATER_MEMORY_SOURCE,
+        "story_id": str(session.story_package_id),
+        "session_id": str(session.session_id),
+        "story_title": str(title),
+        "episode_status": "completed" if ending_title else "paused",
+        "ending_title": ending_title,
+        "ending_summary": ending_summary,
+        "archive_from_revision": int(archive_from_revision),
+        "archive_through_revision": int(archive_through_revision),
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "episode_summary": episode_summary,
+    }
+
+
+def _compact_episode_summary(
+    session: Any,
+    ending: Mapping[str, Any] | None,
+    *,
+    max_chars: int = 360,
+) -> str:
+    """确定性生成单集摘要；完整公开正文由 Theater 冷档案承接。"""  # noqa: DOCSTRING_CJK
+
+    ending_summary = str((ending or {}).get("summary") or "").strip()
+    if ending_summary:
+        return ending_summary
+    if session.performance_history:
+        source = session.performance_history[-1]
+        fallback_phase = "ordinary"
+    else:
+        source = session.opening_performance
+        fallback_phase = "opening"
+    _, text = _performance_memory_projection(source, fallback_phase=fallback_phase)
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    candidate = normalized[:max_chars]
+    cut = max(candidate.rfind(mark) for mark in "。！？")
+    if cut >= max_chars // 2:
+        return candidate[:cut + 1]
+    return candidate.rstrip() + "……"
+
+
+def build_numeric_v2_public_archive(
+    *,
+    title: str,
+    session: Any,
+    ending: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """投影一份不含隐藏状态的完整公开演绎冷档案。"""  # noqa: DOCSTRING_CJK
+
+    opening_parts, opening_text = _performance_memory_projection(
+        session.opening_performance,
+        fallback_phase="opening",
+    )
+    turns: list[dict[str, Any]] = []
+    for record in session.performance_history:
+        revision = int(record.get("revision") or 0)
+        parts, performance_text = _performance_memory_projection(
+            record,
+            fallback_phase="ordinary",
+        )
+        turns.append({
+            "revision": revision,
+            "player_input": str(record.get("input_text") or "").strip(),
+            "performance": performance_text,
+            "parts": parts,
+        })
+    return {
+        "schema": "neko.theater.numeric.v2.public-archive",
+        "story_id": str(session.story_package_id),
+        "session_id": str(session.session_id),
+        "story_title": str(title),
+        "character_id": str(session.catgirl_binding.get("character_id") or ""),
+        "catgirl_name": str(session.catgirl_binding.get("catgirl_name") or ""),
+        "player_name": str(session.catgirl_binding.get("player_address") or "玩家"),
+        "revision": int(session.revision),
+        "episode_status": "completed" if ending else "paused",
+        "ending": {
+            "title": str((ending or {}).get("title") or "").strip(),
+            "summary": str((ending or {}).get("summary") or "").strip(),
+        },
+        "opening": {
+            "performance": opening_text,
+            "parts": opening_parts,
+        },
+        "turns": turns,
+    }
+
 
 def build_numeric_v2_memory_messages(
     *,
     title: str,
     session: Any,
     ending: Mapping[str, Any] | None,
-    tail_turns: int = 6,
+    archive_from_revision: int = 1,
+    archive_through_revision: int | None = None,
+    include_opening: bool = True,
 ) -> list[dict[str, Any]]:
-    """只用公开演绎构造有限完整尾部和确定性摘要。"""  # noqa: DOCSTRING_CJK
+    """构造单个剧场记忆胶囊；完整演绎只保存在 Theater 冷档案。"""  # noqa: DOCSTRING_CJK
 
-    records = list(session.performance_history)[-max(1, int(tail_turns)):]
-    messages: list[dict[str, Any]] = []
-    for record in records:
-        input_text = str(record.get("input_text") or "").strip()
-        if input_text:
-            messages.append({"role": "human", "content": [{"type": "text", "text": input_text}]})
-        for block in performance_content_blocks(record):
-            role = "ai" if block.get("type") == "dialogue" else "system"
-            messages.append({"role": role, "content": [{"type": "text", "text": block["text"]}]})
-    ending_title = str((ending or {}).get("title") or "").strip()
-    ending_summary = str((ending or {}).get("summary") or "").strip()
-    if ending_title:
-        summary = f"小剧场《{title}》在结局《{ending_title}》落幕。"
-    else:
-        # 主动退出仍可继续，记忆中不能把暂离误写成剧情终局。
-        summary = f"小剧场《{title}》在玩家本次退出的位置暂告一段落。"
-    if ending_summary:
-        summary += f" 公开结局摘要：{ending_summary}"
-    messages.append({"role": "system", "content": [{"type": "text", "text": summary}]})
-    return messages
+    through_revision = int(
+        session.revision if archive_through_revision is None else archive_through_revision
+    )
+    from_revision = max(1, int(archive_from_revision))
+    episode_summary = _compact_episode_summary(session, ending)
+    episode = _episode_metadata(
+        title=title,
+        session=session,
+        ending=ending,
+        archive_from_revision=from_revision,
+        archive_through_revision=through_revision,
+        episode_summary=episode_summary,
+    )
+    # include_opening 继续保留在函数签名中兼容旧回执；摘要胶囊不再复制开场正文。
+    _ = include_opening
+    return [{
+        "role": "system",
+        "content": [{"type": "text", "text": episode_summary}],
+        "metadata": episode,
+    }]
 
 
 __all__ = [
     "NumericV2ArchiveError",
     "NumericV2ArchiveStore",
+    "PUBLIC_ARCHIVES_PER_STORY_CHARACTER",
+    "THEATER_MEMORY_SOURCE",
     "build_numeric_v2_memory_messages",
+    "build_numeric_v2_public_archive",
 ]

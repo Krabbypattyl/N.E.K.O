@@ -11,11 +11,14 @@
         resume: '/api/theater-numeric/session/resume',
         active: '/api/theater-numeric/session/active',
         archive: '/api/theater-numeric/session/archive',
-        skipArchive: '/api/theater-numeric/session/archive/skip'
+        skipArchive: '/api/theater-numeric/session/archive/skip',
+        memoryArchives: '/api/theater-numeric/memory/archives',
+        pinMemoryArchive: '/api/theater-numeric/memory/archive/pin',
+        forgetMemory: '/api/theater-numeric/memory/forget'
     };
     var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
     // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
-    var state = { stories: [], storyId: '', session: null, busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
+    var state = { stories: [], storyId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
     var modalResolve = null;
     var modalPersistent = false;
     var modalReturnFocus = null;
@@ -85,10 +88,11 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-delete-btn'].forEach(function (id) {
+        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
+        document.querySelectorAll('[data-theater-pin-session]').forEach(function (node) { node.disabled = busy; });
         renderActions();
     }
     function selectedStory() {
@@ -168,12 +172,53 @@
         $('theater-detail-background').textContent = String(intro.background || '');
         $('theater-detail-player').textContent = String(intro.player_identity || '');
         $('theater-detail-catgirl').textContent = String(intro.catgirl_identity || '');
+        renderMemoryArchives();
         renderActions();
+    }
+    function renderMemoryArchives() {
+        var list = $('theater-memory-list');
+        var empty = $('theater-memory-empty');
+        if (!list || !empty) return;
+        list.textContent = '';
+        empty.hidden = state.archives.length > 0;
+        state.archives.forEach(function (archive, index) {
+            var row = document.createElement('div');
+            row.className = 'theater-memory-row';
+            var copy = document.createElement('div');
+            var title = document.createElement('strong');
+            title.textContent = String(archive.ending_title || (archive.episode_status === 'completed'
+                ? t('theater.completedPerformance', '已完成的演绎')
+                : t('theater.pausedPerformance', '暂停的演绎')));
+            var meta = document.createElement('span');
+            meta.textContent = t('theater.performanceRecordMeta', '记录 {{index}} · revision {{revision}}', {
+                index: state.archives.length - index,
+                revision: Number(archive.revision || 0)
+            });
+            copy.append(title, meta);
+            var pin = document.createElement('button');
+            pin.type = 'button';
+            pin.className = 'theater-memory-pin';
+            pin.dataset.theaterPinSession = String(archive.session_id || '');
+            pin.textContent = archive.pinned
+                ? t('theater.unpinPerformance', '取消收藏')
+                : t('theater.pinPerformance', '收藏');
+            pin.disabled = state.busy;
+            pin.addEventListener('click', function () { toggleArchivePin(archive); });
+            row.append(copy, pin);
+            list.appendChild(row);
+        });
+    }
+    async function loadMemoryArchives(storyId) {
+        var result = await requestJson(api.memoryArchives + '?story_id=' + encodeURIComponent(storyId));
+        if (state.storyId !== storyId) return;
+        state.archives = result.ok && Array.isArray(result.archives) ? result.archives : [];
+        renderMemoryArchives();
     }
     async function selectStory(storyId) {
         if (state.busy || !storyId) return;
         state.storyId = storyId;
         state.session = null;
+        state.archives = [];
         setFeedback('');
         renderStories();
         renderDetail();
@@ -198,6 +243,7 @@
             }
         }
         else if (result._status !== 404) setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+        await loadMemoryArchives(storyId);
         renderDetail();
         setStatus('theater.ready', '就绪');
         var url = new URL(window.location.href);
@@ -349,12 +395,51 @@
             var result = await requestJson(api.packages + '/' + encodeURIComponent(state.storyId), { method: 'DELETE' });
             if (!result.ok) throw new Error('delete_failed');
             state.stories = state.stories.filter(function (story) { return String(story.story_id) !== state.storyId; });
-            state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null;
+            state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null; state.archives = [];
             renderStories(); renderDetail();
             if (state.storyId) await selectStory(state.storyId);
             setStatus('theater.storyDeleted', '剧本已删除');
         } catch (_) { setFeedback(t('theater.storyDeleteFailed', '剧本删除失败，请重试。'), true); }
         finally { setBusy(false); }
+    }
+    async function toggleArchivePin(archive) {
+        if (state.busy || !archive || !archive.session_id) return;
+        setBusy(true); setFeedback('');
+        try {
+            var result = await requestJson(api.pinMemoryArchive, { method: 'POST', body: {
+                story_id: state.storyId,
+                session_id: archive.session_id,
+                pinned: !archive.pinned
+            }});
+            if (!result.ok) throw new Error('pin_failed');
+            await loadMemoryArchives(state.storyId);
+        } catch (_) {
+            setFeedback(t('theater.memoryPinFailed', '收藏状态更新失败，请重试。'), true);
+        } finally { setBusy(false); }
+    }
+    async function forgetStoryMemory() {
+        if (!state.storyId || state.busy) return;
+        var confirmed = await showModal({
+            title: t('theater.forgetStoryMemoryTitle', '忘记该剧本？'),
+            body: t('theater.forgetStoryMemoryBody', '这会删除当前猫娘对该剧本的摘要、时间索引和完整演绎档案，但不会删除剧本或当前进度。'),
+            cancelLabel: t('common.cancel', '取消'),
+            confirmLabel: t('theater.forgetStoryMemory', '忘记该剧本'),
+            danger: true
+        });
+        if (!confirmed) return;
+        setBusy(true); setFeedback('');
+        try {
+            var result = await requestJson(api.forgetMemory, {
+                method: 'POST', body: { story_id: state.storyId }
+            });
+            if (!result.ok) throw new Error('forget_failed');
+            state.archives = [];
+            state.pendingEnd = null;
+            renderMemoryArchives();
+            setFeedback(t('theater.storyMemoryForgotten', '已忘记该剧本的演绎记忆。'));
+        } catch (_) {
+            setFeedback(t('theater.storyMemoryForgetFailed', '剧本记忆删除失败，请重试。'), true);
+        } finally { setBusy(false); }
     }
     async function importStory(file) {
         if (!file || state.busy) return;
@@ -379,7 +464,7 @@
             while (state.pendingEnd === receipt) {
                 var remember = await showModal({
                     title: t('theater.rememberPerformanceTitle', '是否让 N.E.K.O 记下本次演绎内容？'),
-                    body: t('theater.rememberPerformanceBody', '只会记录公开的演绎摘要和最近片段，不包含隐藏数值与路线条件。'),
+                    body: t('theater.rememberPerformanceRetentionBody', '猫娘的日常记忆只保留公开摘要，完整公开演绎保存在小剧场档案中；隐藏数值与路线条件不会写入。'),
                     cancelLabel: t('theater.skipMemory', '暂不记录'), confirmLabel: t('theater.saveMemory', '记下本次演绎'), persistent: true
                 });
                 var body = { story_id: receipt.story_id, session_id: receipt.session_id, revision: receipt.revision, end_receipt_id: receipt.end_receipt_id };
@@ -404,7 +489,10 @@
                 }
                 state.pendingEnd = null;
                 hideModal();
-                if (remember) setFeedback(t('theater.memorySaved', '本次演绎已记下。'));
+                if (remember) {
+                    await loadMemoryArchives(receipt.story_id);
+                    setFeedback(t('theater.memorySaved', '本次演绎已记下。'));
+                }
                 break;
             }
         } finally {
@@ -460,6 +548,7 @@
         $('theater-start-btn').addEventListener('click', beginSession);
         $('theater-continue-btn').addEventListener('click', continueSession);
         $('theater-delete-btn').addEventListener('click', deleteStory);
+        $('theater-forget-memory-btn').addEventListener('click', forgetStoryMemory);
         loadStories().catch(function () { setStatus('theater.failed', '出错了'); setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true); });
         postMessage({ action: 'theater:selector-ready' });
     });

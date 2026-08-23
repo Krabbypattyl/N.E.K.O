@@ -302,6 +302,12 @@ class NumericV2Compiler:
                 c.add("metric_initial_out_of_range", f"{path}.initial", "初始值超出 metric 范围。")
             if metric.get("visibility") not in _VISIBILITIES:
                 c.add("invalid_metric_visibility", f"{path}.visibility", "Numeric v2 数值只能对玩家隐藏。")
+            if metric.get("relationship_effect", "none") not in {"positive", "negative", "none"}:
+                c.add(
+                    "invalid_metric_relationship_effect",
+                    f"{path}.relationship_effect",
+                    "关系演绎作用只能是 positive、negative 或 none。",
+                )
             limits = c.obj(metric.get("per_turn_limit"), f"{path}.per_turn_limit")
             for direction in ("increase", "decrease"):
                 limit = c.require_int(limits.get(direction), f"{path}.per_turn_limit.{direction}")

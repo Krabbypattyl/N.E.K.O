@@ -12,11 +12,24 @@ from fastapi.testclient import TestClient
 import pytest
 
 from main_routers import numeric_theater_router
+from memory.recent import CompressedRecentHistoryManager
 from services.theater.numeric_v2_actor import NumericV2ActorError
-from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+from services.theater.numeric_v2_archive import (
+    NumericV2ArchiveStore,
+    build_numeric_v2_memory_messages,
+)
 from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult
 from services.theater.numeric_v2_registry import NumericV2PackageError
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+from utils.llm_client import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    THEATER_MEMORY_SOURCE,
+    convert_to_messages,
+    messages_to_dict,
+)
+from utils.llm_client.history import SQLChatMessageHistory
 
 
 class _ConfigManager:
@@ -797,7 +810,7 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
     assert captured["interrupt_audio"] is True
 
 
-def test_numeric_end_receipt_archives_public_tail_once(tmp_path, monkeypatch):
+def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypatch):
     captured = {"calls": 0}
 
     class _MemoryResponse:
@@ -865,6 +878,14 @@ def test_numeric_end_receipt_archives_public_tail_once(tmp_path, monkeypatch):
             "/api/theater-numeric/session/active",
             params={"story_id": "numeric_v2_contract"},
         )
+        restarted = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "archive_session_next_run",
+                "replace_existing": True,
+            },
+        )
 
     assert archived.status_code == 200
     assert archived.json()["status"] == "written"
@@ -872,16 +893,300 @@ def test_numeric_end_receipt_archives_public_tail_once(tmp_path, monkeypatch):
     assert replay.json()["status"] == "already_written"
     assert restored.json()["end_receipt_id"] == receipt["end_receipt_id"]
     assert restored.json()["archive_status"] == "written"
+    assert restarted.status_code == 200
+    assert restarted.json()["session"]["session_id"] == "archive_session_next_run"
+    assert not (
+        tmp_path / "theater" / "numeric_v2" / "sessions" / "archive_session.json"
+    ).exists()
     assert captured["calls"] == 1
     assert captured["url"].endswith("/%E6%B5%8B%E8%AF%95%E7%8C%AB%E5%A8%98")
     assert captured["payload"]["idempotency_key"] == ended["archive_request_id"]
     memory_text = captured["payload"]["input_history"]
-    assert "我把信放在桌上。" in memory_text
+    memory_messages = json.loads(memory_text)
     assert "我在听。" in memory_text
-    assert "暂告一段落" in memory_text
+    assert "我把信放在桌上。" not in memory_text
+    assert [message["role"] for message in memory_messages] == ["system"]
+    assert all(
+        message["metadata"]["source"] == THEATER_MEMORY_SOURCE
+        for message in memory_messages
+    )
+    assert all(message["metadata"]["episode_status"] == "paused" for message in memory_messages)
+    assert memory_messages[0]["metadata"]["memory_tier"] == "episode_summary"
+    assert memory_messages[0]["metadata"]["message_kind"] == "episode_summary"
+    assert "【" not in memory_text
     assert "metrics" not in memory_text
     assert "suggested_inputs" not in memory_text
     assert "mainline_" not in memory_text
+
+    # 单集胶囊经过统一消息转换后仍是 system，且内部来源元数据不丢失。
+    persisted_messages = messages_to_dict(convert_to_messages(memory_messages))
+    assert [message["type"] for message in persisted_messages] == ["system"]
+    assert all(
+        message["data"]["metadata"]["source"] == THEATER_MEMORY_SOURCE
+        for message in persisted_messages
+    )
+    public_archives = list(
+        (tmp_path / "theater" / "numeric_v2" / "public_archives").glob("*.json")
+    )
+    assert len(public_archives) == 1
+    public_archive = json.loads(public_archives[0].read_text(encoding="utf-8"))
+    assert public_archive["schema"] == "neko.theater.numeric.v2.public-archive"
+    assert public_archive["session_id"] == "archive_session"
+    assert public_archive["turns"][0]["player_input"] == "我把信放在桌上。"
+    assert "我在听。" in public_archive["turns"][0]["performance"]
+    assert "metrics" not in json.dumps(public_archive, ensure_ascii=False)
+    assert "mainline_" not in json.dumps(public_archive, ensure_ascii=False)
+
+
+def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch):
+    """显式忘记应清理热记忆、冷档案与旧回执，但保留 Session。"""  # noqa: DOCSTRING_CJK
+
+    captured = {"forgotten": False}
+
+    class _MemoryResponse:
+        content = b"{}"
+        is_success = True
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class _MemoryClient:
+        async def post(self, url, *, json, timeout):
+            if url.endswith("/theater/forget"):
+                captured["forgotten"] = True
+                return _MemoryResponse({
+                    "ok": True,
+                    "removed_recent": 1,
+                    "removed_time_index": 3,
+                })
+            return _MemoryResponse({"status": "cached", "count": 1})
+
+    monkeypatch.setattr(
+        "utils.internal_http_client.get_internal_http_client",
+        lambda: _MemoryClient(),
+    )
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "forget_session"},
+        )
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "forget_session",
+                "base_revision": 0,
+            },
+        ).json()
+        archived = client.post(
+            "/api/theater-numeric/session/archive",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "forget_session",
+                "revision": 0,
+                "end_receipt_id": ended["end_receipt_id"],
+                "archive_request_id": ended["archive_request_id"],
+            },
+        )
+        listed = client.get(
+            "/api/theater-numeric/memory/archives",
+            params={"story_id": "numeric_v2_contract"},
+        )
+        pinned = client.post(
+            "/api/theater-numeric/memory/archive/pin",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "forget_session",
+                "pinned": True,
+            },
+        )
+        forgotten = client.post(
+            "/api/theater-numeric/memory/forget",
+            json={"story_id": "numeric_v2_contract"},
+        )
+        after = client.get(
+            "/api/theater-numeric/memory/archives",
+            params={"story_id": "numeric_v2_contract"},
+        )
+        active = client.get(
+            "/api/theater-numeric/session/active",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert archived.json()["status"] == "written"
+    assert len(listed.json()["archives"]) == 1
+    assert pinned.json()["archive"]["pinned"] is True
+    assert forgotten.json() == {
+        "ok": True,
+        "removed_recent": 1,
+        "removed_time_index": 3,
+        "removed_archives": 1,
+        "removed_receipts": 2,
+    }
+    assert captured["forgotten"] is True
+    assert after.json()["archives"] == []
+    assert active.json()["session"]["session_id"] == "forget_session"
+    assert active.json()["archive_status"] == "skipped"
+
+
+def test_numeric_memory_projection_builds_one_compact_episode_summary():
+    """完整换场留在 Session；日常记忆只接收一条有序单集摘要。"""  # noqa: DOCSTRING_CJK
+
+    session = SimpleNamespace(
+        story_package_id="numeric_v2_contract",
+        session_id="memory_projection",
+        revision=2,
+        opening_performance={
+            "scene_narration": "雨点敲在窗沿。",
+            "performance": "（抬起头）你来了。",
+        },
+        performance_history=(
+            {
+                "revision": 1,
+                "input_text": "把合同递给她。",
+                "performance": "（接过合同）我看看。",
+            },
+            {
+                "revision": 2,
+                "input_text": "一起去找中介。",
+                "segments": [
+                    {
+                        "phase": "source_response",
+                        "performance": "（站起身）走吧。",
+                    },
+                    {
+                        "phase": "transition_bridge",
+                        "scene_narration": "雨停后，两人来到街角。",
+                    },
+                    {
+                        "phase": "target_opening",
+                        "scene_narration": "卷帘门已经落锁。",
+                        "performance": "（攥紧合同）他们跑了。",
+                    },
+                ],
+            },
+        ),
+    )
+
+    messages = build_numeric_v2_memory_messages(
+        title="雨夜合租",
+        session=session,
+        ending=None,
+    )
+
+    assert [message["role"] for message in messages] == ["system"]
+    capsule = messages[0]
+    transition_text = json.dumps(capsule["content"], ensure_ascii=False)
+    expected_order = [
+        "走吧。",
+        "雨停后，两人来到街角。",
+        "卷帘门已经落锁。",
+        "他们跑了。",
+    ]
+    assert [transition_text.index(text) for text in expected_order] == sorted(
+        transition_text.index(text) for text in expected_order
+    )
+    assert capsule["metadata"]["memory_tier"] == "episode_summary"
+    assert capsule["metadata"]["episode_summary"]
+    assert "把合同递给她" not in transition_text
+    assert "一起去找中介" not in transition_text
+    assert "【" not in json.dumps(messages, ensure_ascii=False)
+
+
+def test_sql_history_serialization_preserves_internal_message_metadata():
+    """时间索引必须保留来源元数据，否则虚构事实过滤会在落库后失效。"""  # noqa: DOCSTRING_CJK
+
+    history = SQLChatMessageHistory.__new__(SQLChatMessageHistory)
+    serialized = json.loads(history._serialize(HumanMessage(
+        content="把合同递过去。",
+        metadata={"source": THEATER_MEMORY_SOURCE, "session_id": "memory_projection"},
+    )))
+
+    assert serialized == {
+        "type": "human",
+        "data": {
+            "content": "把合同递过去。",
+            "metadata": {
+                "source": THEATER_MEMORY_SOURCE,
+                "session_id": "memory_projection",
+            },
+        },
+    }
+    assert HumanMessage(
+        content="把合同递过去。",
+        metadata={"source": THEATER_MEMORY_SOURCE},
+    ).to_openai() == {
+        "role": "user",
+        "content": "把合同递过去。",
+    }
+
+
+def test_sql_history_replaces_theater_story_event_atomically(tmp_path):
+    """同一稳定事件更新后只保留最新周目胶囊。"""  # noqa: DOCSTRING_CJK
+
+    from sqlalchemy import create_engine, text
+
+    database_path = tmp_path / "theater-memory.db"
+    connection_string = f"sqlite:///{database_path}"
+    history = SQLChatMessageHistory(
+        connection_string=connection_string,
+        session_id="theater-story-stable",
+        table_name="message_store",
+    )
+    history.add_messages([SystemMessage(content="旧周目摘要")])
+    history.replace_messages([
+        SystemMessage(content="新周目一"),
+        SystemMessage(content="新周目二"),
+    ])
+
+    with create_engine(connection_string).connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT message FROM message_store "
+                "WHERE session_id = :session_id ORDER BY id"
+            ),
+            {"session_id": "theater-story-stable"},
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert "旧周目摘要" not in "\n".join(row[0] for row in rows)
+    assert "新周目一" in rows[0][0]
+    assert "新周目二" in rows[1][0]
+
+
+def test_recent_compression_prompt_uses_theater_episode_context_only():
+    """摘要提示只引用剧场单集上下文，不重新展开完整演绎正文。"""  # noqa: DOCSTRING_CJK
+
+    manager = CompressedRecentHistoryManager.__new__(CompressedRecentHistoryManager)
+    manager.name_mapping = {"human": "哥哥"}
+    message = AIMessage(
+        content="雨点敲在窗沿。\n\n（抬起头）你来了。",
+        metadata={
+            "source": THEATER_MEMORY_SOURCE,
+            "session_id": "memory_projection",
+            "archive_from_revision": 1,
+            "archive_through_revision": 1,
+            "story_title": "雨夜合租",
+            "episode_status": "paused",
+            "parts": [
+                {"kind": "scene_narration", "phase": "opening", "text": "雨点敲在窗沿。"},
+                {"kind": "action", "phase": "opening", "text": "（抬起头）"},
+                {"kind": "dialogue", "phase": "opening", "text": "你来了。"},
+            ],
+        },
+    )
+
+    rendered = manager._render_messages_to_text([message], "测试猫娘")
+
+    assert "共同演绎小剧场《雨夜合租》" in rendered
+    assert "属于虚构剧情，不代表现实经历" in rendered
+    assert "雨点敲在窗沿。" not in rendered
+    assert "测试猫娘 | （抬起头）你来了。" not in rendered
+    assert "【旁白】" not in rendered
 
 
 @pytest.mark.asyncio
@@ -917,6 +1222,195 @@ async def test_numeric_end_receipt_concurrent_creation_converges(tmp_path):
     later_receipt = await store.acreate_or_get(later_session)
     assert later_receipt["receipt_id"] != receipts[0]["receipt_id"]
     assert later_receipt["revision"] == 8
+
+
+def test_numeric_archive_receipt_advances_incremental_watermark_after_success(tmp_path):
+    """继续演绎再次退出时，只归档上次成功写入之后的新公开回合。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    binding = {
+        "character_id": "character_" + "1" * 32,
+        "catgirl_name": "测试猫娘",
+    }
+    first_session = SimpleNamespace(
+        story_package_id="numeric_v2_contract",
+        session_id="incremental_archive",
+        revision=3,
+        catgirl_binding=binding,
+    )
+    first_receipt = store.create_or_get(first_session)
+    assert first_receipt["archive_from_revision"] == 1
+    assert first_receipt["archive_through_revision"] == 3
+    assert first_receipt["include_opening"] is True
+
+    store.update(first_receipt, status="written")
+    resumed_session = SimpleNamespace(
+        story_package_id=first_session.story_package_id,
+        session_id=first_session.session_id,
+        revision=6,
+        catgirl_binding=binding,
+    )
+    resumed_receipt = store.create_or_get(resumed_session)
+
+    assert resumed_receipt["archive_from_revision"] == 4
+    assert resumed_receipt["archive_through_revision"] == 6
+    assert resumed_receipt["include_opening"] is False
+
+
+def test_numeric_receipt_gc_preserves_legacy_written_receipt_until_cold_archive_exists(tmp_path):
+    """升级前已写入记忆但未生成冷档案的回执不能被 GC 提前销毁。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    binding = {
+        "character_id": "character_legacy_archive",
+        "catgirl_name": "小葵",
+    }
+    first = SimpleNamespace(
+        story_package_id="story_legacy_archive",
+        session_id="legacy_archive_session",
+        revision=1,
+        catgirl_binding=binding,
+    )
+    first_receipt = store.create_or_get(first)
+    store.update(first_receipt, status="written")
+    second = SimpleNamespace(
+        story_package_id=first.story_package_id,
+        session_id=first.session_id,
+        revision=2,
+        catgirl_binding=binding,
+    )
+    second_receipt = store.create_or_get(second)
+    store.update(second_receipt, status="skipped")
+
+    store.cleanup_receipts({first.session_id})
+
+    assert store.has_written_receipt_for_session(first.session_id) is True
+    assert store._receipt_path(first_receipt["receipt_id"]).is_file()
+    assert store.load_for_session(first.session_id)["receipt_id"] == second_receipt["receipt_id"]
+
+
+def test_numeric_public_archives_keep_latest_five_plus_pinned(tmp_path):
+    """冷档案默认有界，用户收藏的旧周目不参与自动淘汰。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+
+    def session(index: int):
+        return SimpleNamespace(
+            story_package_id="story_retention",
+            session_id=f"session_{index}",
+            revision=index,
+            catgirl_binding={
+                "character_id": "character_retention",
+                "catgirl_name": "小葵",
+                "player_address": "哥哥",
+            },
+            opening_performance={"performance": "你来了。"},
+            performance_history=(),
+        )
+
+    store.write_public_archive(title="有界剧本", session=session(0), ending=None)
+    store.set_public_archive_pinned(
+        story_id="story_retention",
+        session_id="session_0",
+        character_id="character_retention",
+        legacy_catgirl_name="小葵",
+        pinned=True,
+    )
+    for index in range(1, 7):
+        store.write_public_archive(title="有界剧本", session=session(index), ending=None)
+
+    archives = store.list_public_archives(
+        story_id="story_retention",
+        character_id="character_retention",
+        legacy_catgirl_name="小葵",
+    )
+    assert len(archives) == 6
+    assert {archive["session_id"] for archive in archives} == {
+        "session_0", "session_2", "session_3", "session_4", "session_5", "session_6",
+    }
+    assert next(item for item in archives if item["session_id"] == "session_0")["pinned"] is True
+
+    store.set_public_archive_pinned(
+        story_id="story_retention",
+        session_id="session_0",
+        character_id="character_retention",
+        legacy_catgirl_name="小葵",
+        pinned=False,
+    )
+    remaining = store.list_public_archives(
+        story_id="story_retention",
+        character_id="character_retention",
+        legacy_catgirl_name="小葵",
+    )
+    assert {archive["session_id"] for archive in remaining} == {
+        "session_2", "session_3", "session_4", "session_5", "session_6",
+    }
+
+
+def test_numeric_public_archive_stage_can_commit_or_discard(tmp_path):
+    """记忆请求失败时只留待提交副本，用户改选不记录后必须可销毁。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    session = SimpleNamespace(
+        story_package_id="story_stage",
+        session_id="session_stage",
+        revision=1,
+        catgirl_binding={
+            "character_id": "character_stage",
+            "catgirl_name": "小葵",
+            "player_address": "哥哥",
+        },
+        opening_performance={"performance": "你来了。"},
+        performance_history=(),
+    )
+    receipt = store.create_or_get(session)
+
+    store.stage_public_archive(
+        receipt=receipt,
+        title="两阶段归档",
+        session=session,
+        ending=None,
+    )
+    assert not store._public_archive_path(session.session_id).exists()
+    assert store._staged_archive_path(receipt["receipt_id"]).is_file()
+    store.discard_staged_public_archive(receipt["receipt_id"])
+    assert not store._staged_archive_path(receipt["receipt_id"]).exists()
+
+    store.stage_public_archive(
+        receipt=receipt,
+        title="两阶段归档",
+        session=session,
+        ending=None,
+    )
+    store.commit_staged_public_archive(receipt)
+    assert store._public_archive_path(session.session_id).is_file()
+    assert not store._staged_archive_path(receipt["receipt_id"]).exists()
+
+
+def test_numeric_receipt_gc_keeps_only_active_session_pointer(tmp_path):
+    """冷启动回执 GC 只保留仍可恢复 Session 的最新指针。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+
+    def session(index: int):
+        return SimpleNamespace(
+            story_package_id="story_receipt_gc",
+            session_id=f"receipt_session_{index}",
+            revision=index,
+            catgirl_binding={
+                "character_id": "character_receipt_gc",
+                "catgirl_name": "小葵",
+            },
+        )
+
+    for index in range(3):
+        store.create_or_get(session(index))
+
+    result = store.cleanup_receipts({"receipt_session_2"})
+
+    assert result == {"receipts_removed": 2, "pointers_removed": 2}
+    assert len(list(store.root.glob("theater_end_*.json"))) == 1
+    assert len(list(store.root.glob("session-*.json"))) == 1
 
 
 def test_numeric_session_survives_current_catgirl_rename(tmp_path, monkeypatch):

@@ -20,6 +20,7 @@ def numeric_v2_story() -> dict:
     metric = {
         "name": "信任度",
         "description": "猫娘愿意相信玩家承诺的程度。",
+        "relationship_effect": "positive",
         "min": 0,
         "max": 100,
         "initial": 20,
@@ -150,6 +151,28 @@ def test_numeric_v2_soft_pacing_budget_is_optional_and_validated():
     with pytest.raises(NumericV2CompileError) as over_limit:
         NumericV2Compiler().compile(story)
     assert any(issue.code == "invalid_node_recommended_turns" for issue in over_limit.value.issues)
+
+
+def test_numeric_v2_rejects_unknown_relationship_effect():
+    story = numeric_v2_story()
+    story["metric_schema"]["trust"]["relationship_effect"] = "guess"
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "invalid_metric_relationship_effect"
+        for issue in caught.value.issues
+    )
+
+
+def test_numeric_v2_accepts_legacy_metric_without_relationship_effect():
+    story = numeric_v2_story()
+    story["metric_schema"]["trust"].pop("relationship_effect")
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert "relationship_effect" not in compiled.story["metric_schema"]["trust"]
 
 
 def test_numeric_v2_rejects_conflicting_identity_source_names():

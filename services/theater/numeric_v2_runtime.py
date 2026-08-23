@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -60,6 +60,31 @@ def _integer(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise NumericV2RuntimeError(f"{field}_invalid")
     return value
+
+
+def _scene_completion_ready(value: Mapping[str, Any]) -> bool:
+    raw = value.get("scene_completion_ready")
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise NumericV2RuntimeError("scene_completion_ready_invalid")
+    return raw
+
+
+def _scene_goal_evidence(value: Any) -> dict[str, tuple[int, ...]]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise NumericV2RuntimeError("scene_goal_evidence_invalid")
+    result: dict[str, tuple[int, ...]] = {}
+    for goal_id, revisions in value.items():
+        if not isinstance(revisions, (list, tuple)):
+            raise NumericV2RuntimeError("scene_goal_evidence_invalid")
+        result[str(goal_id)] = tuple(
+            _integer(revision, "scene_goal_evidence_revision")
+            for revision in revisions
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +170,10 @@ class ScriptSessionV2:
     opening_performance: dict[str, Any]
     performance_history: tuple[dict[str, Any], ...]
     ended_reason: str | None = None
+    # 本幕目标一旦被 Evaluator 判定完成，就保持到满足 min_turns 或离开节点。
+    # 旧 Session 缺少这两个字段时使用空状态，恢复后从下一回合开始采用新合同。
+    scene_completion_ready: bool = False
+    scene_goal_evidence: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +192,11 @@ class ScriptSessionV2:
             "opening_performance": deepcopy(self.opening_performance),
             "performance_history": deepcopy(list(self.performance_history)),
             "ended_reason": self.ended_reason,
+            "scene_completion_ready": self.scene_completion_ready,
+            "scene_goal_evidence": {
+                goal_id: list(revisions)
+                for goal_id, revisions in self.scene_goal_evidence.items()
+            },
         }
 
     @classmethod
@@ -184,6 +218,8 @@ class ScriptSessionV2:
             opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
             performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
             ended_reason=(str(value.get("ended_reason")) if value.get("ended_reason") is not None else None),
+            scene_completion_ready=_scene_completion_ready(value),
+            scene_goal_evidence=_scene_goal_evidence(value.get("scene_goal_evidence")),
         )
 
 
@@ -256,6 +292,54 @@ class NumericV2Engine:
                 raise NumericV2RuntimeError("session_metric_out_of_range")
         if session.node_turn_count < 0 or session.revision < 0:
             raise NumericV2RuntimeError("session_counter_invalid")
+        self._validate_scene_goal_evidence(session, session.scene_goal_evidence)
+
+    def _current_scene_evidence_revisions(self, session: ScriptSessionV2) -> set[int]:
+        """返回当前节点最近一次访问中可被 Evaluator 引用的正式记录版本。"""  # noqa: DOCSTRING_CJK
+
+        revisions: set[int] = set()
+        entered_current_node = False
+        current_node_id = str(session.current_node_id)
+        for record in reversed(session.performance_history):
+            from_node_id = str(record.get("from_node_id") or "")
+            to_node_id = str(record.get("to_node_id") or "")
+            if from_node_id == current_node_id and to_node_id == current_node_id:
+                revision = record.get("revision")
+                if isinstance(revision, int) and not isinstance(revision, bool):
+                    revisions.add(revision)
+                continue
+            if to_node_id == current_node_id and from_node_id != current_node_id:
+                revision = record.get("revision")
+                if isinstance(revision, int) and not isinstance(revision, bool):
+                    revisions.add(revision)
+                entered_current_node = True
+            break
+        if not entered_current_node and current_node_id == str(self.story["start_node_id"]):
+            revisions.add(0)
+        return revisions
+
+    def _validate_scene_goal_evidence(
+        self,
+        session: ScriptSessionV2,
+        evidence: Mapping[str, tuple[int, ...]],
+    ) -> None:
+        """只接受当前节点目标和当前访问中的记录版本，防止跨幕事实串用。"""  # noqa: DOCSTRING_CJK
+
+        goal_count = min(8, len(self.nodes[session.current_node_id]["story_beat"].get("must_happen") or []))
+        valid_goal_ids = {f"goal.{index + 1}" for index in range(goal_count)}
+        valid_revisions = self._current_scene_evidence_revisions(session)
+        for goal_id, revisions in evidence.items():
+            if goal_id not in valid_goal_ids:
+                raise NumericV2RuntimeError("scene_goal_evidence_goal_invalid")
+            if (
+                not isinstance(revisions, tuple)
+                or len(revisions) > 8
+                or len(set(revisions)) != len(revisions)
+                or any(revision not in valid_revisions for revision in revisions)
+            ):
+                raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
+        if len({revision for revisions in evidence.values() for revision in revisions}) > 8:
+            raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
 
     def resolve_turn(
         self,
@@ -264,6 +348,8 @@ class NumericV2Engine:
         changes: tuple[MetricChangeV2, ...],
         *,
         scene_complete: bool = False,
+        goal_evidence: Mapping[str, tuple[int, ...]] | None = None,
+        persist_scene_progress: bool = True,
     ) -> TurnOutcomeV2:
         self.validate_session(session)
         if session.status == "ended":
@@ -274,6 +360,35 @@ class NumericV2Engine:
             raise NumericV2DuplicateTurnError("duplicate_client_turn_id")
         if len({change.metric_id for change in changes}) != len(changes):
             raise NumericV2RuntimeError("metric_change_duplicate")
+
+        submitted_goal_evidence = dict(goal_evidence or {})
+        self._validate_scene_goal_evidence(session, submitted_goal_evidence)
+        merged_goal_evidence = {
+            goal_id: tuple(dict.fromkeys((
+                *session.scene_goal_evidence.get(goal_id, ()),
+                *submitted_goal_evidence.get(goal_id, ()),
+            )))[-4:]
+            for goal_id in dict.fromkeys((
+                *session.scene_goal_evidence,
+                *submitted_goal_evidence,
+            ))
+        }
+        # 目标证据只承担跨越最近窗口的短期保留职责。始终优先保存最近八个
+        # 正式 revision，避免同一目标长期积累后反过来让合法 Session 无法复验。
+        newest_evidence_revisions = set(sorted({
+            revision
+            for revisions in merged_goal_evidence.values()
+            for revision in revisions
+        })[-8:])
+        merged_goal_evidence = {
+            goal_id: tuple(
+                revision
+                for revision in revisions
+                if revision in newest_evidence_revisions
+            )
+            for goal_id, revisions in merged_goal_evidence.items()
+            if any(revision in newest_evidence_revisions for revision in revisions)
+        }
 
         before = dict(session.metrics)
         after = dict(before)
@@ -289,7 +404,12 @@ class NumericV2Engine:
         route = None
         route_status = "waiting_min_turns"
         min_turns = int(source.get("min_turns") or 1)
-        if next_turn_count >= min_turns and not scene_complete:
+        scene_completion_ready = (
+            session.scene_completion_ready or scene_complete
+            if persist_scene_progress
+            else scene_complete
+        )
+        if next_turn_count >= min_turns and not scene_completion_ready:
             # min_turns 只是最短停留时间；本幕目标尚未兑现时不能按轮数硬切剧情。
             route_status = "scene_incomplete"
         elif next_turn_count >= min_turns:
@@ -306,6 +426,15 @@ class NumericV2Engine:
             transition = deepcopy(dict(route["transition_contract"]))
             route_status = "advanced"
 
+        next_scene_completion_ready = scene_completion_ready if route is None else False
+        # 完成信号已由 Runtime 锁存后，旧证据不再参与后续判定；即使仍在等待
+        # min_turns，也只保留完成状态，避免反复占用 Evaluator 输入预算。
+        next_scene_goal_evidence = (
+            merged_goal_evidence
+            if route is None and not scene_completion_ready
+            else {}
+        )
+
         revision = session.revision + 1
         next_session = replace(
             session,
@@ -315,6 +444,8 @@ class NumericV2Engine:
             revision=revision,
             status=next_status,
             processed_client_turn_ids=(*session.processed_client_turn_ids, request.client_turn_id),
+            scene_completion_ready=next_scene_completion_ready,
+            scene_goal_evidence=next_scene_goal_evidence,
         )
         event = {
             "schema": LEDGER_EVENT_SCHEMA,
@@ -335,6 +466,13 @@ class NumericV2Engine:
             "node_turn_count": next_turn_count,
             "status": next_status,
         }
+        if persist_scene_progress:
+            # Ledger 保存累计状态，恢复时无需重新询问模型，也不会把旧幕证据带入新幕。
+            event["scene_completion_ready"] = scene_completion_ready
+            event["scene_goal_evidence"] = {
+                goal_id: list(revisions)
+                for goal_id, revisions in next_scene_goal_evidence.items()
+            }
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
 
     def finalize_transition_performance(
@@ -539,12 +677,14 @@ class NumericV2Runtime:
         changes: tuple[MetricChangeV2, ...],
         *,
         scene_complete: bool = False,
+        goal_evidence: Mapping[str, tuple[int, ...]] | None = None,
     ) -> TurnOutcomeV2:
         return self.engine.resolve_turn(
             current.session,
             request,
             changes,
             scene_complete=scene_complete,
+            goal_evidence=goal_evidence,
         )
 
     async def commit_turn(

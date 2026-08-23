@@ -87,9 +87,11 @@ from utils.new_character_greeting_state import (
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable, is_cloudsave_disabled
 from services.theater.numeric_v2_store import (
     delete_numeric_v2_sessions,
+    list_numeric_v2_public_archives,
     list_numeric_v2_sessions,
     update_numeric_v2_character_bindings,
 )
+from services.theater.numeric_v2_archive import NumericV2ArchiveStore
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
 from services.theater.paths import theater_root
 
@@ -1536,11 +1538,29 @@ async def _delete_catgirl_by_name_serialized(name: str):
     numeric_session_index_path = (
         numeric_theater_root / "numeric_v2" / "story_sessions.json"
     )
+    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
+    numeric_public_archive_targets = [
+        Path(item["path"])
+        for item in list_numeric_v2_public_archives(
+            numeric_theater_root,
+            character_id=deleted_character_id,
+            legacy_catgirl_name=name,
+        )
+    ]
+    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
+        character_id=deleted_character_id,
+        legacy_catgirl_name=name,
+    )
 
     if not safe_path_name:
         logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
         characters_snapshot = copy.deepcopy(characters)
-        unsafe_targets = [*numeric_session_targets, numeric_session_index_path]
+        unsafe_targets = [
+            *numeric_session_targets,
+            *numeric_public_archive_targets,
+            *numeric_receipt_targets,
+            numeric_session_index_path,
+        ]
         with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
             memory_snapshot_records = await asyncio.to_thread(
                 _snapshot_existing_paths,
@@ -1550,6 +1570,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
             try:
                 await delete_numeric_v2_sessions(
                     numeric_theater_root,
+                    character_id=deleted_character_id,
+                    legacy_catgirl_name=name,
+                )
+                await asyncio.to_thread(
+                    numeric_archive_store.delete_receipts,
                     character_id=deleted_character_id,
                     legacy_catgirl_name=name,
                 )
@@ -1596,6 +1621,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
     memory_targets.extend(numeric_session_targets)
+    memory_targets.extend(numeric_public_archive_targets)
+    memory_targets.extend(numeric_receipt_targets)
     memory_targets.append(numeric_session_index_path)
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     meta_path = _config_manager.card_face_meta_path(name)
@@ -1694,6 +1721,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
             # 角色卡是剧场 Session 槽位的一部分；删除角色时必须同步删除所有剧本下的对应槽位。
             await delete_numeric_v2_sessions(
                 numeric_theater_root,
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+            )
+            await asyncio.to_thread(
+                numeric_archive_store.delete_receipts,
                 character_id=deleted_character_id,
                 legacy_catgirl_name=name,
             )

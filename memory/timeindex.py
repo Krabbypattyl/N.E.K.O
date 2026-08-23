@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from utils.llm_client import SQLChatMessageHistory, SystemMessage
+from utils.llm_client import (
+    SQLChatMessageHistory,
+    SystemMessage,
+    is_theater_memory_message,
+    messages_from_dict,
+    messages_to_dict,
+)
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
 from memory.stop_names import collect_stop_names, strip_stop_names
@@ -23,6 +29,7 @@ from collections.abc import AsyncIterator, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import asyncio
+import json
 import os
 import unicodedata
 
@@ -505,6 +512,130 @@ class TimeIndexedMemory:
     async def astore_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         await asyncio.to_thread(
             self.store_conversation, event_id, messages, lanlan_name, timestamp
+        )
+
+    def replace_conversation(self, event_id, messages, lanlan_name, timestamp=None):
+        """按稳定事件 ID 原子替换对话，供同一剧本更新有界周目摘要。"""  # noqa: DOCSTRING_CJK
+
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
+            return
+        if timestamp is None:
+            timestamp = datetime.now()
+
+        db_path = self.db_paths[lanlan_name]
+        uri_path = db_path.replace("\\", "/")
+        history = SQLChatMessageHistory(
+            connection_string=f"sqlite:///{uri_path}",
+            session_id=event_id,
+            table_name=self._validate_table_name(TIME_ORIGINAL_TABLE_NAME),
+        )
+        history.replace_messages(messages)
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        with self.engines[lanlan_name].connect() as conn:
+            conn.execute(
+                text(
+                    f"UPDATE {original_table} SET timestamp = :timestamp "
+                    "WHERE session_id = :session_id"
+                ),
+                {"timestamp": timestamp, "session_id": event_id},
+            )
+            conn.commit()
+
+    async def areplace_conversation(
+        self,
+        event_id,
+        messages,
+        lanlan_name,
+        timestamp=None,
+    ):
+        await asyncio.to_thread(
+            self.replace_conversation,
+            event_id,
+            messages,
+            lanlan_name,
+            timestamp,
+        )
+
+    @staticmethod
+    def _is_serialized_theater_message(serialized_message: object) -> bool:
+        """识别时间索引中的新旧剧场行；解析失败时宁可保留。"""  # noqa: DOCSTRING_CJK
+
+        try:
+            payload = json.loads(str(serialized_message or ""))
+            if not isinstance(payload, dict):
+                return False
+            messages = messages_from_dict([payload])
+            return bool(messages and is_theater_memory_message(messages[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+    def reconcile_theater_conversations(
+        self,
+        events_by_story,
+        lanlan_name,
+        timestamp=None,
+    ):
+        """用 recent 的有界剧场胶囊原子重建时间索引。"""  # noqa: DOCSTRING_CJK
+
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            raise RuntimeError("theater_time_index_unavailable")
+        if timestamp is None:
+            timestamp = datetime.now()
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        normalized_events = []
+        for event_id, messages in events_by_story.values():
+            normalized_event_id = str(event_id or "").strip()
+            if not normalized_event_id:
+                continue
+            for message in messages_to_dict(list(messages)):
+                normalized_events.append({
+                    "session_id": normalized_event_id,
+                    "message": json.dumps(message, ensure_ascii=False),
+                    "timestamp": timestamp,
+                })
+
+        with self.engines[lanlan_name].begin() as conn:
+            rows = conn.execute(
+                text(f"SELECT id, message FROM {original_table}")
+            ).fetchall()
+            theater_row_ids = [
+                int(row[0])
+                for row in rows
+                if self._is_serialized_theater_message(row[1])
+            ]
+            for row_id in theater_row_ids:
+                conn.execute(
+                    text(f"DELETE FROM {original_table} WHERE id = :row_id"),
+                    {"row_id": row_id},
+                )
+            for event in normalized_events:
+                conn.execute(
+                    text(
+                        f"INSERT INTO {original_table} "
+                        "(session_id, message, timestamp) "
+                        "VALUES (:session_id, :message, :timestamp)"
+                    ),
+                    event,
+                )
+        return {
+            "removed": len(theater_row_ids),
+            "stored": len(normalized_events),
+        }
+
+    async def areconcile_theater_conversations(
+        self,
+        events_by_story,
+        lanlan_name,
+        timestamp=None,
+    ):
+        return await asyncio.to_thread(
+            self.reconcile_theater_conversations,
+            events_by_story,
+            lanlan_name,
+            timestamp,
         )
 
     def has_conversation_event(self, event_id: str, lanlan_name: str) -> bool:

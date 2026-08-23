@@ -43,6 +43,7 @@ from .gates import (
     REVIEW_MIN_INTERVAL,
     REVIEW_SKIP_HISTORY_LEN,
 )
+from utils.llm_client import is_theater_memory_message
 from utils.recent_file import capture_recent_generation
 
 
@@ -360,6 +361,11 @@ async def maybe_spawn_review(name: str) -> None:
             )
         except Exception as e:
             logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
+            return
+        # 通用 review 会删除中段 system 并允许合并普通 user/ai 消息，无法保持剧场
+        # 片段元数据与正文一一对应。剧场原文留给既有压缩链路收束成带来源的备忘录，
+        # 在此之前保持不可改写，避免虚构剧情失去来源后混入现实对话。
+        if any(is_theater_memory_message(message) for message in history):
             return
         # Gate 3: history 长度
         if len(history) < REVIEW_SKIP_HISTORY_LEN:

@@ -161,6 +161,10 @@ def _numeric_v2_session_root(theater_storage_root: Path) -> Path:
     return Path(theater_storage_root) / "numeric_v2" / "sessions"
 
 
+def _numeric_v2_public_archive_root(theater_storage_root: Path) -> Path:
+    return Path(theater_storage_root) / "numeric_v2" / "public_archives"
+
+
 def _session_matches_character(
     binding: Mapping[str, Any],
     character_id: str,
@@ -233,6 +237,60 @@ def list_numeric_v2_sessions(
     return result
 
 
+def list_numeric_v2_public_archives(
+    theater_storage_root: Path,
+    *,
+    story_id: str = "",
+    character_id: str = "",
+    legacy_catgirl_name: str = "",
+) -> list[dict[str, str]]:
+    """列出与剧本或角色匹配的公开演绎冷档案。"""  # noqa: DOCSTRING_CJK
+
+    normalized_story_id = str(story_id or "").strip()
+    normalized_character_id = str(character_id or "").strip()
+    normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+    root = _numeric_v2_public_archive_root(theater_storage_root)
+    if not root.is_dir():
+        return []
+    result: list[dict[str, str]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
+        ):
+            continue
+        summary = {
+            "session_id": str(payload.get("session_id") or "").strip(),
+            "story_id": str(payload.get("story_id") or "").strip(),
+            "catgirl_name": str(payload.get("catgirl_name") or "").strip(),
+            "character_id": str(payload.get("character_id") or "").strip(),
+            "path": str(path),
+        }
+        if normalized_story_id and summary["story_id"] != normalized_story_id:
+            continue
+        if normalized_character_id and not (
+            summary["character_id"] == normalized_character_id
+            or (
+                not summary["character_id"]
+                and normalized_legacy_name
+                and summary["catgirl_name"] == normalized_legacy_name
+            )
+        ):
+            continue
+        if (
+            not normalized_character_id
+            and normalized_legacy_name
+            and summary["catgirl_name"] != normalized_legacy_name
+        ):
+            continue
+        result.append(summary)
+    return result
+
+
 async def delete_numeric_v2_sessions(
     theater_storage_root: Path,
     *,
@@ -285,6 +343,20 @@ async def delete_numeric_v2_sessions(
                 except FileNotFoundError:
                     continue
                 deleted.append(candidate)
+
+        # 公开冷档案与对应剧本/角色同生命周期；删除恢复槽位时不能留下孤儿文件。
+        for archive in list_numeric_v2_public_archives(
+            theater_storage_root,
+            story_id=normalized_story_id,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+        ):
+            path = Path(archive["path"])
+            async with _lock(path):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
         stories = _read_story_session_slots(index_path)
         if normalized_story_id:
@@ -699,6 +771,16 @@ class NumericV2SessionStore:
                 scene_complete = event.get("scene_complete")
                 if not isinstance(scene_complete, bool):
                     raise ValueError("scene_complete_shape")
+                raw_goal_evidence = event.get("scene_goal_evidence", {})
+                if not isinstance(raw_goal_evidence, Mapping):
+                    raise ValueError("scene_goal_evidence_shape")
+                goal_evidence = {
+                    str(goal_id): tuple(revisions)
+                    for goal_id, revisions in raw_goal_evidence.items()
+                    if isinstance(revisions, list)
+                }
+                if len(goal_evidence) != len(raw_goal_evidence):
+                    raise ValueError("scene_goal_evidence_shape")
                 request = TurnRequestV2.from_mapping(
                     {
                         "client_turn_id": turn_id,
@@ -711,6 +793,12 @@ class NumericV2SessionStore:
                     request,
                     changes,
                     scene_complete=scene_complete,
+                    goal_evidence=goal_evidence,
+                    # 老 Ledger 没有进度字段时严格按旧规则重放；新回合从写入字段开始启用记忆。
+                    persist_scene_progress=(
+                        "scene_completion_ready" in event
+                        or "scene_goal_evidence" in event
+                    ),
                 )
             except Exception as exc:
                 raise NumericV2StoreError("numeric_ledger_replay_invalid") from exc
@@ -733,6 +821,9 @@ class NumericV2SessionStore:
                 "metric_changes",
             ):
                 if event.get(field) != expected_event.get(field):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            for field in ("scene_completion_ready", "scene_goal_evidence"):
+                if field in event and event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             performance = stored.session.performance_history[event_index]
             if not isinstance(performance, Mapping):
@@ -807,7 +898,11 @@ class NumericV2SessionStore:
                     != ["source_response", "transition_bridge", "target_opening"]
                 ):
                     raise NumericV2StoreError("numeric_transition_performance_invalid")
-            replay_session = replayed.session
+            # 下一条 Ledger 的目标证据只能引用已正式提交的演绎记录，因此重放时同步补回历史。
+            replay_session = replace(
+                replayed.session,
+                performance_history=(*replayed.session.performance_history, deepcopy(dict(performance))),
+            )
             expected_node = str(expected_event["to_node_id"])
             expected_metrics = dict(expected_event["after_metrics"])
             seen_turns.add(turn_id)
@@ -826,6 +921,11 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_session_status_mismatch")
         if replay_session.revision != stored.session.revision:
             raise NumericV2StoreError("numeric_session_revision_mismatch")
+        if (
+            replay_session.scene_completion_ready != stored.session.scene_completion_ready
+            or replay_session.scene_goal_evidence != stored.session.scene_goal_evidence
+        ):
+            raise NumericV2StoreError("numeric_session_scene_progress_mismatch")
 
     def _write(self, path: Path, stored: NumericV2StoredSession, *, exclusive: bool = False) -> None:
         payload = {
@@ -879,6 +979,7 @@ class NumericV2SessionStore:
 
 __all__ = [
     "delete_numeric_v2_sessions",
+    "list_numeric_v2_public_archives",
     "list_numeric_v2_sessions",
     "update_numeric_v2_character_bindings",
     "NumericV2SessionExistsError",

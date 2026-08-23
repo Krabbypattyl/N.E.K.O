@@ -379,11 +379,40 @@ async def start_numeric_session(request: Request):
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
                 if _current_catgirl_binding(config_manager) != binding:
                     raise ValueError("catgirl_changed_requires_new_session")
+                archive_store = _archive_store(config_manager)
+                previous_receipt = await archive_store.aload_for_session(
+                    existing.session.session_id
+                )
+                needs_legacy_archive = (
+                    previous_receipt is not None
+                    and previous_receipt.get("status") == "written"
+                ) or await asyncio.to_thread(
+                    archive_store.has_written_receipt_for_session,
+                    existing.session.session_id,
+                )
+                if needs_legacy_archive:
+                    previous_public = _numeric_payload(
+                        runtime,
+                        existing,
+                        display_binding=binding,
+                    )
+                    # 兼容升级前已经写入记忆、但尚未生成冷档案的 Session；
+                    # 冷档案落盘失败时不能继续删除旧恢复槽位。
+                    await archive_store.awrite_public_archive(
+                        title=str(runtime.engine.story["meta"]["title"]),
+                        session=existing.session,
+                        ending=previous_public["scene"].get("ending"),
+                    )
                 stored = await runtime.replace_active_session(
                     previous_session_id=existing.session.session_id,
                     session_id=session_id,
                     catgirl_binding=binding,
                     opening_performance=opening,
+                )
+                # 新 Session 已原子接管恢复槽位，旧 Session 回执不再有任何合法消费者。
+                await asyncio.to_thread(
+                    archive_store.delete_session_receipts,
+                    existing.session.session_id,
                 )
             else:
                 # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
@@ -513,12 +542,14 @@ async def submit_numeric_input(request: Request):
             engine=runtime.engine,
             session=current.session,
             message=turn.message,
+            recent_ledger_events=current.ledger_events,
         )
         outcome = runtime.prepare_turn(
             current,
             turn,
             evaluation.metric_changes,
             scene_complete=evaluation.scene_complete,
+            goal_evidence=evaluation.goal_evidence,
         )
         performance = await NumericV2Actor(config_manager).generate_turn(
             engine=runtime.engine,
@@ -845,48 +876,68 @@ async def archive_numeric_session(request: Request):
             if expected_request_id and archive_request_id != expected_request_id:
                 return _error("numeric_archive_request_mismatch", 409)
             runtime = await _runtime_for_story(config_manager, receipt["story_id"])
-            stored = await runtime.restore_session(receipt["session_id"])
-            if stored is None:
-                return _error("numeric_session_not_found", 404)
-            current_binding = _ensure_current_catgirl(stored.session, config_manager)
-            if receipt.get("character_id") != current_binding.get("character_id"):
-                return _error("numeric_end_receipt_character_mismatch", 409)
-            if stored.session.status != "ended" or stored.session.revision != receipt["revision"]:
-                return _error("numeric_archive_session_not_ended", 409)
-            public = _numeric_payload(
-                runtime,
-                stored,
-                display_binding=current_binding,
-            )
-            title = str(runtime.engine.story["meta"]["title"])
-            messages = build_numeric_v2_memory_messages(
-                title=title,
-                session=stored.session,
-                ending=public["scene"].get("ending"),
-            )
-            from config import MEMORY_SERVER_PORT
-            from utils.internal_http_client import get_internal_http_client
+            # 归档与剧本删除、重新开始共用故事级锁，避免删除完成后又写回孤立冷档案。
+            async with runtime.story_session_guard():
+                stored = await runtime.restore_session(receipt["session_id"])
+                if stored is None:
+                    return _error("numeric_session_not_found", 404)
+                current_binding = _ensure_current_catgirl(stored.session, config_manager)
+                if receipt.get("character_id") != current_binding.get("character_id"):
+                    return _error("numeric_end_receipt_character_mismatch", 409)
+                if stored.session.status != "ended" or stored.session.revision != receipt["revision"]:
+                    return _error("numeric_archive_session_not_ended", 409)
+                public = _numeric_payload(
+                    runtime,
+                    stored,
+                    display_binding=current_binding,
+                )
+                title = str(runtime.engine.story["meta"]["title"])
+                messages = build_numeric_v2_memory_messages(
+                    title=title,
+                    session=stored.session,
+                    ending=public["scene"].get("ending"),
+                    archive_from_revision=int(receipt.get("archive_from_revision") or 1),
+                    archive_through_revision=int(
+                        receipt.get("archive_through_revision") or stored.session.revision
+                    ),
+                    include_opening=bool(receipt.get("include_opening", True)),
+                )
+                from config import MEMORY_SERVER_PORT
+                from utils.internal_http_client import get_internal_http_client
 
-            receipt = await store.aupdate(
-                receipt,
-                status="writing",
-                archive_request_id=archive_request_id,
-            )
-            response = await get_internal_http_client().post(
-                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{quote(current_binding['catgirl_name'], safe='')}",
-                # 记忆服务使用同一稳定键收敛未知响应和跨进程重试，不能只在剧场侧去重。
-                json={
-                    "input_history": json.dumps(messages, ensure_ascii=False),
-                    "idempotency_key": archive_request_id,
-                },
-                timeout=8.0,
-            )
-            data = response.json() if response.content else {}
-            if not response.is_success or data.get("status") == "error":
-                await store.aupdate(receipt, status="pending")
-                return _error("numeric_archive_memory_failed", 502)
-            await store.aupdate(receipt, status="written", archive_request_id=archive_request_id)
-            return {"ok": True, "status": "written", "count": data.get("count")}
+                receipt = await store.aupdate(
+                    receipt,
+                    status="writing",
+                    archive_request_id=archive_request_id,
+                )
+                # 先落不含隐藏状态的完整冷档案，再让记忆服务迁移旧版全文；
+                # 这样旧时间索引被折叠时，公开演绎仍有可恢复副本。
+                await store.astage_public_archive(
+                    receipt=receipt,
+                    title=title,
+                    session=stored.session,
+                    ending=public["scene"].get("ending"),
+                )
+                response = await get_internal_http_client().post(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{quote(current_binding['catgirl_name'], safe='')}",
+                    # 记忆服务使用同一稳定键收敛未知响应和跨进程重试，不能只在剧场侧去重。
+                    json={
+                        "input_history": json.dumps(messages, ensure_ascii=False),
+                        "idempotency_key": archive_request_id,
+                    },
+                    timeout=8.0,
+                )
+                data = response.json() if response.content else {}
+                if not response.is_success or data.get("status") == "error":
+                    await store.aupdate(receipt, status="pending")
+                    return _error("numeric_archive_memory_failed", 502)
+                await store.acommit_staged_public_archive(receipt)
+                await store.aupdate(
+                    receipt,
+                    status="written",
+                    archive_request_id=archive_request_id,
+                )
+                return {"ok": True, "status": "written", "count": data.get("count")}
         except NumericV2ArchiveError as exc:
             return _error(str(exc), 409)
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
@@ -917,10 +968,140 @@ async def skip_numeric_session_archive(request: Request):
             receipt = await _validated_receipt(store, payload)
             if receipt.get("status") == "written":
                 return _error("numeric_archive_already_written", 409)
+            await store.adiscard_staged_public_archive(
+                str(receipt.get("receipt_id") or "")
+            )
             await store.aupdate(receipt, status="skipped")
             return {"ok": True, "status": "skipped"}
         except NumericV2ArchiveError as exc:
             return _error(str(exc), 409)
+
+
+@router.get("/memory/archives")
+async def list_numeric_memory_archives(story_id: str):
+    """列出当前猫娘在指定剧本中的冷档案摘要。"""  # noqa: DOCSTRING_CJK
+
+    config_manager = get_config_manager()
+    normalized_story_id = str(story_id or "").strip()
+    try:
+        await _runtime_for_story(config_manager, normalized_story_id)
+        binding = _current_catgirl_binding(config_manager)
+        archives = await asyncio.to_thread(
+            _archive_store(config_manager).list_public_archives,
+            story_id=normalized_story_id,
+            character_id=binding["character_id"],
+            legacy_catgirl_name=binding["catgirl_name"],
+        )
+        public_archives = [
+            {
+                key: value
+                for key, value in archive.items()
+                if key not in {"path", "modified_ns"}
+            }
+            for archive in archives
+        ]
+        return {"ok": True, "archives": public_archives}
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    except NumericV2ArchiveError as exc:
+        return _error(str(exc), 500)
+
+
+@router.post("/memory/archive/pin")
+async def pin_numeric_memory_archive(request: Request):
+    payload = await _json_object(request)
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=payload,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+    story_id = str(payload.get("story_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    if not story_id or not session_id or not isinstance(payload.get("pinned"), bool):
+        return _error("numeric_public_archive_pin_invalid", 400)
+    config_manager = get_config_manager()
+    try:
+        runtime = await _runtime_for_story(config_manager, story_id)
+        async with runtime.story_session_guard():
+            binding = _current_catgirl_binding(config_manager)
+            result = await asyncio.to_thread(
+                _archive_store(config_manager).set_public_archive_pinned,
+                story_id=story_id,
+                session_id=session_id,
+                character_id=binding["character_id"],
+                legacy_catgirl_name=binding["catgirl_name"],
+                pinned=payload["pinned"],
+            )
+        return {"ok": True, "archive": result}
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    except NumericV2ArchiveError as exc:
+        return _error(str(exc), 404)
+
+
+@router.post("/memory/forget")
+async def forget_numeric_story_memory(request: Request):
+    """显式忘记当前猫娘的指定剧本，不删除剧本包或 Session。"""  # noqa: DOCSTRING_CJK
+
+    payload = await _json_object(request)
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=payload,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+    story_id = str(payload.get("story_id") or "").strip()
+    if not story_id:
+        return _error("story_id_required", 400)
+    config_manager = get_config_manager()
+    try:
+        runtime = await _runtime_for_story(config_manager, story_id)
+        binding = _current_catgirl_binding(config_manager)
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        async with runtime.story_session_guard():
+            response = await get_internal_http_client().post(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
+                f"{quote(binding['catgirl_name'], safe='')}/theater/forget",
+                json={"story_id": story_id},
+                timeout=8.0,
+            )
+            data = response.json() if response.content else {}
+            if not response.is_success or data.get("ok") is not True:
+                return _error("numeric_theater_memory_forget_failed", 502)
+            archive_store = _archive_store(config_manager)
+            removed_archives = await asyncio.to_thread(
+                archive_store.delete_public_archives,
+                story_id=story_id,
+                character_id=binding["character_id"],
+                legacy_catgirl_name=binding["catgirl_name"],
+            )
+            removed_receipts = await asyncio.to_thread(
+                archive_store.delete_receipts,
+                story_id=story_id,
+                character_id=binding["character_id"],
+                legacy_catgirl_name=binding["catgirl_name"],
+            )
+            stored = await runtime.restore_story_session_unlocked(binding)
+            if stored is not None and stored.session.status == "ended":
+                # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
+                skipped = await archive_store.acreate_or_get(stored.session)
+                await archive_store.aupdate(skipped, status="skipped")
+        return {
+            "ok": True,
+            "removed_recent": int(data.get("removed_recent") or 0),
+            "removed_time_index": int(data.get("removed_time_index") or 0),
+            "removed_archives": removed_archives,
+            "removed_receipts": removed_receipts,
+        }
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    except Exception:
+        return _error("numeric_theater_memory_forget_failed", 502)
 
 
 __all__ = ["router"]

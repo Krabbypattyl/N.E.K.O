@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     pass
 
-from .messages import BaseMessage
+from .messages import BaseMessage, messages_to_dict
 
 class SQLChatMessageHistory:
     """Minimal SQLite message store for memory/timeindex.py.
@@ -56,7 +56,8 @@ class SQLChatMessageHistory:
 
     def _serialize(self, message: Any) -> str:
         if isinstance(message, BaseMessage):
-            return _json.dumps({"type": message.type, "data": {"content": message.content}}, ensure_ascii=False)
+            # 统一复用消息协议序列化，确保小剧场来源与内容块元数据不会在时间索引中丢失。
+            return _json.dumps(messages_to_dict([message])[0], ensure_ascii=False)
         if isinstance(message, dict):
             return _json.dumps(message, ensure_ascii=False)
         return _json.dumps({"type": "system", "data": {"content": str(message)}}, ensure_ascii=False)
@@ -84,3 +85,20 @@ class SQLChatMessageHistory:
             with self._engine.connect() as conn:
                 conn.execute(insert(self._table), rows)
                 conn.commit()
+
+    def replace_messages(self, messages: list) -> None:
+        """按 session_id 原子替换整批消息。"""  # noqa: DOCSTRING_CJK
+
+        from sqlalchemy import delete, insert
+
+        rows = [
+            {"session_id": self.session_id, "message": self._serialize(message)}
+            for message in messages
+        ]
+        # 删除与重写必须处于同一事务，避免读取方看到同一剧场周目的半更新状态。
+        with self._engine.begin() as conn:
+            conn.execute(
+                delete(self._table).where(self._table.c.session_id == self.session_id)
+            )
+            if rows:
+                conn.execute(insert(self._table), rows)
