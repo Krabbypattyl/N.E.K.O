@@ -48,6 +48,102 @@ def _snapshot(*, revision: int, performance_history: list[dict] | None = None) -
 
 
 @pytest.mark.frontend
+def test_theater_capsule_rebuilds_committed_history_after_idempotent_retry(
+    mock_page: Page,
+    running_server: str,
+):
+    """提交成功但响应丢失时，重试快照必须补回已提交的猫娘回复。"""  # noqa: DOCSTRING_CJK
+
+    input_ids: list[str] = []
+    first_response_lost = {"value": False}
+    turn = {
+        "revision": 1,
+        "input_text": "检查那封旧信",
+        "performance": "（按住信角）纸张没有受潮，封口也还完整。",
+        "suggested_inputs": ["问她信是谁留下的"],
+    }
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/capsule-browser-session"):
+            fulfill(route, _snapshot(revision=0))
+            return
+        if path.endswith("/api/theater-numeric/session/speak-block"):
+            fulfill(route, {"ok": True, "audio_queued": False})
+            return
+        if path.endswith("/api/theater-numeric/session/input"):
+            body = json.loads(request.post_data or "{}")
+            input_ids.append(body["client_turn_id"])
+            if not first_response_lost["value"]:
+                first_response_lost["value"] = True
+                route.abort("connectionreset")
+                return
+            payload = _snapshot(revision=1, performance_history=[turn])
+            payload["idempotent_replay"] = True
+            fulfill(route, payload)
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+        " && typeof window.sendTextPayload === 'function'"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1',
+                action: 'theater:launch-request',
+                launch_id: 'capsule-idempotent-launch',
+                launch_action: 'continue',
+                story_id: 'capsule-browser-story',
+                session_id: 'capsule-browser-session',
+                revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        "() => window.nekoTheaterRuntime.handleComposerSubmit('检查那封旧信')"
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
+        timeout=10000,
+    )
+    mock_page.evaluate(
+        "() => window.nekoTheaterRuntime.handleComposerSubmit('检查那封旧信')"
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().revision === 1"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
+        timeout=10000,
+    )
+
+    history = mock_page.locator(".compact-export-history-anchor")
+    expect(history.get_by_text("检查那封旧信", exact=True)).to_have_count(1)
+    expect(history).to_contain_text("纸张没有受潮，封口也还完整。")
+    assert len(input_ids) == 2
+    assert input_ids[0] == input_ids[1]
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("page_path", ["/", "/chat"])
 def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     mock_page: Page,

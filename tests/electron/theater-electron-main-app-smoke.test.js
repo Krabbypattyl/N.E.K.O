@@ -15,6 +15,10 @@ test('main app hosts theater runtime while selector remains a child page', () =>
   const selector = source('templates/theater.html');
   const runtime = source('static/app/app-theater-runtime.js');
 
+  // 三个页面都先加载共享协议，但只有聊天宿主加载胶囊运行时。
+  assert.match(index, /\/static\/js\/theater_transport\.js/);
+  assert.match(chat, /\/static\/js\/theater_transport\.js/);
+  assert.match(selector, /\/static\/js\/theater_transport\.js/);
   assert.match(index, /\/static\/app\/app-theater-runtime\.js/);
   assert.match(chat, /\/static\/app\/app-theater-runtime\.js/);
   assert.doesNotMatch(selector, /app-theater-runtime\.js/);

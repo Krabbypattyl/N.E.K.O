@@ -41,15 +41,18 @@ def test_theater_selector_and_capsule_runtime_assets_are_scoped():
         subtitle_html = _text_for(client, "/subtitle")
 
     assert "data-theater-selector-app" in theater_html
+    assert "/static/js/theater_transport.js" in theater_html
     assert "/static/js/theater_selector.js" in theater_html
     assert "/static/css/theater.css" not in theater_html
     assert "/static/app/app-theater-runtime.js" not in theater_html
 
     assert "react-chat-window-root" in chat_html
+    assert "/static/js/theater_transport.js" in chat_html
     assert "/static/app/app-theater-runtime.js" in chat_html
     assert "/static/js/theater_selector.js" not in chat_html
 
     assert "subtitle-display" in subtitle_html
+    assert "/static/js/theater_transport.js" not in subtitle_html
     assert "/static/app/app-theater-runtime.js" not in subtitle_html
     assert "/static/js/theater_selector.js" not in subtitle_html
 

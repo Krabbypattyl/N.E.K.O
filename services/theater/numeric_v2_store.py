@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping, TYPE_CHECKING
+from weakref import WeakValueDictionary
 
 from .numeric_v2_performance import (
     valid_mixed_performance,
@@ -48,22 +49,29 @@ class NumericV2StoredSession:
     ledger_events: tuple[dict[str, Any], ...]
 
 
-_LOCKS: dict[str, asyncio.Lock] = {}
-_STORY_LOCKS: dict[str, asyncio.Lock] = {}
+# 协程持有或等待锁时会保留强引用；空闲后由弱引用表自动回收，避免 Session/剧本 ID 无限积累。
+_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_STORY_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _lock(path: Path) -> asyncio.Lock:
     key = str(path.resolve())
-    if key not in _LOCKS:
-        _LOCKS[key] = asyncio.Lock()
-    return _LOCKS[key]
+    lock = _LOCKS.get(key)
+    if lock is None:
+        # 新锁必须先由局部变量强持有，再登记弱引用；否则创建与返回之间就可能被立即回收。
+        lock = asyncio.Lock()
+        _LOCKS[key] = lock
+    return lock
 
 
 def _story_lock(path: Path, story_id: str) -> asyncio.Lock:
     key = f"{path.resolve()}::{story_id}"
-    if key not in _STORY_LOCKS:
-        _STORY_LOCKS[key] = asyncio.Lock()
-    return _STORY_LOCKS[key]
+    lock = _STORY_LOCKS.get(key)
+    if lock is None:
+        # 与 Session 文件锁保持相同生命周期，调用方进入 async with 前始终持有强引用。
+        lock = asyncio.Lock()
+        _STORY_LOCKS[key] = lock
+    return lock
 
 
 def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
@@ -549,18 +557,6 @@ class NumericV2SessionStore:
             self._write(path, stored, exclusive=True)
             return stored
 
-    async def replace(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
-        """重开同一剧本时复用唯一 Session 文件，避免产生第二条演绎记录。"""  # noqa: DOCSTRING_CJK
-
-        path = self._path(session.session_id)
-        async with _lock(path):
-            if not path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            self.engine.validate_session(session)
-            stored = NumericV2StoredSession(session, ())
-            self._write(path, stored)
-            return stored
-
     async def replace_active(
         self,
         previous_session_id: str,
@@ -714,7 +710,34 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_session_read_failed") from exc
         if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
             raise NumericV2StoreError("numeric_store_schema_invalid")
-        session = ScriptSessionV2.from_mapping(dict(payload.get("session") or {}))
+        raw_session = dict(payload.get("session") or {})
+        if "player_address_known" not in raw_session:
+            initial_state = self.engine.story.get("initial_state")
+            initial_known = bool(
+                initial_state.get("player_address_known")
+                if isinstance(initial_state, Mapping)
+                else False
+            )
+            if not initial_known:
+                binding = raw_session.get("catgirl_binding")
+                configured_address = (
+                    str(binding.get("player_address") or "").strip()
+                    if isinstance(binding, Mapping)
+                    else ""
+                )
+                events = payload.get("ledger_events")
+                initial_known = bool(
+                    configured_address
+                    and configured_address not in {"你", "男主"}
+                    and isinstance(events, list)
+                    and any(
+                        configured_address in str(event.get("input_text") or "")
+                        for event in events
+                        if isinstance(event, Mapping)
+                    )
+                )
+            raw_session["player_address_known"] = initial_known
+        session = ScriptSessionV2.from_mapping(raw_session)
         events = payload.get("ledger_events")
         if not isinstance(events, list) or any(not isinstance(item, dict) for item in events):
             raise NumericV2StoreError("numeric_ledger_invalid")
@@ -822,6 +845,12 @@ class NumericV2SessionStore:
             ):
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if (
+                "player_address_known" in event
+                and event.get("player_address_known")
+                != expected_event.get("player_address_known")
+            ):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             for field in ("scene_completion_ready", "scene_goal_evidence"):
                 if field in event and event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -924,6 +953,7 @@ class NumericV2SessionStore:
         if (
             replay_session.scene_completion_ready != stored.session.scene_completion_ready
             or replay_session.scene_goal_evidence != stored.session.scene_goal_evidence
+            or replay_session.player_address_known != stored.session.player_address_known
         ):
             raise NumericV2StoreError("numeric_session_scene_progress_mismatch")
 

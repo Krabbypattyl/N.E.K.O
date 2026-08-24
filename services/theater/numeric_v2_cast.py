@@ -43,12 +43,16 @@ class NumericV2CastProjection:
         return cls(
             source_player_name=_identity_name(intro.get("player_identity")),
             source_catgirl_name=_identity_name(intro.get("catgirl_identity")),
-            player_name=str(player_name or "玩家").strip() or "玩家",
+            player_name=str(player_name or "你").strip() or "你",
             catgirl_name=str(catgirl_name or "当前猫娘").strip() or "当前猫娘",
         )
 
     def text(self, value: Any) -> str:
+        lead_pair = f"{self.player_name}和{self.catgirl_name}"
         replacements = (
+            ("男女主人公", lead_pair),
+            ("男女主角", lead_pair),
+            ("男女主", lead_pair),
             (self.source_player_name, self.player_name),
             (self.source_catgirl_name, self.catgirl_name),
         )

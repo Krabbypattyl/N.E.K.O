@@ -20,6 +20,15 @@ _COMPARATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
 _VISIBILITIES = frozenset({"hidden"})
 _NODE_TYPES = frozenset({"start", "scene", "ending"})
 MAX_RECOMMENDED_TURNS = 40
+_ACTING_CONTRACT_COGNITION_STATES = frozenset({"fresh_boot", "limited", "normal"})
+_ACTING_CONTRACT_MEMORY_STATES = frozenset({"empty", "partial", "available"})
+_ACTING_CONTRACT_SELF_REFERENCE_MODES = frozenset({"system_neutral", "persona_allowed"})
+_ACTING_CONTRACT_PERSONA_SCOPES = frozenset({"style_only", "full"})
+# 新 Story beat 使用有限枚举表达关系和目标证据；旧包缺少这些字段时继续走兼容投影。
+_RELATIONSHIP_CEILINGS = frozenset({"stranger", "guarded", "cooperative", "trusted", "intimate"})
+_GOAL_OWNERS = frozenset({"catgirl", "player", "shared", "environment"})
+_GOAL_EVIDENCE_MODES = frozenset({"semantic", "exact"})
+MAX_STORY_GOALS = 8
 _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
@@ -92,6 +101,33 @@ def _first_sentence(value: Any) -> str:
     text = str(value or "").strip()
     endings = [index for mark in "。！？" if (index := text.find(mark)) >= 0]
     return text[:min(endings) + 1] if endings else text
+
+
+def numeric_v2_story_goal_contracts(beat: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """把新旧目标统一投影为稳定合同，但绝不把兼容默认值写回作者包。"""  # noqa: DOCSTRING_CJK
+
+    structured = beat.get("goals")
+    if isinstance(structured, list):
+        return tuple(
+            {
+                "goal_id": str(item.get("id") or ""),
+                "owner": str(item.get("owner") or ""),
+                "text": str(item.get("description") or ""),
+                "evidence": deepcopy(dict(item.get("evidence") or {})),
+            }
+            for item in structured
+            if isinstance(item, Mapping)
+        )
+    # 旧包继续使用稳定的 goal.N，owner 留空后由既有兼容规则从作者原文投影。
+    return tuple(
+        {
+            "goal_id": f"goal.{index + 1}",
+            "owner": "",
+            "text": str(item or ""),
+            "evidence": {},
+        }
+        for index, item in enumerate(list(beat.get("must_happen") or [])[:MAX_STORY_GOALS])
+    )
 
 
 def _condition_branches(conditions: Mapping[str, Any]) -> list[list[Mapping[str, Any]]]:
@@ -214,6 +250,13 @@ class NumericV2Compiler:
     def compile(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
         collector = _Collector()
         story = collector.obj(payload, "story")
+        initial_state = story.get("initial_state")
+        if isinstance(initial_state, Mapping) and "player_address_known" not in initial_state:
+            # 老包没有结构化称呼字段时只按“未知”兼容，不从自然语言推断状态。
+            story["initial_state"] = {
+                **initial_state,
+                "player_address_known": False,
+            }
         if story.get("schema") != STORY_SCHEMA:
             collector.add("invalid_schema", "schema", f"schema 必须是 {STORY_SCHEMA}。")
         for field in sorted(_FORBIDDEN_LEGACY_FIELDS.intersection(story)):
@@ -321,6 +364,12 @@ class NumericV2Compiler:
 
         initial = c.obj(initial_value, "initial_state")
         initial_metrics = c.obj(initial.get("metrics"), "initial_state.metrics")
+        if not isinstance(initial.get("player_address_known"), bool):
+            c.add(
+                "invalid_initial_player_address_known",
+                "initial_state.player_address_known",
+                "初始称呼状态必须是布尔值。",
+            )
         if set(initial_metrics) != set(metric_ranges):
             c.add("initial_metrics_mismatch", "initial_state.metrics", "初始状态必须精确覆盖全部 metric。")
         for metric_id, value in initial_metrics.items():
@@ -372,30 +421,149 @@ class NumericV2Compiler:
     def _validate_story_beat(c: _Collector, value: Any, path: str) -> None:
         beat = c.obj(value, path)
         summary = c.require_text(beat.get("summary"), f"{path}.summary")
-        if summary and _PLAYER_OWNED_SUBJECT_RE.search(_first_sentence(summary)):
+        # 新包的 opening_scene 是唯一可见开场；旧包才从摘要首句兼容提取。
+        opening_path = f"{path}.opening_scene" if "opening_scene" in beat else f"{path}.summary"
+        opening_scene = (
+            c.require_text(beat.get("opening_scene"), opening_path)
+            if "opening_scene" in beat
+            else summary
+        )
+        if opening_scene and _PLAYER_OWNED_SUBJECT_RE.search(_first_sentence(opening_scene)):
             c.add(
                 "player_owned_opening_forbidden",
-                f"{path}.summary",
+                opening_path,
                 "节点开场只能建立环境或猫娘可见行动，不得替玩家执行行动或决定。",
             )
-        must_happen = c.require_text_list(
-            beat.get("must_happen"),
-            f"{path}.must_happen",
-            allow_empty=False,
-        )
-        for index, item in enumerate(must_happen):
-            if (
-                _PLAYER_OWNED_SUBJECT_RE.search(item)
-                or _FORCED_PLAYER_ACTION_RE.search(item)
-            ):
+        if "relationship_ceiling" in beat and beat.get("relationship_ceiling") not in _RELATIONSHIP_CEILINGS:
+            c.add(
+                "invalid_relationship_ceiling",
+                f"{path}.relationship_ceiling",
+                f"关系上限必须是 {', '.join(sorted(_RELATIONSHIP_CEILINGS))} 之一。",
+            )
+        if "goals" in beat:
+            if "must_happen" in beat:
                 c.add(
-                    "player_owned_goal_forbidden",
-                    f"{path}.must_happen[{index}]",
-                    "幕目标必须由猫娘或环境主动呈现，不得预先规定玩家行动。",
+                    "conflicting_story_goal_contracts",
+                    path,
+                    "结构化 goals 与旧 must_happen 只能保留一份，避免目标事实分叉。",
                 )
+            NumericV2Compiler._validate_structured_goals(c, beat.get("goals"), f"{path}.goals")
+        else:
+            # 兼容目标仍沿用原有玩家归属保护；结构化目标依靠显式 owner 分配职责。
+            must_happen = c.require_text_list(
+                beat.get("must_happen"),
+                f"{path}.must_happen",
+                allow_empty=False,
+            )
+            for index, item in enumerate(must_happen):
+                if (
+                    _PLAYER_OWNED_SUBJECT_RE.search(item)
+                    or _FORCED_PLAYER_ACTION_RE.search(item)
+                ):
+                    c.add(
+                        "player_owned_goal_forbidden",
+                        f"{path}.must_happen[{index}]",
+                        "幕目标必须由猫娘或环境主动呈现，不得预先规定玩家行动。",
+                    )
         c.require_text_list(beat.get("must_not_happen"), f"{path}.must_not_happen", allow_empty=True)
         c.require_text(beat.get("catgirl_situation"), f"{path}.catgirl_situation")
         c.require_text(beat.get("transition_goal"), f"{path}.transition_goal")
+        if "acting_contract" in beat:
+            NumericV2Compiler._validate_acting_contract(c, beat.get("acting_contract"), f"{path}.acting_contract")
+
+    @staticmethod
+    def _validate_structured_goals(c: _Collector, value: Any, path: str) -> None:
+        """校验作者显式目标，避免 Runtime、Evaluator 和 Actor 再从描述中猜职责。"""  # noqa: DOCSTRING_CJK
+
+        goals = c.array(value, path)
+        if not goals:
+            c.add("required_items", path, "至少需要填写一项目标。")
+        if len(goals) > MAX_STORY_GOALS:
+            c.add("too_many_story_goals", path, f"每幕最多允许 {MAX_STORY_GOALS} 项结构化目标。")
+        seen_ids: set[str] = set()
+        for index, raw in enumerate(goals):
+            goal_path = f"{path}[{index}]"
+            goal = c.obj(raw, goal_path)
+            goal_id = c.require_id(goal.get("id"), f"{goal_path}.id")
+            if goal_id in seen_ids:
+                c.add("duplicate_story_goal_id", f"{goal_path}.id", "同一幕的目标 ID 不能重复。")
+            if goal_id:
+                seen_ids.add(goal_id)
+            if goal.get("owner") not in _GOAL_OWNERS:
+                c.add(
+                    "invalid_story_goal_owner",
+                    f"{goal_path}.owner",
+                    f"目标主体必须是 {', '.join(sorted(_GOAL_OWNERS))} 之一。",
+                )
+            c.require_text(goal.get("description"), f"{goal_path}.description")
+            evidence_path = f"{goal_path}.evidence"
+            evidence = c.obj(goal.get("evidence"), evidence_path)
+            mode = evidence.get("mode")
+            if mode not in _GOAL_EVIDENCE_MODES:
+                c.add(
+                    "invalid_goal_evidence_mode",
+                    f"{evidence_path}.mode",
+                    f"证据模式必须是 {', '.join(sorted(_GOAL_EVIDENCE_MODES))} 之一。",
+                )
+            anchors = c.require_text_list(
+                evidence.get("anchors"),
+                f"{evidence_path}.anchors",
+                allow_empty=True,
+            )
+            if len(anchors) > 8:
+                c.add("too_many_goal_evidence_anchors", f"{evidence_path}.anchors", "每项目标最多允许八个精确证据锚点。")
+            if mode == "exact" and not anchors:
+                c.add(
+                    "goal_evidence_anchors_required",
+                    f"{evidence_path}.anchors",
+                    "exact 证据模式至少需要一个完整字面锚点。",
+                )
+            if mode == "semantic" and anchors:
+                c.add(
+                    "semantic_goal_evidence_anchors_forbidden",
+                    f"{evidence_path}.anchors",
+                    "semantic 模式不读取字面锚点；需要硬核验时请改用 exact。",
+                )
+
+    @staticmethod
+    def _validate_acting_contract(c: _Collector, value: Any, path: str) -> None:
+        contract = c.obj(value, path)
+        enum_fields = (
+            ("cognition_state", _ACTING_CONTRACT_COGNITION_STATES, "认知状态"),
+            ("memory_state", _ACTING_CONTRACT_MEMORY_STATES, "记忆状态"),
+            ("self_reference_mode", _ACTING_CONTRACT_SELF_REFERENCE_MODES, "自称模式"),
+            ("persona_scope", _ACTING_CONTRACT_PERSONA_SCOPES, "人格权限"),
+        )
+        for field, allowed, label in enum_fields:
+            value = contract.get(field)
+            if value not in allowed:
+                c.add(
+                    "invalid_acting_contract_value",
+                    f"{path}.{field}",
+                    f"{label}必须是 {', '.join(sorted(allowed))} 之一。",
+                )
+        c.require_text_list(
+            contract.get("allowed_behaviors"),
+            f"{path}.allowed_behaviors",
+            allow_empty=True,
+        )
+        c.require_text_list(
+            contract.get("forbidden_behaviors"),
+            f"{path}.forbidden_behaviors",
+            allow_empty=True,
+        )
+        if "assertable_self_facts" in contract:
+            facts = c.require_text_list(
+                contract.get("assertable_self_facts"),
+                f"{path}.assertable_self_facts",
+                allow_empty=False,
+            )
+            if len(facts) > 8:
+                c.add(
+                    "too_many_assertable_self_facts",
+                    f"{path}.assertable_self_facts",
+                    "每个演绎合同最多允许八条可确认自身事实。",
+                )
 
     @staticmethod
     def _validate_nodes(c: _Collector, value: Any, metric_ranges: Mapping[str, tuple[int | None, int | None]]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
@@ -680,5 +848,7 @@ __all__ = [
     "NumericV2Issue",
     "NumericV2Warning",
     "MAX_RECOMMENDED_TURNS",
+    "MAX_STORY_GOALS",
     "STORY_SCHEMA",
+    "numeric_v2_story_goal_contracts",
 ]

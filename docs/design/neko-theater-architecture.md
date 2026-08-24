@@ -30,14 +30,17 @@ Numeric v2 的产品定位是：
 | `numeric_v2_identity.py` | 角色卡不可变 ID 与当前猫娘绑定 |
 | `numeric_v2_evaluator.py` | 单回合 metric 依据与强度、目标证据和 `scene_complete` 判定；确定性换算 delta |
 | `numeric_v2_runtime.py` | 候选状态、限幅、`min_turns`、路线、结局和 Ledger 事件 |
-| `numeric_v2_actor.py` | 已结算回合的旁白、猫娘对白和推荐输入 |
+| `numeric_v2_actor.py` | Actor 上下文投影、Prompt 预算和单次模型调用编排 |
+| `numeric_v2_actor_output.py` | Actor 输出解析、混合正文校验、换场去重和推荐输入保护 |
+| `numeric_v2_workflow.py` | 固定 Evaluator → Runtime 候选 → Actor → 身份复验 → 原子提交的应用工作流 |
 | `numeric_v2_store.py` | Session、Ledger、表现历史和槽位索引的原子持久化 |
 | `numeric_v2_archive.py` | 结束回执、单集记忆胶囊和完整公开演绎冷档案 |
 | `numeric_v2_maintenance.py` | 冷启动审计、隔离区和可恢复删除事务 |
-| `main_routers/numeric_theater_router.py` | `/api/theater-numeric` 的 Numeric v2-only HTTP 入口 |
+| `main_routers/numeric_theater_router.py` | `/api/theater-numeric` 的请求校验、错误映射、TTS 与归档 HTTP 入口 |
 | `app/memory_server/routes.py`、`memory/recent.py`、`memory/timeindex.py` | 剧场胶囊 upsert、有界周目记忆、时间索引覆盖和 Prompt 渲染隔离 |
 | `utils/llm_client/messages.py` | 内部消息来源元数据的序列化、识别与供应商协议剥离 |
 | `static/js/theater_selector.js` | `/theater` 的剧本选择、导入、删除、开始和继续交接 |
+| `static/js/theater_transport.js` | 选择页与本体共用的消息协议、请求 ID 和本地 JSON/CSRF 请求边界 |
 | `static/app/app-theater-runtime.js` | N.E.K.O 本体中的 Session 恢复、输入提交、内容块播放和结束流程 |
 | `services/theater/tts_bridge.py` | 已提交猫娘对白的共享 TTS 播放桥 |
 
@@ -86,7 +89,8 @@ Story Package 是作者事实源，不包含玩家 Session、Ledger、模型演�
 
 作者包可以使用候选男女主身份描述，但运行时必须统一投影：
 
-- 男主由玩家扮演，显示和演绎统一使用当前猫娘对玩家的称呼；
+- 男主由用户扮演；`player_address_known=false` 时 Actor 只能看到“你”，直到用户输入中出现完整配置昵称并由成功回合原子确认；
+- `player_address_known=true` 时显示和演绎才使用当前猫娘对玩家的称呼；
 - 女主由当前猫娘扮演，统一使用当前角色卡猫娘名；
 - 候选原名不能重新出现在 Actor 输出中；
 - 玩家与猫娘的行为、经历和台词归属不能交换；
@@ -94,7 +98,7 @@ Story Package 是作者事实源，不包含玩家 Session、Ledger、模型演�
 
 ### 3.2 隐藏数值
 
-`metric_schema` 定义数值 ID、范围、bands 和允许的增减规则；`initial_state.metrics` 必须完整覆盖所有 metric。可选 `relationship_effect` 只能是 `positive / negative / none`，由作者或生成器明确声明该数值是“越高越亲近”“越高越疏远”还是“不控制关系距离”；旧包缺省按 `none` 兼容，Runtime 不得根据数值 ID、名称或题材猜测。
+`metric_schema` 定义数值 ID、范围、bands 和允许的增减规则；`initial_state.metrics` 必须完整覆盖所有 metric。`initial_state.player_address_known` 是结构化布尔状态，声明本剧开场时猫娘是否已经知道玩家称呼，不能从自然语言摘要或“称呼未知”等文案解析；旧 Story Package 缺少该字段时只按 `false` 兼容。可选 `relationship_effect` 只能是 `positive / negative / none`，由作者或生成器明确声明该数值是“越高越亲近”“越高越疏远”还是“不控制关系距离”；旧包缺省按 `none` 兼容，Runtime 不得根据数值 ID、名称或题材猜测。
 
 Evaluator 只能选择作者已经声明的 `criterion_id` 和有限强度 `weak / normal / strong / decisive`，不能直接决定任意 delta。服务端依据该 metric 对应方向的 `per_turn_limit` 确定性换算：`weak=1`、`normal=ceil(limit/3)`、`strong=ceil(2×limit/3)`、`decisive=limit`，再由 Runtime 限幅。关系型 metric 的相同依据在最近四条 Ledger 事件中已经获得奖励时，仅换一种说法、重复礼貌或延续同一态度不能再次变化；只有出现新的成本、风险、明确兑现或可验证结果时才允许继续计分。玩家端不显示原始值、metric ID、阈值、route gate、强度或内部判定证据。
 
@@ -117,6 +121,29 @@ Evaluator 只能选择作者已经声明的 `criterion_id` 和有限强度 `weak
 - `recommended_turns` 不改变 `scene_complete`，不触发路线，也不改变 Runtime 的 `min_turns`、route gate 和 priority 判定；
 - 玩家端不显示预算；作者可以在生成器节点检查器中调整。
 
+每个非结局节点的 `story_beat` 可以使用以下结构化作者事实；新包应优先使用，旧包保持原样兼容：
+
+- `opening_scene`：本幕唯一确定性可见开场。新包不得再让 Runtime 从 `summary` 首句猜开场；旧包缺少时才兼容取摘要首句。开场只能建立环境或猫娘可见行动，不能替“你”执行行动或决定；
+- `relationship_ceiling`：当前幕允许的最高关系阶段，只能是 `stranger / guarded / cooperative / trusted / intimate`。Actor 将它与隐藏关系 metric 的当前阶段取更严格者；旧包缺少时才从既有文本合同兼容投影；
+- `goals`：带稳定作者 ID、行为主体和证据方式的目标数组，与旧 `must_happen` 互斥。同幕最多八项，`owner` 只能是 `catgirl / player / shared / environment`；Actor 不能代替 `player` 目标行动，`shared` 必须保留双方各自证据；
+- `goals[].evidence.mode=semantic` 时由 Evaluator 结合已提交事实做语义判断且不得填写字面锚点；`mode=exact` 时必须提供 1—8 个完整 `anchors`，服务端只在该 owner 允许的已提交来源中逐字核验。锚点缺失会把模型给出的 `scene_complete=true` 确定性降为 `false`，但不会由程序反向把未完成目标判为完成。
+
+结构化目标示例：
+
+```json
+{
+  "id": "goal.reboot_identity_question",
+  "owner": "catgirl",
+  "description": "猫娘明确说明主存储区损坏，并询问自己的过去与唤醒者身份。",
+  "evidence": {
+    "mode": "semantic",
+    "anchors": []
+  }
+}
+```
+
+兼容投影不会把缺省 `opening_scene`、`relationship_ceiling` 或 `goals` 写回旧 Story Package，因此不会改变旧包 canonical bytes、package hash 或既有 Session 绑定。旧 `must_happen` 继续映射为稳定 `goal.N`；只有旧包才允许 Evaluator 使用既有文本归属与引号锚点兼容规则。
+
 路线的 `transition_contract` 至少承担两类约束：
 
 - `must_deliver`：换场时必须带入目标场景的事件或信息；
@@ -134,6 +161,7 @@ Evaluator 只能选择作者已经声明的 `criterion_id` 和有限强度 `weak
   → Evaluator 一次调用
   → 服务端把 criterion + strength 确定性换算为 delta
   → Runtime 应用 delta、goal_evidence、min_turns、scene_complete、route gate 和 priority
+  → Runtime 按完整配置昵称精确检查本轮披露候选，形成候选称呼状态
   → Actor 一次调用
   → 重新校验 Session、角色绑定和 revision
   → 原子提交 Session + Ledger event + performance record
@@ -182,10 +210,10 @@ Evaluator 输出严格限定为：
 当 Runtime 已选择路线时，Actor 同一回合必须完成三个连续动作：
 
 1. 直接回应玩家本轮输入并收住来源节点的当前互动；
-2. 用必要的时间、地点或行动桥接完成过渡合同；
+2. 只用必要的环境、时间或地点变化完成桥接，不替玩家补写行动；
 3. 建立目标节点 `opening_scene` 的现场，但不在同一回合演完整个目标节点。
 
-换场输出继续使用固定顺序的 `source_response`、`transition_bridge`、`target_opening` 三段结构。`source_response.performance` 使用混合正文并至少包含一句直接回应玩家的对白；`transition_bridge.scene_narration` 只交代目标开场没有覆盖的必要时间、地点、行动或来源收束，去重后没有独立事实时允许为空且前端不显示占位旁白；`target_opening.scene_narration` 必须以 Runtime 提供的目标 `opening_scene` 原文开头，随后可用 `target_opening.performance` 交付目标场景中的猫娘动作与对白。解析器、Runtime 和 Store 分别校验三段完整性、可见目标节点与 Ledger `to_node_id` 一致。任一条件不满足时整回合不提交，前端按三段顺序连续展示，不额外暴露节点标题。新提交的 performance 使用内部合同版本 3；旧合同版本继续兼容恢复。
+换场输出继续使用固定顺序的 `source_response`、`transition_bridge`、`target_opening` 三段结构。`source_response.performance` 使用混合正文并至少包含一句直接回应玩家的对白；`transition_bridge.scene_narration` 只交代目标开场没有覆盖的必要环境、时间、地点变化或来源收束，不能出现“你 / 您 / 男主 / 玩家 / 配置昵称”并为用户分配动作，去重后没有独立事实时允许为空且前端不显示占位旁白；`target_opening.scene_narration` 必须以 Runtime 提供的目标 `opening_scene` 原文开头，随后可用 `target_opening.performance` 交付目标场景中的猫娘动作与对白。解析器、Runtime 和 Store 分别校验三段完整性、可见目标节点与 Ledger `to_node_id` 一致。任一条件不满足时整回合不提交，前端按三段顺序连续展示，不额外暴露节点标题。新提交的 performance 使用内部合同版本 3；旧合同版本继续兼容恢复。
 
 节点 ID 已推进不等于玩家看见了换场。换场交付必须成为可验证的提交条件；仅把 `route_changed`、目标 beat 和过渡合同放进 Prompt 不足以保证一致性。实测证据和复测状态见[“正式节点已推进，但可见场景没有切换”](./neko-theater-issues-and-solutions.md#问题-1正式节点已推进但可见场景没有切换)。
 
@@ -206,9 +234,9 @@ Numeric v2 不增加独立记忆模型或第三次总结调用。Session 和 Led
 2. 最新一轮已提交表现在预算允许时原样保留，物品位置、状态、持有人、许可和末句对白不能与旧记录一起平均裁剪；
 3. 当前节点本次访问的开场或进入该节点的换场记录其次；在预算内发送本次访问的全部前文，超出预算时再从最早回合开始按完整句降级，不能混入循环重访前的同名节点记录；Evaluator 读取跨节点记录时只投影 `target_opening`，不把属于上一幕的 `source_response`、换场桥或触发换场的旧玩家输入重复算作新幕事实；
 4. 任何降级都必须在完整句边界停止，不得向模型交付“虽然是”“如果你敢”等由程序截断的半句；
-5. 未换场回合只发送 `current_story_beat`，不发送重复的来源 beat、空目标 beat 和空过渡合同；换场时才发送来源、目标与过渡数据；
+5. 未换场回合只发送 `current_story_beat`，不发送重复的来源 beat、空目标 beat 和空过渡合同；换场先做固定紧凑投影，只保留来源幕硬边界、目标幕待完成目标与硬边界、Runtime 目标开场、过渡合同及两幕各自的演绎和关系合同，不再发送完整来源 beat、目标自由文本临时状态或重复的数值解释；
 6. Actor 总输入预算为 4800 Token，当前场景工作记忆最多 2200 Token。稳定背景、双方身份、当前玩家输入、当前/目标幕边界、过渡合同、角色人格和关系控制都按完整字段交付，不再把剧情字段裁成固定 180 Token 片段；
-7. 超出总预算时按固定顺序整组降级：先删除只用于防重复的 `recent_openings` 和 `recent_suggestions`，再从最早的完整历史回合开始淘汰；换场仍超限时，删除已经消费的来源幕 `source_story_beat`，再删除与系统合同重复的 `style_instruction`，最后继续淘汰最早完整历史。不能截断保留下来的字符串，也不能删除当前玩家输入或目标幕事实；固定合同本身仍超限时整轮失败并回退输入；
+7. 换场紧凑投影在预算装箱前确定性完成；随后按固定顺序删除只用于防重复的 `recent_openings` 和 `recent_suggestions`，再从最早的完整历史回合开始淘汰。兼容装箱器仍能丢弃直接传入的已消费来源 beat 和重复风格说明，但正式换场链路不再生成这些字段。不能截断保留下来的字符串，也不能删除当前玩家输入或目标幕事实；固定合同本身仍超限时整轮失败并回退输入；
 8. 通用 `bound_prompt_messages` 只作为最后安全网。Actor 专用装箱完成后，它不应再改写最新回合；
 9. 若模型仍照搬上一轮全部对白，且本轮正文与上一轮达到高相似度，Actor 必须拒绝提交该结果。该保护不新增自动重试或模型调用，Session、Ledger 和 revision 保持原状。
 
@@ -233,12 +261,13 @@ Numeric v2 是由 AI 驱动的类 Galgame。角色卡切换的价值不能只体
 | `intro.catgirl_identity` | `acting_context.story_identity` | 初始剧情身份、经历、能力与目标，不定义基础性格 |
 | `catgirl_binding.role_overlay` | `acting_context.story_role_context` | 如何进入故事及长期关系弧线，不定义基础性格 |
 | 当前节点 `story_beat.catgirl_situation` | `acting_context.current_scene_state` | 当前幕临时状态 |
-| 目标节点 `catgirl_situation` | `acting_context.target_scene_state` | 换场后临时状态 |
+| 当前节点 `story_beat.acting_contract` | `acting_context.acting_contract` | 结构化声明当前认知、记忆、自称模式、人格权限和允许/禁止行为；优先于角色卡表达风格 |
+| 目标节点 `story_beat` | `target_story_beat.pending_goals / boundaries` 与 Runtime 目标开场 | 换场时只交付目标幕待发生事实和硬边界，不发送可能与 Session 事实冲突的自由文本临时状态 |
 | `relationship_effect != none` 的隐藏 metric bands 与当前幕关系合同 | `acting_context.relationship_control` | 两类上限取更严格者；控制距离、触碰、亲昵称呼、暧昧、依赖和关系承诺，不公开原始数值和阈值 |
 | `relationship_effect = none` 的隐藏 metric bands | `acting_context.capability_state` | 提供能力、压力、线索等非关系状态，不得改变关系距离 |
 | 目标节点关系合同 | `acting_context.target_relationship_control` | 仅在换幕回合提供，防止目标开场沿用来源幕的亲密许可 |
 
-`characters` 当前只要求是对象，Actor 不消费，不能把它启用为并行人格事实源。每轮 Actor 都从角色卡、当前节点和 Session metrics 确定性重建 `acting_context`；数值跨 band 或 Runtime 进入目标节点时自然得到新的临时状态，不改写角色卡、不持久化模型总结，也不需要“每幕重写人设”。
+`characters` 当前只要求是对象，Actor 不消费，不能把它启用为并行人格事实源。每轮 Actor 都从角色卡、当前节点和 Session metrics 确定性重建 `acting_context`；`acting_contract` 明确规定当前认知、记忆和自称权限时，角色卡只能提供剩余的表达风格，不能覆盖该合同。数值跨 band 或 Runtime 进入目标节点时自然得到新的临时状态，不改写角色卡、不持久化模型总结，也不需要“每幕重写人设”。
 
 关系型 metric 只由显式 `relationship_effect` 识别。Actor 把正向数值的低、中、高 band 投影为从戒备到亲密的阶段，把反向数值按相反方向投影；多个关系数值取最严格者，再与当前幕 `关系上限` 取更严格者，得到 `effective_stage`。该阶段是亲密行为硬上限：最低阶段只能礼貌回应、有限软化和保持距离，不能提前演出暧昧、占有、依赖、主动肢体接触、伴侣式亲昵称呼或已经建立的亲密关系；较高阶段仍必须由已发生事实支撑。核心人格只决定许可行为如何表达，不能越过阶段；推荐输入服从同一上限，低关系阶段也不能反向授权敌视、羞辱或威胁。Actor 只接收 band 标签、统一阶段和允许/禁止行为，不接收原始数值或阈值。
 
@@ -262,9 +291,11 @@ Actor 使用以下无额外模型调用的软文风控制：
 每个回合使用稳定 `client_turn_id` 和 `base_revision`：
 
 - 重复提交不能重复调用模型或写入第二条记录；
+- 服务端已提交但响应丢失时，同一 `client_turn_id` 只返回当前权威快照；胶囊据此重建完整历史并移除乐观气泡，不要求服务端再次返回或播放单条 performance；
 - revision 冲突返回 409，前端刷新服务端快照并保留未提交草稿；
 - Evaluator、Actor 或 Store 任一步失败都不提交半回合；
-- Actor 生成成功前不写 Session、Ledger 或表现历史；
+- Actor 生成成功前不写 Session、Ledger 或表现历史；称呼状态与成功回合的 Session、Ledger event、performance record 一起原子提交；
+- 称呼未知时不把配置昵称发送给 Actor；只有玩家本轮明确包含完整昵称时，Actor 输出中的相同字符串才允许通过确定性保护；
 - Session 文件中的 Ledger 事件和表现记录按 revision 一一对应，加载时复验节点、数值、计数器和链尾；
 - 并发结束、重复结束、剧本删除和回合提交通过相同的故事级边界保护，只有一个最终结果可以提交。
 
@@ -282,7 +313,7 @@ Story ID × 猫娘角色卡不可变 character_id
 
 - 角色卡改名不改变 `character_id`，因此不丢进度；
 - 删除角色卡后新建同名角色会得到新 ID，不能继承旧进度；
-- 关闭窗口或退出 N.E.K.O 不结束 Session，重启后恢复当前猫娘对应的剧本槽位；
+- 关闭窗口或退出 N.E.K.O 不结束 Session，重启后恢复当前猫娘对应的剧本槽位和 `player_address_known`；
 - 切换猫娘不删除其他猫娘的进度，切回后恢复各自槽位；
 - 剧情终局在当前槽位保留只读记录；玩家主动退出写入 `ended_reason=user_exit`，不改变 Ledger、revision 和演绎历史，并可从选剧页原子恢复为 `active`；
 - 主动退出后同时提供“继续”和“开始”：继续恢复同一 Session，“开始”经确认后创建新 Session ID 并原子替换旧文件；剧情终局只提供“开始”；
@@ -399,7 +430,7 @@ memory server 对当前猫娘使用 settle lock 串行 recent 与时间索引更
 
 首次结构生成不要求模型同时输出 metric、阈值、priority、`min_turns` 或 `recommended_turns`。两类回合默认值、稳定 ID、正式条件、互补路线、结构校验、编译和原子写入应由程序确定性处理。
 
-主线模型每章使用 `catgirl_progress_events` 输出 1—4 项由“女主”或“环境”主动完成的原子事件。每项只能包含一个可独立核验的交付，不能把展示资料、解释来源和确认结论合并成一个复合目标；涉及日期、编号、期限、金额或条款时，实际值必须直接进入对应事件，缺少既定值时改写为协商、报价或共同填写。生成器把每项分别投影为 Story Package 的 `must_happen`；旧作者草稿的单数 `catgirl_progress_event` 只作编辑和编译兼容，新模型输出统一使用数组字段。
+主线模型每章使用 `catgirl_progress_events` 输出 1—4 项由“女主”或“环境”主动完成的原子事件。每项只能包含一个可独立核验的交付，不能把展示资料、解释来源和确认结论合并成一个复合目标；涉及日期、编号、期限、金额或条款时，实际值必须直接进入对应事件，缺少既定值时改写为协商、报价或共同填写。生成器将新项目的每项事件分别投影为结构化 `goals`，保留稳定 ID，并明确 `owner` 与 `evidence.mode`；只有旧作者项目和旧 Story Package 继续兼容 `must_happen`。旧作者草稿的单数 `catgirl_progress_event` 只作编辑和编译兼容，新模型输出统一使用数组字段。
 
 生成器预设和缺省数值根据 `relationship_effect` 选择安全限幅：关系型默认每回合增减上限为 3，非关系型默认 5；作者在高级设置中仍可显式修改。该默认值只负责降低未来剧本的关系跳变速度，Runtime 继续使用 Story Package 中已经声明的正式限幅。
 

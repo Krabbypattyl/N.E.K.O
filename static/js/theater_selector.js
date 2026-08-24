@@ -9,6 +9,7 @@
         packages: '/api/theater-numeric/packages',
         start: '/api/theater-numeric/session/start',
         resume: '/api/theater-numeric/session/resume',
+        end: '/api/theater-numeric/session/end',
         active: '/api/theater-numeric/session/active',
         archive: '/api/theater-numeric/session/archive',
         skipArchive: '/api/theater-numeric/session/archive/skip',
@@ -16,7 +17,12 @@
         pinMemoryArchive: '/api/theater-numeric/memory/archive/pin',
         forgetMemory: '/api/theater-numeric/memory/forget'
     };
-    var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
+    // 选择页只消费共享传输协议；跨窗口目标和业务状态仍由本页独立管理。
+    var transport = window.nekoTheaterTransport;
+    if (!transport) throw new Error('numeric_theater_transport_unavailable');
+    var MESSAGE_SCHEMA = transport.MESSAGE_SCHEMA;
+    var createId = transport.createId;
+    var requestJson = transport.requestJson;
     // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
     var state = { stories: [], storyId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
     var modalResolve = null;
@@ -31,12 +37,6 @@
         }
         return fallback;
     }
-    function createId(prefix) {
-        var random = window.crypto && typeof window.crypto.randomUUID === 'function'
-            ? window.crypto.randomUUID()
-            : Math.random().toString(36).slice(2) + Date.now().toString(36);
-        return prefix + random;
-    }
     function setStatus(key, fallback) {
         var node = $('theater-selector-status');
         node.textContent = t(key, fallback);
@@ -48,35 +48,8 @@
         node.textContent = text || '';
         node.dataset.tone = isError ? 'error' : 'info';
     }
-    // 所有本地修改请求复用主程序的 CSRF 请求头，不在剧场页另建安全协议。
-    async function mutationHeaders() {
-        var helper = window.nekoLocalMutationSecurity;
-        if (!helper || typeof helper.getMutationHeaders !== 'function') return {};
-        try { return await helper.getMutationHeaders(); } catch (_) { return {}; }
-    }
-    async function requestJson(url, options) {
-        var opts = options || {};
-        var method = opts.method || 'GET';
-        var serialized = Object.prototype.hasOwnProperty.call(opts, 'body') ? JSON.stringify(opts.body) : undefined;
-        async function send() {
-            var headers = { 'Content-Type': 'application/json' };
-            if (method !== 'GET') Object.assign(headers, await mutationHeaders());
-            return fetch(url, { method: method, headers: headers, body: serialized });
-        }
-        var response = await send();
-        if (response.status === 403 && method !== 'GET') {
-            var helper = window.nekoLocalMutationSecurity;
-            if (helper && typeof helper.refreshToken === 'function') {
-                await helper.refreshToken();
-                response = await send();
-            }
-        }
-        var data = await response.json().catch(function () { return {}; });
-        data._status = response.status;
-        return data;
-    }
     function postMessage(message) {
-        var payload = Object.assign({ schema: MESSAGE_SCHEMA, source: 'theater-selector', timestamp: Date.now() }, message || {});
+        var payload = transport.createMessage('theater-selector', message);
         var sent = false;
         if (state.channel) {
             try { state.channel.postMessage(payload); sent = true; } catch (_) {}
@@ -88,7 +61,7 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
+        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
@@ -114,6 +87,9 @@
         startButton.setAttribute('data-i18n', startKey);
         startButton.disabled = state.busy || !state.storyId || kind === 'active';
         $('theater-continue-btn').disabled = state.busy || (kind !== 'active' && kind !== 'paused');
+        var endButton = $('theater-end-btn');
+        endButton.hidden = kind !== 'active';
+        endButton.disabled = state.busy || kind !== 'active';
         $('theater-delete-btn').disabled = state.busy || !state.storyId;
         startButton.classList.toggle('is-current-primary', kind === 'new' || kind === 'ended');
         $('theater-continue-btn').classList.toggle('is-current-primary', kind === 'active' || kind === 'paused');
@@ -365,6 +341,41 @@
         } catch (_) { setFeedback(t('theater.continueFailed', '继续演出失败，请重试。'), true); }
         finally { setBusy(false); }
     }
+    // 选剧页是胶囊结束按钮之外的独立兜底入口；成功后同步本体运行时解除锁定。
+    async function endSession() {
+        if (state.busy || sessionKind() !== 'active' || !state.session) return;
+        var confirmed = await showModal({
+            title: t('theater.endPerformance', '结束演绎'),
+            body: t('theater.endConfirm', '确定结束当前演绎吗？'),
+            cancelLabel: t('common.cancel', '取消'),
+            confirmLabel: t('theater.endPerformance', '结束演绎'),
+            danger: true
+        });
+        if (!confirmed || sessionKind() !== 'active') return;
+        setBusy(true); setFeedback('');
+        try {
+            var result = await requestJson(api.end, { method: 'POST', body: {
+                story_id: state.storyId,
+                session_id: state.session.session_id,
+                base_revision: Number(state.session.revision || 0)
+            }});
+            if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
+            state.session = result.session;
+            state.pendingEnd = {
+                story_id: state.storyId,
+                session_id: result.session.session_id,
+                revision: result.session.revision,
+                end_receipt_id: result.end_receipt_id || '',
+                archive_request_id: result.archive_request_id || ''
+            };
+            postMessage({ action: 'theater:external-end', story_id: state.storyId, session_id: result.session.session_id });
+            renderDetail();
+            setStatus('theater.paused', '已退出');
+            await maybePromptMemory();
+        } catch (_) {
+            setFeedback(t('theater.endFailed', '结束演绎失败，请检查网络后重试。'), true);
+        } finally { setBusy(false); }
+    }
     // “开始”同时承担首次创建和结束后再次开局；只有后者需要替换确认。
     async function beginSession() {
         if (sessionKind() === 'active') return;
@@ -547,6 +558,7 @@
         $('theater-import-input').addEventListener('change', function () { importStory(this.files && this.files[0]); });
         $('theater-start-btn').addEventListener('click', beginSession);
         $('theater-continue-btn').addEventListener('click', continueSession);
+        $('theater-end-btn').addEventListener('click', endSession);
         $('theater-delete-btn').addEventListener('click', deleteStory);
         $('theater-forget-memory-btn').addEventListener('click', forgetStoryMemory);
         loadStories().catch(function () { setStatus('theater.failed', '出错了'); setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true); });

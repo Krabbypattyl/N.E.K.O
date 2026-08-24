@@ -26,6 +26,7 @@ def test_theater_page_is_numeric_story_selector_only():
         "theater-detail-catgirl",
         "theater-start-btn",
         "theater-continue-btn",
+        "theater-end-btn",
         "theater-delete-btn",
     ):
         assert f'id="{element_id}"' in html
@@ -44,7 +45,7 @@ def test_selector_hidden_states_and_placeholder_stay_compact():
 
     assert ".theater-selector-shell[hidden]{display:none!important}" in compact_css
     assert ".theater-detail-placeholder{min-height:96px" in compact_css
-    assert ".theater-detail-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))" in compact_css
+    assert ".theater-detail-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))" in compact_css
 
 
 def test_selector_uses_two_stage_handoff_and_start_replacement():
@@ -54,6 +55,8 @@ def test_selector_uses_two_stage_handoff_and_start_replacement():
     assert "theater:launch-ready" in script
     assert "theater:selector-ready" in script
     assert "theater:post-end" in script
+    assert "theater:external-end" in script
+    assert "async function endSession()" in script
     assert "开始新的演绎？" in script
     assert "async function beginSession()" in script
     assert "replace_existing: replaceExisting === true" in script
@@ -152,6 +155,7 @@ def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     assert "restoreSelectorWindow(selectorTarget)" in runtime
     assert "state.errorMessage = t('theater.endFailed'" in runtime
     assert "return returnToSelector(state.pendingEnd, 'natural-ending-return')" in runtime
+    assert "message.action === 'theater:external-end'" in runtime
     assert "modal-dialog-theater" in geometry
     assert ".modal-overlay.modal-overlay-theater{background:transparent!important" in compact_css
     assert ".modal-dialog-theater.modal-btn{min-width:112px;min-height:44px" in compact_css
@@ -161,6 +165,7 @@ def test_theater_assets_are_scoped_to_selector_and_main_chat_hosts():
     selector = _source("templates/theater.html")
     index = _source("templates/index.html")
     chat = _source("templates/chat.html")
+    transport_path = "/static/js/theater_transport.js"
 
     assert "/static/js/theater_selector.js" in selector
     assert "/static/app/app-theater-runtime.js" not in selector
@@ -168,6 +173,27 @@ def test_theater_assets_are_scoped_to_selector_and_main_chat_hosts():
     assert "/static/app/app-theater-runtime.js" in chat
     assert "/static/js/theater_selector.js" not in index
     assert "/static/js/theater_selector.js" not in chat
+    # 三个宿主都必须先加载共享协议，避免业务脚本因依赖缺失而在页面初始化阶段退出。
+    assert selector.index(transport_path) < selector.index("/static/js/theater_selector.js")
+    assert index.index(transport_path) < index.index("/static/app/app-theater-runtime.js")
+    assert chat.index(transport_path) < chat.index("/static/app/app-theater-runtime.js")
+
+
+def test_theater_transport_owns_shared_request_and_message_protocol():
+    """协议号、CSRF 重试和请求 ID 只能在共享层实现一次。"""  # noqa: DOCSTRING_CJK
+
+    transport = _source("static/js/theater_transport.js")
+    selector = _source("static/js/theater_selector.js")
+    runtime = _source("static/app/app-theater-runtime.js")
+
+    assert "window.nekoTheaterTransport = Object.freeze" in transport
+    assert "async function requestJson" in transport
+    assert "async function mutationHeaders" in transport
+    assert "function createMessage" in transport
+    assert "function createId" not in selector
+    assert "async function requestJson" not in selector
+    assert "function createId" not in runtime
+    assert "async function requestJson" not in runtime
 
 
 def test_theater_locales_remain_valid_and_aligned():

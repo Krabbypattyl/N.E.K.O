@@ -71,7 +71,7 @@ def numeric_v2_catgirl_binding(
         "character_id": character_id,
         "catgirl_id": f"catgirl:{character_id}",
         "catgirl_name": selected_name,
-        "player_address": _load_player_address(config_manager) or "玩家",
+        "player_address": _load_player_address(config_manager) or "你",
         "profile_revision": f"characters:{profile_hash.removeprefix('sha256:')[:16]}",
         "profile_hash": profile_hash,
     }

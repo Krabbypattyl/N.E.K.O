@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import gc
 import json
 import os
 
@@ -23,6 +24,27 @@ from services.theater.numeric_v2_runtime import (
     TurnRequestV2,
 )
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+
+def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
+    """锁在并发窗口内必须复用，调用方释放后不得按历史 ID 永久积累。"""  # noqa: DOCSTRING_CJK
+
+    session_path = tmp_path / "numeric_v2" / "sessions" / "lock-test.json"
+    session_key = str(session_path.resolve())
+    session_lock = numeric_v2_store._lock(session_path)
+    assert numeric_v2_store._lock(session_path) is session_lock
+
+    receipt_path = tmp_path / "numeric_v2" / "end_receipts" / "lock-test.json"
+    receipt_key = str(receipt_path.resolve())
+    receipt_lock = numeric_v2_archive._receipt_lock(receipt_path)
+    assert numeric_v2_archive._receipt_lock(receipt_path) is receipt_lock
+
+    # 删除测试持有的最后强引用后，弱引用表应自动清除两个空闲条目。
+    del session_lock
+    del receipt_lock
+    gc.collect()
+    assert session_key not in numeric_v2_store._LOCKS
+    assert receipt_key not in numeric_v2_archive._RECEIPT_LOCKS
 
 
 def _binding() -> dict[str, str]:
@@ -126,6 +148,98 @@ async def test_numeric_v2_waits_for_min_turns_then_selects_route(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_player_address_is_committed_only_with_successful_turn(tmp_path):
+    runtime = NumericV2Runtime(
+        NumericV2Engine.from_mapping(numeric_v2_story(player_address_known=False)),
+        tmp_path,
+    )
+    stored = await runtime.start_session(
+        session_id="runtime_player_address_state",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    assert stored.session.player_address_known is False
+    assert stored.session.to_dict()["player_address_known"] is False
+
+    disclosed = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("address_disclosure", 0, "我叫哥哥。"),
+        (),
+        scene_complete=False,
+    )
+    assert disclosed.session.player_address_known is True
+    assert disclosed.ledger_event["player_address_known"] is True
+
+    with pytest.raises(ValueError, match="numeric_performance_invalid"):
+        await runtime.commit_turn(disclosed, {"performance": "无效"})
+
+    unchanged = await runtime.restore_session(stored.session.session_id)
+    assert unchanged is not None
+    assert unchanged.session.player_address_known is False
+    assert unchanged.session.revision == 0
+
+    committed = await runtime.commit_turn(disclosed, _performance("我听见了。"))
+    assert committed.session.player_address_known is True
+    assert committed.ledger_events[-1]["player_address_known"] is True
+
+    restored = await runtime.restore_session(stored.session.session_id)
+    assert restored is not None
+    assert restored.session.player_address_known is True
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_surface_you_fallback_does_not_count_as_disclosed_name(tmp_path):
+    runtime = NumericV2Runtime(
+        NumericV2Engine.from_mapping(numeric_v2_story(player_address_known=False)),
+        tmp_path,
+    )
+    binding = _binding()
+    binding["player_address"] = "你"
+    stored = await runtime.start_session(
+        session_id="runtime_surface_you_fallback",
+        catgirl_binding=binding,
+        opening_performance=_opening(),
+    )
+
+    prepared = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("surface_you_fallback", 0, "你好，你先说。"),
+        (),
+        scene_complete=False,
+    )
+
+    assert prepared.session.player_address_known is False
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_legacy_session_derives_address_state_from_submitted_input(tmp_path):
+    story = numeric_v2_story(player_address_known=False)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_legacy_player_address",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    disclosed = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("legacy_address_disclosure", 0, "我叫哥哥。"),
+        (),
+        scene_complete=False,
+    )
+    await runtime.commit_turn(disclosed, _performance("记住了。"))
+
+    path = tmp_path / "numeric_v2" / "sessions" / "runtime_legacy_player_address.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["session"].pop("player_address_known")
+    payload["ledger_events"][0].pop("player_address_known")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    restored = await runtime.restore_session(stored.session.session_id)
+    assert restored is not None
+    assert restored.session.player_address_known is True
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_remembers_scene_completion_until_min_turns(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -194,6 +308,46 @@ async def test_numeric_v2_restores_goal_evidence_from_ledger(tmp_path):
     assert restored.session.current_node_id == "start"
     assert restored.session.scene_goal_evidence == {"goal.1": (1,)}
     assert restored.ledger_events[-1]["scene_goal_evidence"] == {"goal.1": [1]}
+
+
+def test_numeric_v2_runtime_accepts_structured_goal_ids():
+    """Runtime 应直接校验作者目标 ID，避免结构化目标又退回按序号猜测。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat["goals"] = [{
+        "id": "confirm_old_letter",
+        "owner": "catgirl",
+        "description": "女主确认旧信保管状态。",
+        "evidence": {"mode": "semantic", "anchors": []},
+    }]
+    beat.pop("must_happen")
+    engine = NumericV2Engine.from_mapping(story)
+    session = replace(
+        engine.create_session(
+            session_id="runtime_structured_goal_id",
+            catgirl_binding=_binding(),
+            opening_performance=_opening(),
+        ),
+        node_turn_count=1,
+        revision=1,
+        performance_history=({
+            "revision": 1,
+            "from_node_id": "start",
+            "to_node_id": "start",
+            "input_text": "请继续说明。",
+            "performance": "（按住信封）这封信一直由我保管。",
+        },),
+    )
+
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("structured_goal_id", 1, "我明白了。"),
+        (),
+        goal_evidence={"confirm_old_letter": (1,)},
+    )
+
+    assert outcome.session.scene_goal_evidence == {"confirm_old_letter": (1,)}
 
 
 @pytest.mark.asyncio
@@ -661,7 +815,9 @@ async def test_numeric_v2_restart_replaces_ended_session_in_same_catgirl_slot(tm
         base_revision=0,
         reason="user_exit",
     )
-    restarted = await runtime.restart_session(
+    # 重开必须显式指出被替换的旧 Session，测试与生产接口保持同一条原子替换链。
+    restarted = await runtime.replace_active_session(
+        previous_session_id=old.session.session_id,
         session_id="runtime_story_reopened",
         catgirl_binding=_binding(),
         opening_performance=_opening(),
@@ -701,7 +857,9 @@ async def test_numeric_v2_preserves_one_session_per_story_and_catgirl(tmp_path):
     assert (await runtime.restore_story_session(_binding())).session.session_id == lan.session.session_id
     assert (await runtime.restore_story_session(other_binding)).session.session_id == mio.session.session_id
 
-    restarted_lan = await runtime.restart_session(
+    # 只替换当前猫娘的恢复槽位，另一只猫娘的 Session 必须保持不变。
+    restarted_lan = await runtime.replace_active_session(
+        previous_session_id=lan.session.session_id,
         session_id="runtime_lan_restarted",
         catgirl_binding=_binding(),
         opening_performance=_opening(),

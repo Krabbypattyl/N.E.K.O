@@ -11,13 +11,15 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from weakref import WeakValueDictionary
 
 from utils.llm_client import THEATER_MEMORY_SOURCE
 
 from .numeric_v2_performance import content_blocks, mixed_performance_blocks
 
 
-_RECEIPT_LOCKS: dict[str, threading.Lock] = {}
+# 调用线程进入 with 后会强持有锁；空闲回执锁无需常驻，避免历史 Session 数量决定进程内存。
+_RECEIPT_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
 _RECEIPT_LOCKS_GUARD = threading.Lock()
 PUBLIC_ARCHIVES_PER_STORY_CHARACTER = 5
 
@@ -27,7 +29,12 @@ def _receipt_lock(path: Path) -> threading.Lock:
 
     key = str(path.resolve())
     with _RECEIPT_LOCKS_GUARD:
-        return _RECEIPT_LOCKS.setdefault(key, threading.Lock())
+        lock = _RECEIPT_LOCKS.get(key)
+        if lock is None:
+            # 返回前由局部变量强持有，避免弱引用表在创建和 with 接管之间立即回收新锁。
+            lock = threading.Lock()
+            _RECEIPT_LOCKS[key] = lock
+        return lock
 
 
 class NumericV2ArchiveError(ValueError):
@@ -843,7 +850,7 @@ def build_numeric_v2_public_archive(
         "story_title": str(title),
         "character_id": str(session.catgirl_binding.get("character_id") or ""),
         "catgirl_name": str(session.catgirl_binding.get("catgirl_name") or ""),
-        "player_name": str(session.catgirl_binding.get("player_address") or "玩家"),
+        "player_name": str(session.catgirl_binding.get("player_address") or "你"),
         "revision": int(session.revision),
         "episode_status": "completed" if ending else "paused",
         "ending": {

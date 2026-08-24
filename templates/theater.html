@@ -11,6 +11,8 @@
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <!-- 共享传输协议必须先于选择页业务脚本加载。 -->
+    <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
@@ -49,6 +51,7 @@
                         <p class="theater-session-hint" id="theater-session-hint" role="status" aria-live="polite"></p>
                         <button type="button" class="theater-primary" id="theater-start-btn" data-i18n="theater.start">开始</button>
                         <button type="button" class="theater-primary" id="theater-continue-btn" data-i18n="theater.continueSession">继续</button>
+                        <button type="button" class="theater-secondary theater-danger" id="theater-end-btn" data-i18n="theater.endPerformance" hidden>结束演绎</button>
                         <button type="button" class="theater-secondary theater-danger" id="theater-delete-btn" data-i18n="theater.deleteStory">删除剧本</button>
                     </div>
                     <div class="theater-inline-feedback" id="theater-inline-feedback" role="status" aria-live="polite" hidden></div>

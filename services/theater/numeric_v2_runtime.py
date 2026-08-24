@@ -11,7 +11,11 @@ from typing import Any, Mapping
 
 from utils.tokenize import truncate_to_tokens
 
-from .numeric_v2 import CompiledNumericV2Package, NumericV2Compiler
+from .numeric_v2 import (
+    CompiledNumericV2Package,
+    NumericV2Compiler,
+    numeric_v2_story_goal_contracts,
+)
 from .numeric_v2_performance import (
     valid_mixed_performance,
     valid_ordered_content,
@@ -60,6 +64,20 @@ def _integer(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise NumericV2RuntimeError(f"{field}_invalid")
     return value
+
+
+def _player_address_known_after_turn(
+    session: "ScriptSessionV2",
+    message: str,
+) -> bool:
+    """仅按完整配置昵称的精确字符串判断本轮是否披露称呼。"""  # noqa: DOCSTRING_CJK
+
+    if session.player_address_known:
+        return True
+    configured_address = str(session.catgirl_binding.get("player_address") or "").strip()
+    if not configured_address or configured_address in {"你", "男主"}:
+        return False
+    return configured_address in str(message or "")
 
 
 def _scene_completion_ready(value: Mapping[str, Any]) -> bool:
@@ -169,6 +187,7 @@ class ScriptSessionV2:
     processed_client_turn_ids: tuple[str, ...]
     opening_performance: dict[str, Any]
     performance_history: tuple[dict[str, Any], ...]
+    player_address_known: bool = False
     ended_reason: str | None = None
     # 本幕目标一旦被 Evaluator 判定完成，就保持到满足 min_turns 或离开节点。
     # 旧 Session 缺少这两个字段时使用空状态，恢复后从下一回合开始采用新合同。
@@ -191,6 +210,7 @@ class ScriptSessionV2:
             "processed_client_turn_ids": list(self.processed_client_turn_ids),
             "opening_performance": deepcopy(self.opening_performance),
             "performance_history": deepcopy(list(self.performance_history)),
+            "player_address_known": self.player_address_known,
             "ended_reason": self.ended_reason,
             "scene_completion_ready": self.scene_completion_ready,
             "scene_goal_evidence": {
@@ -203,6 +223,9 @@ class ScriptSessionV2:
     def from_mapping(cls, value: Mapping[str, Any]) -> "ScriptSessionV2":
         if value.get("schema") != SESSION_SCHEMA:
             raise NumericV2RuntimeError("numeric_session_schema_invalid")
+        raw_player_address_known = value.get("player_address_known", False)
+        if not isinstance(raw_player_address_known, bool):
+            raise NumericV2RuntimeError("session_player_address_known_invalid")
         return cls(
             session_id=_stable_id(value.get("session_id"), "session_id"),
             story_package_id=_stable_id(value.get("story_package_id"), "story_package_id"),
@@ -217,6 +240,7 @@ class ScriptSessionV2:
             processed_client_turn_ids=tuple(str(item) for item in value.get("processed_client_turn_ids") or []),
             opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
             performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
+            player_address_known=raw_player_address_known,
             ended_reason=(str(value.get("ended_reason")) if value.get("ended_reason") is not None else None),
             scene_completion_ready=_scene_completion_ready(value),
             scene_goal_evidence=_scene_goal_evidence(value.get("scene_goal_evidence")),
@@ -271,6 +295,7 @@ class NumericV2Engine:
             processed_client_turn_ids=(),
             opening_performance=deepcopy(dict(opening_performance)),
             performance_history=(),
+            player_address_known=bool(self.story["initial_state"]["player_address_known"]),
         )
 
     def validate_session(self, session: ScriptSessionV2) -> None:
@@ -292,6 +317,8 @@ class NumericV2Engine:
                 raise NumericV2RuntimeError("session_metric_out_of_range")
         if session.node_turn_count < 0 or session.revision < 0:
             raise NumericV2RuntimeError("session_counter_invalid")
+        if not isinstance(session.player_address_known, bool):
+            raise NumericV2RuntimeError("session_player_address_known_invalid")
         self._validate_scene_goal_evidence(session, session.scene_goal_evidence)
 
     def _current_scene_evidence_revisions(self, session: ScriptSessionV2) -> set[int]:
@@ -325,8 +352,13 @@ class NumericV2Engine:
     ) -> None:
         """只接受当前节点目标和当前访问中的记录版本，防止跨幕事实串用。"""  # noqa: DOCSTRING_CJK
 
-        goal_count = min(8, len(self.nodes[session.current_node_id]["story_beat"].get("must_happen") or []))
-        valid_goal_ids = {f"goal.{index + 1}" for index in range(goal_count)}
+        # 新包直接校验作者目标 ID；旧包由兼容投影稳定得到 goal.N。
+        valid_goal_ids = {
+            str(goal["goal_id"])
+            for goal in numeric_v2_story_goal_contracts(
+                self.nodes[session.current_node_id]["story_beat"]
+            )
+        }
         valid_revisions = self._current_scene_evidence_revisions(session)
         for goal_id, revisions in evidence.items():
             if goal_id not in valid_goal_ids:
@@ -434,6 +466,7 @@ class NumericV2Engine:
             if route is None and not scene_completion_ready
             else {}
         )
+        player_address_known = _player_address_known_after_turn(session, request.message)
 
         revision = session.revision + 1
         next_session = replace(
@@ -444,6 +477,7 @@ class NumericV2Engine:
             revision=revision,
             status=next_status,
             processed_client_turn_ids=(*session.processed_client_turn_ids, request.client_turn_id),
+            player_address_known=player_address_known,
             scene_completion_ready=next_scene_completion_ready,
             scene_goal_evidence=next_scene_goal_evidence,
         )
@@ -465,6 +499,7 @@ class NumericV2Engine:
             "scene_complete": scene_complete,
             "node_turn_count": next_turn_count,
             "status": next_status,
+            "player_address_known": player_address_known,
         }
         if persist_scene_progress:
             # Ledger 保存累计状态，恢复时无需重新询问模型，也不会把旧幕证据带入新幕。
@@ -620,36 +655,6 @@ class NumericV2Runtime:
             migrated.session.session_id,
         )
         return migrated
-
-    async def restart_session(
-        self,
-        *,
-        session_id: str,
-        catgirl_binding: Mapping[str, Any],
-        opening_performance: Mapping[str, Any],
-    ) -> NumericV2StoredSession:
-        session = self.engine.create_session(
-            session_id=session_id,
-            catgirl_binding=catgirl_binding,
-            opening_performance=opening_performance,
-        )
-        existing = await self.restore_story_session(
-            session.catgirl_binding,
-        )
-        if existing is None:
-            stored = await self.store.create(session)
-        else:
-            stored = await self.store.replace_active(
-                existing.session.session_id,
-                session,
-            )
-        if existing is None:
-            await self.store.set_story_session_id(
-                self.engine.story_id,
-                str(session.catgirl_binding.get("character_id") or ""),
-                session.session_id,
-            )
-        return stored
 
     async def replace_active_session(
         self,

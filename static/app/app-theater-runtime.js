@@ -9,7 +9,12 @@
         speakBlock: '/api/theater-numeric/session/speak-block'
     };
     var POINTER_KEY = 'neko.theater.numeric.v2.capsule-pointer.v1';
-    var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
+    // 本体运行时只消费共享传输协议；胶囊状态、回放和跨窗口目标仍由本模块负责。
+    var transport = window.nekoTheaterTransport;
+    if (!transport) throw new Error('numeric_theater_transport_unavailable');
+    var MESSAGE_SCHEMA = transport.MESSAGE_SCHEMA;
+    var createId = transport.createId;
+    var requestJson = transport.requestJson;
     // 旧 Session 可能已保存过去的空桥段占位句；只在转场桥段中精确隐藏，不改写正式演绎记录。
     var LEGACY_EMPTY_TRANSITION_BRIDGE = '时间向前流转，现场随之转换。';
     var state = {
@@ -32,37 +37,8 @@
         }
         return fallback;
     }
-    function createId(prefix) {
-        var random = window.crypto && typeof window.crypto.randomUUID === 'function'
-            ? window.crypto.randomUUID()
-            : Math.random().toString(36).slice(2) + Date.now().toString(36);
-        return prefix + random;
-    }
-    async function mutationHeaders() {
-        var helper = window.nekoLocalMutationSecurity;
-        if (!helper || typeof helper.getMutationHeaders !== 'function') return {};
-        try { return await helper.getMutationHeaders(); } catch (_) { return {}; }
-    }
-    async function requestJson(url, options) {
-        var opts = options || {};
-        var method = opts.method || 'GET';
-        var body = Object.prototype.hasOwnProperty.call(opts, 'body') ? JSON.stringify(opts.body) : undefined;
-        async function send() {
-            var headers = { 'Content-Type': 'application/json' };
-            if (method !== 'GET') Object.assign(headers, await mutationHeaders());
-            return fetch(url, { method: method, headers: headers, body: body });
-        }
-        var response = await send();
-        if (response.status === 403 && method !== 'GET') {
-            var helper = window.nekoLocalMutationSecurity;
-            if (helper && typeof helper.refreshToken === 'function') { await helper.refreshToken(); response = await send(); }
-        }
-        var data = await response.json().catch(function () { return {}; });
-        data._status = response.status;
-        return data;
-    }
     function postMessage(message) {
-        var payload = Object.assign({ schema: MESSAGE_SCHEMA, source: 'theater-runtime', timestamp: Date.now() }, message || {});
+        var payload = transport.createMessage('theater-runtime', message);
         if (state.channel) { try { state.channel.postMessage(payload); } catch (_) {} }
         return payload;
     }
@@ -505,7 +481,7 @@
         if (!state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
             state.history.push(historyEntry(optimisticHistoryId, 'player_action', message, state.playerName));
         }
-        state.phase = 'evaluating'; state.suggestedInputs = []; state.draftRestore = null; render();
+        state.phase = 'evaluating'; state.suggestedInputs = []; state.draftRestore = null; state.errorMessage = ''; render();
         var result;
         try {
             result = await requestJson(api.input, { method: 'POST', body: {
@@ -536,6 +512,16 @@
             end_receipt_id: result.end_receipt_id,
             archive_request_id: result.archive_request_id || ''
         };
+        if (result.idempotent_replay === true) {
+            // 上一次请求可能已在服务端提交但响应丢失；幂等重放只返回权威快照，
+            // 不会再次返回 performance。必须用快照重建历史，不能留下乐观玩家气泡或漏掉猫娘回复。
+            state.history = buildCommittedHistory(result);
+            state.currentBlock = null;
+            state.draftRestore = null;
+            state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
+            render();
+            return true;
+        }
         await playPerformance(result.performance, state.revision, {
             playerInput: message,
             playerAlreadyShown: true
@@ -707,6 +693,12 @@
             launch(message);
         }
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
+        else if (
+            message.action === 'theater:external-end'
+            && state.active
+            && message.story_id === state.storyId
+            && message.session_id === state.sessionId
+        ) clear('selector-ended');
         else if (message.action === 'catgirl_switched' && state.active) clear('catgirl-switched');
     }
 

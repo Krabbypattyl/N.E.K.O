@@ -34,6 +34,8 @@ def _install_selector_routes(
     start_calls: list[dict] | None = None,
     start_result: dict | None = None,
     resume_result: dict | None = None,
+    end_calls: list[dict] | None = None,
+    end_result: dict | None = None,
 ) -> None:
     def handler(route: Route) -> None:
         request = route.request
@@ -61,6 +63,14 @@ def _install_selector_routes(
                 _fulfill(route, {"ok": False, "reason": "unexpected_resume"}, 409)
             else:
                 _fulfill(route, resume_result)
+            return
+        if path.endswith("/api/theater-numeric/session/end"):
+            if end_calls is not None:
+                end_calls.append(json.loads(request.post_data or "{}"))
+            if end_result is None:
+                _fulfill(route, {"ok": False, "reason": "unexpected_end"}, 409)
+            else:
+                _fulfill(route, end_result)
             return
         if path.endswith("/api/theater-numeric/memory/archives"):
             _fulfill(route, {"ok": True, "archives": []})
@@ -170,8 +180,66 @@ def test_active_story_only_enables_continue(mock_page: Page, running_server: str
     expect(mock_page.locator("#theater-start-btn")).to_have_text("重新开始")
     expect(mock_page.locator("#theater-start-btn")).to_have_attribute("data-i18n", "theater.restartSession")
     expect(mock_page.locator("#theater-continue-btn")).to_be_enabled()
+    expect(mock_page.locator("#theater-end-btn")).to_be_enabled()
+    expect(mock_page.locator("#theater-end-btn")).to_have_text("结束演绎")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("点击“继续”")
     expect(mock_page.locator("#theater-restart-btn")).to_have_count(0)
+
+
+@pytest.mark.frontend
+def test_selector_can_end_active_story_when_capsule_button_is_unavailable(
+    mock_page: Page,
+    running_server: str,
+):
+    end_calls: list[dict] = []
+    _install_selector_routes(
+        mock_page,
+        session={
+            "session_id": "active-session",
+            "story_package_id": STORY["story_id"],
+            "revision": 4,
+            "status": "active",
+        },
+        end_calls=end_calls,
+        end_result={
+            "ok": True,
+            "session": {
+                "session_id": "active-session",
+                "story_package_id": STORY["story_id"],
+                "revision": 5,
+                "status": "ended",
+                "ended_reason": "user_exit",
+            },
+            "end_receipt_id": "selector-end-receipt",
+            "archive_request_id": "selector-archive-request",
+            "archive_status": "pending",
+        },
+    )
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+
+    mock_page.locator("#theater-end-btn").click()
+    expect(mock_page.locator("#theater-modal-title")).to_have_text("结束演绎")
+    mock_page.locator("#theater-modal-cancel").click()
+    expect(mock_page.locator("#theater-end-btn")).to_be_visible()
+
+    mock_page.locator("#theater-end-btn").click()
+    with mock_page.expect_request("**/api/theater-numeric/session/end") as request_info:
+        mock_page.locator("#theater-modal-confirm").click()
+    assert json.loads(request_info.value.post_data or "{}") == {
+        "story_id": STORY["story_id"],
+        "session_id": "active-session",
+        "base_revision": 4,
+    }
+    expect(mock_page.locator("#theater-modal-title")).to_contain_text("记下本次演绎内容")
+    mock_page.locator("#theater-modal-cancel").click()
+    expect(mock_page.locator("#theater-end-btn")).to_be_hidden()
+    expect(mock_page.locator("#theater-session-badge")).to_have_text("已退出")
+    expect(mock_page.locator("#theater-session-hint")).to_contain_text("继续原进度")
+    assert end_calls == [{
+        "story_id": STORY["story_id"],
+        "session_id": "active-session",
+        "base_revision": 4,
+    }]
 
 
 @pytest.mark.frontend

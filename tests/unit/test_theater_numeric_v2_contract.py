@@ -14,7 +14,7 @@ from services.theater.numeric_v2_registry import (
 )
 
 
-def numeric_v2_story() -> dict:
+def numeric_v2_story(*, player_address_known: bool = True) -> dict:
     """构造一个包含两条数值路线和两个结局的最小合法包。"""  # noqa: DOCSTRING_CJK
 
     metric = {
@@ -87,7 +87,10 @@ def numeric_v2_story() -> dict:
             "role_overlay": "她既期待重逢，又担心玩家再次离开。",
         },
         "metric_schema": {"trust": metric},
-        "initial_state": {"metrics": {"trust": 20}},
+        "initial_state": {
+            "metrics": {"trust": 20},
+            "player_address_known": player_address_known,
+        },
         "start_node_id": "start",
         "nodes": [
             {
@@ -134,6 +137,148 @@ def test_numeric_v2_compiles_canonical_package():
     assert compiled.story["schema"] == "neko.story.numeric.v2"
     assert compiled.package_hash.startswith("sha256:")
     assert json.loads(compiled.json_bytes)["meta"]["story_id"] == "numeric_v2_contract"
+
+
+def test_numeric_v2_requires_structured_initial_player_address_state():
+    story = numeric_v2_story()
+    story["initial_state"]["player_address_known"] = "称呼未知"
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "invalid_initial_player_address_known"
+        and issue.path == "initial_state.player_address_known"
+        for issue in error.value.issues
+    )
+
+
+def test_numeric_v2_legacy_package_defaults_missing_player_address_state_to_unknown():
+    story = numeric_v2_story()
+    del story["initial_state"]["player_address_known"]
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert compiled.story["initial_state"]["player_address_known"] is False
+
+
+def test_numeric_v2_validates_optional_acting_contract():
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["acting_contract"] = {
+        "cognition_state": "fresh_boot",
+        "memory_state": "empty",
+        "self_reference_mode": "system_neutral",
+        "persona_scope": "style_only",
+        "assertable_self_facts": ["视觉校准完成", "主存储区为空"],
+        "allowed_behaviors": ["自检", "观察", "确认环境"],
+        "forbidden_behaviors": ["使用角色卡自称", "虚构旧记忆"],
+    }
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert compiled.story["nodes"][0]["story_beat"]["acting_contract"]["cognition_state"] == "fresh_boot"
+    assert compiled.story["nodes"][0]["story_beat"]["acting_contract"]["assertable_self_facts"] == [
+        "视觉校准完成",
+        "主存储区为空",
+    ]
+
+    story["nodes"][0]["story_beat"]["acting_contract"]["self_reference_mode"] = "invalid"
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+    assert any(
+        issue.code == "invalid_acting_contract_value"
+        and issue.path.endswith("acting_contract.self_reference_mode")
+        for issue in error.value.issues
+    )
+
+    story["nodes"][0]["story_beat"]["acting_contract"]["self_reference_mode"] = "system_neutral"
+    story["nodes"][0]["story_beat"]["acting_contract"]["assertable_self_facts"] = []
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+    assert any(
+        issue.path.endswith("acting_contract.assertable_self_facts")
+        for issue in error.value.issues
+    )
+
+
+def test_numeric_v2_accepts_structured_story_beat_contract_without_rewriting_legacy_beats():
+    """新包可声明明确开场、关系上限和目标证据，未迁移节点仍保持原文与哈希输入。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat["summary"] = "你最终决定是否留下，这是本幕的作者计划。"
+    beat["opening_scene"] = "雨水沿着花店玻璃缓慢滑落。"
+    beat["relationship_ceiling"] = "guarded"
+    beat["goals"] = [
+        {
+            "id": "confirm_old_letter",
+            "owner": "catgirl",
+            "description": "女主说明旧信一直由她保管。",
+            "evidence": {
+                "mode": "exact",
+                "anchors": ["旧信一直由我保管"],
+            },
+        }
+    ]
+    beat.pop("must_happen")
+
+    compiled = NumericV2Compiler().compile(story)
+    compiled_beat = compiled.story["nodes"][0]["story_beat"]
+
+    assert compiled_beat["opening_scene"] == "雨水沿着花店玻璃缓慢滑落。"
+    assert compiled_beat["relationship_ceiling"] == "guarded"
+    assert compiled_beat["goals"][0]["id"] == "confirm_old_letter"
+    assert "must_happen" not in compiled_beat
+    # 兼容节点不能被编译器静默补入新字段，否则旧安装包哈希和 Session 会失效。
+    assert "opening_scene" not in compiled.story["nodes"][1]["story_beat"]
+    assert "relationship_ceiling" not in compiled.story["nodes"][1]["story_beat"]
+    assert "goals" not in compiled.story["nodes"][1]["story_beat"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "issue_code"),
+    [
+        (
+            lambda beat: beat.update({
+                "goals": [{
+                    "id": "duplicate_source",
+                    "owner": "catgirl",
+                    "description": "女主说明旧信来历。",
+                    "evidence": {"mode": "semantic", "anchors": []},
+                }],
+            }),
+            "conflicting_story_goal_contracts",
+        ),
+        (
+            lambda beat: beat.update({"relationship_ceiling": "very_close"}),
+            "invalid_relationship_ceiling",
+        ),
+        (
+            lambda beat: (
+                beat.pop("must_happen"),
+                beat.update({
+                    "goals": [{
+                        "id": "missing_anchor",
+                        "owner": "catgirl",
+                        "description": "女主明确说出旧信来历。",
+                        "evidence": {"mode": "exact", "anchors": []},
+                    }],
+                }),
+            ),
+            "goal_evidence_anchors_required",
+        ),
+    ],
+)
+def test_numeric_v2_rejects_invalid_structured_story_beat_contract(mutate, issue_code):
+    """结构化字段必须在编译边界失败，不能把不完整合同留给模型猜测。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    mutate(story["nodes"][0]["story_beat"])
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(issue.code == issue_code for issue in caught.value.issues)
 
 
 def test_numeric_v2_soft_pacing_budget_is_optional_and_validated():
@@ -360,7 +505,10 @@ def test_numeric_v2_accepts_metric_free_single_route_mainline():
 
     story = numeric_v2_story()
     story["metric_schema"] = {}
-    story["initial_state"] = {"metrics": {}}
+    story["initial_state"] = {
+        "metrics": {},
+        "player_address_known": True,
+    }
     story["nodes"] = [
         {
             "id": "start",

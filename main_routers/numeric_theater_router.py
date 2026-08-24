@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
+from weakref import WeakValueDictionary
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -59,13 +60,30 @@ from services.theater.numeric_v2_store import (
     NumericV2StoreError,
     NumericV2StoreRevisionConflictError,
 )
+from services.theater.numeric_v2_workflow import execute_numeric_v2_turn
 from services.theater.tts_bridge import speak_committed_line
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
-_speak_request_locks: dict[str, asyncio.Lock] = {}
+# 请求执行期间由局部变量强持有锁；完成后弱引用表可自动回收不同请求 ID，避免长期运行持续增长。
+_speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _speak_request_results: dict[str, dict[str, Any]] = {}
-_archive_request_locks: dict[str, asyncio.Lock] = {}
+# 归档幂等事实保存在回执文件中，进程内锁只负责并发窗口，不应永久保留每个回执 ID。
+_archive_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _request_lock(
+    locks: WeakValueDictionary[str, asyncio.Lock],
+    request_id: str,
+) -> asyncio.Lock:
+    """返回请求粒度的共享锁，并在返回前用局部变量保持强引用。"""  # noqa: DOCSTRING_CJK
+
+    lock = locks.get(request_id)
+    if lock is None:
+        # 同一事件循环内没有跨线程写入；局部强引用可覆盖弱引用登记到调用方接管之间的空隙。
+        lock = asyncio.Lock()
+        locks[request_id] = lock
+    return lock
 
 
 def _performance_block_group(
@@ -124,6 +142,14 @@ def _current_catgirl_binding(config_manager: Any) -> dict[str, str]:
     return numeric_v2_catgirl_binding(config_manager)
 
 
+def _surface_player_name(binding: Mapping[str, str], *, known: bool) -> str:
+    """用户可见投影只在 Session 确认后使用真实称呼。"""  # noqa: DOCSTRING_CJK
+
+    if not known:
+        return "你"
+    return str(binding.get("player_address") or "你").strip() or "你"
+
+
 def _ensure_current_catgirl(session: Any, config_manager: Any) -> dict[str, str]:
     """只用不可变角色 ID 校验归属，允许同一角色改名或更新角色卡。"""  # noqa: DOCSTRING_CJK
 
@@ -164,7 +190,10 @@ def _scene_projection(
     binding = display_binding or stored.session.catgirl_binding
     cast = NumericV2CastProjection.from_story(
         runtime.engine.story,
-        player_name=str(binding.get("player_address") or "玩家"),
+        player_name=_surface_player_name(
+            binding,
+            known=bool(stored.session.player_address_known),
+        ),
         catgirl_name=str(binding.get("catgirl_name") or "当前猫娘"),
     )
     ending = None
@@ -201,6 +230,7 @@ def _public_session(session: Any) -> dict[str, Any]:
         "node_turn_count": session.node_turn_count,
         "revision": session.revision,
         "status": session.status,
+        "player_address_known": session.player_address_known,
         "opening_performance": session.opening_performance,
         "performance_history": list(session.performance_history),
         "ended_reason": session.ended_reason,
@@ -218,7 +248,10 @@ def _numeric_payload(
     binding = display_binding or stored.session.catgirl_binding
     cast = NumericV2CastProjection.from_story(
         runtime.engine.story,
-        player_name=str(binding.get("player_address") or "玩家"),
+        player_name=_surface_player_name(
+            binding,
+            known=bool(stored.session.player_address_known),
+        ),
         catgirl_name=str(binding.get("catgirl_name") or "当前猫娘"),
     )
     payload = {
@@ -226,7 +259,10 @@ def _numeric_payload(
         "story_title": str(runtime.engine.story["meta"]["title"]),
         # 历史区署名使用当前展示绑定；不要让前端从本地文案猜玩家或猫娘名称。
         "participants": {
-            "player_name": str(binding.get("player_address") or "玩家"),
+            "player_name": _surface_player_name(
+                binding,
+                known=bool(stored.session.player_address_known),
+            ),
             "catgirl_name": str(binding.get("catgirl_name") or "当前猫娘"),
         },
         "story_intro": cast.intro(runtime.engine.story),
@@ -244,17 +280,18 @@ def _list_story_summaries(
     registry: NumericV2PackageRegistry,
     binding: Mapping[str, str],
 ) -> list[dict[str, Any]]:
-    """在线程中完成整批剧本读取，避免逐包文件 IO 阻塞事件循环。"""  # noqa: DOCSTRING_CJK
+    """在线程中读取一次剧本列表，并直接投影已经校验过的简介。"""  # noqa: DOCSTRING_CJK
 
     stories: list[dict[str, Any]] = []
     for summary in registry.list_packages():
-        engine = registry.load_engine(str(summary.get("story_id") or ""))
+        # list_packages 已经读取并编译过整包；这里只需要简介中的作者角色名，不能再次加载同一文件。
+        projection_story = {"intro": dict(summary.get("intro") or {})}
         cast = NumericV2CastProjection.from_story(
-            engine.story,
-            player_name=binding.get("player_address") or "玩家",
+            projection_story,
+            player_name=_surface_player_name(binding, known=False),
             catgirl_name=binding.get("catgirl_name") or "当前猫娘",
         )
-        stories.append({**summary, "display_intro": cast.intro(engine.story)})
+        stories.append({**summary, "display_intro": cast.intro(projection_story)})
     return stories
 
 
@@ -538,30 +575,21 @@ async def submit_numeric_input(request: Request):
             return _error("session_already_ended", 409)
         if turn.base_revision != current.session.revision:
             return _error("numeric_base_revision_mismatch", 409)
-        evaluation = await NumericV2MetricEvaluator(config_manager).evaluate(
-            engine=runtime.engine,
-            session=current.session,
-            message=turn.message,
-            recent_ledger_events=current.ledger_events,
+        # HTTP 层只完成请求前置校验和错误映射，模型顺序与原子提交由应用工作流固定。
+        workflow = await execute_numeric_v2_turn(
+            config_manager=config_manager,
+            runtime=runtime,
+            current=current,
+            turn=turn,
+            ensure_current_binding=lambda session: _ensure_current_catgirl(
+                session,
+                config_manager,
+            ),
         )
-        outcome = runtime.prepare_turn(
-            current,
-            turn,
-            evaluation.metric_changes,
-            scene_complete=evaluation.scene_complete,
-            goal_evidence=evaluation.goal_evidence,
-        )
-        performance = await NumericV2Actor(config_manager).generate_turn(
-            engine=runtime.engine,
-            session=current.session,
-            outcome=outcome,
-            player_input=turn.message,
-        )
-        current_binding = _ensure_current_catgirl(current.session, config_manager)
-        # 删除剧本事务与正式提交共享 story guard；模型调用不占锁，删除若先
-        # 完成则本次提交安全失败，删除若回滚则提交基于恢复后的文件继续。
-        async with runtime.story_session_guard():
-            stored = await runtime.commit_turn(outcome, performance)
+        outcome = workflow.outcome
+        performance = workflow.performance
+        stored = workflow.stored
+        current_binding = workflow.display_binding
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError) as exc:
@@ -740,7 +768,7 @@ async def speak_numeric_block(request: Request):
         )
     ):
         return _error("numeric_speak_block_request_invalid", 400)
-    lock = _speak_request_locks.setdefault(playback_request_id, asyncio.Lock())
+    lock = _request_lock(_speak_request_locks, playback_request_id)
     async with lock:
         previous = _speak_request_results.get(playback_request_id)
         if previous is not None:
@@ -860,7 +888,10 @@ async def archive_numeric_session(request: Request):
     archive_request_id = str(payload.get("archive_request_id") or "").strip()
     if not archive_request_id or len(archive_request_id) > 160:
         return _error("numeric_archive_request_invalid", 400)
-    lock = _archive_request_locks.setdefault(str(payload.get("end_receipt_id") or ""), asyncio.Lock())
+    lock = _request_lock(
+        _archive_request_locks,
+        str(payload.get("end_receipt_id") or ""),
+    )
     async with lock:
         store: NumericV2ArchiveStore | None = None
         receipt: dict[str, Any] | None = None
@@ -961,7 +992,10 @@ async def skip_numeric_session_archive(request: Request):
     )
     if validation_error is not None:
         return validation_error
-    lock = _archive_request_locks.setdefault(str(payload.get("end_receipt_id") or ""), asyncio.Lock())
+    lock = _request_lock(
+        _archive_request_locks,
+        str(payload.get("end_receipt_id") or ""),
+    )
     async with lock:
         try:
             store = _archive_store(get_config_manager())

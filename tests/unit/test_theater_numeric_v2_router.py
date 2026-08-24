@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,49 @@ from utils.llm_client import (
     messages_to_dict,
 )
 from utils.llm_client.history import SQLChatMessageHistory
+
+
+def test_numeric_v2_router_idle_request_locks_are_reclaimed():
+    """请求锁只覆盖并发执行窗口，完成后不能随幂等请求 ID 无限增长。"""  # noqa: DOCSTRING_CJK
+
+    request_id = "router_lock_reclaim_test"
+    lock = numeric_theater_router._request_lock(
+        numeric_theater_router._speak_request_locks,
+        request_id,
+    )
+    assert numeric_theater_router._request_lock(
+        numeric_theater_router._speak_request_locks,
+        request_id,
+    ) is lock
+
+    # 调用方不再持有锁时，弱引用表应自行删除空闲请求条目。
+    del lock
+    gc.collect()
+    assert request_id not in numeric_theater_router._speak_request_locks
+
+
+def test_numeric_v2_story_list_reuses_compiled_summary_intro():
+    """列表投影只能消费注册表已经编译的摘要，不能为显示简介再次加载整包。"""  # noqa: DOCSTRING_CJK
+
+    class _SummaryOnlyRegistry:
+        def list_packages(self):
+            # 故意不提供 load_engine；若列表实现退回二次加载，本测试会直接失败。
+            return [{
+                "story_id": "summary_only_story",
+                "title": "摘要剧本",
+                "intro": {
+                    "background": "林舟在门口遇见小岚。",
+                    "player_identity": "林舟，刚到这里的男主。",
+                    "catgirl_identity": "小岚，守在门口的猫娘。",
+                },
+            }]
+
+    stories = numeric_theater_router._list_story_summaries(
+        _SummaryOnlyRegistry(),
+        {"catgirl_name": "测试猫娘", "player_address": "哥哥"},
+    )
+
+    assert stories[0]["display_intro"]["background"] == "你在门口遇见测试猫娘。"
 
 
 class _ConfigManager:
@@ -69,11 +113,21 @@ def _performance(text: str, *, opening: bool = False) -> dict:
     }
 
 
-def _client(tmp_path: Path, monkeypatch, config_manager=None, *, opening_text="你回来了。") -> TestClient:
+def _client(
+    tmp_path: Path,
+    monkeypatch,
+    config_manager=None,
+    *,
+    opening_text="你回来了。",
+    player_address_known=True,
+) -> TestClient:
     packages = tmp_path / "theater" / "numeric_v2" / "packages"
     packages.mkdir(parents=True)
     (packages / "numeric_v2_contract.json").write_text(
-        json.dumps(numeric_v2_story(), ensure_ascii=False),
+        json.dumps(
+            numeric_v2_story(player_address_known=player_address_known),
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     manager = config_manager or _ConfigManager(tmp_path)
@@ -97,13 +151,30 @@ def _client(tmp_path: Path, monkeypatch, config_manager=None, *, opening_text="�
     return TestClient(app)
 
 
+def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, player_address_known=False)
+    with client:
+        listed = client.get("/api/theater-numeric/stories")
+        assert listed.status_code == 200
+        assert listed.json()["stories"][0]["display_intro"]["player_identity"].startswith("你，")
+
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "unknown_address"},
+        )
+        body = started.json()
+        assert started.status_code == 200
+        assert body["story_intro"]["player_identity"].startswith("你，")
+        assert body["participants"]["player_name"] == "你"
+
+
 def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     with client:
         listed = client.get("/api/theater-numeric/stories")
         assert listed.status_code == 200
         assert listed.json()["stories"][0]["story_id"] == "numeric_v2_contract"
-        assert listed.json()["stories"][0]["display_intro"]["player_identity"].startswith("哥哥，")
+        assert listed.json()["stories"][0]["display_intro"]["player_identity"].startswith("你，")
 
         started = client.post(
             "/api/theater-numeric/session/start",

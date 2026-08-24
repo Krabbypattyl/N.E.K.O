@@ -1,0 +1,64 @@
+/** Numeric v2 小剧场跨页面协议与本地 JSON 请求的最小共享层。 */
+(function () {
+    'use strict';
+
+    // 这里只收纳选择页与本体运行时完全一致的传输规则，不接管各页面的业务状态和发送目标。
+    var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
+
+    function createId(prefix) {
+        var random = window.crypto && typeof window.crypto.randomUUID === 'function'
+            ? window.crypto.randomUUID()
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        return String(prefix || '') + random;
+    }
+
+    async function mutationHeaders() {
+        // 所有本地修改请求复用主程序的 CSRF 实现，剧场协议不保存也不复制安全令牌。
+        var helper = window.nekoLocalMutationSecurity;
+        if (!helper || typeof helper.getMutationHeaders !== 'function') return {};
+        try { return await helper.getMutationHeaders(); } catch (_) { return {}; }
+    }
+
+    async function requestJson(url, options) {
+        var opts = options || {};
+        var method = opts.method || 'GET';
+        var body = Object.prototype.hasOwnProperty.call(opts, 'body')
+            ? JSON.stringify(opts.body)
+            : undefined;
+
+        async function send() {
+            var headers = { 'Content-Type': 'application/json' };
+            if (method !== 'GET') Object.assign(headers, await mutationHeaders());
+            return fetch(url, { method: method, headers: headers, body: body });
+        }
+
+        var response = await send();
+        if (response.status === 403 && method !== 'GET') {
+            // CSRF 过期时只刷新并重试一次，避免一次业务动作产生无界请求循环。
+            var helper = window.nekoLocalMutationSecurity;
+            if (helper && typeof helper.refreshToken === 'function') {
+                await helper.refreshToken();
+                response = await send();
+            }
+        }
+        var data = await response.json().catch(function () { return {}; });
+        data._status = response.status;
+        return data;
+    }
+
+    function createMessage(source, message) {
+        // 页面只提供自身来源和业务字段，协议版本与时间戳由共享边界统一补齐。
+        return Object.assign({
+            schema: MESSAGE_SCHEMA,
+            source: String(source || ''),
+            timestamp: Date.now()
+        }, message || {});
+    }
+
+    window.nekoTheaterTransport = Object.freeze({
+        MESSAGE_SCHEMA: MESSAGE_SCHEMA,
+        createId: createId,
+        requestJson: requestJson,
+        createMessage: createMessage
+    });
+})();
