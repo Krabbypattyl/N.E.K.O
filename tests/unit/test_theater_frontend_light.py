@@ -66,6 +66,10 @@ def test_selector_uses_two_stage_handoff_and_start_replacement():
 def test_capsule_runtime_separates_narration_and_dialogue_tts():
     runtime = _source("static/app/app-theater-runtime.js")
     buttons = _source("static/app/app-buttons.js")
+    host_api = _source("static/app/app-react-chat-window/resize-drag-and-api.js")
+    host_messages = _source(
+        "static/app/app-react-chat-window/message-bundle-actions-and-prompts.js"
+    )
 
     assert "/session/speak-block" in runtime
     assert "if (block.type === 'dialogue')" in runtime
@@ -77,6 +81,26 @@ def test_capsule_runtime_separates_narration_and_dialogue_tts():
     assert "var theaterRuntime = window.nekoTheaterRuntime" in buttons
     assert "theaterRuntime.isActive()" in buttons
     assert "handleComposerSubmit" in buttons
+    assert "setOnTheaterSubmit" in runtime
+    assert "setOnTheaterSubmit" in host_api
+    assert "I.handleTheaterSubmit" in host_messages
+    theater_branch = buttons[buttons.index("if (theaterRuntime &&"):]
+    assert theater_branch.index("if (hasExtraImages)") < theater_branch.index(
+        "theaterRuntime.handleComposerSubmit(text)"
+    )
+    assert "if (hasScreenshots || hasExtraImages)" not in theater_branch[:600]
+
+
+def test_selector_does_not_publish_stale_story_after_archive_load():
+    """异步归档返回后必须再次复验当前选择，再更新详情和地址栏。"""  # noqa: DOCSTRING_CJK
+
+    script = _source("static/js/theater_selector.js")
+    selection = script.index("async function selectStory(")
+    archive_await = script.index("await loadMemoryArchives(storyId);", selection)
+    recheck = script.index("if (state.storyId !== storyId) return;", archive_await)
+    replace_url = script.index("window.history.replaceState", recheck)
+
+    assert archive_await < recheck < replace_url
 
 
 def test_capsule_runtime_projects_narration_display_kind_from_performance_phase():

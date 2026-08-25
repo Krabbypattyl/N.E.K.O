@@ -362,18 +362,12 @@ async def maybe_spawn_review(name: str) -> None:
         except Exception as e:
             logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
             return
-        # 通用 review 只处理最后一条剧场胶囊之后连续产生的普通聊天。这样既不会
-        # 改写剧场来源元数据，也不会因历史里长期保留一条胶囊而永久停掉日常复盘。
-        last_theater_index = next(
-            (
-                index
-                for index in range(len(history) - 1, -1, -1)
-                if is_theater_memory_message(history[index])
-            ),
-            -1,
-        )
-        if last_theater_index >= 0:
-            history = history[last_theater_index + 1:]
+        # 剧场胶囊不进入通用 review，但其前后的普通聊天仍属于同一条可复盘时间线。
+        history = [
+            message
+            for message in history
+            if not is_theater_memory_message(message)
+        ]
         # Gate 3: history 长度
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return

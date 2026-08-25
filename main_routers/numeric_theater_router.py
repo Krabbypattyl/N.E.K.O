@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
@@ -71,6 +72,7 @@ from utils.character_memory import character_config_mutation_lock
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
+logger = logging.getLogger(__name__)
 # 请求执行期间由局部变量强持有锁；完成后弱引用表可自动回收不同请求 ID，避免长期运行持续增长。
 _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _speak_request_results: dict[str, dict[str, Any]] = {}
@@ -482,10 +484,18 @@ async def start_numeric_session(request: Request):
                     opening_performance=opening,
                 )
                 # 新 Session 已原子接管恢复槽位，旧 Session 回执不再有任何合法消费者。
-                await asyncio.to_thread(
-                    archive_store.delete_session_receipts,
-                    existing.session.session_id,
-                )
+                try:
+                    await asyncio.to_thread(
+                        archive_store.delete_session_receipts,
+                        existing.session.session_id,
+                    )
+                except (NumericV2ArchiveError, OSError):
+                    # 新 Session 和恢复槽位已经提交；旧回执清理失败只能延后维护，不能把成功重开报成失败。
+                    logger.warning(
+                        "Numeric v2 重新开始后清理旧回执失败: %s",
+                        existing.session.session_id,
+                        exc_info=True,
+                    )
             else:
                 # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
@@ -1063,16 +1073,27 @@ async def skip_numeric_session_archive(request: Request):
     async with lock:
         try:
             config_manager = get_config_manager()
-            store = _archive_store(config_manager)
-            receipt = await _validated_receipt(store, payload)
-            if receipt.get("status") == "written":
-                return _error("numeric_archive_already_written", 409)
-            await _assert_numeric_writable(config_manager, "end_receipts")
-            await store.adiscard_staged_public_archive(
-                str(receipt.get("receipt_id") or "")
-            )
-            await store.aupdate(receipt, status="skipped")
-            return {"ok": True, "status": "skipped"}
+            story_id = str(payload.get("story_id") or "").strip()
+            NumericV2PackageRegistry(
+                _numeric_root(config_manager) / "numeric_v2" / "packages"
+            ).package_path(story_id)
+            # 跳过归档与角色/剧本删除使用相同锁顺序，防止删除后重新创建孤立回执。
+            async with character_config_mutation_lock, numeric_v2_story_session_guard(
+                _numeric_root(config_manager),
+                story_id,
+            ):
+                store = _archive_store(config_manager)
+                receipt = await _validated_receipt(store, payload)
+                if receipt.get("status") == "written":
+                    return _error("numeric_archive_already_written", 409)
+                await _assert_numeric_writable(config_manager, "end_receipts")
+                await store.adiscard_staged_public_archive(
+                    str(receipt.get("receipt_id") or "")
+                )
+                await store.aupdate(receipt, status="skipped")
+                return {"ok": True, "status": "skipped"}
+        except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+            return _package_error(exc)
         except NumericV2ArchiveError as exc:
             return _error(str(exc), 409)
 

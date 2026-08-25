@@ -917,6 +917,9 @@
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        setOnTheaterSubmit: function (handler) {
+            I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
+        },
         setOnTheaterSuggestedInputSelect: function (handler) {
             I.state.onTheaterSuggestedInputSelect = typeof handler === 'function' ? handler : null;
         },

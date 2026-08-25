@@ -337,6 +337,29 @@ describe('App', () => {
     expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('routes theater drafts through the dedicated callback before cat-local chat', () => {
+    const onComposerSubmit = vi.fn();
+    const onTheaterSubmit = vi.fn();
+    renderInputApp({
+      catLocalTextOnly: true,
+      theaterPresentation: {
+        active: true,
+        phase: 'awaiting_player',
+        history: [],
+        suggestedInputs: [],
+      },
+      onComposerSubmit,
+      onTheaterSubmit,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '  推开教室门  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onTheaterSubmit).toHaveBeenCalledWith('推开教室门');
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+  });
+
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
     const onComposerSubmit = vi.fn();
     const { rerender } = render(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import gc
 import json
 from pathlib import Path
@@ -454,6 +455,66 @@ def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch)
     assert replayed_turn.status_code == 200
     assert replayed_turn.json()["idempotent_replay"] is True
     assert replayed_turn.json()["end_receipt_id"].startswith("theater_end_")
+
+
+def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
+    """跳过归档的校验与提交必须位于角色和剧本生命周期锁内。"""  # noqa: DOCSTRING_CJK
+
+    story_guard_active = {"value": False}
+    observed = {}
+    original_guard = numeric_theater_router.numeric_v2_story_session_guard
+    original_update = NumericV2ArchiveStore.aupdate
+
+    @asynccontextmanager
+    async def tracked_story_guard(*args, **kwargs):
+        async with original_guard(*args, **kwargs):
+            story_guard_active["value"] = True
+            try:
+                yield
+            finally:
+                story_guard_active["value"] = False
+
+    async def tracked_update(self, receipt, **changes):
+        if changes.get("status") == "skipped":
+            observed["story_guard"] = story_guard_active["value"]
+            observed["character_guard"] = (
+                numeric_theater_router.character_config_mutation_lock.locked()
+            )
+        return await original_update(self, receipt, **changes)
+
+    monkeypatch.setattr(
+        numeric_theater_router,
+        "numeric_v2_story_session_guard",
+        tracked_story_guard,
+    )
+    monkeypatch.setattr(NumericV2ArchiveStore, "aupdate", tracked_update)
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "skip_locked"},
+        ).status_code == 200
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "skip_locked",
+                "base_revision": 0,
+            },
+        ).json()
+        skipped = client.post(
+            "/api/theater-numeric/session/archive/skip",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "skip_locked",
+                "revision": 0,
+                "end_receipt_id": ended["end_receipt_id"],
+            },
+        )
+
+    assert skipped.status_code == 200
+    assert skipped.json()["status"] == "skipped"
+    assert observed == {"story_guard": True, "character_guard": True}
 
 
 def test_numeric_v2_actor_failure_does_not_commit_half_turn(tmp_path, monkeypatch):
@@ -926,6 +987,54 @@ def test_numeric_v2_restart_keeps_ended_session_when_new_opening_fails(tmp_path,
         sessions = tmp_path / "theater" / "numeric_v2" / "sessions"
         assert (sessions / "restart_source.json").is_file()
         assert not (sessions / "restart_target.json").exists()
+
+
+def test_numeric_v2_restart_stays_successful_when_old_receipt_cleanup_fails(
+    tmp_path,
+    monkeypatch,
+):
+    """新 Session 提交后的旧回执清理失败不能反转成功结果。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "cleanup_source"},
+        ).status_code == 200
+        assert client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "cleanup_source",
+                "base_revision": 0,
+            },
+        ).status_code == 200
+
+        def fail_cleanup(_self, _session_id):
+            raise OSError("cleanup failed")
+
+        monkeypatch.setattr(
+            NumericV2ArchiveStore,
+            "delete_session_receipts",
+            fail_cleanup,
+        )
+        restarted = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "cleanup_target",
+                "replace_existing": True,
+            },
+        )
+        active = client.get(
+            "/api/theater-numeric/session/active",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert restarted.status_code == 200
+    assert restarted.json()["session"]["session_id"] == "cleanup_target"
+    assert active.status_code == 200
+    assert active.json()["session"]["session_id"] == "cleanup_target"
 
 
 def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, monkeypatch):
@@ -1718,15 +1827,28 @@ def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monke
 
     manager = _RenamableConfigManager(tmp_path)
     client = _client(tmp_path, monkeypatch, manager)
+    commit_lock_states = []
+    original_commit = numeric_theater_router.NumericV2Runtime.commit_turn
 
     async def rename_during_actor(*args, **kwargs):
         manager.current_name = "改名后"
         return _performance("我在听。")
 
+    async def record_commit_lock(self, *args, **kwargs):
+        commit_lock_states.append(
+            numeric_theater_router.character_config_mutation_lock.locked()
+        )
+        return await original_commit(self, *args, **kwargs)
+
     monkeypatch.setattr(
         numeric_theater_router.NumericV2Actor,
         "generate_turn",
         rename_during_actor,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "commit_turn",
+        record_commit_lock,
     )
     with client:
         started = client.post(
@@ -1756,6 +1878,7 @@ def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monke
     )
     persisted = json.loads(session_path.read_text(encoding="utf-8"))
     assert persisted["session"]["catgirl_binding"]["catgirl_name"] == "改名后"
+    assert commit_lock_states == [True]
 
 
 def test_numeric_turn_preserves_player_address_fact_during_model_wait(

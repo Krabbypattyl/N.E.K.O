@@ -1540,6 +1540,7 @@
             onComposerScreenshot: I.handleComposerScreenshot,
             onComposerRemoveAttachment: I.handleComposerRemoveAttachment,
             onComposerSubmit: I.handleComposerSubmit,
+            onTheaterSubmit: I.handleTheaterSubmit,
             onAvatarInteraction: I.handleAvatarInteraction,
             onAvatarToolStateChange: I.handleAvatarToolStateChange,
             onJukeboxClick: I.handleJukeboxClick,

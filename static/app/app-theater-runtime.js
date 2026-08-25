@@ -295,6 +295,10 @@
     function bindHostCallbacks() {
         var chatHost = host();
         if (!chatHost) return false;
+        if (typeof chatHost.setOnTheaterSubmit === 'function') {
+            // 玩家自由输入直接进入剧场 Runtime，不经过普通聊天或猫娘局部聊天路由。
+            chatHost.setOnTheaterSubmit(function (text) { void submit(text); });
+        }
         if (typeof chatHost.setOnTheaterSuggestedInputSelect === 'function') {
             // 推荐输入直接进入 Runtime 提交流程，不借用输入框草稿或普通 Galgame 回填链路。
             chatHost.setOnTheaterSuggestedInputSelect(function (text) { void submit(text); });

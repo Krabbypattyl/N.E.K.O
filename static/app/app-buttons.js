@@ -3306,10 +3306,11 @@
             var hasExtraImages = extraImageDataUrls.length > 0;
             var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
 
-            if (!text && !hasScreenshots && !hasExtraImages) return;
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
-                if (hasScreenshots || hasExtraImages) {
+                if (!text) return false;
+                // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。
+                if (hasExtraImages) {
                     window.showStatusToast(
                         window.t ? window.t('theater.imagesUnavailable') : '小剧场演绎暂不支持图片输入',
                         3500
@@ -3318,6 +3319,7 @@
                 }
                 return theaterRuntime.handleComposerSubmit(text);
             }
+            if (!text && !hasScreenshots && !hasExtraImages) return;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
                 return false;

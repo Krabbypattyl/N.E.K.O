@@ -87,6 +87,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
+  onTheaterSubmit?: (text: string) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
@@ -938,6 +939,7 @@ function CompactChatApp({
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
+  onTheaterSubmit,
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
@@ -5021,7 +5023,11 @@ function CompactChatApp({
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
-      onComposerSubmit?.({ text });
+      if (theaterActive && onTheaterSubmit) {
+        onTheaterSubmit(text);
+      } else {
+        onComposerSubmit?.({ text });
+      }
       if (theaterActive) {
         setTheaterDraft('');
       } else if (catLocalTextOnly) {

@@ -328,6 +328,10 @@ export const chatWindowPropsSchema = z.object({
     .args(galgameOptionSchema)
     .returns(z.void())
     .optional(),
+  onTheaterSubmit: z.function()
+    .args(z.string())
+    .returns(z.void())
+    .optional(),
   onTheaterSuggestedInputSelect: z.function()
     .args(z.string())
     .returns(z.void())

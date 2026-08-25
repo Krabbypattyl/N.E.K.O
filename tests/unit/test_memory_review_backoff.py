@@ -186,7 +186,7 @@ async def _drive_spawn(memory_server, name, history):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generic_review_does_not_rewrite_theater_messages():
-    """通用 review 跳过剧场胶囊，但仍能处理其后积累的普通聊天。"""  # noqa: DOCSTRING_CJK
+    """通用 review 跳过剧场胶囊，但保留其前后的普通聊天。"""  # noqa: DOCSTRING_CJK
     from app import memory_server
 
     name = "测试角色-theater-review"
@@ -202,7 +202,7 @@ async def test_generic_review_does_not_rewrite_theater_messages():
 
     fake_mgr.review_history.assert_awaited_once()
     reviewed_snapshot = fake_mgr.review_history.await_args.args[1]
-    assert reviewed_snapshot == history[3:]
+    assert reviewed_snapshot == history[:2] + history[3:]
     assert all(
         message.metadata.get("source") != "theater_numeric_v2"
         for message in reviewed_snapshot

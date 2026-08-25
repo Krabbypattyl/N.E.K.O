@@ -229,6 +229,8 @@
         }
         else if (result._status !== 404) setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
         await loadMemoryArchives(storyId);
+        // 归档请求返回期间可能已经切换剧本；旧选择不能覆盖详情或地址栏。
+        if (state.storyId !== storyId) return;
         renderDetail();
         setStatus('theater.ready', '就绪');
         var url = new URL(window.location.href);
