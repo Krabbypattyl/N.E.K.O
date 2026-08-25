@@ -54,15 +54,20 @@ async def execute_numeric_v2_turn(
     )
     # 模型调用期间角色卡可能切换；成功输出不能提交到另一只猫娘的恢复槽位。
     display_binding = ensure_current_binding(current.session)
+    refreshed_binding = {
+        str(key): str(value)
+        for key, value in display_binding.items()
+    }
+    # 本轮 Ledger 已按模型调用前的称呼事实计算；只刷新角色展示字段，避免称呼并发变化破坏重放。
+    refreshed_binding["player_address"] = str(
+        outcome.session.catgirl_binding.get("player_address") or ""
+    )
     outcome = replace(
         outcome,
         session=replace(
             outcome.session,
             # 不可变角色 ID 已通过校验；提交前刷新名称和人格版本，避免并发改名被旧候选覆盖。
-            catgirl_binding={
-                str(key): str(value)
-                for key, value in display_binding.items()
-            },
+            catgirl_binding=refreshed_binding,
         ),
     )
     # 模型调用不占剧本锁；只在正式提交阶段与删除、归档和重新开始串行。

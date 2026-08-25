@@ -55,6 +55,7 @@ from services.theater.numeric_v2_runtime import (
 from services.theater.paths import theater_root
 from services.theater.numeric_v2_store import (
     list_numeric_v2_sessions,
+    numeric_v2_story_session_guard,
     NumericV2SessionExistsError,
     NumericV2SessionNotFoundError,
     NumericV2StoreError,
@@ -66,6 +67,7 @@ from utils.cloudsave_runtime import (
     MaintenanceModeError,
     assert_cloudsave_writable,
 )
+from utils.character_memory import character_config_mutation_lock
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
@@ -966,8 +968,8 @@ async def archive_numeric_session(request: Request):
             if expected_request_id and archive_request_id != expected_request_id:
                 return _error("numeric_archive_request_mismatch", 409)
             runtime = await _runtime_for_story(config_manager, receipt["story_id"])
-            # 归档与剧本删除、重新开始共用故事级锁，避免删除完成后又写回孤立冷档案。
-            async with runtime.story_session_guard():
+            # 角色生命周期锁固定记忆目录名称；故事锁避免剧本删除完成后又写回孤立冷档案。
+            async with character_config_mutation_lock, runtime.story_session_guard():
                 stored = await runtime.restore_session(receipt["session_id"])
                 if stored is None:
                     return _error("numeric_session_not_found", 404)
@@ -1157,12 +1159,23 @@ async def forget_numeric_story_memory(request: Request):
         return _error("story_id_required", 400)
     config_manager = get_config_manager()
     try:
-        runtime = await _runtime_for_story(config_manager, story_id)
-        binding = _current_catgirl_binding(config_manager)
+        # 仅用注册表路径规则复验 ID；剧本包删除后仍必须允许清理其残留记忆。
+        NumericV2PackageRegistry(
+            _numeric_root(config_manager) / "numeric_v2" / "packages"
+        ).package_path(story_id)
+        try:
+            runtime = await _runtime_for_story(config_manager, story_id)
+        except NumericV2PackageNotFoundError:
+            runtime = None
         from config import MEMORY_SERVER_PORT
         from utils.internal_http_client import get_internal_http_client
 
-        async with runtime.story_session_guard():
+        # 遗忘同样写入角色记忆目录，必须与角色改名串行；独立故事锁不依赖剧本包存在。
+        async with character_config_mutation_lock, numeric_v2_story_session_guard(
+            _numeric_root(config_manager),
+            story_id,
+        ):
+            binding = _current_catgirl_binding(config_manager)
             await _assert_numeric_writable(config_manager, "memory")
             response = await get_internal_http_client().post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
@@ -1186,7 +1199,11 @@ async def forget_numeric_story_memory(request: Request):
                 character_id=binding["character_id"],
                 legacy_catgirl_name=binding["catgirl_name"],
             )
-            stored = await runtime.restore_story_session_unlocked(binding)
+            stored = (
+                await runtime.restore_story_session_unlocked(binding)
+                if runtime is not None
+                else None
+            )
             if stored is not None and stored.session.status == "ended":
                 # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
                 skipped = await archive_store.acreate_or_get(stored.session)

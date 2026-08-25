@@ -996,6 +996,9 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
     class _MemoryClient:
         async def post(self, url, *, json, timeout):
             captured["calls"] += 1
+            captured["character_lock_held"] = (
+                numeric_theater_router.character_config_mutation_lock.locked()
+            )
             captured["url"] = url
             captured["payload"] = json
             captured["timeout"] = timeout
@@ -1071,6 +1074,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
         tmp_path / "theater" / "numeric_v2" / "sessions" / "archive_session.json"
     ).exists()
     assert captured["calls"] == 1
+    assert captured["character_lock_held"] is True
     assert captured["url"].endswith("/%E6%B5%8B%E8%AF%95%E7%8C%AB%E5%A8%98")
     assert captured["payload"]["idempotency_key"] == ended["archive_request_id"]
     memory_text = captured["payload"]["input_history"]
@@ -1203,6 +1207,62 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
     assert after.json()["archives"] == []
     assert active.json()["session"]["session_id"] == "forget_session"
     assert active.json()["archive_status"] == "skipped"
+
+
+def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
+    tmp_path,
+    monkeypatch,
+):
+    """剧本包删除后仍应按稳定 story_id 清理残留记忆。"""  # noqa: DOCSTRING_CJK
+
+    captured = {}
+
+    class _MemoryResponse:
+        content = b"{}"
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {
+                "ok": True,
+                "removed_recent": 1,
+                "removed_time_index": 1,
+            }
+
+    class _MemoryClient:
+        async def post(self, url, *, json, timeout):
+            captured["url"] = url
+            captured["payload"] = json
+            captured["character_lock_held"] = (
+                numeric_theater_router.character_config_mutation_lock.locked()
+            )
+            return _MemoryResponse()
+
+    monkeypatch.setattr(
+        "utils.internal_http_client.get_internal_http_client",
+        lambda: _MemoryClient(),
+    )
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        deleted = client.delete(
+            "/api/theater-numeric/packages/numeric_v2_contract",
+        )
+        forgotten = client.post(
+            "/api/theater-numeric/memory/forget",
+            json={"story_id": "numeric_v2_contract"},
+        )
+
+    assert deleted.status_code == 200
+    assert forgotten.status_code == 200
+    assert forgotten.json() == {
+        "ok": True,
+        "removed_recent": 1,
+        "removed_time_index": 1,
+        "removed_archives": 0,
+        "removed_receipts": 0,
+    }
+    assert captured["payload"] == {"story_id": "numeric_v2_contract"}
+    assert captured["character_lock_held"] is True
 
 
 def test_numeric_memory_projection_builds_one_compact_episode_summary():
@@ -1696,3 +1756,76 @@ def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monke
     )
     persisted = json.loads(session_path.read_text(encoding="utf-8"))
     assert persisted["session"]["catgirl_binding"]["catgirl_name"] == "改名后"
+
+
+def test_numeric_turn_preserves_player_address_fact_during_model_wait(
+    tmp_path,
+    monkeypatch,
+):
+    """本轮称呼事实生成后即被冻结，配置并发变化不能破坏 Ledger 重放。"""  # noqa: DOCSTRING_CJK
+
+    class _MutableAddressConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.player_address = "你"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": "测试猫娘",
+                "猫娘": {
+                    "测试猫娘": _catgirl_profile("测试猫娘", "安静而认真。"),
+                },
+                "主人": {"昵称": self.player_address},
+            }
+
+    manager = _MutableAddressConfigManager(tmp_path)
+    client = _client(
+        tmp_path,
+        monkeypatch,
+        manager,
+        player_address_known=False,
+    )
+
+    async def change_address_during_actor(*args, **kwargs):
+        manager.player_address = "哥哥"
+        return _performance("我在听。")
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_turn",
+        change_address_during_actor,
+    )
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "address_mid_turn"},
+        )
+        assert started.status_code == 200
+
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "address_mid_turn",
+                "client_turn_id": "address_mid_turn_1",
+                "base_revision": 0,
+                "message": "哥哥，我们继续吧。",
+            },
+        )
+        restored = client.get(
+            "/api/theater-numeric/session/address_mid_turn",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert submitted.status_code == 200
+    assert restored.status_code == 200
+    assert restored.json()["session"]["player_address_known"] is False
+    session_path = (
+        tmp_path
+        / "theater"
+        / "numeric_v2"
+        / "sessions"
+        / "address_mid_turn.json"
+    )
+    persisted = json.loads(session_path.read_text(encoding="utf-8"))
+    assert persisted["session"]["catgirl_binding"]["player_address"] == "你"

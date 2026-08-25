@@ -74,6 +74,21 @@ def _story_lock(path: Path, story_id: str) -> asyncio.Lock:
     return lock
 
 
+@asynccontextmanager
+async def numeric_v2_story_session_guard(
+    theater_storage_root: Path,
+    story_id: str,
+):
+    """在不加载剧本包的情况下复用指定剧本的 Session 生命周期锁。"""  # noqa: DOCSTRING_CJK
+
+    normalized_story_id = str(story_id or "").strip()
+    if not normalized_story_id:
+        raise NumericV2StoreError("numeric_story_id_required")
+    index_path = Path(theater_storage_root) / "numeric_v2" / "story_sessions.json"
+    async with _story_lock(index_path, normalized_story_id):
+        yield
+
+
 def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
     if not path.is_file():
         return {}
@@ -471,8 +486,7 @@ class NumericV2SessionStore:
 
     @asynccontextmanager
     async def story_session_guard(self, story_id: str):
-        normalized_story_id = str(story_id or "").strip()
-        async with _story_lock(self._story_session_index_path, normalized_story_id):
+        async with numeric_v2_story_session_guard(self.root.parent.parent, story_id):
             yield
 
     def _read_story_session_index(self) -> dict[str, dict[str, str]]:
@@ -1062,6 +1076,7 @@ __all__ = [
     "delete_numeric_v2_sessions",
     "list_numeric_v2_public_archives",
     "list_numeric_v2_sessions",
+    "numeric_v2_story_session_guard",
     "update_numeric_v2_character_bindings",
     "NumericV2SessionExistsError",
     "NumericV2SessionNotFoundError",
