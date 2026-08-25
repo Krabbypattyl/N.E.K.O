@@ -547,6 +547,9 @@ def test_theater_locales_remain_valid_and_aligned():
 
 def test_theater_popup_entry_opens_story_selector():
     popup_config = _source("static/avatar/avatar-ui-popup-config.js")
+    pngtuber = _source("static/pngtuber-core.js")
     assert popup_config.count("url: '/theater'") == 3
-    assert "url: '/theater-home'" not in popup_config
-    assert "url: '/theater-numeric'" not in popup_config
+    assert pngtuber.count("url: '/theater'") == 1
+    for source in (popup_config, pngtuber):
+        assert "url: '/theater-home'" not in source
+        assert "url: '/theater-numeric'" not in source
