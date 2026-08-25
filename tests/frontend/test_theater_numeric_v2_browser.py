@@ -273,7 +273,12 @@ def test_selector_opens_identity_checked_performance_archive(
                 "turns": [{
                     "revision": 1,
                     "player_input": "我来取那封信。",
-                    "performance": "（把信递过来）一直替你留着。",
+                    "performance": "（把信递过来）一直替你留着。雨停后，两人走到街角。",
+                    "parts": [
+                        {"kind": "action", "phase": "source_response", "text": "（把信递过来）"},
+                        {"kind": "dialogue", "phase": "source_response", "text": "一直替你留着。"},
+                        {"kind": "scene_narration", "phase": "transition_bridge", "text": "雨停后，两人走到街角。"},
+                    ],
                 }],
                 "ending": {"title": "雨停之后", "summary": "两人终于说开旧事。"},
             }})
@@ -288,7 +293,11 @@ def test_selector_opens_identity_checked_performance_archive(
 
     expect(mock_page.locator("#theater-modal-title")).to_have_text(STORY["title"])
     expect(mock_page.locator("#theater-modal-body")).to_contain_text("我来取那封信")
-    expect(mock_page.locator("#theater-modal-body")).to_contain_text("一直替你留着")
+    expect(mock_page.locator("#theater-modal-body")).to_contain_text("小葵：一直替你留着")
+    expect(mock_page.locator("#theater-modal-body")).to_contain_text("雨停后，两人走到街角")
+    expect(mock_page.locator("#theater-modal-body")).not_to_contain_text(
+        "小葵：雨停后，两人走到街角"
+    )
     expect(mock_page.locator("#theater-modal-body")).to_contain_text("雨停之后")
     expect(mock_page.locator("#theater-modal-cancel")).to_be_hidden()
     expect(mock_page.locator("#theater-modal-confirm")).to_have_text("关闭")

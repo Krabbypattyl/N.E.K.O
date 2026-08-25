@@ -338,8 +338,25 @@ def test_selector_reads_saved_performance_through_archive_detail_api():
     assert "async function viewMemoryArchive(summary)" in selector
     assert "api.memoryArchive" in selector
     assert "function formatMemoryArchive(archive)" in selector
+    assert "function formatTurnPerformance(turn)" in selector
+    assert "part.kind === 'action' || part.kind === 'dialogue'" in selector
     assert "singleAction: true" in selector
     assert "transcript: true" in selector
+
+
+def test_capsule_runtime_reasserts_composer_visibility_without_overwriting_restore_state():
+    """剧场每次渲染都保持输入区可见，但只采集一次退出恢复快照。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    start = runtime.index("function claimComposerVisibility(chatHost)")
+    end = runtime.index("function restoreComposerVisibility(chatHost)", start)
+    claim = runtime[start:end]
+
+    assert "if (!state.active || !chatHost) return;" in claim
+    assert "if (!state.composerVisibilityRestore)" in claim
+    assert "state.composerVisibilityRestore ||" not in claim
+    assert "chatHost.setComposerHidden(false)" in claim
+    assert "chatHost.setGoodbyeComposerHidden(false)" in claim
 
 
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():

@@ -84,12 +84,15 @@
         chatHost.setChatSurfaceMode(mode);
     }
     function claimComposerVisibility(chatHost) {
-        if (!state.active || state.composerVisibilityRestore || !chatHost) return;
-        var snapshot = typeof chatHost.getState === 'function' ? chatHost.getState() : {};
-        state.composerVisibilityRestore = {
-            composerHidden: !!snapshot.composerHiddenRequested,
-            goodbyeComposerHidden: !!snapshot.goodbyeComposerHidden
-        };
+        if (!state.active || !chatHost) return;
+        if (!state.composerVisibilityRestore) {
+            var snapshot = typeof chatHost.getState === 'function' ? chatHost.getState() : {};
+            state.composerVisibilityRestore = {
+                composerHidden: !!snapshot.composerHiddenRequested,
+                goodbyeComposerHidden: !!snapshot.goodbyeComposerHidden
+            };
+        }
+        // 快照只采集一次，但剧场活跃期间每次渲染都要重新声明输入区可见。
         if (typeof chatHost.setComposerHidden === 'function') chatHost.setComposerHidden(false);
         if (typeof chatHost.setGoodbyeComposerHidden === 'function') chatHost.setGoodbyeComposerHidden(false);
     }

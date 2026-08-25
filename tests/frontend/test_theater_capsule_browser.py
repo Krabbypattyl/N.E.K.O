@@ -54,6 +54,62 @@ def _snapshot(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_reasserts_composer_visibility_on_active_render(
+    mock_page: Page,
+    running_server: str,
+):
+    """外部 goodbye 状态隐藏输入区后，下一次剧场渲染必须立即重新显示。"""  # noqa: DOCSTRING_CJK
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/capsule-browser-session"):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(_snapshot(revision=0), ensure_ascii=False),
+            )
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1',
+                action: 'theater:launch-request',
+                launch_id: 'composer-visibility-launch',
+                launch_action: 'continue',
+                story_id: 'capsule-browser-story',
+                session_id: 'capsule-browser-session',
+                revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+
+    mock_page.evaluate(
+        """() => {
+            window.reactChatWindowHost.setGoodbyeComposerHidden(true, 'review-regression');
+            window.dispatchEvent(new Event('localechange'));
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.getState().goodbyeComposerHidden === false"
+    )
+    expect(mock_page.locator(".composer-input")).to_be_visible()
+
+
+@pytest.mark.frontend
 def test_theater_capsule_ignores_late_turn_after_launching_another_session(
     mock_page: Page,
     running_server: str,

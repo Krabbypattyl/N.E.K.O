@@ -224,13 +224,27 @@
         if (openingText) lines.push(t('theater.performanceArchiveOpening', '开场') + '\n' + openingText);
         var playerName = String(archive.player_name || '你');
         var catgirlName = String(archive.catgirl_name || 'Neko');
+        function formatTurnPerformance(turn) {
+            var storedParts = Array.isArray(turn && turn.parts) ? turn.parts : [];
+            var renderedParts = storedParts.map(function (part) {
+                if (!part || typeof part !== 'object') return '';
+                var text = String(part.text || '').trim();
+                if (!text) return '';
+                // 场景旁白保持无署名；猫娘动作和对白才归到角色名下。
+                return part.kind === 'action' || part.kind === 'dialogue'
+                    ? catgirlName + '：' + text
+                    : text;
+            }).filter(Boolean);
+            if (renderedParts.length) return renderedParts;
+            var legacyPerformance = String(turn && turn.performance || '').trim();
+            return legacyPerformance ? [catgirlName + '：' + legacyPerformance] : [];
+        }
         var turns = Array.isArray(archive.turns) ? archive.turns : [];
         turns.forEach(function (turn, index) {
             var parts = [t('theater.performanceArchiveTurn', '第 {{index}} 回合', { index: index + 1 })];
             var playerInput = String(turn && turn.player_input || '').trim();
-            var performance = String(turn && turn.performance || '').trim();
             if (playerInput) parts.push(playerName + '：' + playerInput);
-            if (performance) parts.push(catgirlName + '：' + performance);
+            formatTurnPerformance(turn).forEach(function (line) { parts.push(line); });
             lines.push(parts.join('\n'));
         });
         var ending = archive && archive.ending && typeof archive.ending === 'object' ? archive.ending : {};
