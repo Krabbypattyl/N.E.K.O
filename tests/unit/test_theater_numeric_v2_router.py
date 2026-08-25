@@ -1863,6 +1863,80 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
     assert "mainline_" not in json.dumps(public_archive, ensure_ascii=False)
 
 
+def test_numeric_archive_written_retry_respects_cloudsave_write_fence(
+    tmp_path,
+    monkeypatch,
+):
+    """维护态不得借 written 回执重试隐式修复 Session 归档水位。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "archive_fence_replay",
+            },
+        )
+        assert started.status_code == 200
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "archive_fence_replay",
+                "base_revision": 0,
+            },
+        ).json()
+
+        archive_store = NumericV2ArchiveStore(tmp_path / "theater")
+        receipt = archive_store.load(ended["end_receipt_id"])
+        assert receipt is not None
+        archive_store.update(
+            receipt,
+            status="written",
+            archive_request_id=ended["archive_request_id"],
+        )
+        session_pointer_path = archive_store._session_path("archive_fence_replay")
+        # 模拟 written 回执已落盘但 Session 水位尚未提交的进程中断窗口。
+        archive_store._write(
+            session_pointer_path,
+            {
+                "receipt_id": ended["end_receipt_id"],
+                "archived_through_revision": -1,
+            },
+        )
+        fence_calls = []
+
+        def _blocked(_config_manager, *, operation: str, target: str):
+            fence_calls.append((operation, target))
+            raise MaintenanceModeError(
+                "applying_snapshot",
+                operation=operation,
+                target=target,
+            )
+
+        monkeypatch.setattr(
+            numeric_theater_router,
+            "assert_cloudsave_writable",
+            _blocked,
+        )
+        with pytest.raises(MaintenanceModeError):
+            client.post(
+                "/api/theater-numeric/session/archive",
+                json={
+                    "story_id": "numeric_v2_contract",
+                    "session_id": "archive_fence_replay",
+                    "revision": 0,
+                    "end_receipt_id": ended["end_receipt_id"],
+                    "archive_request_id": ended["archive_request_id"],
+                },
+            )
+
+    pointer = archive_store._read(session_pointer_path)
+    assert fence_calls == [("save", "theater/numeric_v2/archives")]
+    assert pointer["archived_through_revision"] == -1
+
+
 def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch):
     """显式忘记应清理热记忆、冷档案与旧回执，但保留 Session。"""  # noqa: DOCSTRING_CJK
 
