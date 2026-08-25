@@ -16,7 +16,11 @@ _NAME_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
 def _identity_name(identity: Any) -> str:
     """身份首段是作者角色名；没有独立名字时不做危险的全文猜测。"""  # noqa: DOCSTRING_CJK
 
-    first = _NAME_SEPARATOR_RE.split(str(identity or "").strip(), maxsplit=1)[0].strip()
+    text = str(identity or "").strip()
+    separator = _NAME_SEPARATOR_RE.search(text)
+    if separator is None:
+        return ""
+    first = text[:separator.start()].strip()
     if not first or len(first) > 24:
         return ""
     return first

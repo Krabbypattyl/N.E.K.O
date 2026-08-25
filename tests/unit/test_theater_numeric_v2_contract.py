@@ -358,6 +358,29 @@ def test_numeric_v2_rejects_conflicting_identity_source_names():
 
 
 @pytest.mark.parametrize(
+    ("field", "identity"),
+    [
+        ("catgirl_identity", "小葵是守着花店和旧信的店主。"),
+        ("player_identity", "这是一段超过二十四个字符且不能作为独立角色姓名的首段，回乡故人。"),
+    ],
+)
+def test_numeric_v2_rejects_identity_without_bounded_source_name(field, identity):
+    """作者身份必须显式分出短姓名，运行时不能从整句职责里猜名字。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["intro"][field] = identity
+
+    with pytest.raises(NumericV2CompileError) as error:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "intro_identity_name_segment_required"
+        and issue.path == f"intro.{field}"
+        for issue in error.value.issues
+    )
+
+
+@pytest.mark.parametrize(
     "summary",
     [
         "周末，男主开始清理堆积如山的快递纸箱。",

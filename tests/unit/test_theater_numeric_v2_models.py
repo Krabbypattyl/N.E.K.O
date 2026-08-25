@@ -1190,6 +1190,21 @@ def test_numeric_v2_cast_projects_multi_word_source_names():
     assert projected["catgirl_identity"] == "测试猫娘，经营花店、保留旧信的年轻女性。"
 
 
+def test_numeric_v2_cast_does_not_treat_undelimited_identity_as_source_name():
+    """绕过编译的旧数据也不能把整句身份职责替换成运行时姓名。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["intro"]["catgirl_identity"] = "小葵是守着花店和旧信的店主。"
+    cast = NumericV2CastProjection.from_story(
+        story,
+        player_name="哥哥",
+        catgirl_name="测试猫娘",
+    )
+
+    assert cast.source_catgirl_name == ""
+    assert cast.intro(story)["catgirl_identity"] == "小葵是守着花店和旧信的店主。"
+
+
 def test_numeric_v2_cast_does_not_replace_latin_name_inside_word():
     """英文姓名只匹配完整词，不能把普通单词中的同名子串改坏。"""  # noqa: DOCSTRING_CJK
 

@@ -97,7 +97,12 @@ def _text(value: Any) -> bool:
 
 
 def _identity_source_name(value: Any) -> str:
-    return _IDENTITY_SEPARATOR_RE.split(str(value or "").strip(), maxsplit=1)[0].strip()
+    text = str(value or "").strip()
+    separator = _IDENTITY_SEPARATOR_RE.search(text)
+    if separator is None:
+        return ""
+    name = text[:separator.start()].strip()
+    return name if 0 < len(name) <= 24 else ""
 
 
 def _first_sentence(value: Any) -> str:
@@ -328,6 +333,14 @@ class NumericV2Compiler:
         intro = c.obj(value, "intro")
         for field in ("background", "player_identity", "catgirl_identity"):
             c.require_text(intro.get(field), f"intro.{field}")
+        for field in ("player_identity", "catgirl_identity"):
+            identity = intro.get(field)
+            if _text(identity) and not _identity_source_name(identity):
+                c.add(
+                    "intro_identity_name_segment_required",
+                    f"intro.{field}",
+                    "必须采用“角色名，剧情身份”格式，且角色名不超过 24 个字符。",
+                )
         player_name = _identity_source_name(intro.get("player_identity"))
         catgirl_name = _identity_source_name(intro.get("catgirl_identity"))
         if player_name and player_name == catgirl_name:
