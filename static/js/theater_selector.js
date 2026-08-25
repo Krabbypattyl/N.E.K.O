@@ -631,6 +631,8 @@
         if (!message || typeof message !== 'object') return;
         if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
         if (message.action === 'theater:post-end' && message.story_id && message.session_id && message.end_receipt_id) {
+            // BroadcastChannel、opener 或重复 ready 都可能重送同一事实；按服务端稳定回执 ID 去重。
+            if (state.pendingEnd && state.pendingEnd.end_receipt_id === message.end_receipt_id) return;
             state.pendingEnd = message;
             selectStory(String(message.story_id)).catch(function () {
                 setStatus('theater.failed', '出错了');

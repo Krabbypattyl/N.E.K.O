@@ -759,7 +759,10 @@ async def submit_numeric_input(request: Request):
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
     except ValueError as exc:
-        if str(exc) == "catgirl_changed_requires_new_session":
+        if str(exc) in {
+            "catgirl_changed_requires_new_session",
+            "catgirl_profile_changed_requires_retry",
+        }:
             return _error(str(exc), 409)
         return _error(str(exc), 400)
     except (NumericV2RuntimeError, NumericV2StoreError) as exc:
@@ -996,13 +999,29 @@ async def speak_numeric_block(request: Request):
             )
             from main_routers.shared_state import get_session_manager
 
-            # 最终身份复验与 TTS 入队共用角色生命周期锁；切换只能发生在旧对白入队前或入队后，
-            # 后者会沿用既有切换通知清理旧角色音频，不能在清理完成后迟到写回。
-            async with character_config_mutation_lock:
+            # 最终身份和 Session 复验与 TTS 入队共用生命周期锁；角色切换、剧本删除或
+            # Session 替换只能发生在旧对白入队前或入队后，不能在清理完成后迟到写回。
+            async with character_config_mutation_lock, runtime.story_session_guard():
+                latest = await runtime.restore_session(session_id)
+                if latest is None:
+                    return _error("numeric_session_not_found", 404)
                 current_binding = _ensure_current_catgirl(
-                    stored.session,
+                    latest.session,
                     config_manager,
                 )
+                if latest.session.revision != revision:
+                    return _error("numeric_base_revision_mismatch", 409)
+                if revision == 0:
+                    latest_performance = latest.session.opening_performance
+                else:
+                    latest_history_index = revision - 1
+                    if latest_history_index >= len(latest.session.performance_history):
+                        return _error("numeric_speak_block_not_found", 404)
+                    latest_performance = latest.session.performance_history[
+                        latest_history_index
+                    ]
+                if latest_performance != performance:
+                    return _error("numeric_speak_block_not_found", 404)
                 result = await speak_committed_line(
                     dialogue_text,
                     session_id=session_id,

@@ -321,6 +321,27 @@ def test_selector_preserves_newer_end_receipt_during_memory_prompt():
     assert modal_await < current_guard < archive_request
 
 
+def test_end_receipt_uses_single_transport_and_stable_deduplication():
+    """已知选剧页只接收一次结束事实，重复 ready 也不能替换正在处理的回执对象。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    selector = _source("static/js/theater_selector.js")
+    send_start = runtime.index("function sendPendingEnd(target)")
+    send_end = runtime.index("async function confirmEnd(", send_start)
+    send_block = runtime[send_start:send_end]
+    handler_start = selector.index("message.action === 'theater:post-end'")
+    dedupe = selector.index(
+        "state.pendingEnd.end_receipt_id === message.end_receipt_id",
+        handler_start,
+    )
+    publish = selector.index("state.pendingEnd = message;", dedupe)
+
+    assert "if (postDirect(target, directMessage)) return;" in send_block
+    assert "postMessage(content);" in send_block
+    assert "postMessage(Object.assign" not in send_block
+    assert dedupe < publish
+
+
 def test_capsule_runtime_requires_chat_host_before_launch_ready():
     """React 胶囊未挂载时不能发送启动成功回执或保留不可见运行态。"""  # noqa: DOCSTRING_CJK
 

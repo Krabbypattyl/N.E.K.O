@@ -48,16 +48,32 @@ async def execute_numeric_v2_turn(
         scene_complete=evaluation.scene_complete,
         goal_evidence=evaluation.goal_evidence,
     )
-    performance = await NumericV2Actor(config_manager).generate_turn(
+    actor = NumericV2Actor(config_manager)
+    # 在 Actor 调用前冻结真实人格输入；模型返回后必须仍与当前角色配置属于同一世代。
+    generation_binding = ensure_current_binding(current.session)
+    generation_profile = actor._character_profile()
+    performance = await actor.generate_turn(
         engine=runtime.engine,
         session=current.session,
         outcome=outcome,
         player_input=turn.message,
+        character_profile=generation_profile,
     )
     # 模型调用不占生命周期锁；仅将身份复验、展示刷新和原子提交与角色改名串行。
     async with character_config_mutation_lock:
         # 模型调用期间角色卡可能切换；成功输出不能提交到另一只猫娘的恢复槽位。
         display_binding = ensure_current_binding(current.session)
+        current_profile = actor._character_profile()
+        same_display_name = str(display_binding.get("catgirl_name") or "") == str(
+            generation_binding.get("catgirl_name") or ""
+        )
+        if current_profile != generation_profile or (
+            same_display_name
+            and str(display_binding.get("profile_hash") or "")
+            != str(generation_binding.get("profile_hash") or "")
+        ):
+            # 同名角色资料或实际人格文本已改变；旧人格输出不能伪装成新版本提交。
+            raise ValueError("catgirl_profile_changed_requires_retry")
         refreshed_binding = {
             str(key): str(value)
             for key, value in display_binding.items()

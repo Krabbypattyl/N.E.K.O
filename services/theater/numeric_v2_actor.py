@@ -1769,8 +1769,14 @@ class NumericV2Actor:
         session: ScriptSessionV2,
         outcome: TurnOutcomeV2,
         player_input: str,
+        character_profile: str | None = None,
     ) -> dict[str, Any]:
-        profile = self._character_profile()
+        # 工作流可冻结本轮实际使用的人格文本，确保提交前能复验同一生成世代。
+        profile = (
+            self._character_profile()
+            if character_profile is None
+            else str(character_profile)
+        )
         catgirl_name = str(session.catgirl_binding.get("catgirl_name") or self._current_catgirl_name())
         configured_address = str(
             session.catgirl_binding.get("player_address")

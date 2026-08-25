@@ -1154,7 +1154,7 @@ def test_numeric_v2_router_rechecks_catgirl_before_commit(tmp_path, monkeypatch)
         )
         assert blocked.status_code == 409
         assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
-        assert events == ["check", "actor", "changed", "check"]
+        assert events == ["check", "check", "actor", "changed", "check"]
 
         manager.current_name = "测试猫娘"
         restored = client.get(
@@ -1517,6 +1517,19 @@ def test_numeric_v2_restart_stays_successful_when_old_receipt_cleanup_fails(
 
 def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, monkeypatch):
     captured = {}
+    story_guard_depth = {"value": 0}
+    original_guard = numeric_theater_router.NumericV2Runtime.story_session_guard
+    original_restore = numeric_theater_router.NumericV2Runtime.restore_session
+    restore_calls = []
+
+    @asynccontextmanager
+    async def tracked_story_guard(runtime):
+        async with original_guard(runtime):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
 
     async def capture_speech(*args, **kwargs):
         captured["args"] = args
@@ -1524,9 +1537,24 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
         captured["character_lock_held"] = (
             numeric_theater_router.character_config_mutation_lock.locked()
         )
+        captured["story_lock_held"] = story_guard_depth["value"] > 0
         return {"audio_queued": True, "speech_id": "speech-1"}
 
+    async def tracked_restore(runtime, session_id):
+        restore_calls.append(story_guard_depth["value"] > 0)
+        return await original_restore(runtime, session_id)
+
     monkeypatch.setattr(numeric_theater_router, "speak_committed_line", capture_speech)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "story_session_guard",
+        tracked_story_guard,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "restore_session",
+        tracked_restore,
+    )
     client = _client(
         tmp_path,
         monkeypatch,
@@ -1551,6 +1579,7 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
         )
         assert narration.status_code == 422
         assert narration.json()["reason"] == "numeric_speak_block_not_dialogue"
+        restore_calls.clear()
 
         dialogue = client.post(
             "/api/theater-numeric/session/speak-block",
@@ -1571,6 +1600,8 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
     assert captured["args"][0] == "你回来了。 先进来吧。"
     assert captured["interrupt_audio"] is True
     assert captured["character_lock_held"] is True
+    assert captured["story_lock_held"] is True
+    assert restore_calls == [False, True]
 
 
 def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypatch):
@@ -2468,6 +2499,65 @@ def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monke
     persisted = json.loads(session_path.read_text(encoding="utf-8"))
     assert persisted["session"]["catgirl_binding"]["catgirl_name"] == "改名后"
     assert commit_lock_states == [True]
+
+
+def test_numeric_turn_rejects_profile_edit_during_actor_wait(tmp_path, monkeypatch):
+    """Actor 使用旧人格生成时，同名角色的新资料不能被错误标记为本轮版本。"""  # noqa: DOCSTRING_CJK
+
+    class _EditableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.personality = "安静而认真。"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": "测试猫娘",
+                "猫娘": {
+                    "测试猫娘": _catgirl_profile("测试猫娘", self.personality),
+                },
+                "主人": {"昵称": "哥哥"},
+            }
+
+    manager = _EditableConfigManager(tmp_path)
+    client = _client(tmp_path, monkeypatch, manager)
+    captured = {}
+
+    async def edit_during_actor(*args, **kwargs):
+        captured["character_profile"] = kwargs.get("character_profile")
+        manager.personality = "编辑后变得活泼而坦率。"
+        return _performance("这句旧人格输出不能提交。")
+
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "profile_mid_turn"},
+        )
+        assert started.status_code == 200
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2Actor,
+            "generate_turn",
+            edit_during_actor,
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "profile_mid_turn",
+                "client_turn_id": "profile_mid_turn_1",
+                "base_revision": 0,
+                "message": "继续说吧。",
+            },
+        )
+        restored = client.get(
+            "/api/theater-numeric/session/profile_mid_turn",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert "character_profile" in captured
+    assert submitted.status_code == 409
+    assert submitted.json()["reason"] == "catgirl_profile_changed_requires_retry"
+    assert restored.status_code == 200
+    assert restored.json()["session"]["revision"] == 0
 
 
 def test_numeric_turn_preserves_player_address_fact_during_model_wait(

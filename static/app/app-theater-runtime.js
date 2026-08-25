@@ -45,8 +45,8 @@
         return payload;
     }
     function postDirect(target, message) {
-        if (!target || typeof target.postMessage !== 'function') return;
-        try { target.postMessage(message, window.location.origin); } catch (_) {}
+        if (!target || typeof target.postMessage !== 'function') return false;
+        try { target.postMessage(message, window.location.origin); return true; } catch (_) { return false; }
     }
     function rememberPointer() {
         try {
@@ -694,8 +694,13 @@
     }
     function sendPendingEnd(target) {
         if (!state.pendingEnd) return;
-        var message = postMessage(Object.assign({ action: 'theater:post-end', message_id: createId('theater_post_end_') }, state.pendingEnd));
-        postDirect(target, message);
+        var content = Object.assign({ action: 'theater:post-end', message_id: createId('theater_post_end_') }, state.pendingEnd);
+        // 已知选剧页时只直发；直发失败才广播，避免同一回执通过两个传输通道重复到达。
+        if (target) {
+            var directMessage = transport.createMessage('theater-runtime', content);
+            if (postDirect(target, directMessage)) return;
+        }
+        postMessage(content);
     }
     async function confirmEnd(onConfirmed) {
         var message = t('theater.endConfirm', '确定结束当前演绎吗？');
