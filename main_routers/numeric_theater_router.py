@@ -477,8 +477,9 @@ async def start_numeric_session(request: Request):
         return validation_error
     story_id = str(payload.get("story_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
-    if not story_id or not session_id:
-        return _error("story_id_and_session_id_required", 400)
+    expected_character_id = str(payload.get("character_id") or "").strip()
+    if not story_id or not session_id or not expected_character_id:
+        return _error("story_id_session_id_and_character_id_required", 400)
     config_manager = get_config_manager()
     replace_existing = payload.get("replace_existing") is True
     try:
@@ -486,6 +487,8 @@ async def start_numeric_session(request: Request):
         # 先在统一锁顺序下取得角色与恢复槽位快照；已有进度可直接恢复，不浪费一次开场生成。
         async with character_config_mutation_lock, runtime.story_session_guard():
             binding = _current_catgirl_binding(config_manager)
+            if binding["character_id"] != expected_character_id:
+                raise ValueError("catgirl_changed_requires_new_session")
             existing = await runtime.restore_story_session_unlocked(binding)
             if existing is not None:
                 _ensure_current_catgirl(existing.session, config_manager)

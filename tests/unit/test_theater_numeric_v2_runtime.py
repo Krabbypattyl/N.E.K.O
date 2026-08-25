@@ -894,6 +894,65 @@ async def test_numeric_v2_session_delete_rejects_transient_session_read_failure(
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_session_delete_rejects_transient_archive_read_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """冷档案暂时不可读时必须在删除任何 Session 前中止级联操作。"""  # noqa: DOCSTRING_CJK
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_delete_unreadable_archive",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_path = runtime.store._path(stored.session.session_id)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    archive_path = (
+        tmp_path
+        / "numeric_v2"
+        / "public_archives"
+        / f"{stored.session.session_id}.json"
+    )
+    archive_path.parent.mkdir(parents=True)
+    archive_path.write_text(
+        json.dumps(
+            {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": stored.session.story_package_id,
+                "session_id": stored.session.session_id,
+                "character_id": _binding()["character_id"],
+                "catgirl_name": _binding()["catgirl_name"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    path_type = type(archive_path)
+    original_read_text = path_type.read_text
+
+    def transient_read(path, *args, **kwargs):
+        if path == archive_path:
+            raise PermissionError("temporary archive failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", transient_read)
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_public_archive_read_failed",
+    ):
+        await numeric_v2_store.delete_numeric_v2_sessions(
+            tmp_path,
+            story_id=stored.session.story_package_id,
+        )
+
+    assert session_path.is_file()
+    assert archive_path.is_file()
+    assert index_path.is_file()
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_story_restore_ignores_sessions_from_other_stories(tmp_path):
     story = _branch_story()
     other_story = deepcopy(story)

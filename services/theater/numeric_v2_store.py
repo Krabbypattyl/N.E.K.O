@@ -282,6 +282,7 @@ def list_numeric_v2_public_archives(
     story_id: str = "",
     character_id: str = "",
     legacy_catgirl_name: str = "",
+    raise_on_io_error: bool = False,
 ) -> list[dict[str, str]]:
     """列出与剧本或角色匹配的公开演绎冷档案。"""  # noqa: DOCSTRING_CJK
 
@@ -295,7 +296,12 @@ def list_numeric_v2_public_archives(
     for path in sorted(root.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        except OSError:
+            # 展示列表保持容错；删除事务必须把暂时不可读视为失败，不能遗漏用户档案。
+            if raise_on_io_error:
+                raise
+            continue
+        except (UnicodeError, json.JSONDecodeError):
             continue
         if (
             not isinstance(payload, dict)
@@ -363,6 +369,16 @@ async def delete_numeric_v2_sessions(
             )
         except OSError as exc:
             raise NumericV2StoreError("numeric_session_read_failed") from exc
+        try:
+            archive_candidates = list_numeric_v2_public_archives(
+                theater_storage_root,
+                story_id=normalized_story_id,
+                character_id=normalized_character_id,
+                legacy_catgirl_name=normalized_legacy_name,
+                raise_on_io_error=True,
+            )
+        except OSError as exc:
+            raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
         deleted: list[dict[str, str]] = []
         for candidate in candidates:
             path = Path(candidate["path"])
@@ -397,12 +413,7 @@ async def delete_numeric_v2_sessions(
                 deleted.append(candidate)
 
         # 公开冷档案与对应剧本/角色同生命周期；删除恢复槽位时不能留下孤儿文件。
-        for archive in list_numeric_v2_public_archives(
-            theater_storage_root,
-            story_id=normalized_story_id,
-            character_id=normalized_character_id,
-            legacy_catgirl_name=normalized_legacy_name,
-        ):
+        for archive in archive_candidates:
             path = Path(archive["path"])
             async with _lock(path):
                 try:

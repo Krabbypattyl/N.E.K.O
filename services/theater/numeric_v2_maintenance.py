@@ -165,6 +165,7 @@ def _prepare_delete_transaction(
         for summary in list_numeric_v2_public_archives(
             theater_root,
             story_id=story_id,
+            raise_on_io_error=True,
         ):
             public_archive_backup_root.mkdir(parents=True, exist_ok=True)
             source = Path(summary["path"])

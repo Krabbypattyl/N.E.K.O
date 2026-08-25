@@ -20,6 +20,7 @@ STORY = {
         "catgirl_identity": "小葵是守着花店和旧信的店主。",
     },
 }
+CHARACTER_ID = "numeric-browser-character"
 
 
 def _fulfill(route: Route, payload: dict, status: int = 200) -> None:
@@ -42,7 +43,10 @@ def _install_selector_routes(
         path = request.url.split("?", 1)[0]
         if path.endswith("/api/theater-numeric/stories"):
             stories = [] if deleted and deleted["value"] else [STORY]
-            _fulfill(route, {"ok": True, "stories": stories})
+            _fulfill(
+                route,
+                {"ok": True, "stories": stories, "character_id": CHARACTER_ID},
+            )
             return
         if path.endswith("/api/theater-numeric/session/active"):
             if session is None:
@@ -124,7 +128,10 @@ def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, runni
         request = route.request
         path = request.url.split("?", 1)[0]
         if path.endswith("/api/theater-numeric/stories"):
-            _fulfill(route, {"ok": True, "stories": [STORY]})
+            _fulfill(
+                route,
+                {"ok": True, "stories": [STORY], "character_id": CHARACTER_ID},
+            )
             return
         if path.endswith("/api/theater-numeric/session/active"):
             _fulfill(route, {"ok": False, "reason": "numeric_session_not_found"}, 404)
@@ -317,6 +324,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
 
     start_payload = json.loads(request_info.value.post_data or "{}")
     assert start_payload["story_id"] == STORY["story_id"]
+    assert start_payload["character_id"] == CHARACTER_ID
     assert start_payload["replace_existing"] is True
     assert start_payload["session_id"] != "ended-session"
 
@@ -341,7 +349,10 @@ def test_selector_queues_post_end_memory_prompt_behind_open_confirmation(
         request = route.request
         path = request.url.split("?", 1)[0]
         if path.endswith("/api/theater-numeric/stories"):
-            _fulfill(route, {"ok": True, "stories": [STORY]})
+            _fulfill(
+                route,
+                {"ok": True, "stories": [STORY], "character_id": CHARACTER_ID},
+            )
             return
         if path.endswith("/api/theater-numeric/session/active"):
             payload = {"ok": True, "session": ended_session}
@@ -414,7 +425,14 @@ def test_selector_drops_restart_confirmation_after_story_switch(
         request = route.request
         path = request.url.split("?", 1)[0]
         if path.endswith("/api/theater-numeric/stories"):
-            _fulfill(route, {"ok": True, "stories": [STORY, second_story]})
+            _fulfill(
+                route,
+                {
+                    "ok": True,
+                    "stories": [STORY, second_story],
+                    "character_id": CHARACTER_ID,
+                },
+            )
             return
         if path.endswith("/api/theater-numeric/session/active"):
             is_second = "story_id=numeric_browser_story_b" in request.url
@@ -524,7 +542,10 @@ def test_post_end_receipt_prompts_memory_on_selector_and_archives_once(
         request = route.request
         path = request.url.split("?", 1)[0]
         if path.endswith("/api/theater-numeric/stories"):
-            _fulfill(route, {"ok": True, "stories": [STORY]})
+            _fulfill(
+                route,
+                {"ok": True, "stories": [STORY], "character_id": CHARACTER_ID},
+            )
             return
         if path.endswith("/api/theater-numeric/session/active"):
             _fulfill(route, {

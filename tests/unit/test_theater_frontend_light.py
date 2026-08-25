@@ -290,16 +290,36 @@ def test_capsule_runtime_revalidates_conflict_refresh_ownership():
     runtime = _source("static/app/app-theater-runtime.js")
     submit_start = runtime.index("async function submit(text)")
     conflict_start = runtime.index("result.reason === 'numeric_base_revision_mismatch'", submit_start)
-    refresh = runtime.index("var refreshed = await requestJson(", conflict_start)
+    refresh = runtime.index("refreshed = await requestJson(", conflict_start)
+    refresh_try = runtime.rindex("try {", conflict_start, refresh)
+    refresh_catch = runtime.index("} catch (_)", refresh)
+    refresh_error = runtime.index("state.errorMessage = t('theater.inputFailed'", refresh_catch)
     ownership_guard = runtime.index(
         "isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)",
-        refresh,
+        refresh_error,
     )
     pending_guard = runtime.index("state.pendingTurn.id === submittedTurnId", ownership_guard)
     apply_snapshot = runtime.index("applySnapshot(refreshed);", pending_guard)
 
     assert "var submittedLaunchEpoch = launchEpoch;" in runtime[submit_start:conflict_start]
-    assert refresh < ownership_guard < pending_guard < apply_snapshot
+    assert refresh_try < refresh < refresh_catch < refresh_error < ownership_guard
+    assert ownership_guard < pending_guard < apply_snapshot
+    assert "chatHost.setOnTheaterSubmit(submitFromHost);" in runtime
+    assert "void submit(text).catch" in runtime
+
+
+def test_selector_binds_session_start_to_displayed_character():
+    """开始和重新开始都必须携带确认时展示角色的稳定 ID。"""  # noqa: DOCSTRING_CJK
+
+    selector = _source("static/js/theater_selector.js")
+    start = selector[
+        selector.index("async function startSession("):
+        selector.index("async function continueSession(")
+    ]
+
+    assert "!state.characterId" in start
+    assert "var startCharacterId = state.characterId;" in start
+    assert "character_id: startCharacterId" in start
 
 
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():
@@ -384,15 +404,12 @@ def test_story_deletion_clears_matching_capsule_runtime():
     assert "clear('story-deleted')" in runtime[runtime_handler:]
 
 
-def test_capsule_runtime_stops_old_audio_before_loading_replacement_session():
-    """替换 Session 的快照即使加载失败，也不能继续播放旧演绎语音。"""  # noqa: DOCSTRING_CJK
+def test_capsule_runtime_stops_old_audio_before_every_launch():
+    """同一 Session 再次启动也必须先停止旧播放协程与语音。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     launch_start = runtime.index("async function performLaunch(message, launchToken)")
-    switch_guard = runtime.index(
-        "if (state.active && (state.storyId !== nextStoryId || state.sessionId !== nextSessionId))",
-        launch_start,
-    )
+    switch_guard = runtime.index("if (state.active)", launch_start)
     clear_audio = runtime.index("claimAudioPlayback();", switch_guard)
     loading = runtime.index(
         "state.active = true; state.phase = 'loading'",

@@ -306,16 +306,24 @@
         if (state.active && typeof chatHost.openWindow === 'function') chatHost.openWindow();
         return true;
     }
+    function submitFromHost(text) {
+        void submit(text).catch(function () {
+            if (!state.active) return;
+            state.phase = 'awaiting_player';
+            state.errorMessage = t('theater.inputFailed', '演绎提交失败，请重试。');
+            render();
+        });
+    }
     function bindHostCallbacks() {
         var chatHost = host();
         if (!chatHost) return false;
         if (typeof chatHost.setOnTheaterSubmit === 'function') {
             // 玩家自由输入直接进入剧场 Runtime，不经过普通聊天或猫娘局部聊天路由。
-            chatHost.setOnTheaterSubmit(function (text) { void submit(text); });
+            chatHost.setOnTheaterSubmit(submitFromHost);
         }
         if (typeof chatHost.setOnTheaterSuggestedInputSelect === 'function') {
             // 推荐输入直接进入 Runtime 提交流程，不借用输入框草稿或普通 Galgame 回填链路。
-            chatHost.setOnTheaterSuggestedInputSelect(function (text) { void submit(text); });
+            chatHost.setOnTheaterSuggestedInputSelect(submitFromHost);
         }
         if (typeof chatHost.setOnTheaterEnd === 'function') chatHost.setOnTheaterEnd(function () { runtime.requestEnd(); });
         render();
@@ -469,8 +477,8 @@
         captureChatSurfaceMode(chatHost);
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
-        if (state.active && (state.storyId !== nextStoryId || state.sessionId !== nextSessionId)) {
-            // 新快照可能加载失败，切换 Session 时必须先停止旧正文与旧语音，不能等待加载结果。
+        if (state.active) {
+            // 即使重新启动同一 Session，也必须先使旧正文和旧语音失效，避免两个播放协程交错写回。
             claimAudioPlayback();
             state.queueToken += 1;
             state.pendingTurn = null;
@@ -568,12 +576,20 @@
             state.phase = 'awaiting_player';
             state.draftRestore = { id: createId('theater_draft_restore_'), text: message };
             if (result.reason === 'numeric_base_revision_mismatch') {
-                var refreshed = await requestJson(api.session + '/' + encodeURIComponent(submittedSessionId) + '?story_id=' + encodeURIComponent(submittedStoryId));
+                var refreshed = null;
+                try {
+                    refreshed = await requestJson(api.session + '/' + encodeURIComponent(submittedSessionId) + '?story_id=' + encodeURIComponent(submittedStoryId));
+                } catch (_) {
+                    if (isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)) {
+                        state.errorMessage = t('theater.inputFailed', '演绎提交失败，请重试。');
+                    }
+                }
                 // 冲突刷新期间可能启动了另一个 Session；旧快照只能回写原提交世代。
                 if (
                     isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)
                     && state.pendingTurn
                     && state.pendingTurn.id === submittedTurnId
+                    && refreshed
                     && refreshed.ok
                 ) {
                     applySnapshot(refreshed);
@@ -842,11 +858,7 @@
         isActive: function () { return state.active; },
         handleComposerSubmit: function (text) {
             if (!state.active) return false;
-            submit(text).catch(function () {
-                state.phase = 'awaiting_player';
-                state.errorMessage = t('theater.inputFailed', '演绎提交失败，请重试。');
-                render();
-            });
+            submitFromHost(text);
             return true;
         },
         requestEnd: requestEnd,

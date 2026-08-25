@@ -254,7 +254,24 @@ def _client(
     monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
     app = FastAPI()
     app.include_router(numeric_theater_router.router)
-    return TestClient(app)
+
+    class _NumericV2TestClient(TestClient):
+        def post(self, url, *args, **kwargs):
+            payload = kwargs.get("json")
+            if (
+                url == "/api/theater-numeric/session/start"
+                and isinstance(payload, dict)
+                and "character_id" not in payload
+            ):
+                # 路由回归默认模拟新版选剧页；需要测试旧/错角色令牌时由用例显式传入。
+                payload = dict(payload)
+                payload["character_id"] = numeric_theater_router._current_catgirl_binding(
+                    manager
+                )["character_id"]
+                kwargs["json"] = payload
+            return super().post(url, *args, **kwargs)
+
+    return _NumericV2TestClient(app)
 
 
 def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, monkeypatch):
@@ -1198,6 +1215,60 @@ def test_numeric_v2_router_rechecks_catgirl_after_opening(tmp_path, monkeypatch)
         assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
         assert events == ["actor", "changed"]
         assert not list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))
+
+
+def test_numeric_v2_start_rejects_selector_character_after_switch(
+    tmp_path,
+    monkeypatch,
+):
+    """选剧页属于旧角色时，开始请求不能为新当前角色创建或替换 Session。"""  # noqa: DOCSTRING_CJK
+
+    class _MutableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.current_name = "测试猫娘"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": self.current_name,
+                "猫娘": {
+                    "测试猫娘": _catgirl_profile("测试猫娘", "安静而认真。"),
+                    "新猫娘": _catgirl_profile("新猫娘", "活泼而坦率。"),
+                },
+                "主人": {"昵称": "哥哥"},
+            }
+
+    manager = _MutableConfigManager(tmp_path)
+    client = _client(tmp_path, monkeypatch, config_manager=manager)
+    opening_calls = []
+
+    async def unexpected_opening(*_args, **_kwargs):
+        opening_calls.append(True)
+        return _performance("不应生成。", opening=True)
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_opening",
+        unexpected_opening,
+    )
+    with client:
+        old_character_id = client.get("/api/theater-numeric/stories").json()[
+            "character_id"
+        ]
+        manager.current_name = "新猫娘"
+        blocked = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "stale_selector_start",
+                "character_id": old_character_id,
+            },
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
+    assert opening_calls == []
+    assert not list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))
 
 
 def test_numeric_v2_router_rechecks_package_after_opening(tmp_path, monkeypatch):

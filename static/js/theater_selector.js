@@ -356,12 +356,16 @@
         setStatus('theater.failed', '出错了');
     }
     async function startSession(replaceExisting) {
-        if (state.busy || !state.storyId) return;
+        if (state.busy || !state.storyId || !state.characterId) return;
         var startCharacterEpoch = characterEpoch;
+        var startCharacterId = state.characterId;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.start, { method: 'POST', body: {
-                story_id: state.storyId, session_id: createId('numeric_capsule_session_'), replace_existing: replaceExisting === true
+                story_id: state.storyId,
+                session_id: createId('numeric_capsule_session_'),
+                character_id: startCharacterId,
+                replace_existing: replaceExisting === true
             }});
             if (startCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'start_failed');

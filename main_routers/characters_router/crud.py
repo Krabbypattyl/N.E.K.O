@@ -1571,6 +1571,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
             numeric_theater_root,
             character_id=deleted_character_id,
             legacy_catgirl_name=name,
+            raise_on_io_error=True,
         )
     ]
     numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
