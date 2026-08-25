@@ -666,6 +666,12 @@ class NumericV2Compiler:
                 route_targets[node_id] = targets
             terminal = node.get("type") == "ending" or node.get("terminal") is True
             if terminal:
+                if node.get("type") == "start":
+                    c.add(
+                        "terminal_start_forbidden",
+                        f"{path}.terminal",
+                        "开场节点不能同时作为结局。",
+                    )
                 if routes:
                     c.add("terminal_route_forbidden", f"{path}.route_gates", "结局节点不能创建出边。")
                 c.require_id(node.get("ending_id"), f"{path}.ending_id")

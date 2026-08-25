@@ -306,6 +306,54 @@ def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | 
     return match
 
 
+def _compute_review_slots(snapshot: list, current: list) -> list[int]:
+    """定位 snapshot 在当前历史中仍可安全替换的普通消息槽位。"""  # noqa: DOCSTRING_CJK
+
+    if not snapshot or not current:
+        return []
+    # 通用 review 的 snapshot 已排除剧场胶囊；提交时对当前历史做同样投影，
+    # 但保留原始下标，避免胶囊把前后普通对话的逆向匹配截断。
+    if (
+        not any(is_theater_memory_message(message) for message in snapshot)
+        and any(is_theater_memory_message(message) for message in current)
+    ):
+        current_indexes = [
+            index
+            for index, message in enumerate(current)
+            if not is_theater_memory_message(message)
+        ]
+        projected_current = [current[index] for index in current_indexes]
+    else:
+        current_indexes = list(range(len(current)))
+        projected_current = current
+    if (
+        len(projected_current) >= len(snapshot)
+        and all(
+            _msg_identity(projected_current[index]) == _msg_identity(snapshot[index])
+            for index in range(len(snapshot))
+        )
+    ):
+        return current_indexes[:len(snapshot)]
+    anchor = build_review_fingerprint(snapshot, REVIEW_FINGERPRINT_K)
+    projected_cutoff = _find_fingerprint_position(projected_current, anchor)
+    if projected_cutoff is None:
+        return []
+    slots: list[int] = []
+    snapshot_index = len(snapshot) - 1
+    current_index = projected_cutoff
+    while (
+        snapshot_index >= 0
+        and current_index >= 0
+        and _msg_identity(projected_current[current_index])
+        == _msg_identity(snapshot[snapshot_index])
+    ):
+        slots.append(current_indexes[current_index])
+        snapshot_index -= 1
+        current_index -= 1
+    slots.reverse()
+    return slots
+
+
 def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | None]:
     """Given the snapshot taken at review start and the current history, compute (capacity, cutoff_idx).
 
@@ -317,26 +365,8 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
 
     Returns ``(0, None)`` for a wasted (no-op) review.
     """
-    if not snapshot or not current:
-        return (0, None)
-    if (
-        len(current) >= len(snapshot)
-        and all(_msg_identity(current[i]) == _msg_identity(snapshot[i]) for i in range(len(snapshot)))
-    ):
-        return (len(snapshot), len(snapshot) - 1)
-    anchor = build_review_fingerprint(snapshot, REVIEW_FINGERPRINT_K)
-    cutoff_idx = _find_fingerprint_position(current, anchor)
-    if cutoff_idx is None:
-        return (0, None)
-    # 从 cutoff 起逆向走（包含 cutoff 自身），算 capacity
-    capacity = 0
-    s_idx = len(snapshot) - 1
-    c_idx = cutoff_idx
-    while s_idx >= 0 and c_idx >= 0 and _msg_identity(current[c_idx]) == _msg_identity(snapshot[s_idx]):
-        capacity += 1
-        s_idx -= 1
-        c_idx -= 1
-    return (capacity, cutoff_idx)
+    slots = _compute_review_slots(snapshot, current)
+    return (len(slots), slots[-1] if slots else None)
 
 
 # Setup logger
@@ -1327,7 +1357,7 @@ class CompressedRecentHistoryManager:
         )
 
     def _render_messages_to_text(self, messages, lanlan_name):
-        """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。
+        """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。  # noqa: DOCSTRING_CJK
 
         单条 message 文本超过 RECENT_PER_MESSAGE_MAX_TOKENS 时做头尾保留截断
         （head=tail=半数 token）。用户长贴 / AI 偶尔写小作文都会触发；头尾各
@@ -1977,7 +2007,9 @@ class CompressedRecentHistoryManager:
                 # review LLM，永不熔断。只读盘场景下那是整夜空烧。
                 return ('failed', None, '提交时读盘失败，无法定位 cutoff')
 
-            capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+            review_slots = _compute_review_slots(snapshot, current)
+            capacity = len(review_slots)
+            cutoff_idx = review_slots[-1] if review_slots else None
             if cutoff_idx is None:
                 # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
                 return ('white', None, 'review 完成但 cutoff 失配')
@@ -1989,15 +2021,25 @@ class CompressedRecentHistoryManager:
                 # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
                 return ('white', None, 'review 输出为空')
 
-            # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
-            # 为 corrected 末尾 take_count 条；cutoff_idx 之后新增的保留。
-            # take_count < capacity 时，前 (capacity - take_count) 个 slot
-            # 直接消失（review 决定删条，结果就比原来短）。
-            new_history = (
-                current[:cutoff_idx - capacity + 1]
-                + corrected_messages[-take_count:]
-                + current[cutoff_idx + 1:]
-            )
+            # 只替换匹配到的普通消息槽位；夹在其中的剧场胶囊及并发新增消息原位保留。
+            # corrected 变短时与旧逻辑一致，删除较早槽位并把模型输出写入最近槽位。
+            review_slot_set = set(review_slots)
+            replacement_slots = review_slots[-take_count:]
+            replacements = dict(zip(
+                replacement_slots,
+                corrected_messages[-take_count:],
+                strict=True,
+            ))
+            new_history = []
+            patched_end = -1
+            for index, message in enumerate(current):
+                if index not in review_slot_set:
+                    new_history.append(message)
+                    continue
+                replacement = replacements.get(index)
+                if replacement is not None:
+                    new_history.append(replacement)
+                    patched_end = len(new_history) - 1
 
             # 栅栏留在白 review 判定之后：重构前它也在那两个 early return 之后，
             # 维护态下的白 review 照旧不会被抬成 'failed'。
@@ -2017,9 +2059,12 @@ class CompressedRecentHistoryManager:
             #   patched_end   = patched_start + take_count - 1
             # 新 fingerprint = K 条以 patched_end 结尾的消息。如果 patched_end
             # 之前的消息不足 K-1 条，取从 0 开始所有可用的。
-            patched_end = (cutoff_idx - capacity + 1) + take_count - 1
-            fp_start = max(0, patched_end - REVIEW_FINGERPRINT_K + 1)
-            fp_messages = new_history[fp_start:patched_end + 1]
+            reviewed_prefix = [
+                message
+                for message in new_history[:patched_end + 1]
+                if not is_theater_memory_message(message)
+            ]
+            fp_messages = reviewed_prefix[-REVIEW_FINGERPRINT_K:]
             new_fingerprint = build_review_fingerprint(fp_messages, k=REVIEW_FINGERPRINT_K)
             detail = (
                 f"cutoff_idx={cutoff_idx}, capacity={capacity}, "

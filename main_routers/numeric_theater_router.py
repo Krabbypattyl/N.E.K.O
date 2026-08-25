@@ -1177,7 +1177,8 @@ async def pin_numeric_memory_archive(request: Request):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, story_id)
-        async with runtime.story_session_guard():
+        # 置顶会改写角色归属的冷档案，锁顺序与归档、遗忘和角色删除保持一致。
+        async with character_config_mutation_lock, runtime.story_session_guard():
             await _assert_numeric_writable(config_manager, "public_archives")
             binding = _current_catgirl_binding(config_manager)
             result = await asyncio.to_thread(

@@ -268,14 +268,17 @@ async def test_numeric_v2_player_address_is_committed_only_with_successful_turn(
     assert disclosed.ledger_event["player_address_known"] is True
 
     with pytest.raises(ValueError, match="numeric_performance_invalid"):
-        await runtime.commit_turn(disclosed, {"performance": "无效"})
+        await runtime.commit_turn(disclosed, {"performance": "（只有动作没有对白）"})
 
     unchanged = await runtime.restore_session(stored.session.session_id)
     assert unchanged is not None
     assert unchanged.session.player_address_known is False
     assert unchanged.session.revision == 0
 
-    committed = await runtime.commit_turn(disclosed, _performance("我听见了。"))
+    committed = await runtime.commit_turn(
+        disclosed,
+        {"performance": "我听见了。", "suggested_inputs": []},
+    )
     assert committed.session.player_address_known is True
     assert committed.ledger_events[-1]["player_address_known"] is True
 

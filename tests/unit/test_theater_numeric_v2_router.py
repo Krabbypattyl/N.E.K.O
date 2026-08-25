@@ -1281,6 +1281,20 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
     """显式忘记应清理热记忆、冷档案与旧回执，但保留 Session。"""  # noqa: DOCSTRING_CJK
 
     captured = {"forgotten": False}
+    pin_lock_states = []
+    original_pin = NumericV2ArchiveStore.set_public_archive_pinned
+
+    def tracked_pin(store, *args, **kwargs):
+        pin_lock_states.append(
+            numeric_theater_router.character_config_mutation_lock.locked()
+        )
+        return original_pin(store, *args, **kwargs)
+
+    monkeypatch.setattr(
+        NumericV2ArchiveStore,
+        "set_public_archive_pinned",
+        tracked_pin,
+    )
 
     class _MemoryResponse:
         content = b"{}"
@@ -1359,6 +1373,7 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
     assert archived.json()["status"] == "written"
     assert len(listed.json()["archives"]) == 1
     assert pinned.json()["archive"]["pinned"] is True
+    assert pin_lock_states == [True]
     assert forgotten.json() == {
         "ok": True,
         "removed_recent": 1,

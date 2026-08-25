@@ -4,6 +4,16 @@
 
     // 这里只收纳选择页与本体运行时完全一致的传输规则，不接管各页面的业务状态和发送目标。
     var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
+    var DEFAULT_TIMEOUT_MS = 30000;
+    var START_TIMEOUT_MS = 45000;
+    var TURN_TIMEOUT_MS = 60000;
+
+    function defaultTimeoutMs(url) {
+        var path = String(url || '').split('?', 1)[0];
+        if (path === '/api/theater-numeric/session/input') return TURN_TIMEOUT_MS;
+        if (path === '/api/theater-numeric/session/start') return START_TIMEOUT_MS;
+        return DEFAULT_TIMEOUT_MS;
+    }
 
     function createId(prefix) {
         var random = window.crypto && typeof window.crypto.randomUUID === 'function'
@@ -22,7 +32,10 @@
     async function requestJson(url, options) {
         var opts = options || {};
         var method = opts.method || 'GET';
-        var timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 30000;
+        // 模型接口的浏览器超时必须覆盖服务端 Evaluator + Actor 合法预算及少量提交开销。
+        var timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+            ? opts.timeoutMs
+            : defaultTimeoutMs(url);
         var body = Object.prototype.hasOwnProperty.call(opts, 'body')
             ? JSON.stringify(opts.body)
             : undefined;

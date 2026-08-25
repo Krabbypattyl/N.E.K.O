@@ -221,6 +221,44 @@ def test_numeric_v2_evaluator_enforces_structured_exact_goal_evidence():
     assert accepted.goal_evidence == {"confirm_old_letter": (1,)}
 
 
+def test_numeric_v2_evaluator_accepts_current_input_for_player_goal():
+    """玩家本轮完成自有目标时应使用即将提交的服务端 revision。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat["goals"] = [{
+        "id": "player_promise",
+        "owner": "player",
+        "description": "玩家明确承诺留下修好设备。",
+        "evidence": {"mode": "semantic", "anchors": []},
+    }]
+    beat.pop("must_happen")
+    engine = NumericV2Engine.from_mapping(story)
+    session = _session(engine)
+
+    result = numeric_v2_evaluator._parse_output(
+        json.dumps({
+            "scene_complete": True,
+            "metric_changes": {},
+            "goal_evidence": {"player_promise": [1]},
+        }),
+        engine,
+        "我会留下把设备修好。",
+        session,
+    )
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("player_goal_turn", 0, "我会留下把设备修好。"),
+        (),
+        scene_complete=False,
+        goal_evidence=result.goal_evidence,
+    )
+
+    assert result.scene_complete is True
+    assert result.goal_evidence == {"player_promise": (1,)}
+    assert outcome.session.scene_goal_evidence == {"player_promise": (1,)}
+
+
 def test_numeric_v2_evaluator_deterministically_records_complete_exact_goal():
     """精确目标全部出现在正确 owner 的正式内容后，不依赖模型重复抄写证据。"""  # noqa: DOCSTRING_CJK
 
@@ -1111,7 +1149,7 @@ def test_numeric_v2_evaluator_caps_merged_goal_evidence_at_eight_revisions(monke
     monkeypatch.setattr(
         numeric_v2_evaluator,
         "_deterministic_goal_evidence",
-        lambda _engine, _session: {
+        lambda _engine, _session, **_kwargs: {
             "goal.1": (1, 2, 3, 4),
             "goal.2": (5, 6, 7, 8),
             "goal.3": (9, 10, 11),

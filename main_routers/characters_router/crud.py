@@ -1041,7 +1041,9 @@ async def set_current_catgirl(request: Request):
 
     # Numeric v2 以不可变 character_id 独立恢复；切换角色只发布当前配置，
     # 不结束或删除其他角色的剧本进度。
-    await _publish_current_catgirl()
+    # 当前角色发布与剧场提交共享角色生命周期锁，保证提交前复验结果不会被切换请求穿透。
+    async with character_config_mutation_lock:
+        await _publish_current_catgirl()
     # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()

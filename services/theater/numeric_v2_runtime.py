@@ -352,16 +352,19 @@ class NumericV2Engine:
         self,
         session: ScriptSessionV2,
         evidence: Mapping[str, tuple[int, ...]],
+        *,
+        pending_revision: int | None = None,
     ) -> None:
         """只接受当前节点目标和当前访问中的记录版本，防止跨幕事实串用。"""  # noqa: DOCSTRING_CJK
 
         # 新包直接校验作者目标 ID；旧包由兼容投影稳定得到 goal.N。
-        valid_goal_ids = {
-            str(goal["goal_id"])
+        goal_contracts = {
+            str(goal["goal_id"]): goal
             for goal in numeric_v2_story_goal_contracts(
                 self.nodes[session.current_node_id]["story_beat"]
             )
         }
+        valid_goal_ids = set(goal_contracts)
         valid_revisions = self._current_scene_evidence_revisions(session)
         for goal_id, revisions in evidence.items():
             if goal_id not in valid_goal_ids:
@@ -370,8 +373,15 @@ class NumericV2Engine:
                 not isinstance(revisions, tuple)
                 or len(revisions) > 8
                 or len(set(revisions)) != len(revisions)
-                or any(revision not in valid_revisions for revision in revisions)
             ):
+                raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
+            allowed_revisions = set(valid_revisions)
+            if (
+                pending_revision is not None
+                and str(goal_contracts[goal_id].get("owner") or "") == "player"
+            ):
+                allowed_revisions.add(pending_revision)
+            if any(revision not in allowed_revisions for revision in revisions):
                 raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
         if len({revision for revisions in evidence.values() for revision in revisions}) > 8:
             raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
@@ -397,7 +407,11 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("metric_change_duplicate")
 
         submitted_goal_evidence = dict(goal_evidence or {})
-        self._validate_scene_goal_evidence(session, submitted_goal_evidence)
+        self._validate_scene_goal_evidence(
+            session,
+            submitted_goal_evidence,
+            pending_revision=session.revision + 1,
+        )
         merged_goal_evidence = {
             goal_id: tuple(dict.fromkeys((
                 *session.scene_goal_evidence.get(goal_id, ()),
@@ -733,7 +747,6 @@ class NumericV2Runtime:
                 raise NumericV2RuntimeError("numeric_transition_performance_invalid")
         elif "performance" in performance and not valid_mixed_performance(
             performance,
-            require_narration=True,
             require_dialogue=True,
         ):
             raise NumericV2RuntimeError("numeric_performance_invalid")

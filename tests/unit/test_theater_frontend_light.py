@@ -234,6 +234,10 @@ def test_theater_transport_owns_shared_request_and_message_protocol():
     assert "async function requestJson" in transport
     assert "async function mutationHeaders" in transport
     assert "function createMessage" in transport
+    assert "TURN_TIMEOUT_MS = 60000" in transport
+    assert "START_TIMEOUT_MS = 45000" in transport
+    assert "path === '/api/theater-numeric/session/input'" in transport
+    assert "path === '/api/theater-numeric/session/start'" in transport
     assert "function createId" not in selector
     assert "async function requestJson" not in selector
     assert "function createId" not in runtime

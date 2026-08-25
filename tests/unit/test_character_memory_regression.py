@@ -1492,11 +1492,22 @@ async def test_character_management_and_recent_save_regression():
             assert add_result["success"] is True
             assert "测试角色" in cm.load_characters().get("猫娘", {})
 
-            switch_result = await characters_router_module.set_current_catgirl(
-                _DummyRequest({"catgirl_name": "测试角色"})
-            )
+            switch_lock_states = []
+            original_save_characters = cm.asave_characters
+
+            async def _tracked_save_characters(payload):
+                switch_lock_states.append(
+                    characters_router_module.character_config_mutation_lock.locked()
+                )
+                return await original_save_characters(payload)
+
+            with patch.object(cm, "asave_characters", _tracked_save_characters):
+                switch_result = await characters_router_module.set_current_catgirl(
+                    _DummyRequest({"catgirl_name": "测试角色"})
+                )
             assert switch_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == "测试角色"
+            assert switch_lock_states == [True]
 
             from utils.recent_file import write_recent_payload
 

@@ -425,6 +425,7 @@ def _strong_goal_match(goal_text: str, source_text: str) -> bool:
 def _deterministic_goal_evidence(
     engine: NumericV2Engine,
     session: ScriptSessionV2,
+    current_player_input: str = "",
 ) -> dict[str, tuple[int, ...]]:
     """精确目标做完整硬核验；旧包只按原规则保留词面相关记录。"""  # noqa: DOCSTRING_CJK
 
@@ -490,6 +491,9 @@ def _deterministic_goal_evidence(
                         player_text + dialogue_text + narration_text
                     ):
                         owner_revisions.append(revision)
+                if owner == "player" and anchor in str(current_player_input or ""):
+                    # 当前输入成功提交后会取得下一 revision；只为玩家自有目标预记这一服务端确定值。
+                    owner_revisions.append(session.revision + 1)
                 if owner == "shared":
                     if not shared_player_revisions or not shared_catgirl_revisions:
                         exact_complete = False
@@ -721,7 +725,8 @@ def _build_messages(
         "goal_evidence 必须逐项目标增量返回：即使 scene_complete=false，也要为本轮上下文中已经完整成立的每个 pending_goal 返回证据；"
         "不要等到全部目标完成后才集中返回，也不要为只完成一部分子条件的目标返回证据。"
         "输入中的 pending_goals 已排除此前正式完成的目标，不得重新判定或要求重复交付。"
-        "goal_evidence 只把 goal_id 映射到证明子条件所需的最小 revision 集合；只能引用上下文已有 revision，"
+        "goal_evidence 只把 goal_id 映射到证明子条件所需的最小 revision 集合；通常只能引用上下文已有 revision，"
+        "仅 owner=player 的目标可以在当前 player_input 已明确完成时引用 player_input_revision；"
         "retained_goal_context 与 recent_context 同等有效，不要收集仅有相似名词的记录。"
         "只能输出 JSON：{\"scene_complete\":布尔值,\"metric_changes\":{\"数值ID\":{\"strength\":\"weak|normal|strong|decisive\",\"criterion_id\":\"规则ID\"}},"
         "\"goal_evidence\":{\"goal.1\":[记录revision]}}。"
@@ -751,6 +756,7 @@ def _build_messages(
             message,
             max_tokens=NUMERIC_V2_EVALUATOR_PLAYER_INPUT_MAX_TOKENS,
         ),
+        "player_input_revision": session.revision + 1,
         "decision_order": [
             "先逐项遍历 pending_goals，并扫描全部 context；任何已经完整成立的目标都必须立即写入 goal_evidence，即使 scene_complete 为 false、证据来自较早回合或当前 player_input 与它无关。",
             "再只用当前 player_input 判定 metric_changes；必须完整命中依据中的动作、对象和结果，只有相似动词、泛称事实或能力说明时返回空 object。",
@@ -790,6 +796,7 @@ def _build_messages(
             "retained_goal_context": retained_goal_context,
             "current_scene_context": earlier_context,
             "player_input": fixed_data["player_input"],
+            "player_input_revision": fixed_data["player_input_revision"],
             # 判定顺序放在动态 JSON 末尾，避免长系统合同让模型只关注当前玩家输入。
             "decision_order": fixed_data["decision_order"],
         }
@@ -849,12 +856,13 @@ def _parse_output(
         if session is None:
             raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
         # 结构化目标使用作者 ID；旧包仍由统一投影得到 goal.N。
-        valid_goal_ids = {
-            str(goal["goal_id"])
+        goal_contracts = {
+            str(goal["goal_id"]): goal
             for goal in numeric_v2_story_goal_contracts(
                 engine.nodes[session.current_node_id]["story_beat"]
             )
         }
+        valid_goal_ids = set(goal_contracts)
         valid_revisions = {
             item.get("revision")
             for item in _current_scene_context(session)
@@ -869,7 +877,10 @@ def _parse_output(
             ):
                 raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
             revisions = tuple(dict.fromkeys(raw_revisions))[-4:]
-            if len(revisions) > 8 or any(revision not in valid_revisions for revision in revisions):
+            allowed_revisions = set(valid_revisions)
+            if str(goal_contracts[goal_id].get("owner") or "") == "player":
+                allowed_revisions.add(session.revision + 1)
+            if len(revisions) > 8 or any(revision not in allowed_revisions for revision in revisions):
                 raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_goal_evidence_invalid")
             if revisions:
                 goal_evidence[goal_id] = revisions
@@ -878,7 +889,11 @@ def _parse_output(
     if session is not None:
         # 模型可能漏填部分目标证据；精确锚点只从正式记录恢复证据，
         # 证据集合齐全后再由服务端统一校正完成状态，不生成新的事实文本。
-        deterministic_evidence = _deterministic_goal_evidence(engine, session)
+        deterministic_evidence = _deterministic_goal_evidence(
+            engine,
+            session,
+            current_player_input=message,
+        )
         merged_evidence: dict[str, tuple[int, ...]] = {}
         retained_revisions: set[int] = set()
         goal_ids = dict.fromkeys((*goal_evidence, *deterministic_evidence))

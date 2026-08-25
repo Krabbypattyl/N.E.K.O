@@ -964,7 +964,6 @@ class NumericV2SessionStore:
                 if expected_event["from_node_id"] == expected_event["to_node_id"]:
                     if not valid_mixed_performance(
                         performance,
-                        require_narration=True,
                         require_dialogue=True,
                     ):
                         raise NumericV2StoreError("numeric_performance_record_invalid")

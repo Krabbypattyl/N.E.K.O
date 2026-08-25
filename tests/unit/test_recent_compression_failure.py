@@ -426,6 +426,54 @@ def test_update_history_preserves_legacy_theater_message_before_migration(tmp_pa
     )
 
 
+def test_review_commit_preserves_capsule_position_between_ordinary_ranges(tmp_path):
+    """通用 review 跨过剧场胶囊提交时只能改普通消息槽位。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name = _make_manager(tmp_path)
+    capsule = SystemMessage(
+        content="剧场单集摘要。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "story_id": "story_review",
+            "session_id": "session_review",
+        },
+    )
+    current = [
+        HumanMessage(content="旧问题"),
+        AIMessage(content="旧回答"),
+        capsule,
+        HumanMessage(content="后续问题一"),
+        AIMessage(content="后续回答一"),
+        HumanMessage(content="后续问题二"),
+        AIMessage(content="后续回答二"),
+    ]
+    snapshot = [message for message in current if message is not capsule]
+    corrected = [
+        HumanMessage(content="修正问题"),
+        AIMessage(content="修正回答"),
+        HumanMessage(content="修正后续一"),
+        AIMessage(content="修正后续答一"),
+        HumanMessage(content="修正后续二"),
+        AIMessage(content="修正后续答二"),
+    ]
+    _write_recent(mgr.log_file_path[name], current)
+
+    status, _fingerprint, _detail = mgr._commit_review_locked(
+        mgr.log_file_path[name],
+        name,
+        snapshot,
+        corrected,
+    )
+
+    final = _read_recent(mgr.log_file_path[name])
+    assert status == "patched"
+    assert final[2].metadata.get("session_id") == "session_review"
+    assert [message.content for message in final if message is not final[2]] == [
+        message.content for message in corrected
+    ]
+
+
 def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
     mgr, name = _make_manager(tmp_path)
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]

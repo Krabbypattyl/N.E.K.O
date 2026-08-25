@@ -635,6 +635,24 @@ def test_numeric_v2_rejects_direct_self_loop_even_with_an_ending_route():
     )
 
 
+def test_numeric_v2_rejects_terminal_start_node():
+    """开场即结局无法进入正常演绎流程，必须在导入时拒绝。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["nodes"][0]["terminal"] = True
+    story["nodes"][0]["ending_id"] = "stay"
+    story["nodes"][0]["route_gates"] = []
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "terminal_start_forbidden"
+        and issue.path == "nodes[0].terminal"
+        for issue in caught.value.issues
+    )
+
+
 def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
     package_root = tmp_path / "theater" / "numeric_v2" / "packages"
     registry = NumericV2PackageRegistry(package_root)
