@@ -225,7 +225,16 @@
         renderStories();
         renderDetail();
         setStatus('theater.loadingSession', '正在读取演绎进度...');
-        var result = await requestJson(api.active + '?story_id=' + encodeURIComponent(storyId));
+        var result;
+        try {
+            result = await requestJson(api.active + '?story_id=' + encodeURIComponent(storyId));
+        } catch (_) {
+            // 只允许当前选择发布断网状态；旧请求失败不能覆盖玩家后来切换的剧本。
+            if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return false;
+            setStatus('theater.failed', '出错了');
+            setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+            return false;
+        }
         if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
         if (result.ok && result.session) {
             state.session = result.session;
@@ -245,7 +254,15 @@
             }
         }
         else if (result._status !== 404) setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
-        await loadMemoryArchives(storyId, selectionCharacterEpoch);
+        try {
+            await loadMemoryArchives(storyId, selectionCharacterEpoch);
+        } catch (_) {
+            // 记忆列表同属详情快照；请求失败时结束 loading 状态并保留当前可重试选择。
+            if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return false;
+            setStatus('theater.failed', '出错了');
+            setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+            return false;
+        }
         // 归档请求返回期间可能已经切换剧本；旧选择不能覆盖详情或地址栏。
         if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
         renderDetail();
@@ -254,6 +271,7 @@
         url.searchParams.set('story_id', storyId);
         window.history.replaceState(null, '', url.toString());
         if (state.pendingEnd && state.pendingEnd.story_id === storyId) await maybePromptMemory();
+        return true;
     }
     // 页面只保留一个模态框实例；所有请求串行展示，避免异步回执覆盖尚未选择的确认框。
     function presentModal(options, resolve) {
@@ -481,7 +499,7 @@
             state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null; state.archives = [];
             renderStories(); renderDetail();
             // 删除动作尚处于 busy 状态；内部刷新必须显式放行，否则详情会停留在旧剧本。
-            if (state.storyId) await selectStory(state.storyId, true);
+            if (state.storyId && !(await selectStory(state.storyId, true))) return;
             setStatus('theater.storyDeleted', '剧本已删除');
         } catch (_) { setFeedback(t('theater.storyDeleteFailed', '剧本删除失败，请重试。'), true); }
         finally { setBusy(false); }
@@ -625,7 +643,9 @@
         if (!state.stories.some(function (story) { return String(story.story_id) === state.storyId; })) state.storyId = String((state.stories[0] || {}).story_id || '');
         renderStories(); renderDetail();
         // 导入/删除期间 loadStories 也会在 busy 状态内运行，允许这一次内部详情刷新。
-        if (state.storyId) await selectStory(state.storyId, true); else setStatus('theater.ready', '就绪');
+        if (state.storyId) {
+            if (!(await selectStory(state.storyId, true))) return false;
+        } else setStatus('theater.ready', '就绪');
         return true;
     }
     // 本体结束演绎后只传定位回执；选择页重新读取服务端状态再显示询问。

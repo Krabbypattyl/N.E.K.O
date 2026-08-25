@@ -118,6 +118,59 @@ def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: P
 
 
 @pytest.mark.frontend
+def test_selector_recovers_status_when_story_detail_request_loses_network(
+    mock_page: Page,
+    running_server: str,
+):
+    """切换剧本时网络中断必须退出读取态并显示可重试错误。"""  # noqa: DOCSTRING_CJK
+
+    second_story = {
+        **STORY,
+        "story_id": "numeric_browser_story_network_failure",
+        "title": "断线后的舞台",
+    }
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            _fulfill(
+                route,
+                {
+                    "ok": True,
+                    "stories": [STORY, second_story],
+                    "character_id": CHARACTER_ID,
+                },
+            )
+            return
+        if path.endswith("/api/theater-numeric/session/active"):
+            if second_story["story_id"] in request.url:
+                route.abort("failed")
+            else:
+                _fulfill(
+                    route,
+                    {"ok": False, "reason": "numeric_session_not_found"},
+                    404,
+                )
+            return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": True, "archives": []})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+    expect(mock_page.locator("#theater-selector-status")).to_have_text("就绪")
+
+    mock_page.locator(".theater-story-card").filter(has_text="断线后的舞台").click()
+
+    expect(mock_page.locator("#theater-selector-status")).to_have_text("出错了")
+    expect(mock_page.locator("#theater-inline-feedback")).to_contain_text(
+        "演绎进度读取失败"
+    )
+
+
+@pytest.mark.frontend
 def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, running_server: str):
     """选剧页用最小记录列表提供收藏与显式忘记入口。"""  # noqa: DOCSTRING_CJK
 

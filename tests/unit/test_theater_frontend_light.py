@@ -158,17 +158,23 @@ def test_selector_does_not_publish_stale_story_after_archive_load():
 
     script = _source("static/js/theater_selector.js")
     selection = script.index("async function selectStory(")
+    active_await = script.index("result = await requestJson(api.active", selection)
+    active_catch = script.index("} catch (_) {", active_await)
+    active_failure = script.index("setStatus('theater.failed', '出错了');", active_catch)
     archive_await = script.index(
         "await loadMemoryArchives(storyId, selectionCharacterEpoch);",
         selection,
     )
+    archive_catch = script.index("} catch (_) {", archive_await)
+    archive_failure = script.index("setStatus('theater.failed', '出错了');", archive_catch)
     recheck = script.index(
         "if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;",
         archive_await,
     )
     replace_url = script.index("window.history.replaceState", recheck)
 
-    assert archive_await < recheck < replace_url
+    assert active_await < active_catch < active_failure < archive_await
+    assert archive_await < archive_catch < archive_failure < recheck < replace_url
 
 
 def test_capsule_runtime_projects_narration_display_kind_from_performance_phase():
