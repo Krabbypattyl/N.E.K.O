@@ -81,6 +81,12 @@ def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
         ("invalid_json", "numeric_end_receipt_read_failed"),
         ("invalid_payload", "numeric_public_archive_invalid"),
         ("invalid_schema", "numeric_public_archive_invalid"),
+        ("missing_story_id", "numeric_public_archive_invalid"),
+        ("missing_session_id", "numeric_public_archive_invalid"),
+        ("missing_character_id", "numeric_public_archive_invalid"),
+        ("invalid_story_id_type", "numeric_public_archive_invalid"),
+        ("invalid_session_id_type", "numeric_public_archive_invalid"),
+        ("invalid_character_id_type", "numeric_public_archive_invalid"),
     ],
 )
 def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
@@ -111,6 +117,25 @@ def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
                 return "[]"
             if read_failure == "invalid_schema":
                 return json.dumps({"schema": "unknown"})
+            if read_failure.startswith("missing_"):
+                invalid_archive = {
+                    "schema": "neko.theater.numeric.v2.public-archive",
+                    "story_id": "story_transient_delete",
+                    "session_id": "session_transient_delete",
+                    "character_id": "character_transient_delete",
+                }
+                invalid_archive.pop(read_failure.removeprefix("missing_"))
+                return json.dumps(invalid_archive)
+            if read_failure.startswith("invalid_") and read_failure.endswith("_type"):
+                invalid_archive = {
+                    "schema": "neko.theater.numeric.v2.public-archive",
+                    "story_id": "story_transient_delete",
+                    "session_id": "session_transient_delete",
+                    "character_id": "character_transient_delete",
+                }
+                invalid_field = read_failure.removeprefix("invalid_").removesuffix("_type")
+                invalid_archive[invalid_field] = []
+                return json.dumps(invalid_archive)
             raise PermissionError("temporary archive failure")
         return original_read_text(path, *args, **kwargs)
 

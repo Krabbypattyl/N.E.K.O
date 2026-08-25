@@ -473,6 +473,12 @@ class NumericV2ArchiveStore:
             if (
                 payload is None
                 or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
+                or not isinstance(payload.get("story_id"), str)
+                or not payload["story_id"].strip()
+                or not isinstance(payload.get("session_id"), str)
+                or not payload["session_id"].strip()
+                or "character_id" not in payload
+                or not isinstance(payload["character_id"], str)
             ):
                 # 严格枚举无法确认未知载荷的故事与角色归属，必须中止而不能宣称删除完整。
                 if raise_on_io_error:
