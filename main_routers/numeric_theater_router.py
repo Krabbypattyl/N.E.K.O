@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
+from services.theater.numeric_v2 import NumericV2CompileError
 from services.theater.numeric_v2_actor import (
     NumericV2Actor,
     NumericV2ActorError,
@@ -382,8 +383,19 @@ async def import_numeric_story(request: Request):
     try:
         config_manager = get_config_manager()
         registry = await _registry(config_manager)
-        await _assert_numeric_writable(config_manager, "packages")
-        summary = await asyncio.to_thread(registry.import_package, payload)
+        compiled = await asyncio.to_thread(registry.compiler.compile, payload)
+        # 导入与同 story_id 的删除事务共用生命周期锁，避免成功导入被迟到回滚覆盖。
+        async with numeric_v2_story_session_guard(
+            _numeric_root(config_manager),
+            compiled.story_id,
+        ):
+            await _assert_numeric_writable(config_manager, "packages")
+            summary = await asyncio.to_thread(
+                registry.import_package,
+                compiled.story,
+            )
+    except NumericV2CompileError:
+        return _error("numeric_v2_contract_invalid", 422)
     except NumericV2PackageExistsError:
         return _error("numeric_story_exists", 409)
     except NumericV2PackageError as exc:
@@ -769,18 +781,31 @@ async def end_numeric_session(request: Request):
     try:
         config_manager = get_config_manager()
         runtime = await _runtime_for_story(config_manager, story_id)
-        current = await runtime.restore_session(session_id)
-        if current is None:
-            return _error("numeric_session_not_found", 404)
-        # 结束操作同样复验当前猫娘，避免角色切换后继续改写旧人格 Session。
-        current_binding = _ensure_current_catgirl(current.session, config_manager)
-        if current.session.status == "ended":
-            # Session 已提交但回执写入失败时，客户端会重试结束请求；此时只补建回执，不能再次推进 revision。
-            receipt = await _create_receipt_for_existing_ended_session(
-                config_manager,
-                runtime,
+        # 结束状态与回执必须和当前角色事实一起提交，锁序固定为角色锁→故事锁。
+        async with character_config_mutation_lock, runtime.story_session_guard():
+            current = await runtime.restore_session(session_id)
+            if current is None:
+                return _error("numeric_session_not_found", 404)
+            current_binding = _ensure_current_catgirl(
                 current.session,
+                config_manager,
             )
+            idempotent_replay = current.session.status == "ended"
+            if idempotent_replay:
+                # Session 已提交但回执写入失败时只补建回执，不能再次推进 revision。
+                stored = current
+            else:
+                await _assert_numeric_writable(config_manager, "sessions")
+                stored = await runtime.end_session(
+                    session_id,
+                    base_revision=base_revision,
+                    reason="user_exit",
+                )
+            receipt = await _create_ended_receipt(
+                config_manager,
+                stored.session,
+            )
+        if idempotent_replay:
             return {
                 "ok": True,
                 "idempotent_replay": True,
@@ -791,18 +816,6 @@ async def end_numeric_session(request: Request):
                     display_binding=current_binding,
                 ),
             }
-        async with runtime.story_session_guard():
-            await _assert_numeric_writable(config_manager, "sessions")
-            stored = await runtime.end_session(
-                session_id,
-                base_revision=base_revision,
-                reason="user_exit",
-            )
-        receipt = await _create_receipt_for_existing_ended_session(
-            config_manager,
-            runtime,
-            stored.session,
-        )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2StoreRevisionConflictError:

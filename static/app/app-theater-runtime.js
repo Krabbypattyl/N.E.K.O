@@ -757,6 +757,8 @@
     async function restorePointer() {
         var pointer = readPointer();
         if (!pointer) return;
+        // 启动恢复只属于读取指针时的 launch 世代；任何更新的选剧启动都有更高优先级。
+        var restoreLaunchEpoch = launchEpoch;
         var snapshot;
         try {
             snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
@@ -764,6 +766,7 @@
             // 暂时性网络失败保留指针供下次恢复，但不让启动 Promise 产生未处理拒绝。
             return;
         }
+        if (restoreLaunchEpoch !== launchEpoch) return;
         if (!snapshot.ok || !snapshot.session) { try { window.localStorage.removeItem(POINTER_KEY); } catch (_) {} return; }
         applySnapshot(snapshot);
         if (snapshot.end_receipt_id) state.pendingEnd = {
@@ -774,7 +777,9 @@
             archive_request_id: snapshot.archive_request_id || ''
         };
         state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot); state.currentBlock = null;
-        await waitForHost(); render();
+        await waitForHost();
+        if (restoreLaunchEpoch !== launchEpoch) return;
+        render();
     }
     function handleCrossWindowMessage(event) {
         if (event && event.origin && event.origin !== window.location.origin) return;

@@ -579,7 +579,10 @@ class NumericV2SessionStore:
         if session_id:
             try:
                 indexed = await self.load(session_id)
-            except NumericV2StoreError:
+            except NumericV2StoreError as exc:
+                # JSON、合同或账本损坏可由冷启动审计修复；暂时性 I/O 故障必须交给调用方重试。
+                if isinstance(exc.__cause__, OSError):
+                    raise
                 indexed = None
             if (
                 indexed is not None
@@ -688,9 +691,12 @@ class NumericV2SessionStore:
     async def load(self, session_id: str) -> NumericV2StoredSession | None:
         path = self._path(session_id)
         async with _lock(path):
-            if not path.is_file():
-                return None
-            stored = self._read(path)
+            try:
+                stored = self._read(path)
+            except NumericV2StoreError as exc:
+                if isinstance(exc.__cause__, FileNotFoundError):
+                    return None
+                raise
             self._validate_chain(stored)
             return stored
 

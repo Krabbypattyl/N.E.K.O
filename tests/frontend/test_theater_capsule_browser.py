@@ -227,6 +227,80 @@ def test_theater_capsule_ignores_late_launch_snapshot(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_ignores_pointer_restore_superseded_by_launch(
+    mock_page: Page,
+    running_server: str,
+):
+    """启动指针的迟到快照不能覆盖选剧页随后启动的新 Session。"""  # noqa: DOCSTRING_CJK
+
+    pending_pointer: dict[str, Route] = {}
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/session-a"):
+            pending_pointer["route"] = route
+            return
+        if path.endswith("/api/theater-numeric/session/session-b"):
+            fulfill(
+                route,
+                _snapshot(revision=0, story_id="story-b", session_id="session-b"),
+            )
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script(
+        """window.localStorage.setItem(
+            'neko.theater.numeric.v2.capsule-pointer.v1',
+            JSON.stringify({story_id: 'story-a', session_id: 'session-a'})
+        );
+        window.localStorage.setItem('neko_tutorial_settings', 'seen');"""
+    )
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    for _ in range(50):
+        if "route" in pending_pointer:
+            break
+        mock_page.wait_for_timeout(20)
+    assert "route" in pending_pointer
+
+    mock_page.evaluate(
+        """() => window.postMessage({
+            schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+            launch_id: 'pointer-superseding-launch', launch_action: 'continue',
+            story_id: 'story-b', session_id: 'session-b', revision: 0
+        }, window.location.origin)"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    fulfill(
+        pending_pointer["route"],
+        _snapshot(revision=0, story_id="story-a", session_id="session-a"),
+    )
+    mock_page.wait_for_timeout(200)
+
+    state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    pointer = mock_page.evaluate(
+        "() => JSON.parse(window.localStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1'))"
+    )
+    assert state["storyId"] == "story-b"
+    assert state["sessionId"] == "session-b"
+    assert state["phase"] == "awaiting_player"
+    assert pointer == {"story_id": "story-b", "session_id": "session-b"}
+
+
+@pytest.mark.frontend
 def test_theater_capsule_ignores_end_confirmation_after_session_switch(
     mock_page: Page,
     running_server: str,

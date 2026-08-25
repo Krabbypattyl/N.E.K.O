@@ -709,6 +709,38 @@ def test_numeric_v2_registry_installs_missing_defaults_beside_user_packages(
     assert (package_root / ".defaults_initialized").is_file()
 
 
+def test_numeric_v2_registry_reconciles_new_defaults_without_restoring_deleted_ones(
+    tmp_path,
+    monkeypatch,
+):
+    """升级只补装新增内置剧本，用户主动删除的旧内置剧本保持删除。"""  # noqa: DOCSTRING_CJK
+
+    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
+    bundled_root = tmp_path / "bundled"
+    bundled_root.mkdir()
+    first_story = numeric_v2_story()
+    (bundled_root / "first.json").write_text(
+        json.dumps(first_story, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    registry = NumericV2PackageRegistry(package_root)
+    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
+    registry.ensure_default_packages()
+    registry.delete_package(first_story["meta"]["story_id"])
+
+    later_story = numeric_v2_story()
+    later_story["meta"]["story_id"] = "numeric_v2_later_default"
+    (bundled_root / "later.json").write_text(
+        json.dumps(later_story, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    registry.ensure_default_packages()
+
+    assert {item["story_id"] for item in registry.list_packages()} == {
+        "numeric_v2_later_default",
+    }
+
+
 def test_numeric_v2_registry_treats_concurrent_default_install_as_success(
     tmp_path,
     monkeypatch,

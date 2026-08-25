@@ -107,6 +107,52 @@ async def test_numeric_v2_router_uses_cloudsave_write_fence(tmp_path, monkeypatc
     assert calls == [("save", "theater/numeric_v2/sessions")]
 
 
+def test_numeric_v2_story_import_holds_story_lifecycle_lock(tmp_path, monkeypatch):
+    """独占写入剧本包时必须与同 ID 删除事务串行。"""  # noqa: DOCSTRING_CJK
+
+    story_guard_depth = {"value": 0}
+    import_lock_states = []
+    original_guard = numeric_theater_router.numeric_v2_story_session_guard
+    original_import = numeric_theater_router.NumericV2PackageRegistry.import_package
+
+    @asynccontextmanager
+    async def tracked_story_guard(theater_root, story_id):
+        async with original_guard(theater_root, story_id):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
+
+    def tracked_import(registry, payload):
+        if payload["meta"]["story_id"] == "numeric_import_lock_guard":
+            import_lock_states.append(story_guard_depth["value"] > 0)
+        return original_import(registry, payload)
+
+    monkeypatch.setattr(
+        numeric_theater_router,
+        "numeric_v2_story_session_guard",
+        tracked_story_guard,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2PackageRegistry,
+        "import_package",
+        tracked_import,
+    )
+    story = numeric_v2_story()
+    story["meta"]["story_id"] = "numeric_import_lock_guard"
+    client = _client(tmp_path, monkeypatch)
+
+    with client:
+        imported = client.post(
+            "/api/theater-numeric/packages/import",
+            json=story,
+        )
+
+    assert imported.status_code == 200
+    assert import_lock_states == [True]
+
+
 def test_numeric_v2_story_list_reuses_compiled_summary_intro():
     """列表投影只能消费注册表已经编译的摘要，不能为显示简介再次加载整包。"""  # noqa: DOCSTRING_CJK
 
@@ -497,6 +543,77 @@ def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
 
         assert resumed.status_code == 200
         assert check_states == [{"character": True, "story": True}]
+
+
+def test_numeric_v2_end_rechecks_catgirl_inside_lifecycle_locks(
+    tmp_path,
+    monkeypatch,
+):
+    """结束 Session 的角色复验、状态提交和回执创建必须处于同一双锁区间。"""  # noqa: DOCSTRING_CJK
+
+    story_guard_depth = {"value": 0}
+    check_states = []
+    end_states = []
+    original_guard = numeric_theater_router.NumericV2Runtime.story_session_guard
+    original_check = numeric_theater_router._ensure_current_catgirl
+    original_end = numeric_theater_router.NumericV2Runtime.end_session
+
+    @asynccontextmanager
+    async def tracked_story_guard(runtime):
+        async with original_guard(runtime):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
+
+    def lock_state():
+        return {
+            "character": numeric_theater_router.character_config_mutation_lock.locked(),
+            "story": story_guard_depth["value"] > 0,
+        }
+
+    def tracked_check(session, config_manager):
+        check_states.append(lock_state())
+        return original_check(session, config_manager)
+
+    async def tracked_end(runtime, *args, **kwargs):
+        end_states.append(lock_state())
+        return await original_end(runtime, *args, **kwargs)
+
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "end_lock_guard"},
+        ).status_code == 200
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2Runtime,
+            "story_session_guard",
+            tracked_story_guard,
+        )
+        monkeypatch.setattr(
+            numeric_theater_router,
+            "_ensure_current_catgirl",
+            tracked_check,
+        )
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2Runtime,
+            "end_session",
+            tracked_end,
+        )
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "end_lock_guard",
+                "base_revision": 0,
+            },
+        )
+
+    assert ended.status_code == 200
+    assert check_states == [{"character": True, "story": True}]
+    assert end_states == [{"character": True, "story": True}]
 
 
 def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch):

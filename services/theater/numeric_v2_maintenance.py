@@ -272,7 +272,12 @@ def _caused_by_os_error(exc: BaseException) -> bool:
         seen.add(id(current))
         if isinstance(current, OSError):
             return True
-        current = current.__cause__ or current.__context__
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
     return False
 
 

@@ -63,6 +63,31 @@ def test_selector_uses_two_stage_handoff_and_start_replacement():
     assert "persistent: true" in script
 
 
+def test_selector_binds_delayed_confirmations_to_original_selection():
+    """排队确认框只能操作弹出时对应的剧本和 Session。"""  # noqa: DOCSTRING_CJK
+
+    script = _source("static/js/theater_selector.js")
+    end_block = script[
+        script.index("async function endSession()"):
+        script.index("async function beginSession()")
+    ]
+    begin_block = script[
+        script.index("async function beginSession()"):
+        script.index("async function deleteStory()")
+    ]
+    forget_block = script[
+        script.index("async function forgetStoryMemory()"):
+        script.index("async function importStory(")
+    ]
+
+    assert "selectedSessionMatches(targetStoryId, targetSessionId)" in end_block
+    assert "story_id: targetStoryId" in end_block
+    assert "selectedSessionMatches(targetStoryId, targetSessionId)" in begin_block
+    assert "sessionKind() === targetSessionKind" in begin_block
+    assert "if (!confirmed || state.storyId !== targetStoryId) return;" in forget_block
+    assert "body: { story_id: targetStoryId }" in forget_block
+
+
 def test_capsule_runtime_separates_narration_and_dialogue_tts():
     runtime = _source("static/app/app-theater-runtime.js")
     buttons = _source("static/app/app-buttons.js")

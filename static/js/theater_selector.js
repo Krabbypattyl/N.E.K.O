@@ -77,6 +77,11 @@
         if (state.session.status !== 'ended') return 'active';
         return state.session.ended_reason === 'user_exit' ? 'paused' : 'ended';
     }
+    function selectedSessionMatches(storyId, sessionId) {
+        return state.storyId === storyId
+            && state.session
+            && String(state.session.session_id || '') === sessionId;
+    }
     // 玩家主动退出的记录允许继续或重新开始；剧情自然结局只能重新开始。
     function renderActions() {
         var kind = sessionKind();
@@ -376,6 +381,9 @@
     // 选剧页是胶囊结束按钮之外的独立兜底入口；成功后同步本体运行时解除锁定。
     async function endSession() {
         if (state.busy || sessionKind() !== 'active' || !state.session) return;
+        var targetStoryId = state.storyId;
+        var targetSessionId = String(state.session.session_id || '');
+        var targetRevision = Number(state.session.revision || 0);
         var confirmed = await showModal({
             title: t('theater.endPerformance', '结束演绎'),
             body: t('theater.endConfirm', '确定结束当前演绎吗？'),
@@ -383,24 +391,25 @@
             confirmLabel: t('theater.endPerformance', '结束演绎'),
             danger: true
         });
-        if (!confirmed || sessionKind() !== 'active') return;
+        if (!confirmed || !selectedSessionMatches(targetStoryId, targetSessionId) || sessionKind() !== 'active') return;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.end, { method: 'POST', body: {
-                story_id: state.storyId,
-                session_id: state.session.session_id,
-                base_revision: Number(state.session.revision || 0)
+                story_id: targetStoryId,
+                session_id: targetSessionId,
+                base_revision: targetRevision
             }});
+            if (!selectedSessionMatches(targetStoryId, targetSessionId)) return;
             if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
             state.session = result.session;
             state.pendingEnd = {
-                story_id: state.storyId,
+                story_id: targetStoryId,
                 session_id: result.session.session_id,
                 revision: result.session.revision,
                 end_receipt_id: result.end_receipt_id || '',
                 archive_request_id: result.archive_request_id || ''
             };
-            postMessage({ action: 'theater:external-end', story_id: state.storyId, session_id: result.session.session_id });
+            postMessage({ action: 'theater:external-end', story_id: targetStoryId, session_id: result.session.session_id });
             renderDetail();
             setStatus('theater.paused', '已退出');
             await maybePromptMemory();
@@ -415,12 +424,19 @@
             await startSession(false);
             return;
         }
+        var targetStoryId = state.storyId;
+        var targetSessionId = String(state.session && state.session.session_id || '');
+        var targetSessionKind = sessionKind();
         var confirmed = await showModal({
             title: t('theater.startAgainConfirmTitle', '开始新的演绎？'),
             body: t('theater.startAgainConfirmBody', '这会用新的演绎替换当前角色的已结束记录。'),
             cancelLabel: t('common.cancel', '取消'), confirmLabel: t('theater.start', '开始'), danger: true
         });
-        if (confirmed) await startSession(true);
+        if (
+            confirmed
+            && selectedSessionMatches(targetStoryId, targetSessionId)
+            && sessionKind() === targetSessionKind
+        ) await startSession(true);
     }
     // 删除前由服务端汇总活跃角色，确认后再执行剧本包和 Session 的事务删除。
     async function deleteStory() {
@@ -463,6 +479,7 @@
     }
     async function forgetStoryMemory() {
         if (!state.storyId || state.busy) return;
+        var targetStoryId = state.storyId;
         var confirmed = await showModal({
             title: t('theater.forgetStoryMemoryTitle', '忘记该剧本？'),
             body: t('theater.forgetStoryMemoryBody', '这会删除当前猫娘对该剧本的摘要、时间索引和完整演绎档案，但不会删除剧本或当前进度。'),
@@ -470,12 +487,13 @@
             confirmLabel: t('theater.forgetStoryMemory', '忘记该剧本'),
             danger: true
         });
-        if (!confirmed) return;
+        if (!confirmed || state.storyId !== targetStoryId) return;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.forgetMemory, {
-                method: 'POST', body: { story_id: state.storyId }
+                method: 'POST', body: { story_id: targetStoryId }
             });
+            if (state.storyId !== targetStoryId) return;
             if (!result.ok) throw new Error('forget_failed');
             state.archives = [];
             state.pendingEnd = null;

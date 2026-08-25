@@ -15,6 +15,61 @@ from .numeric_v2 import NumericV2CompileError, NumericV2Compiler
 _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
 _DEFAULT_PACKAGES_INITIALIZED_MARKER = ".defaults_initialized"
+_DEFAULT_PACKAGES_MARKER_SCHEMA = "neko.theater.numeric.v2.default-packages"
+
+
+def _read_default_package_ids(marker: Path) -> set[str]:
+    """读取已处理的内置剧本 ID；兼容旧版本创建的空标记。"""  # noqa: DOCSTRING_CJK
+
+    if not marker.is_file():
+        return set()
+    raw = marker.read_text(encoding="utf-8").strip()
+    if not raw:
+        return set()
+    payload = json.loads(raw)
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != _DEFAULT_PACKAGES_MARKER_SCHEMA
+        or not isinstance(payload.get("story_ids"), list)
+    ):
+        return set()
+    return {
+        story_id
+        for story_id in payload["story_ids"]
+        if isinstance(story_id, str) and _STORY_ID_RE.fullmatch(story_id)
+    }
+
+
+def _write_default_package_ids(marker: Path, story_ids: set[str]) -> None:
+    """原子记录已处理的内置剧本，供后续版本只补装新增项。"""  # noqa: DOCSTRING_CJK
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=marker.parent,
+            prefix=".defaults-",
+            suffix=".tmp",
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+        ) as temporary:
+            json.dump(
+                {
+                    "schema": _DEFAULT_PACKAGES_MARKER_SCHEMA,
+                    "story_ids": sorted(story_ids),
+                },
+                temporary,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, marker)
+        temporary_path = None
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 class NumericV2PackageError(ValueError):
@@ -40,8 +95,6 @@ class NumericV2PackageRegistry:
         """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""  # noqa: DOCSTRING_CJK
 
         marker = self.root / _DEFAULT_PACKAGES_INITIALIZED_MARKER
-        if marker.is_file():
-            return
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             bundled_sources = (
@@ -52,18 +105,21 @@ class NumericV2PackageRegistry:
             # 当前发行物没有内置包时不写完成标记，后续版本加入默认剧本后仍能自动补装。
             if not bundled_sources:
                 return
+            handled_story_ids = _read_default_package_ids(marker)
             for source in bundled_sources:
                 payload = json.loads(source.read_text(encoding="utf-8"))
                 compiled = self.compiler.compile(payload)
-                target = self.package_path(compiled.story_id)
-                if target.exists():
+                if compiled.story_id in handled_story_ids:
                     continue
-                try:
-                    self.import_package(compiled.story)
-                except NumericV2PackageExistsError:
-                    # 多进程首次启动可能同时安装同一默认包；另一进程已写入即视为初始化成功。
-                    pass
-            marker.touch(exist_ok=True)
+                target = self.package_path(compiled.story_id)
+                if not target.exists():
+                    try:
+                        self.import_package(compiled.story)
+                    except NumericV2PackageExistsError:
+                        # 多进程首次启动可能同时安装同一默认包；另一进程已写入即视为初始化成功。
+                        pass
+                handled_story_ids.add(compiled.story_id)
+            _write_default_package_ids(marker, handled_story_ids)
         except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
             raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc
 

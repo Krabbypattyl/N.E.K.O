@@ -1016,6 +1016,33 @@ async def test_numeric_v2_startup_audit_does_not_quarantine_transient_io_failure
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_startup_audit_quarantines_missing_story_session(tmp_path):
+    """剧本已确定删除的孤儿 Session 应被隔离，不能误判为暂时性 I/O 故障。"""  # noqa: DOCSTRING_CJK
+
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_missing_story_audit",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_path = runtime.store._path(stored.session.session_id)
+    registry.delete_package(story["meta"]["story_id"])
+
+    result = audit_numeric_v2_storage(
+        tmp_path,
+        registry,
+        character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    assert result == {"valid": 0, "quarantined": 1}
+    assert not session_path.exists()
+    assert len(list((tmp_path / "numeric_v2" / "quarantine").glob("*"))) == 1
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_recovers_prepared_story_delete_after_interruption(tmp_path):
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
@@ -1148,6 +1175,39 @@ async def test_numeric_v2_indexed_restore_does_not_scan_unrelated_session_files(
     assert restored is not None
     assert restored.session.session_id == stored.session.session_id
     assert corrupt_path.read_text(encoding="utf-8") == "{"
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_indexed_restore_propagates_transient_read_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """恢复槽位暂时不可读时必须中止，不能把有效进度当作不存在。"""  # noqa: DOCSTRING_CJK
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_indexed_transient_failure",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_path = runtime.store._path(stored.session.session_id)
+    path_type = type(session_path)
+    original_read_text = path_type.read_text
+
+    def transient_read(path, *args, **kwargs):
+        if path == session_path:
+            raise PermissionError("temporary storage failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", transient_read)
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_session_read_failed",
+    ):
+        await runtime.restore_story_session(_binding())
+
+    assert session_path.is_file()
 
 
 @pytest.mark.asyncio
