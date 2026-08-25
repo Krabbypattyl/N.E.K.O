@@ -586,37 +586,76 @@ class TimeIndexedMemory:
         if timestamp is None:
             timestamp = datetime.now()
         original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        normalized_events = []
+        normalized_batches: list[tuple[str, list[str]]] = []
         for event_id, messages in events_by_story.values():
             normalized_event_id = str(event_id or "").strip()
             if not normalized_event_id:
                 continue
-            for message in messages_to_dict(list(messages)):
-                normalized_events.append({
-                    "session_id": normalized_event_id,
-                    "message": json.dumps(message, ensure_ascii=False),
-                    "timestamp": timestamp,
-                })
+            normalized_batches.append((
+                normalized_event_id,
+                [
+                    json.dumps(
+                        message,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    for message in messages_to_dict(list(messages))
+                ],
+            ))
 
         with self.engines[lanlan_name].begin() as conn:
             # 先由 SQL 按稳定来源标记收窄候选，再逐条反序列化复验，避免每次归档扫描全表。
             rows = conn.execute(
                 text(
-                    f"SELECT id, message FROM {original_table} "
-                    "WHERE message LIKE :source_marker"
+                    f"SELECT id, session_id, message, timestamp FROM {original_table} "
+                    "WHERE message LIKE :source_marker ORDER BY id"
                 ),
                 {"source_marker": f"%{THEATER_MEMORY_SOURCE}%"},
             ).fetchall()
+            existing_events: dict[str, list[tuple[str, object]]] = {}
             theater_row_ids = [
                 int(row[0])
                 for row in rows
-                if self._is_serialized_theater_message(row[1])
+                if self._is_serialized_theater_message(row[2])
             ]
+            for row in rows:
+                if not self._is_serialized_theater_message(row[2]):
+                    continue
+                try:
+                    canonical_message = json.dumps(
+                        json.loads(str(row[2])),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    canonical_message = str(row[2])
+                existing_events.setdefault(str(row[1] or ""), []).append(
+                    (canonical_message, row[3])
+                )
             if theater_row_ids:
                 conn.execute(
                     text(f"DELETE FROM {original_table} WHERE id = :row_id"),
                     [{"row_id": row_id} for row_id in theater_row_ids],
                 )
+            normalized_events = []
+            for event_id, serialized_messages in normalized_batches:
+                existing = existing_events.get(event_id, [])
+                event_timestamp = timestamp
+                if (
+                    existing
+                    and [message for message, _stored_at in existing]
+                    == serialized_messages
+                    and existing[0][1] is not None
+                ):
+                    # 未变化剧本沿用原时间；只有本次真正更新的剧本才进入当前时间窗口。
+                    event_timestamp = existing[0][1]
+                normalized_events.extend({
+                    "session_id": event_id,
+                    "message": message,
+                    "timestamp": event_timestamp,
+                } for message in serialized_messages)
             for event in normalized_events:
                 conn.execute(
                     text(

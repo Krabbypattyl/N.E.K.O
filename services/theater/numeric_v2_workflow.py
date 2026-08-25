@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
 from .numeric_v2_actor import NumericV2Actor
@@ -54,6 +54,17 @@ async def execute_numeric_v2_turn(
     )
     # 模型调用期间角色卡可能切换；成功输出不能提交到另一只猫娘的恢复槽位。
     display_binding = ensure_current_binding(current.session)
+    outcome = replace(
+        outcome,
+        session=replace(
+            outcome.session,
+            # 不可变角色 ID 已通过校验；提交前刷新名称和人格版本，避免并发改名被旧候选覆盖。
+            catgirl_binding={
+                str(key): str(value)
+                for key, value in display_binding.items()
+            },
+        ),
+    )
     # 模型调用不占剧本锁；只在正式提交阶段与删除、归档和重新开始串行。
     async with runtime.story_session_guard():
         if before_commit is not None:

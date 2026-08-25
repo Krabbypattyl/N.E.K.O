@@ -123,6 +123,27 @@ async def test_numeric_v2_empty_character_id_delete_keeps_other_legacy_names(tmp
     assert (archive_root / "legacy-b.json").is_file()
 
 
+@pytest.mark.asyncio
+async def test_numeric_v2_scoped_delete_preserves_other_story_slots(tmp_path):
+    """同时按剧本和角色删除时，只能移除交集槽位。"""  # noqa: DOCSTRING_CJK
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    numeric_v2_store._write_story_session_slots(index_path, {
+        "story-a": {"character-a": "session-aa", "character-b": "session-ab"},
+        "story-b": {"character-a": "session-ba"},
+    })
+
+    await numeric_v2_store.delete_numeric_v2_sessions(
+        tmp_path,
+        story_id="story-a",
+        character_id="character-a",
+    )
+
+    assert numeric_v2_store._read_story_session_slots(index_path) == {
+        "story-a": {"character-b": "session-ab"},
+        "story-b": {"character-a": "session-ba"},
+    }
+
+
 def _binding() -> dict[str, str]:
     return {
         "character_id": "character_11111111111111111111111111111111",
@@ -645,6 +666,29 @@ async def test_numeric_v2_session_creation_falls_back_without_hardlinks(tmp_path
 
     assert stored.session.session_id == "runtime_no_hardlink"
     assert (tmp_path / "numeric_v2" / "sessions" / "runtime_no_hardlink.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_session_creation_rolls_back_when_index_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    """恢复索引发布失败时不能遗留不可达的 Session 文件。"""  # noqa: DOCSTRING_CJK
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+
+    def _reject_index(_stories):
+        raise OSError("index write failed")
+
+    monkeypatch.setattr(runtime.store, "_write_story_session_index", _reject_index)
+
+    with pytest.raises(OSError, match="index write failed"):
+        await runtime.start_session(
+            session_id="runtime_index_failure",
+            catgirl_binding=_binding(),
+            opening_performance=_opening(),
+        )
+
+    assert not runtime.store._path("runtime_index_failure").exists()
 
 
 @pytest.mark.asyncio

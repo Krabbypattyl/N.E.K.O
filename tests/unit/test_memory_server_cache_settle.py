@@ -361,6 +361,8 @@ def test_theater_episode_upsert_caps_all_stories_to_thirty():
 def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, monkeypatch):
     """时间索引重建应删除旧剧场全文，同时保留普通对话。"""  # noqa: DOCSTRING_CJK
 
+    from datetime import datetime
+
     from sqlalchemy import create_engine, text
 
     from config import TIME_ORIGINAL_TABLE_NAME
@@ -376,6 +378,13 @@ def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, 
         "story_id": "story_legacy",
         "session_id": "legacy_session",
     })
+    unchanged = SystemMessage(content="未变化的旧剧本摘要", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_unchanged",
+        "session_id": "unchanged_session",
+    })
     SQLChatMessageHistory(
         connection_string=connection_string,
         session_id="normal_event",
@@ -386,10 +395,25 @@ def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, 
         session_id="legacy_event",
         table_name=TIME_ORIGINAL_TABLE_NAME,
     ).add_message(legacy)
+    SQLChatMessageHistory(
+        connection_string=connection_string,
+        session_id="theater-story-unchanged",
+        table_name=TIME_ORIGINAL_TABLE_NAME,
+    ).add_message(unchanged)
     with create_engine(connection_string).begin() as connection:
         connection.execute(text(
             f"ALTER TABLE {TIME_ORIGINAL_TABLE_NAME} ADD COLUMN timestamp DATETIME"
         ))
+        connection.execute(
+            text(
+                f"UPDATE {TIME_ORIGINAL_TABLE_NAME} SET timestamp = :timestamp "
+                "WHERE session_id = :session_id"
+            ),
+            {
+                "timestamp": datetime(2020, 1, 2, 3, 4, 5),
+                "session_id": "theater-story-unchanged",
+            },
+        )
 
     manager = TimeIndexedMemory(recent_history_manager=None)
     manager.engines["测试角色"] = create_engine(connection_string)
@@ -405,18 +429,28 @@ def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, 
     })
 
     result = manager.reconcile_theater_conversations(
-        {"story_legacy": ("theater-story-stable", [summary])},
+        {
+            "story_legacy": ("theater-story-stable", [summary]),
+            "story_unchanged": ("theater-story-unchanged", [unchanged]),
+        },
         "测试角色",
+        timestamp=datetime(2030, 5, 6, 7, 8, 9),
     )
 
     with manager.engines["测试角色"].connect() as connection:
         rows = connection.execute(text(
-            f"SELECT session_id, message FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id"
+            f"SELECT session_id, message, timestamp FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id"
         )).fetchall()
-    assert result == {"removed": 1, "stored": 1}
-    assert [row[0] for row in rows] == ["normal_event", "theater-story-stable"]
+    assert result == {"removed": 2, "stored": 2}
+    assert [row[0] for row in rows] == [
+        "normal_event",
+        "theater-story-stable",
+        "theater-story-unchanged",
+    ]
     assert "普通对话" in rows[0][1]
     assert "有界摘要" in rows[1][1]
+    assert str(rows[1][2]).startswith("2030-05-06 07:08:09")
+    assert str(rows[2][2]).startswith("2020-01-02 03:04:05")
 
 
 @pytest.mark.unit
@@ -648,7 +682,7 @@ async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
-    """powerful_memory OFF 模式：``_periodic_signal_extraction_loop`` 整段停
+    """powerful_memory OFF 模式：``_periodic_signal_extraction_loop`` 整段停  # noqa: DOCSTRING_CJK
     （见 ``if not powerful_enabled: continue``），per-turn Stage-1 是 fact
     extraction 的唯一兜底路径，必须保留——否则 OFF 模式用户的 facts.json
     完全停止更新（chatgpt-codex-connector PR #1346 抓到的 regression）。

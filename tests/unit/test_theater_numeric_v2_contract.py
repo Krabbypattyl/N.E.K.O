@@ -632,18 +632,19 @@ def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
         registry.import_package(numeric_v2_story())
 
 
-def test_numeric_v2_registry_marks_empty_defaults_initialized_without_bundled_story(tmp_path):
+def test_numeric_v2_registry_waits_for_future_bundled_story_before_marking(tmp_path):
     package_root = tmp_path / "theater" / "numeric_v2" / "packages"
     registry = NumericV2PackageRegistry(package_root)
 
     registry.ensure_default_packages()
 
     assert registry.list_packages() == []
-    assert (package_root / ".defaults_initialized").is_file()
+    assert not (package_root / ".defaults_initialized").exists()
 
     registry.ensure_default_packages()
 
     assert registry.list_packages() == []
+    assert not (package_root / ".defaults_initialized").exists()
 
 
 def test_numeric_v2_registry_treats_concurrent_default_install_as_success(

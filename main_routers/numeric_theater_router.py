@@ -596,12 +596,18 @@ async def submit_numeric_input(request: Request):
         current_binding = _ensure_current_catgirl(current.session, config_manager)
         # 幂等重放直接返回已提交快照，不能再次调用模型或重复结算。
         if turn.client_turn_id in current.session.processed_client_turn_ids:
+            replay_receipt = (
+                await _create_ended_receipt(config_manager, current.session)
+                if current.session.status == "ended"
+                else None
+            )
             return {
                 "ok": True,
                 "idempotent_replay": True,
                 **_numeric_payload(
                     runtime,
                     current,
+                    end_receipt=replay_receipt,
                     display_binding=current_binding,
                 ),
             }
@@ -690,6 +696,19 @@ async def end_numeric_session(request: Request):
             return _error("numeric_session_not_found", 404)
         # 结束操作同样复验当前猫娘，避免角色切换后继续改写旧人格 Session。
         current_binding = _ensure_current_catgirl(current.session, config_manager)
+        if current.session.status == "ended":
+            # Session 已提交但回执写入失败时，客户端会重试结束请求；此时只补建回执，不能再次推进 revision。
+            receipt = await _create_ended_receipt(config_manager, current.session)
+            return {
+                "ok": True,
+                "idempotent_replay": True,
+                **_numeric_payload(
+                    runtime,
+                    current,
+                    end_receipt=receipt,
+                    display_binding=current_binding,
+                ),
+            }
         async with runtime.story_session_guard():
             await _assert_numeric_writable(config_manager, "sessions")
             stored = await runtime.end_session(

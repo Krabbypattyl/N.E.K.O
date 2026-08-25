@@ -596,13 +596,7 @@ class NumericV2Runtime:
             catgirl_binding=catgirl_binding,
             opening_performance=opening_performance,
         )
-        stored = await self.store.create(session)
-        await self.store.set_story_session_id(
-            self.engine.story_id,
-            str(session.catgirl_binding.get("character_id") or ""),
-            session.session_id,
-        )
-        return stored
+        return await self.store.create_story_session(session)
 
     async def restore_story_session(
         self,

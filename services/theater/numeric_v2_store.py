@@ -370,10 +370,21 @@ async def delete_numeric_v2_sessions(
                     pass
 
         stories = _read_story_session_slots(index_path)
-        if normalized_story_id:
+        if (
+            normalized_story_id
+            and not normalized_character_id
+            and not normalized_legacy_name
+        ):
             stories.pop(normalized_story_id, None)
         if normalized_character_id:
-            for current_story_id in list(stories):
+            story_ids = (
+                [normalized_story_id]
+                if normalized_story_id
+                else list(stories)
+            )
+            for current_story_id in story_ids:
+                if current_story_id not in stories:
+                    continue
                 stories[current_story_id].pop(normalized_character_id, None)
                 if not stories[current_story_id]:
                     stories.pop(current_story_id)
@@ -559,6 +570,43 @@ class NumericV2SessionStore:
             stored = NumericV2StoredSession(session, ())
             self._write(path, stored, exclusive=True)
             return stored
+
+    async def create_story_session(
+        self,
+        session: "ScriptSessionV2",
+    ) -> NumericV2StoredSession:
+        """原子创建 Session 文件并发布对应剧本恢复槽位。"""  # noqa: DOCSTRING_CJK
+
+        path = self._path(session.session_id)
+        index_path = self._story_session_index_path
+        character_id = str(session.catgirl_binding.get("character_id") or "").strip()
+        if not character_id:
+            raise NumericV2StoreError("numeric_story_session_index_invalid")
+        async with _lock(index_path):
+            async with _lock(path):
+                if path.exists():
+                    raise NumericV2SessionExistsError("numeric_session_exists")
+                self.engine.validate_session(session)
+                stored = NumericV2StoredSession(session, ())
+                self._write(path, stored, exclusive=True)
+                stories = self._read_story_session_index()
+                stories.setdefault(session.story_package_id, {})[
+                    character_id
+                ] = session.session_id
+                try:
+                    self._write_story_session_index(stories)
+                except Exception:
+                    # 索引发布失败时撤销刚创建的不可达 Session，保持文件与恢复槽位原子一致。
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as rollback_exc:
+                        raise NumericV2StoreError(
+                            "numeric_session_create_rollback_failed"
+                        ) from rollback_exc
+                    raise
+                return stored
 
     async def replace_active(
         self,

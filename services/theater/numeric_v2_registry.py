@@ -44,8 +44,16 @@ class NumericV2PackageRegistry:
             return
         try:
             self.root.mkdir(parents=True, exist_ok=True)
-            if not any(self.root.glob("*.json")) and _DEFAULT_PACKAGE_ROOT.is_dir():
-                for source in sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json")):
+            bundled_sources = (
+                sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json"))
+                if _DEFAULT_PACKAGE_ROOT.is_dir()
+                else []
+            )
+            # 当前发行物没有内置包时不写完成标记，后续版本加入默认剧本后仍能自动补装。
+            if not bundled_sources:
+                return
+            if not any(self.root.glob("*.json")):
+                for source in bundled_sources:
                     payload = json.loads(source.read_text(encoding="utf-8"))
                     compiled = self.compiler.compile(payload)
                     target = self.package_path(compiled.story_id)

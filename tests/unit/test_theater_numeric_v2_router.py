@@ -396,6 +396,66 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
         assert continued.json()["session"]["revision"] == 2
 
 
+def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch):
+    """结束状态已提交后，结束重试和回合幂等重放都应补建缺失回执。"""  # noqa: DOCSTRING_CJK
+    client = _client(tmp_path, monkeypatch)
+    turn_payload = {
+        "story_id": "numeric_v2_contract",
+        "session_id": "receipt_retry_session",
+        "client_turn_id": "receipt_retry_turn",
+        "base_revision": 0,
+        "message": "先把这句话说完。",
+    }
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "receipt_retry_session",
+            },
+        )
+        assert started.status_code == 200
+        assert client.post(
+            "/api/theater-numeric/session/input",
+            json=turn_payload,
+        ).status_code == 200
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "receipt_retry_session",
+                "base_revision": 1,
+            },
+        )
+        assert ended.status_code == 200
+
+        receipt_root = tmp_path / "theater" / "numeric_v2" / "end_receipts"
+        for path in receipt_root.glob("*.json"):
+            path.unlink()
+        retried_end = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "receipt_retry_session",
+                "base_revision": 1,
+            },
+        )
+        assert retried_end.status_code == 200
+        assert retried_end.json()["idempotent_replay"] is True
+        assert retried_end.json()["end_receipt_id"].startswith("theater_end_")
+
+        for path in receipt_root.glob("*.json"):
+            path.unlink()
+        replayed_turn = client.post(
+            "/api/theater-numeric/session/input",
+            json=turn_payload,
+        )
+
+    assert replayed_turn.status_code == 200
+    assert replayed_turn.json()["idempotent_replay"] is True
+    assert replayed_turn.json()["end_receipt_id"].startswith("theater_end_")
+
+
 def test_numeric_v2_actor_failure_does_not_commit_half_turn(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     with client:
@@ -1573,3 +1633,66 @@ def test_numeric_session_survives_current_catgirl_rename(tmp_path, monkeypatch):
     assert resumed.status_code == 200
     assert resumed.json()["resumed"] is True
     assert resumed.json()["session"]["session_id"] == "rename_session"
+
+
+def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monkeypatch):
+    """模型等待期间的同角色改名必须随本轮提交保留，不能被旧候选状态覆盖。"""  # noqa: DOCSTRING_CJK
+
+    class _RenamableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.current_name = "改名前"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": self.current_name,
+                "猫娘": {
+                    self.current_name: {
+                        "昵称": self.current_name,
+                        "人格": "安静而认真。",
+                        "_reserved": {"character_id": "character_" + "1" * 32},
+                    },
+                },
+                "主人": {"昵称": "哥哥"},
+            }
+
+    manager = _RenamableConfigManager(tmp_path)
+    client = _client(tmp_path, monkeypatch, manager)
+
+    async def rename_during_actor(*args, **kwargs):
+        manager.current_name = "改名后"
+        return _performance("我在听。")
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_turn",
+        rename_during_actor,
+    )
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "rename_mid_turn"},
+        )
+        assert started.status_code == 200
+
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "rename_mid_turn",
+                "client_turn_id": "rename_mid_turn_1",
+                "base_revision": 0,
+                "message": "继续说吧。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    session_path = (
+        tmp_path
+        / "theater"
+        / "numeric_v2"
+        / "sessions"
+        / "rename_mid_turn.json"
+    )
+    persisted = json.loads(session_path.read_text(encoding="utf-8"))
+    assert persisted["session"]["catgirl_binding"]["catgirl_name"] == "改名后"
