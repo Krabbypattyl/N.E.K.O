@@ -681,6 +681,34 @@ def test_numeric_v2_registry_waits_for_future_bundled_story_before_marking(tmp_p
     assert not (package_root / ".defaults_initialized").exists()
 
 
+def test_numeric_v2_registry_installs_missing_defaults_beside_user_packages(
+    tmp_path,
+    monkeypatch,
+):
+    """用户已有剧本不能阻止首次安装其他内置剧本。"""  # noqa: DOCSTRING_CJK
+
+    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
+    bundled_root = tmp_path / "bundled"
+    bundled_root.mkdir()
+    (bundled_root / "default.json").write_text(
+        json.dumps(numeric_v2_story(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    registry = NumericV2PackageRegistry(package_root)
+    user_story = numeric_v2_story()
+    user_story["meta"]["story_id"] = "user_numeric_story"
+    registry.import_package(user_story)
+    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
+
+    registry.ensure_default_packages()
+
+    assert {item["story_id"] for item in registry.list_packages()} == {
+        "numeric_v2_contract",
+        "user_numeric_story",
+    }
+    assert (package_root / ".defaults_initialized").is_file()
+
+
 def test_numeric_v2_registry_treats_concurrent_default_install_as_success(
     tmp_path,
     monkeypatch,

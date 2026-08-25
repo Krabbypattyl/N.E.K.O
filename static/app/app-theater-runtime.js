@@ -469,7 +469,8 @@
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
         if (state.active && (state.storyId !== nextStoryId || state.sessionId !== nextSessionId)) {
-            // 切换 Session 时终止旧正文播放并解除旧回合占位，迟到响应只能留在服务端权威历史中。
+            // 新快照可能加载失败，切换 Session 时必须先停止旧正文与旧语音，不能等待加载结果。
+            claimAudioPlayback();
             state.queueToken += 1;
             state.pendingTurn = null;
             state.currentBlock = null;

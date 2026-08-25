@@ -263,6 +263,19 @@ def _trim_quarantine_safely(quarantine_root: Path) -> None:
         logger.warning("Numeric v2 隔离区裁剪失败", exc_info=True)
 
 
+def _caused_by_os_error(exc: BaseException) -> bool:
+    """识别被业务异常包装的暂时性文件系统错误。"""  # noqa: DOCSTRING_CJK
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def audit_numeric_v2_storage(
     theater_root: Path,
     registry: NumericV2PackageRegistry,
@@ -290,12 +303,23 @@ def audit_numeric_v2_storage(
     quarantined = 0
     engine_cache: dict[str, Any] = {}
     for path in sorted(session_root.glob("*.json")):
-        summary = _read_numeric_v2_session_summary(path)
         try:
+            summary = _read_numeric_v2_session_summary(
+                path,
+                raise_on_io_error=True,
+            )
             if summary is None or summary["session_id"] != path.stem:
                 raise NumericV2StoreError("numeric_session_summary_invalid")
             story_id = summary["story_id"]
             if story_id not in engine_cache:
+                package_path = registry.package_path(story_id)
+                try:
+                    package_path.stat()
+                except FileNotFoundError:
+                    # 已删除剧本留下的孤儿 Session 属于可确定的数据失效，不应当作暂时性 I/O 故障。
+                    raise NumericV2StoreError(
+                        "numeric_session_story_missing"
+                    ) from None
                 engine_cache[story_id] = registry.load_engine(story_id)
             store = NumericV2SessionStore(theater_root, engine_cache[story_id])
             stored = store._read(path)
@@ -318,6 +342,11 @@ def audit_numeric_v2_storage(
                 )
             )
         except Exception as exc:
+            if _caused_by_os_error(exc):
+                # 权限、挂载或设备故障可能只是暂时状态；本轮中止，绝不移动仍可能有效的数据。
+                raise NumericV2StoreError(
+                    "numeric_session_audit_read_failed"
+                ) from exc
             try:
                 _quarantine_session(path, quarantine_root, "invalid")
                 quarantined += 1

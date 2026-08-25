@@ -972,6 +972,50 @@ async def test_numeric_v2_startup_audit_bounds_corrupt_quarantine(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_startup_audit_does_not_quarantine_transient_io_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """暂时性读取失败必须中止审计，不能把有效 Session 当作损坏数据移动。"""  # noqa: DOCSTRING_CJK
+
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_transient_audit_failure",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_path = runtime.store._path(stored.session.session_id)
+    original_read_summary = numeric_v2_maintenance._read_numeric_v2_session_summary
+
+    def transient_read(path, *args, **kwargs):
+        if path == session_path:
+            raise PermissionError("temporary storage failure")
+        return original_read_summary(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        numeric_v2_maintenance,
+        "_read_numeric_v2_session_summary",
+        transient_read,
+    )
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_session_audit_read_failed",
+    ):
+        audit_numeric_v2_storage(
+            tmp_path,
+            registry,
+            character_ids_by_name={"Lan": _binding()["character_id"]},
+        )
+
+    assert session_path.is_file()
+    assert not list((tmp_path / "numeric_v2" / "quarantine").glob("*"))
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_recovers_prepared_story_delete_after_interruption(tmp_path):
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")

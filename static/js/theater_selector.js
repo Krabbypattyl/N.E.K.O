@@ -28,6 +28,7 @@
     var modalResolve = null;
     var modalPersistent = false;
     var modalReturnFocus = null;
+    var modalQueue = [];
 
     function $(id) { return document.getElementById(id); }
     function t(key, fallback, options) {
@@ -238,8 +239,8 @@
         window.history.replaceState(null, '', url.toString());
         if (state.pendingEnd && state.pendingEnd.story_id === storyId) await maybePromptMemory();
     }
-    // 页面只保留一个模态框实例；persistent 模式用于归档失败后的原地重试。
-    function showModal(options) {
+    // 页面只保留一个模态框实例；所有请求串行展示，避免异步回执覆盖尚未选择的确认框。
+    function presentModal(options, resolve) {
         var modal = $('theater-modal');
         if (modal.hidden) {
             modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -253,10 +254,26 @@
         confirm.textContent = options.confirmLabel;
         confirm.classList.toggle('theater-danger', options.danger === true);
         modalPersistent = options.persistent === true;
+        modalResolve = resolve;
         modal.hidden = false;
         // 初始焦点放在弹窗容器，避免第一个按钮在弹出瞬间出现误导性的选中描边；Tab 后仍保留按钮焦点环。
         modal.querySelector('.theater-modal').focus();
-        return new Promise(function (resolve) { modalResolve = resolve; });
+    }
+    function drainModalQueue() {
+        if (modalResolve || modalPersistent || !modalQueue.length) return;
+        var request = modalQueue.shift();
+        presentModal(request.options, request.resolve);
+    }
+    function showModal(options) {
+        return new Promise(function (resolve) {
+            // 归档失败后的重试继续占用当前弹窗，不让排队中的普通确认插入其中。
+            if (modalPersistent && !modalResolve && options.persistent === true) {
+                presentModal(options, resolve);
+                return;
+            }
+            modalQueue.push({ options: options, resolve: resolve });
+            drainModalQueue();
+        });
     }
     function restoreModalFocus() {
         var target = modalReturnFocus;
@@ -272,13 +289,17 @@
         var resolve = modalResolve;
         modalResolve = null;
         if (resolve) resolve(confirmed);
+        if (!modalPersistent) Promise.resolve().then(drainModalQueue);
     }
     function hideModal() {
+        var resolve = modalResolve;
+        modalResolve = null;
         $('theater-modal').hidden = true;
         modalPersistent = false;
-        modalResolve = null;
         setModalBusy(false);
         restoreModalFocus();
+        if (resolve) resolve(false);
+        Promise.resolve().then(drainModalQueue);
     }
     function setModalBusy(busy) {
         $('theater-modal-cancel').disabled = busy;

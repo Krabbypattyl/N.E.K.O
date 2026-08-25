@@ -844,11 +844,12 @@ async def resume_numeric_session(request: Request):
     try:
         config_manager = get_config_manager()
         runtime = await _runtime_for_story(config_manager, story_id)
-        current = await runtime.restore_session(session_id)
-        if current is None:
-            return _error("numeric_session_not_found", 404)
-        current_binding = _ensure_current_catgirl(current.session, config_manager)
-        async with runtime.story_session_guard():
+        # 恢复状态与当前角色属于同一份可变事实，必须在统一锁顺序内读取并复验。
+        async with character_config_mutation_lock, runtime.story_session_guard():
+            current = await runtime.restore_session(session_id)
+            if current is None:
+                return _error("numeric_session_not_found", 404)
+            current_binding = _ensure_current_catgirl(current.session, config_manager)
             await _assert_numeric_writable(config_manager, "sessions")
             stored = await runtime.resume_session(
                 session_id,

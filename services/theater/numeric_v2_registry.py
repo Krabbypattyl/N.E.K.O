@@ -52,18 +52,17 @@ class NumericV2PackageRegistry:
             # 当前发行物没有内置包时不写完成标记，后续版本加入默认剧本后仍能自动补装。
             if not bundled_sources:
                 return
-            if not any(self.root.glob("*.json")):
-                for source in bundled_sources:
-                    payload = json.loads(source.read_text(encoding="utf-8"))
-                    compiled = self.compiler.compile(payload)
-                    target = self.package_path(compiled.story_id)
-                    if target.exists():
-                        continue
-                    try:
-                        self.import_package(compiled.story)
-                    except NumericV2PackageExistsError:
-                        # 多进程首次启动可能同时安装同一默认包；另一进程已写入即视为初始化成功。
-                        pass
+            for source in bundled_sources:
+                payload = json.loads(source.read_text(encoding="utf-8"))
+                compiled = self.compiler.compile(payload)
+                target = self.package_path(compiled.story_id)
+                if target.exists():
+                    continue
+                try:
+                    self.import_package(compiled.story)
+                except NumericV2PackageExistsError:
+                    # 多进程首次启动可能同时安装同一默认包；另一进程已写入即视为初始化成功。
+                    pass
             marker.touch(exist_ok=True)
         except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
             raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc

@@ -322,6 +322,80 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
 
 
 @pytest.mark.frontend
+def test_selector_queues_post_end_memory_prompt_behind_open_confirmation(
+    mock_page: Page,
+    running_server: str,
+):
+    """结束回执到达时不能覆盖用户尚未选择的重新开始确认框。"""  # noqa: DOCSTRING_CJK
+
+    start_calls: list[dict] = []
+    skip_calls: list[dict] = []
+    archive_pending = {"value": False}
+    ended_session = {
+        "session_id": "ended-session",
+        "revision": 4,
+        "status": "ended",
+    }
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            _fulfill(route, {"ok": True, "stories": [STORY]})
+            return
+        if path.endswith("/api/theater-numeric/session/active"):
+            payload = {"ok": True, "session": ended_session}
+            if archive_pending["value"]:
+                payload.update({
+                    "end_receipt_id": "queued-memory-receipt",
+                    "archive_request_id": "queued-memory-request",
+                    "archive_status": "pending",
+                })
+            else:
+                payload["archive_status"] = "written"
+            _fulfill(route, payload)
+            return
+        if path.endswith("/api/theater-numeric/session/start"):
+            start_calls.append(json.loads(request.post_data or "{}"))
+            _fulfill(route, {"ok": False, "reason": "expected_test_stop"}, 409)
+            return
+        if path.endswith("/api/theater-numeric/session/archive/skip"):
+            skip_calls.append(json.loads(request.post_data or "{}"))
+            _fulfill(route, {"ok": True, "status": "skipped"})
+            return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": True, "archives": []})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+    mock_page.locator("#theater-start-btn").click()
+    expect(mock_page.locator("#theater-modal-title")).to_have_text("开始新的演绎？")
+
+    archive_pending["value"] = True
+    mock_page.evaluate(
+        """() => window.postMessage({
+            schema: 'neko.theater.interpage.v1',
+            action: 'theater:post-end',
+            story_id: 'numeric_browser_story',
+            session_id: 'ended-session',
+            revision: 4,
+            end_receipt_id: 'queued-memory-receipt'
+        }, window.location.origin)"""
+    )
+    expect(mock_page.locator("#theater-modal-title")).to_have_text("开始新的演绎？")
+
+    mock_page.locator("#theater-modal-confirm").click()
+    mock_page.wait_for_function("() => document.querySelector('#theater-inline-feedback').textContent.includes('启动演出失败')")
+    assert len(start_calls) == 1
+    expect(mock_page.locator("#theater-modal-title")).to_contain_text("记下本次演绎内容")
+    mock_page.locator("#theater-modal-cancel").click()
+    expect(mock_page.locator("#theater-modal")).to_be_hidden()
+    assert len(skip_calls) == 1
+
+
+@pytest.mark.frontend
 def test_selector_header_keeps_title_horizontal_on_narrow_viewport(mock_page: Page, running_server: str):
     """窄窗口保留横向标题和可见窗口控制，不把标题挤成竖排。"""  # noqa: DOCSTRING_CJK
 

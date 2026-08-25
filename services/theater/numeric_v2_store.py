@@ -203,10 +203,19 @@ def _session_matches_character(
     )
 
 
-def _read_numeric_v2_session_summary(path: Path) -> dict[str, str] | None:
+def _read_numeric_v2_session_summary(
+    path: Path,
+    *,
+    raise_on_io_error: bool = False,
+) -> dict[str, str] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError:
+        # 日常列表保持旧有容错；启动审计则必须区分暂时不可读与内容损坏。
+        if raise_on_io_error:
+            raise
+        return None
+    except (UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
         return None

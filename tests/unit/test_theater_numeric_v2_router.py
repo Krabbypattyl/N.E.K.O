@@ -418,6 +418,87 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
         assert continued.json()["session"]["revision"] == 2
 
 
+def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
+    tmp_path,
+    monkeypatch,
+):
+    """恢复前的角色复验必须与 Session 状态变更处于同一锁区间。"""  # noqa: DOCSTRING_CJK
+
+    class _MutableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.current_name = "测试猫娘"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": self.current_name,
+                "猫娘": {
+                    "测试猫娘": _catgirl_profile("测试猫娘", "安静而认真。"),
+                    "新猫娘": _catgirl_profile("新猫娘", "活泼而坦率。"),
+                },
+                "主人": {"昵称": "哥哥"},
+            }
+
+    manager = _MutableConfigManager(tmp_path)
+    client = _client(tmp_path, monkeypatch, config_manager=manager)
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "resume_lock_guard"},
+        ).status_code == 200
+        assert client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "resume_lock_guard",
+                "base_revision": 0,
+            },
+        ).status_code == 200
+
+        story_guard_depth = {"value": 0}
+        check_states = []
+        original_guard = numeric_theater_router.NumericV2Runtime.story_session_guard
+        original_check = numeric_theater_router._ensure_current_catgirl
+
+        @asynccontextmanager
+        async def tracked_story_guard(runtime):
+            async with original_guard(runtime):
+                story_guard_depth["value"] += 1
+                try:
+                    yield
+                finally:
+                    story_guard_depth["value"] -= 1
+
+        def tracked_check(session, config_manager):
+            check_states.append({
+                "character": numeric_theater_router.character_config_mutation_lock.locked(),
+                "story": story_guard_depth["value"] > 0,
+            })
+            return original_check(session, config_manager)
+
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2Runtime,
+            "story_session_guard",
+            tracked_story_guard,
+        )
+        monkeypatch.setattr(
+            numeric_theater_router,
+            "_ensure_current_catgirl",
+            tracked_check,
+        )
+        resumed = client.post(
+            "/api/theater-numeric/session/resume",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "resume_lock_guard",
+                "base_revision": 0,
+            },
+        )
+
+        assert resumed.status_code == 200
+        assert check_states == [{"character": True, "story": True}]
+
+
 def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch):
     """结束状态已提交后，结束重试和回合幂等重放都应补建缺失回执。"""  # noqa: DOCSTRING_CJK
 

@@ -197,6 +197,24 @@ def test_capsule_runtime_discards_turn_response_after_session_switch():
     assert request < stale_guard < apply_snapshot
 
 
+def test_capsule_runtime_stops_old_audio_before_loading_replacement_session():
+    """替换 Session 的快照即使加载失败，也不能继续播放旧演绎语音。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    launch_start = runtime.index("async function performLaunch(message, launchToken)")
+    switch_guard = runtime.index(
+        "if (state.active && (state.storyId !== nextStoryId || state.sessionId !== nextSessionId))",
+        launch_start,
+    )
+    clear_audio = runtime.index("claimAudioPlayback();", switch_guard)
+    loading = runtime.index(
+        "state.active = true; state.phase = 'loading'",
+        switch_guard,
+    )
+
+    assert switch_guard < clear_audio < loading
+
+
 def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     runtime = _source("static/app/app-theater-runtime.js")
     geometry = _source("static/app/app-react-chat-window/geometry-and-messages.js")
