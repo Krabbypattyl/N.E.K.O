@@ -1844,6 +1844,33 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 '[{"id":"fact-1","text":"旧记忆"}]',
                 encoding="utf-8",
             )
+            # 构造升级前没有 character_id 的剧场档案和结束回执，验证它们进入同一改名事务。
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.paths import theater_root
+
+            numeric_archive_store = NumericV2ArchiveStore(theater_root(cm))
+            legacy_receipt_id = "theater_end_" + "b" * 40
+            numeric_archive_store._write(
+                numeric_archive_store._public_archive_path("legacy_rename_session"),
+                {
+                    "schema": "neko.theater.numeric.v2.public-archive",
+                    "story_id": "legacy_rename_story",
+                    "session_id": "legacy_rename_session",
+                    "character_id": "",
+                    "catgirl_name": "旧角色",
+                },
+            )
+            numeric_archive_store._write(
+                numeric_archive_store._receipt_path(legacy_receipt_id),
+                {
+                    "schema": "neko.theater.numeric.v2.end-receipt",
+                    "receipt_id": legacy_receipt_id,
+                    "story_id": "legacy_rename_story",
+                    "session_id": "legacy_rename_session",
+                    "character_id": "",
+                    "catgirl_name": "旧角色",
+                },
+            )
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 rename_result = await characters_router_module.rename_catgirl(
@@ -1880,6 +1907,17 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             assert not (Path(cm.memory_dir) / "旧角色").exists()
             assert (Path(cm.memory_dir) / "新角色" / "persona.json").is_file()
             assert (Path(cm.memory_dir) / "新角色" / "facts.json").is_file()
+            renamed_character_id = saved_profile["_reserved"]["character_id"]
+            renamed_archive = numeric_archive_store._read(
+                numeric_archive_store._public_archive_path("legacy_rename_session")
+            )
+            renamed_receipt = numeric_archive_store._read(
+                numeric_archive_store._receipt_path(legacy_receipt_id)
+            )
+            assert renamed_archive["character_id"] == renamed_character_id
+            assert renamed_archive["catgirl_name"] == "新角色"
+            assert renamed_receipt["character_id"] == renamed_character_id
+            assert renamed_receipt["catgirl_name"] == "新角色"
 
             recent_payload = json.loads(
                 (Path(cm.memory_dir) / "新角色" / "recent.json").read_text(encoding="utf-8")

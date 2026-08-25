@@ -25,6 +25,8 @@
     var requestJson = transport.requestJson;
     // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
     var state = { stories: [], storyId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
+    // 同一剧本在切换猫娘后仍保持相同 story_id，单独世代号用于拦截旧角色的迟到响应。
+    var characterEpoch = 0;
     var modalResolve = null;
     var modalPersistent = false;
     var modalReturnFocus = null;
@@ -199,14 +201,18 @@
             list.appendChild(row);
         });
     }
-    async function loadMemoryArchives(storyId) {
+    async function loadMemoryArchives(storyId, expectedCharacterEpoch) {
+        var loadCharacterEpoch = expectedCharacterEpoch === undefined
+            ? characterEpoch
+            : expectedCharacterEpoch;
         var result = await requestJson(api.memoryArchives + '?story_id=' + encodeURIComponent(storyId));
-        if (state.storyId !== storyId) return;
+        if (state.storyId !== storyId || loadCharacterEpoch !== characterEpoch) return;
         state.archives = result.ok && Array.isArray(result.archives) ? result.archives : [];
         renderMemoryArchives();
     }
     async function selectStory(storyId, forceWhileBusy) {
         if ((state.busy && forceWhileBusy !== true) || !storyId) return;
+        var selectionCharacterEpoch = characterEpoch;
         state.storyId = storyId;
         state.session = null;
         state.archives = [];
@@ -215,7 +221,7 @@
         renderDetail();
         setStatus('theater.loadingSession', '正在读取演绎进度...');
         var result = await requestJson(api.active + '?story_id=' + encodeURIComponent(storyId));
-        if (state.storyId !== storyId) return;
+        if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
         if (result.ok && result.session) {
             state.session = result.session;
             if (result.session.status === 'ended' && result.end_receipt_id) {
@@ -234,9 +240,9 @@
             }
         }
         else if (result._status !== 404) setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
-        await loadMemoryArchives(storyId);
+        await loadMemoryArchives(storyId, selectionCharacterEpoch);
         // 归档请求返回期间可能已经切换剧本；旧选择不能覆盖详情或地址栏。
-        if (state.storyId !== storyId) return;
+        if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
         renderDetail();
         setStatus('theater.ready', '就绪');
         var url = new URL(window.location.href);
@@ -345,11 +351,13 @@
     }
     async function startSession(replaceExisting) {
         if (state.busy || !state.storyId) return;
+        var startCharacterEpoch = characterEpoch;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.start, { method: 'POST', body: {
                 story_id: state.storyId, session_id: createId('numeric_capsule_session_'), replace_existing: replaceExisting === true
             }});
+            if (startCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'start_failed');
             state.session = result.session;
             renderActions();
@@ -362,6 +370,7 @@
     async function continueSession() {
         var kind = sessionKind();
         if (!state.session || (kind !== 'active' && kind !== 'paused')) return;
+        var continueCharacterEpoch = characterEpoch;
         setBusy(true);
         try {
             var result = kind === 'paused'
@@ -371,6 +380,7 @@
                     base_revision: state.session.revision
                 }})
                 : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?story_id=' + encodeURIComponent(state.storyId));
+            if (continueCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'restore_failed');
             state.session = result.session;
             renderActions();
@@ -384,6 +394,7 @@
         var targetStoryId = state.storyId;
         var targetSessionId = String(state.session.session_id || '');
         var targetRevision = Number(state.session.revision || 0);
+        var targetCharacterEpoch = characterEpoch;
         var confirmed = await showModal({
             title: t('theater.endPerformance', '结束演绎'),
             body: t('theater.endConfirm', '确定结束当前演绎吗？'),
@@ -391,7 +402,7 @@
             confirmLabel: t('theater.endPerformance', '结束演绎'),
             danger: true
         });
-        if (!confirmed || !selectedSessionMatches(targetStoryId, targetSessionId) || sessionKind() !== 'active') return;
+        if (!confirmed || targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId) || sessionKind() !== 'active') return;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.end, { method: 'POST', body: {
@@ -399,7 +410,7 @@
                 session_id: targetSessionId,
                 base_revision: targetRevision
             }});
-            if (!selectedSessionMatches(targetStoryId, targetSessionId)) return;
+            if (targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId)) return;
             if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
             state.session = result.session;
             state.pendingEnd = {
@@ -464,6 +475,7 @@
     }
     async function toggleArchivePin(archive) {
         if (state.busy || !archive || !archive.session_id) return;
+        var pinCharacterEpoch = characterEpoch;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.pinMemoryArchive, { method: 'POST', body: {
@@ -471,6 +483,7 @@
                 session_id: archive.session_id,
                 pinned: !archive.pinned
             }});
+            if (pinCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error('pin_failed');
             await loadMemoryArchives(state.storyId);
         } catch (_) {
@@ -480,6 +493,7 @@
     async function forgetStoryMemory() {
         if (!state.storyId || state.busy) return;
         var targetStoryId = state.storyId;
+        var targetCharacterEpoch = characterEpoch;
         var confirmed = await showModal({
             title: t('theater.forgetStoryMemoryTitle', '忘记该剧本？'),
             body: t('theater.forgetStoryMemoryBody', '这会删除当前猫娘对该剧本的摘要、时间索引和完整演绎档案，但不会删除剧本或当前进度。'),
@@ -487,13 +501,13 @@
             confirmLabel: t('theater.forgetStoryMemory', '忘记该剧本'),
             danger: true
         });
-        if (!confirmed || state.storyId !== targetStoryId) return;
+        if (!confirmed || targetCharacterEpoch !== characterEpoch || state.storyId !== targetStoryId) return;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.forgetMemory, {
                 method: 'POST', body: { story_id: targetStoryId }
             });
-            if (state.storyId !== targetStoryId) return;
+            if (targetCharacterEpoch !== characterEpoch || state.storyId !== targetStoryId) return;
             if (!result.ok) throw new Error('forget_failed');
             state.archives = [];
             state.pendingEnd = null;
@@ -546,13 +560,17 @@
                     result = { ok: false };
                 }
                 setModalBusy(false);
+                if (state.pendingEnd !== receipt) {
+                    hideModal();
+                    break;
+                }
                 if (!result.ok) {
                     archiveFailed = true;
                     $('theater-modal-error').hidden = false;
                     $('theater-modal-error').textContent = t('theater.memorySaveFailed', '演绎记录写入失败，请稍后重试。');
                     continue;
                 }
-                state.pendingEnd = null;
+                if (state.pendingEnd === receipt) state.pendingEnd = null;
                 hideModal();
                 if (remember) {
                     await loadMemoryArchives(receipt.story_id);
@@ -562,6 +580,12 @@
             }
         } finally {
             state.memoryPromptActive = false;
+            // 处理旧回执期间若收到更新回执，释放串行闸门后继续消费新事实。
+            if (state.pendingEnd && state.pendingEnd !== receipt) {
+                maybePromptMemory().catch(function () {
+                    setFeedback(t('theater.memorySaveFailed', '演绎记录写入失败，请稍后重试。'), true);
+                });
+            }
         }
     }
     async function loadStories(preferredStoryId) {
@@ -584,7 +608,27 @@
         if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
         if (message.action === 'theater:post-end' && message.story_id && message.session_id && message.end_receipt_id) {
             state.pendingEnd = message;
-            selectStory(String(message.story_id));
+            selectStory(String(message.story_id)).catch(function () {
+                setStatus('theater.failed', '出错了');
+                setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+            });
+        } else if (message.action === 'catgirl_switched') {
+            // 清除旧角色详情和确认框，并让所有已经发出的同 story_id 请求失效后重新读取当前角色。
+            characterEpoch += 1;
+            state.pendingEnd = null;
+            state.session = null;
+            state.archives = [];
+            modalQueue.splice(0).forEach(function (request) { request.resolve(false); });
+            hideModal();
+            setFeedback('');
+            renderDetail();
+            var selectedStoryId = state.storyId;
+            if (selectedStoryId) {
+                selectStory(selectedStoryId, true).catch(function () {
+                    setStatus('theater.failed', '出错了');
+                    setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+                });
+            }
         }
     }
     function bindModalKeyboard() {

@@ -511,6 +511,80 @@ class NumericV2ArchiveStore:
         )
         return {"session_id": str(session_id), "pinned": payload["pinned"]}
 
+    def update_character_binding(
+        self,
+        *,
+        character_id: str,
+        legacy_catgirl_name: str,
+        catgirl_name: str,
+    ) -> dict[str, int]:
+        """角色改名时同步刷新冷档案、结束回执和待提交档案的身份投影。"""  # noqa: DOCSTRING_CJK
+
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        normalized_catgirl_name = str(catgirl_name or "").strip()
+        if not normalized_character_id or not normalized_catgirl_name:
+            raise NumericV2ArchiveError("numeric_archive_character_binding_invalid")
+
+        updated_archives = 0
+        for archive in self.list_public_archives(
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+        ):
+            path = Path(str(archive["path"]))
+            payload = self._read(path)
+            if payload is None or not self._matches_character(
+                payload,
+                normalized_character_id,
+                normalized_legacy_name,
+            ):
+                continue
+            payload["character_id"] = normalized_character_id
+            payload["catgirl_name"] = normalized_catgirl_name
+            self._write(path, payload)
+            updated_archives += 1
+
+        updated_receipts = 0
+        updated_staged_archives = 0
+        receipt_paths = (
+            sorted(self.root.glob("theater_end_*.json"))
+            if self.root.is_dir()
+            else []
+        )
+        for path in receipt_paths:
+            receipt = self._read(path)
+            if receipt is None or not self._matches_character(
+                receipt,
+                normalized_character_id,
+                normalized_legacy_name,
+            ):
+                continue
+            receipt["character_id"] = normalized_character_id
+            receipt["catgirl_name"] = normalized_catgirl_name
+            self._write(path, receipt)
+            updated_receipts += 1
+
+            staged_path = self._staged_archive_path(
+                str(receipt.get("receipt_id") or "")
+            )
+            staged = self._read(staged_path)
+            if staged is None or not self._matches_character(
+                staged,
+                normalized_character_id,
+                normalized_legacy_name,
+            ):
+                continue
+            staged["character_id"] = normalized_character_id
+            staged["catgirl_name"] = normalized_catgirl_name
+            self._write(staged_path, staged)
+            updated_staged_archives += 1
+
+        return {
+            "archives": updated_archives,
+            "receipts": updated_receipts,
+            "staged_archives": updated_staged_archives,
+        }
+
     def delete_public_archives(
         self,
         *,

@@ -84,7 +84,8 @@ def test_selector_binds_delayed_confirmations_to_original_selection():
     assert "story_id: targetStoryId" in end_block
     assert "selectedSessionMatches(targetStoryId, targetSessionId)" in begin_block
     assert "sessionKind() === targetSessionKind" in begin_block
-    assert "if (!confirmed || state.storyId !== targetStoryId) return;" in forget_block
+    assert "targetCharacterEpoch !== characterEpoch" in forget_block
+    assert "state.storyId !== targetStoryId" in forget_block
     assert "body: { story_id: targetStoryId }" in forget_block
 
 
@@ -141,8 +142,14 @@ def test_selector_does_not_publish_stale_story_after_archive_load():
 
     script = _source("static/js/theater_selector.js")
     selection = script.index("async function selectStory(")
-    archive_await = script.index("await loadMemoryArchives(storyId);", selection)
-    recheck = script.index("if (state.storyId !== storyId) return;", archive_await)
+    archive_await = script.index(
+        "await loadMemoryArchives(storyId, selectionCharacterEpoch);",
+        selection,
+    )
+    recheck = script.index(
+        "if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;",
+        archive_await,
+    )
     replace_url = script.index("window.history.replaceState", recheck)
 
     assert archive_await < recheck < replace_url
@@ -220,6 +227,51 @@ def test_capsule_runtime_discards_turn_response_after_session_switch():
     assert "var submittedSessionId = state.sessionId" in runtime[submit_start:request]
     assert "state.pendingTurn.id !== submittedTurnId" in runtime[request:apply_snapshot]
     assert request < stale_guard < apply_snapshot
+
+
+def test_capsule_runtime_invalidates_pending_launch_when_turn_advances():
+    """成功回合必须让此前发起的同 Session 启动快照失效。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    submit_start = runtime.index("async function submit(text)")
+    successful_turn = runtime.index("state.pendingTurn = null;", submit_start)
+    invalidate_launch = runtime.index("launchEpoch += 1;", successful_turn)
+    apply_snapshot = runtime.index("applySnapshot(result);", successful_turn)
+
+    assert successful_turn < invalidate_launch < apply_snapshot
+
+
+def test_theater_character_switch_invalidates_restore_and_selector_requests():
+    """切换猫娘时，尚未完成的本体恢复和选剧页请求都不能发布旧角色状态。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    selector = _source("static/js/theater_selector.js")
+    runtime_switch = runtime.index("else if (message.action === 'catgirl_switched')")
+    runtime_invalidate = runtime.index("launchEpoch += 1;", runtime_switch)
+    runtime_active_guard = runtime.index("if (state.active)", runtime_invalidate)
+    selector_switch = selector.index("else if (message.action === 'catgirl_switched')")
+
+    assert runtime_switch < runtime_invalidate < runtime_active_guard
+    assert "var characterEpoch = 0;" in selector
+    assert "selectionCharacterEpoch !== characterEpoch" in selector
+    assert "loadCharacterEpoch !== characterEpoch" in selector
+    assert "characterEpoch += 1;" in selector[selector_switch:]
+    assert "state.session = null;" in selector[selector_switch:]
+    assert "selectStory(selectedStoryId, true)" in selector[selector_switch:]
+
+
+def test_selector_preserves_newer_end_receipt_during_memory_prompt():
+    """旧回执归档完成时只能清除自身，并在串行闸门释放后继续处理新回执。"""  # noqa: DOCSTRING_CJK
+
+    selector = _source("static/js/theater_selector.js")
+    prompt_start = selector.index("async function maybePromptMemory()")
+    prompt_end = selector.index("async function loadStories(", prompt_start)
+    prompt = selector[prompt_start:prompt_end]
+
+    assert "if (state.pendingEnd !== receipt)" in prompt
+    assert "if (state.pendingEnd === receipt) state.pendingEnd = null;" in prompt
+    assert "state.pendingEnd && state.pendingEnd !== receipt" in prompt
+    assert "maybePromptMemory().catch" in prompt
 
 
 def test_capsule_runtime_stops_old_audio_before_loading_replacement_session():

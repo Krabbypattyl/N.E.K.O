@@ -713,6 +713,85 @@ def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch)
     )
 
 
+def test_numeric_v2_restore_creates_receipts_inside_lifecycle_locks(
+    tmp_path,
+    monkeypatch,
+):
+    """两个恢复入口补建结束回执时都必须持有角色锁和故事锁。"""  # noqa: DOCSTRING_CJK
+
+    story_guard_depth = {"value": 0}
+    receipt_lock_states = []
+    original_guard = numeric_theater_router.NumericV2Runtime.story_session_guard
+    original_create_receipt = numeric_theater_router._create_ended_receipt
+
+    @asynccontextmanager
+    async def tracked_story_guard(runtime):
+        async with original_guard(runtime):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
+
+    async def tracked_create_receipt(config_manager, session):
+        receipt_lock_states.append({
+            "character_guard": numeric_theater_router.character_config_mutation_lock.locked(),
+            "story_guard": story_guard_depth["value"] > 0,
+        })
+        return await original_create_receipt(config_manager, session)
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "story_session_guard",
+        tracked_story_guard,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router,
+        "_create_ended_receipt",
+        tracked_create_receipt,
+    )
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "restore_receipt_lock_session",
+            },
+        ).status_code == 200
+        assert client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "restore_receipt_lock_session",
+                "base_revision": 0,
+            },
+        ).status_code == 200
+        receipt_lock_states.clear()
+
+        receipt_root = tmp_path / "theater" / "numeric_v2" / "end_receipts"
+        for path in receipt_root.glob("*.json"):
+            path.unlink()
+        active = client.get(
+            "/api/theater-numeric/session/active",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+        for path in receipt_root.glob("*.json"):
+            path.unlink()
+        restored = client.get(
+            "/api/theater-numeric/session/restore_receipt_lock_session",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert active.status_code == 200
+    assert restored.status_code == 200
+    assert receipt_lock_states == [
+        {"character_guard": True, "story_guard": True},
+        {"character_guard": True, "story_guard": True},
+    ]
+
+
 def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
     """跳过归档的校验与提交必须位于角色和剧本生命周期锁内。"""  # noqa: DOCSTRING_CJK
 

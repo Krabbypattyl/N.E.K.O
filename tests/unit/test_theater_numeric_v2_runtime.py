@@ -74,6 +74,55 @@ def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
         store._receipt_path("theater_end_../../outside")
 
 
+def test_numeric_v2_legacy_archives_and_receipts_follow_character_rename(tmp_path):
+    """旧版空 character_id 的冷档案、回执和待提交档案必须随角色改名迁移。"""  # noqa: DOCSTRING_CJK
+
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+    receipt_id = "theater_end_" + "a" * 40
+    legacy_identity = {"character_id": "", "catgirl_name": "旧角色"}
+    public_archive = {
+        "schema": "neko.theater.numeric.v2.public-archive",
+        "story_id": "rename_story",
+        "session_id": "rename_session",
+        **legacy_identity,
+    }
+    receipt = {
+        "schema": "neko.theater.numeric.v2.end-receipt",
+        "receipt_id": receipt_id,
+        "story_id": "rename_story",
+        "session_id": "rename_session",
+        **legacy_identity,
+    }
+    staged_archive = dict(public_archive)
+    store._write(store._public_archive_path("rename_session"), public_archive)
+    store._write(store._receipt_path(receipt_id), receipt)
+    store._write(store._staged_archive_path(receipt_id), staged_archive)
+
+    result = store.update_character_binding(
+        character_id="character_" + "1" * 32,
+        legacy_catgirl_name="旧角色",
+        catgirl_name="新角色",
+    )
+
+    expected_identity = {
+        "character_id": "character_" + "1" * 32,
+        "catgirl_name": "新角色",
+    }
+    assert result == {"archives": 1, "receipts": 1, "staged_archives": 1}
+    assert {
+        key: store._read(store._public_archive_path("rename_session"))[key]
+        for key in expected_identity
+    } == expected_identity
+    assert {
+        key: store._read(store._receipt_path(receipt_id))[key]
+        for key in expected_identity
+    } == expected_identity
+    assert {
+        key: store._read(store._staged_archive_path(receipt_id))[key]
+        for key in expected_identity
+    } == expected_identity
+
+
 @pytest.mark.asyncio
 async def test_numeric_v2_empty_character_id_delete_keeps_other_legacy_names(tmp_path):
     """旧角色卡按名称删除时不能把空 character_id 扩散成全角色删除。"""  # noqa: DOCSTRING_CJK

@@ -714,10 +714,25 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     numeric_session_index_path = (
         numeric_theater_root / "numeric_v2" / "story_sessions.json"
     )
+    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
+    numeric_public_archive_targets = [
+        Path(item["path"])
+        for item in list_numeric_v2_public_archives(
+            numeric_theater_root,
+            character_id=renamed_character_id,
+            legacy_catgirl_name=old_name,
+        )
+    ]
+    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
+        character_id=renamed_character_id,
+        legacy_catgirl_name=old_name,
+    )
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)
     memory_targets.extend(numeric_session_targets)
+    memory_targets.extend(numeric_public_archive_targets)
+    memory_targets.extend(numeric_receipt_targets)
     memory_targets.append(numeric_session_index_path)
     # 卡面文件纳入 snapshot，使迁移失败也能回滚
     old_face = _config_manager.card_faces_dir / f"{old_name}.png"
@@ -827,6 +842,14 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                     _config_manager,
                     new_name,
                 ),
+            )
+            # 旧版冷档案和结束回执可能没有 character_id；必须与 Session 一起迁移，
+            # 否则改名后既无法列出档案，也无法消费尚未处理的结束回执。
+            await asyncio.to_thread(
+                numeric_archive_store.update_character_binding,
+                character_id=renamed_character_id,
+                legacy_catgirl_name=old_name,
+                catgirl_name=new_name,
             )
 
             # Fast path：移除旧名 + 以新名启动一个 catgirl slot。

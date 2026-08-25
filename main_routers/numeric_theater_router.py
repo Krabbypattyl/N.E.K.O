@@ -599,22 +599,24 @@ async def get_active_numeric_session(story_id: str):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
-        binding = _current_catgirl_binding(config_manager)
-        stored = await runtime.restore_story_session(binding)
-        if stored is None:
-            return _error("numeric_session_not_found", 404)
-        binding = _ensure_current_catgirl(stored.session, config_manager)
+        # 恢复、身份复验与补建回执必须共用角色锁→故事锁，避免删除完成后重新写回孤立回执。
+        async with character_config_mutation_lock, runtime.story_session_guard():
+            binding = _current_catgirl_binding(config_manager)
+            stored = await runtime.restore_story_session_unlocked(binding)
+            if stored is None:
+                return _error("numeric_session_not_found", 404)
+            binding = _ensure_current_catgirl(stored.session, config_manager)
+            receipt = (
+                await _create_ended_receipt(config_manager, stored.session)
+                if stored.session.status == "ended"
+                else None
+            )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2StoreError as exc:
         return _error(str(exc), 422)
     except ValueError as exc:
         return _error(str(exc), 409)
-    receipt = (
-        await _create_ended_receipt(config_manager, stored.session)
-        if stored.session.status == "ended"
-        else None
-    )
     return {
         "ok": True,
         "resumed": True,
@@ -632,21 +634,23 @@ async def get_numeric_session(session_id: str, story_id: str):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
-        stored = await runtime.restore_session(session_id)
-        if stored is None:
-            return _error("numeric_session_not_found", 404)
-        binding = _ensure_current_catgirl(stored.session, config_manager)
+        # 指定 Session 的恢复也要覆盖回执写入，保持与角色、剧本删除事务相同的锁序。
+        async with character_config_mutation_lock, runtime.story_session_guard():
+            stored = await runtime.restore_session(session_id)
+            if stored is None:
+                return _error("numeric_session_not_found", 404)
+            binding = _ensure_current_catgirl(stored.session, config_manager)
+            receipt = (
+                await _create_ended_receipt(config_manager, stored.session)
+                if stored.session.status == "ended"
+                else None
+            )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2StoreError as exc:
         return _error(str(exc), 422)
     except ValueError as exc:
         return _error(str(exc), 409)
-    receipt = (
-        await _create_ended_receipt(config_manager, stored.session)
-        if stored.session.status == "ended"
-        else None
-    )
     return {
         "ok": True,
         **_numeric_payload(

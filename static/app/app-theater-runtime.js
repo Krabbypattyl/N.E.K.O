@@ -567,6 +567,8 @@
             return false;
         }
         state.pendingTurn = null;
+        // 成功回合已经推进权威 revision；此前发起的同 Session 启动快照不得再覆盖新历史。
+        launchEpoch += 1;
         applySnapshot(result);
         if (result.end_receipt_id) state.pendingEnd = {
             story_id: state.storyId,
@@ -797,7 +799,11 @@
             && message.story_id === state.storyId
             && message.session_id === state.sessionId
         ) clear('selector-ended');
-        else if (message.action === 'catgirl_switched' && state.active) clear('catgirl-switched');
+        else if (message.action === 'catgirl_switched') {
+            // 角色切换即使发生在启动指针恢复期间，也必须立即使旧角色的异步快照失效。
+            launchEpoch += 1;
+            if (state.active) clear('catgirl-switched');
+        }
     }
 
     var runtime = {
