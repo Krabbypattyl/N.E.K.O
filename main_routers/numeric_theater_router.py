@@ -1258,6 +1258,34 @@ async def list_numeric_memory_archives(story_id: str):
         return _error(str(exc), 500)
 
 
+@router.get("/memory/archive")
+async def get_numeric_memory_archive(story_id: str, session_id: str):
+    """读取当前猫娘有权查看的一份完整公开演绎。"""  # noqa: DOCSTRING_CJK
+
+    normalized_story_id = str(story_id or "").strip()
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_story_id or not normalized_session_id:
+        return _error("story_id_and_session_id_required", 400)
+    config_manager = get_config_manager()
+    try:
+        runtime = await _runtime_for_story(config_manager, normalized_story_id)
+        # 读取与角色改名、角色删除和剧本删除串行，避免校验身份后文件立即迁移或消失。
+        async with character_config_mutation_lock, runtime.story_session_guard():
+            binding = _current_catgirl_binding(config_manager)
+            archive = await asyncio.to_thread(
+                _archive_store(config_manager).load_public_archive,
+                story_id=normalized_story_id,
+                session_id=normalized_session_id,
+                character_id=binding["character_id"],
+                legacy_catgirl_name=binding["catgirl_name"],
+            )
+        return {"ok": True, "archive": archive}
+    except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
+        return _package_error(exc)
+    except NumericV2ArchiveError as exc:
+        return _error(str(exc), 404)
+
+
 @router.post("/memory/archive/pin")
 async def pin_numeric_memory_archive(request: Request):
     payload = await _json_object(request)

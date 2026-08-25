@@ -229,6 +229,74 @@ def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, runni
 
 
 @pytest.mark.frontend
+def test_selector_opens_identity_checked_performance_archive(
+    mock_page: Page,
+    running_server: str,
+):
+    """已保存记录应通过详情接口打开完整公开演绎。"""  # noqa: DOCSTRING_CJK
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            _fulfill(
+                route,
+                {"ok": True, "stories": [STORY], "character_id": CHARACTER_ID},
+            )
+            return
+        if path.endswith("/api/theater-numeric/session/active"):
+            _fulfill(
+                route,
+                {"ok": False, "reason": "numeric_session_not_found"},
+                404,
+            )
+            return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": True, "archives": [{
+                "story_id": STORY["story_id"],
+                "story_title": STORY["title"],
+                "session_id": "saved-session",
+                "revision": 2,
+                "episode_status": "completed",
+                "ending_title": "雨停之后",
+                "pinned": False,
+            }]})
+            return
+        if path.endswith("/api/theater-numeric/memory/archive"):
+            _fulfill(route, {"ok": True, "archive": {
+                "story_id": STORY["story_id"],
+                "story_title": STORY["title"],
+                "session_id": "saved-session",
+                "player_name": "你",
+                "catgirl_name": "小葵",
+                "opening": {"performance": "（推开花店的门）你回来了。"},
+                "turns": [{
+                    "revision": 1,
+                    "player_input": "我来取那封信。",
+                    "performance": "（把信递过来）一直替你留着。",
+                }],
+                "ending": {"title": "雨停之后", "summary": "两人终于说开旧事。"},
+            }})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+
+    with mock_page.expect_request("**/api/theater-numeric/memory/archive?**"):
+        mock_page.locator(".theater-memory-view").click()
+
+    expect(mock_page.locator("#theater-modal-title")).to_have_text(STORY["title"])
+    expect(mock_page.locator("#theater-modal-body")).to_contain_text("我来取那封信")
+    expect(mock_page.locator("#theater-modal-body")).to_contain_text("一直替你留着")
+    expect(mock_page.locator("#theater-modal-body")).to_contain_text("雨停之后")
+    expect(mock_page.locator("#theater-modal-cancel")).to_be_hidden()
+    expect(mock_page.locator("#theater-modal-confirm")).to_have_text("关闭")
+    mock_page.locator("#theater-modal-confirm").click()
+    expect(mock_page.locator("#theater-modal")).to_be_hidden()
+
+
+@pytest.mark.frontend
 def test_active_story_only_enables_continue(mock_page: Page, running_server: str):
     _install_selector_routes(
         mock_page,

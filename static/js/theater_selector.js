@@ -14,6 +14,7 @@
         archive: '/api/theater-numeric/session/archive',
         skipArchive: '/api/theater-numeric/session/archive/skip',
         memoryArchives: '/api/theater-numeric/memory/archives',
+        memoryArchive: '/api/theater-numeric/memory/archive',
         pinMemoryArchive: '/api/theater-numeric/memory/archive/pin',
         forgetMemory: '/api/theater-numeric/memory/forget'
     };
@@ -73,7 +74,7 @@
             var node = $(id);
             if (node) node.disabled = busy;
         });
-        document.querySelectorAll('[data-theater-pin-session]').forEach(function (node) { node.disabled = busy; });
+        document.querySelectorAll('[data-theater-pin-session], [data-theater-view-session]').forEach(function (node) { node.disabled = busy; });
         renderActions();
     }
     function selectedStory() {
@@ -202,9 +203,69 @@
                 : t('theater.pinPerformance', '收藏');
             pin.disabled = state.busy;
             pin.addEventListener('click', function () { toggleArchivePin(archive); });
-            row.append(copy, pin);
+            var view = document.createElement('button');
+            view.type = 'button';
+            view.className = 'theater-memory-view';
+            view.dataset.theaterViewSession = String(archive.session_id || '');
+            view.textContent = t('theater.viewPerformance', '查看');
+            view.disabled = state.busy;
+            view.addEventListener('click', function () { viewMemoryArchive(archive); });
+            var actions = document.createElement('div');
+            actions.className = 'theater-memory-actions';
+            actions.append(view, pin);
+            row.append(copy, actions);
             list.appendChild(row);
         });
+    }
+    function formatMemoryArchive(archive) {
+        var lines = [];
+        var opening = archive && archive.opening && typeof archive.opening === 'object' ? archive.opening : {};
+        var openingText = String(opening.performance || '').trim();
+        if (openingText) lines.push(t('theater.performanceArchiveOpening', '开场') + '\n' + openingText);
+        var playerName = String(archive.player_name || '你');
+        var catgirlName = String(archive.catgirl_name || 'Neko');
+        var turns = Array.isArray(archive.turns) ? archive.turns : [];
+        turns.forEach(function (turn, index) {
+            var parts = [t('theater.performanceArchiveTurn', '第 {{index}} 回合', { index: index + 1 })];
+            var playerInput = String(turn && turn.player_input || '').trim();
+            var performance = String(turn && turn.performance || '').trim();
+            if (playerInput) parts.push(playerName + '：' + playerInput);
+            if (performance) parts.push(catgirlName + '：' + performance);
+            lines.push(parts.join('\n'));
+        });
+        var ending = archive && archive.ending && typeof archive.ending === 'object' ? archive.ending : {};
+        var endingText = [ending.title, ending.summary].filter(Boolean).map(String).join('：');
+        if (endingText) lines.push(t('theater.completedPerformance', '已完成的演绎') + '\n' + endingText);
+        return lines.join('\n\n');
+    }
+    async function viewMemoryArchive(summary) {
+        if (state.busy || !summary || !summary.session_id) return;
+        var viewStoryId = state.storyId;
+        var viewSessionId = String(summary.session_id);
+        var viewCharacterEpoch = characterEpoch;
+        setBusy(true); setFeedback('');
+        try {
+            var result = await requestJson(
+                api.memoryArchive
+                + '?story_id=' + encodeURIComponent(viewStoryId)
+                + '&session_id=' + encodeURIComponent(viewSessionId)
+            );
+            if (state.storyId !== viewStoryId || viewCharacterEpoch !== characterEpoch) return;
+            if (!result.ok || !result.archive) throw new Error('archive_load_failed');
+            var archive = result.archive;
+            await showModal({
+                title: String(archive.story_title || summary.story_title || t('theater.performanceArchiveTitle', '演绎记录')),
+                body: formatMemoryArchive(archive),
+                cancelLabel: '',
+                confirmLabel: t('common.close', '关闭'),
+                singleAction: true,
+                transcript: true
+            });
+        } catch (_) {
+            if (state.storyId === viewStoryId && viewCharacterEpoch === characterEpoch) {
+                setFeedback(t('theater.performanceArchiveLoadFailed', '演绎记录读取失败，请重试。'), true);
+            }
+        } finally { setBusy(false); }
     }
     async function loadMemoryArchives(storyId, expectedCharacterEpoch) {
         var loadCharacterEpoch = expectedCharacterEpoch === undefined
@@ -281,9 +342,12 @@
         }
         $('theater-modal-title').textContent = options.title;
         $('theater-modal-body').textContent = options.body;
+        // 完整演绎只扩展当前只读弹窗，其他确认框继续沿用紧凑尺寸。
+        modal.querySelector('.theater-modal').classList.toggle('theater-transcript-modal', options.transcript === true);
         if (options.keepError !== true) $('theater-modal-error').hidden = true;
         var cancel = $('theater-modal-cancel');
         var confirm = $('theater-modal-confirm');
+        cancel.hidden = options.singleAction === true;
         cancel.textContent = options.cancelLabel;
         confirm.textContent = options.confirmLabel;
         confirm.classList.toggle('theater-danger', options.danger === true);
@@ -689,7 +753,7 @@
             if ($('theater-modal').hidden) return;
             if (event.key === 'Escape') { event.preventDefault(); closeModal(false); return; }
             if (event.key !== 'Tab') return;
-            var buttons = [$('theater-modal-cancel'), $('theater-modal-confirm')].filter(function (node) { return !node.disabled; });
+            var buttons = [$('theater-modal-cancel'), $('theater-modal-confirm')].filter(function (node) { return !node.disabled && !node.hidden; });
             if (!buttons.length) return;
             var index = buttons.indexOf(document.activeElement);
             if (index < 0) { event.preventDefault(); buttons[event.shiftKey ? buttons.length - 1 : 0].focus(); return; }

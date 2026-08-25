@@ -453,6 +453,38 @@ class NumericV2ArchiveStore:
         )
         return archives
 
+    def load_public_archive(
+        self,
+        *,
+        story_id: str,
+        session_id: str,
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> dict[str, Any]:
+        """按剧本、Session 和当前角色读取一份公开演绎正文。"""  # noqa: DOCSTRING_CJK
+
+        normalized_story_id = str(story_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        if not normalized_story_id or not normalized_session_id:
+            raise NumericV2ArchiveError("numeric_public_archive_not_found")
+        payload = self._read(self._public_archive_path(normalized_session_id))
+        if (
+            payload is None
+            or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
+            or str(payload.get("story_id") or "") != normalized_story_id
+            or str(payload.get("session_id") or "") != normalized_session_id
+            or not self._matches_character(
+                payload,
+                normalized_character_id,
+                normalized_legacy_name,
+            )
+        ):
+            # 身份不匹配与文件不存在统一返回 not found，不能泄露其他角色是否保存过该周目。
+            raise NumericV2ArchiveError("numeric_public_archive_not_found")
+        return dict(payload)
+
     def prune_public_archives(
         self,
         *,

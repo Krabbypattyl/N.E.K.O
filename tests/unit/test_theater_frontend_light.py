@@ -328,6 +328,20 @@ def test_selector_binds_session_start_to_displayed_character():
     assert "character_id: startCharacterId" in start
 
 
+def test_selector_reads_saved_performance_through_archive_detail_api():
+    """选剧页只能通过身份校验后的详情接口展示完整演绎。"""  # noqa: DOCSTRING_CJK
+
+    selector = _source("static/js/theater_selector.js")
+
+    assert "memoryArchive: '/api/theater-numeric/memory/archive'" in selector
+    assert "view.dataset.theaterViewSession" in selector
+    assert "async function viewMemoryArchive(summary)" in selector
+    assert "api.memoryArchive" in selector
+    assert "function formatMemoryArchive(archive)" in selector
+    assert "singleAction: true" in selector
+    assert "transcript: true" in selector
+
+
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():
     """旧回执归档完成时只能清除自身，并在串行闸门释放后继续处理新回执。"""  # noqa: DOCSTRING_CJK
 
@@ -502,6 +516,11 @@ def test_theater_locales_remain_valid_and_aligned():
             "rememberPerformanceTitle",
             "memorySaving",
             "performanceHistory",
+            "viewPerformance",
+            "performanceArchiveTitle",
+            "performanceArchiveOpening",
+            "performanceArchiveTurn",
+            "performanceArchiveLoadFailed",
         ):
             assert theater[key]
     assert all(keys == theater_keys[0] for keys in theater_keys[1:])

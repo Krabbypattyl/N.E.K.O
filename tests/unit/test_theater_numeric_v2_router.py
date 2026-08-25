@@ -1738,6 +1738,13 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
             "/api/theater-numeric/session/archive",
             json={**receipt, "archive_request_id": ended["archive_request_id"]},
         )
+        archive_detail = client.get(
+            "/api/theater-numeric/memory/archive",
+            params={
+                "story_id": "numeric_v2_contract",
+                "session_id": "archive_session",
+            },
+        )
         replay = client.post(
             "/api/theater-numeric/session/archive",
             json={**receipt, "archive_request_id": ended["archive_request_id"]},
@@ -1757,6 +1764,19 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
 
     assert archived.status_code == 200
     assert archived.json()["status"] == "written"
+    assert archive_detail.status_code == 200
+    public_archive = archive_detail.json()["archive"]
+    assert public_archive["opening"]["performance"] == "风铃轻轻响了一声。\n\n你回来了。"
+    assert public_archive["turns"] == [{
+        "revision": 1,
+        "player_input": "我把信放在桌上。",
+        "performance": "（风铃轻轻响了一声）我在听。",
+        "parts": [
+            {"kind": "action", "phase": "ordinary", "text": "（风铃轻轻响了一声）"},
+            {"kind": "dialogue", "phase": "ordinary", "text": "我在听。"},
+        ],
+    }]
+    assert "metrics" not in json.dumps(public_archive, ensure_ascii=False)
     assert replay.status_code == 200
     assert replay.json()["status"] == "already_written"
     assert restored.json()["end_receipt_id"] == receipt["end_receipt_id"]
@@ -2417,6 +2437,36 @@ def test_numeric_public_archive_stage_can_commit_or_discard(tmp_path):
     store.commit_staged_public_archive(receipt)
     assert store._public_archive_path(session.session_id).is_file()
     assert not store._staged_archive_path(receipt["receipt_id"]).exists()
+
+
+def test_numeric_public_archive_detail_rejects_other_character(tmp_path):
+    """完整演绎详情不能因知道 Session ID 而跨角色读取。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    session = SimpleNamespace(
+        story_package_id="story_private_archive",
+        session_id="session_private_archive",
+        revision=0,
+        catgirl_binding={
+            "character_id": "character_archive_owner",
+            "catgirl_name": "小葵",
+            "player_address": "哥哥",
+        },
+        opening_performance={"performance": "你来了。"},
+        performance_history=(),
+    )
+    store.write_public_archive(title="归属测试", session=session, ending=None)
+
+    with pytest.raises(
+        NumericV2ArchiveError,
+        match="numeric_public_archive_not_found",
+    ):
+        store.load_public_archive(
+            story_id=session.story_package_id,
+            session_id=session.session_id,
+            character_id="character_archive_other",
+            legacy_catgirl_name="其他猫娘",
+        )
 
 
 def test_numeric_receipt_gc_keeps_only_active_session_pointer(tmp_path):

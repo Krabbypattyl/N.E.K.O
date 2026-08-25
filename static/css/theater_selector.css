@@ -359,7 +359,12 @@ font-size:.78rem}
 .theater-memory-empty{
 margin:14px 0 0!important}
 
-.theater-memory-pin{
+.theater-memory-actions{
+display:flex!important;
+grid-auto-flow:column;
+gap:8px!important}
+
+.theater-memory-pin,.theater-memory-view{
 min-height:34px}
 
 .theater-detail-actions{
@@ -419,6 +424,16 @@ margin:0 0 12px}
 margin:0;
 line-height:1.7;
 white-space:pre-line}
+
+/* 完整演绎正文使用更宽的只读滚动区，避免长周目撑出窗口。 */
+.theater-modal.theater-transcript-modal{
+width:min(720px,100%)}
+
+.theater-transcript-modal #theater-modal-body{
+max-height:min(60vh,560px);
+overflow:auto;
+padding-right:8px;
+white-space:pre-wrap}
 
 .theater-modal-actions{
 display:flex;
