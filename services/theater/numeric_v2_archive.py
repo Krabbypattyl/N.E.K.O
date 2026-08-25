@@ -461,9 +461,9 @@ class NumericV2ArchiveStore:
             try:
                 payload = self._read(path)
                 modified_ns = path.stat().st_mtime_ns
-            except NumericV2ArchiveError as exc:
-                # 普通列表允许跳过暂时不可读的档案；破坏性操作必须中止，避免遗漏用户数据。
-                if raise_on_io_error and isinstance(exc.__cause__, OSError):
+            except NumericV2ArchiveError:
+                # 普通列表允许跳过不可读档案；破坏性操作必须中止，损坏 JSON 也不能被遗漏。
+                if raise_on_io_error:
                     raise
                 continue
             except OSError:
@@ -719,9 +719,9 @@ class NumericV2ArchiveStore:
         for path in self.root.glob("theater_end_*.json"):
             try:
                 receipt = self._read(path)
-            except NumericV2ArchiveError as exc:
-                # 普通查询允许跳过暂时不可读的回执；破坏性操作必须中止，避免遗漏残留数据。
-                if raise_on_io_error and isinstance(exc.__cause__, OSError):
+            except NumericV2ArchiveError:
+                # 普通查询允许跳过不可读回执；破坏性操作必须中止，损坏 JSON 也不能被遗漏。
+                if raise_on_io_error:
                     raise
                 continue
             if receipt is None:

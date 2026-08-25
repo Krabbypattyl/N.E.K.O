@@ -74,11 +74,13 @@ def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
         store._receipt_path("theater_end_../../outside")
 
 
-def test_numeric_v2_public_archive_delete_aborts_on_transient_read_failure(
+@pytest.mark.parametrize("read_failure", ["permission", "invalid_json"])
+def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
     tmp_path,
     monkeypatch,
+    read_failure,
 ):
-    """破坏性删除遇到暂时不可读档案时必须中止，不能静默遗漏。"""  # noqa: DOCSTRING_CJK
+    """破坏性删除遇到不可读或损坏档案时必须中止，不能静默遗漏。"""  # noqa: DOCSTRING_CJK
 
     store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
     archive_path = store.public_archive_root / "transient.json"
@@ -94,6 +96,8 @@ def test_numeric_v2_public_archive_delete_aborts_on_transient_read_failure(
 
     def transient_read(path, *args, **kwargs):
         if path == archive_path:
+            if read_failure == "invalid_json":
+                return "{"
             raise PermissionError("temporary archive failure")
         return original_read_text(path, *args, **kwargs)
 

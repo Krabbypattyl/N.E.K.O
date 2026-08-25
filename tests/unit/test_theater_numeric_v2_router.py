@@ -2050,11 +2050,13 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
     assert active.json()["archive_status"] == "skipped"
 
 
-def test_numeric_story_memory_forget_aborts_before_partial_delete_on_receipt_io_error(
+@pytest.mark.parametrize("read_failure", ["permission", "invalid_json"])
+def test_numeric_story_memory_forget_aborts_before_partial_delete_on_receipt_read_error(
     tmp_path,
     monkeypatch,
+    read_failure,
 ):
-    """回执暂时不可读时必须在删除记忆摘要前中止遗忘。"""  # noqa: DOCSTRING_CJK
+    """回执无法读取或解析时必须在删除记忆摘要前中止遗忘。"""  # noqa: DOCSTRING_CJK
 
     memory_calls = []
 
@@ -2094,6 +2096,8 @@ def test_numeric_story_memory_forget_aborts_before_partial_delete_on_receipt_io_
 
         def transient_read(path, *args, **kwargs):
             if path == receipt_path:
+                if read_failure == "invalid_json":
+                    return "{"
                 raise PermissionError("temporary receipt failure")
             return original_read_text(path, *args, **kwargs)
 
