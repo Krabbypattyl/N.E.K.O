@@ -135,6 +135,17 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
         second = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
 
     assert first == second
+    # 写入恢复后，缓存快路径必须先补写同一个 ID；清空缓存重读仍应保持一致。
+    persisted = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    with cm._characters_cache_lock:
+        assert cm._characters_dirty is False
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+    reloaded = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+    assert persisted == first
+    assert reloaded == first
 
 
 @pytest.mark.unit

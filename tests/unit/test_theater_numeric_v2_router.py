@@ -1787,7 +1787,10 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
         )
         forgotten = client.post(
             "/api/theater-numeric/memory/forget",
-            json={"story_id": "numeric_v2_contract"},
+            json={
+                "story_id": "numeric_v2_contract",
+                "character_id": "character_" + "1" * 32,
+            },
         )
         after = client.get(
             "/api/theater-numeric/memory/archives",
@@ -1855,7 +1858,10 @@ def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
         )
         forgotten = client.post(
             "/api/theater-numeric/memory/forget",
-            json={"story_id": "numeric_v2_contract"},
+            json={
+                "story_id": "numeric_v2_contract",
+                "character_id": "character_" + "1" * 32,
+            },
         )
 
     assert deleted.status_code == 200
@@ -1869,6 +1875,53 @@ def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
     }
     assert captured["payload"] == {"story_id": "numeric_v2_contract"}
     assert captured["character_lock_held"] is True
+
+
+def test_numeric_story_memory_forget_rejects_switched_character(
+    tmp_path,
+    monkeypatch,
+):
+    """确认弹窗属于旧角色时，服务端不能删除新当前角色的记忆。"""  # noqa: DOCSTRING_CJK
+
+    class _MutableConfigManager(_ConfigManager):
+        def __init__(self, root: Path):
+            super().__init__(root)
+            self.current_name = "测试猫娘"
+
+        def load_characters(self) -> dict:
+            return {
+                "当前猫娘": self.current_name,
+                "猫娘": {
+                    "测试猫娘": _catgirl_profile("测试猫娘", "安静而认真。"),
+                    "新猫娘": _catgirl_profile("新猫娘", "活泼而坦率。"),
+                },
+                "主人": {"昵称": "哥哥"},
+            }
+
+    class _UnexpectedMemoryClient:
+        async def post(self, *_args, **_kwargs):
+            raise AssertionError("角色不匹配时不能调用记忆删除")
+
+    manager = _MutableConfigManager(tmp_path)
+    monkeypatch.setattr(
+        "utils.internal_http_client.get_internal_http_client",
+        lambda: _UnexpectedMemoryClient(),
+    )
+    client = _client(tmp_path, monkeypatch, config_manager=manager)
+    with client:
+        listed = client.get("/api/theater-numeric/stories")
+        old_character_id = listed.json()["character_id"]
+        manager.current_name = "新猫娘"
+        blocked = client.post(
+            "/api/theater-numeric/memory/forget",
+            json={
+                "story_id": "numeric_v2_contract",
+                "character_id": old_character_id,
+            },
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["reason"] == "catgirl_changed_requires_refresh"
 
 
 def test_numeric_memory_projection_builds_one_compact_episode_summary():

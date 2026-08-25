@@ -153,7 +153,11 @@ def _prepare_delete_transaction(
         transaction_dir.mkdir(parents=True)
         shutil.copy2(package_target, transaction_dir / "package.json")
         session_backup_root = transaction_dir / "sessions"
-        for summary in list_numeric_v2_sessions(theater_root, story_id=story_id):
+        for summary in list_numeric_v2_sessions(
+            theater_root,
+            story_id=story_id,
+            raise_on_io_error=True,
+        ):
             session_backup_root.mkdir(parents=True, exist_ok=True)
             source = Path(summary["path"])
             shutil.copy2(source, session_backup_root / source.name)

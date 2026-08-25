@@ -536,6 +536,7 @@
         // 请求期间可能从另一个选剧页切换剧本；响应只能写回发起它的 Session。
         var submittedStoryId = state.storyId;
         var submittedSessionId = state.sessionId;
+        var submittedLaunchEpoch = launchEpoch;
         var submittedTurnId = state.pendingTurn.id;
         var optimisticHistoryId = 'player-pending-' + state.pendingTurn.id;
         // 玩家行动先进入历史区，让推荐输入和手动提交都立即得到可见反馈。
@@ -567,8 +568,17 @@
             state.phase = 'awaiting_player';
             state.draftRestore = { id: createId('theater_draft_restore_'), text: message };
             if (result.reason === 'numeric_base_revision_mismatch') {
-                var refreshed = await requestJson(api.session + '/' + encodeURIComponent(state.sessionId) + '?story_id=' + encodeURIComponent(state.storyId));
-                if (refreshed.ok) { applySnapshot(refreshed); state.history = buildCommittedHistory(refreshed); }
+                var refreshed = await requestJson(api.session + '/' + encodeURIComponent(submittedSessionId) + '?story_id=' + encodeURIComponent(submittedStoryId));
+                // 冲突刷新期间可能启动了另一个 Session；旧快照只能回写原提交世代。
+                if (
+                    isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)
+                    && state.pendingTurn
+                    && state.pendingTurn.id === submittedTurnId
+                    && refreshed.ok
+                ) {
+                    applySnapshot(refreshed);
+                    state.history = buildCommittedHistory(refreshed);
+                }
             }
             render();
             return false;

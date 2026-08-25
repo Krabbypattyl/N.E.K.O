@@ -239,6 +239,7 @@ def list_numeric_v2_sessions(
     story_id: str = "",
     character_id: str = "",
     legacy_catgirl_name: str = "",
+    raise_on_io_error: bool = False,
 ) -> list[dict[str, str]]:
     """按剧本或角色列出可识别的 Numeric v2 Session。"""  # noqa: DOCSTRING_CJK
 
@@ -250,7 +251,10 @@ def list_numeric_v2_sessions(
         return []
     result: list[dict[str, str]] = []
     for path in sorted(root.glob("*.json")):
-        summary = _read_numeric_v2_session_summary(path)
+        summary = _read_numeric_v2_session_summary(
+            path,
+            raise_on_io_error=raise_on_io_error,
+        )
         if summary is None:
             continue
         if normalized_story_id and summary["story_id"] != normalized_story_id:
@@ -349,17 +353,27 @@ async def delete_numeric_v2_sessions(
     async with _lock(index_path):
         # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
         stories = _read_story_session_slots(index_path)
-        candidates = list_numeric_v2_sessions(
-            theater_storage_root,
-            story_id=normalized_story_id,
-            character_id=normalized_character_id,
-            legacy_catgirl_name=normalized_legacy_name,
-        )
+        try:
+            candidates = list_numeric_v2_sessions(
+                theater_storage_root,
+                story_id=normalized_story_id,
+                character_id=normalized_character_id,
+                legacy_catgirl_name=normalized_legacy_name,
+                raise_on_io_error=True,
+            )
+        except OSError as exc:
+            raise NumericV2StoreError("numeric_session_read_failed") from exc
         deleted: list[dict[str, str]] = []
         for candidate in candidates:
             path = Path(candidate["path"])
             async with _lock(path):
-                current = _read_numeric_v2_session_summary(path)
+                try:
+                    current = _read_numeric_v2_session_summary(
+                        path,
+                        raise_on_io_error=True,
+                    )
+                except OSError as exc:
+                    raise NumericV2StoreError("numeric_session_read_failed") from exc
                 if current is None:
                     continue
                 if normalized_story_id and current["story_id"] != normalized_story_id:

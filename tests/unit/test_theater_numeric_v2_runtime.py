@@ -856,6 +856,44 @@ async def test_numeric_v2_session_delete_rejects_unreadable_story_index(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_numeric_v2_session_delete_rejects_transient_session_read_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """破坏性枚举遇到暂时性 I/O 失败时必须保留 Session 和索引。"""  # noqa: DOCSTRING_CJK
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_delete_unreadable_session",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_path = runtime.store._path(stored.session.session_id)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    path_type = type(session_path)
+    original_read_text = path_type.read_text
+
+    def transient_read(path, *args, **kwargs):
+        if path == session_path:
+            raise PermissionError("temporary session failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", transient_read)
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_session_read_failed",
+    ):
+        await numeric_v2_store.delete_numeric_v2_sessions(
+            tmp_path,
+            story_id=stored.session.story_package_id,
+        )
+
+    assert session_path.is_file()
+    assert index_path.is_file()
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_story_restore_ignores_sessions_from_other_stories(tmp_path):
     story = _branch_story()
     other_story = deepcopy(story)

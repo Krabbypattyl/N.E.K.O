@@ -367,7 +367,12 @@ async def list_numeric_stories():
         registry = await _registry(config_manager)
         binding = _current_catgirl_binding(config_manager)
         stories = await asyncio.to_thread(_list_story_summaries, registry, binding)
-        return {"ok": True, "stories": stories}
+        return {
+            "ok": True,
+            "stories": stories,
+            # 破坏性操作必须绑定选剧页当前展示的角色，不能只依赖请求到达时的全局当前角色。
+            "character_id": binding["character_id"],
+        }
     except MaintenanceModeError:
         raise
     except Exception:
@@ -1280,8 +1285,9 @@ async def forget_numeric_story_memory(request: Request):
     if validation_error is not None:
         return validation_error
     story_id = str(payload.get("story_id") or "").strip()
-    if not story_id:
-        return _error("story_id_required", 400)
+    expected_character_id = str(payload.get("character_id") or "").strip()
+    if not story_id or not expected_character_id:
+        return _error("story_id_and_character_id_required", 400)
     config_manager = get_config_manager()
     try:
         # 仅用注册表路径规则复验 ID；剧本包删除后仍必须允许清理其残留记忆。
@@ -1301,6 +1307,8 @@ async def forget_numeric_story_memory(request: Request):
             story_id,
         ):
             binding = _current_catgirl_binding(config_manager)
+            if binding["character_id"] != expected_character_id:
+                return _error("catgirl_changed_requires_refresh", 409)
             await _assert_numeric_writable(config_manager, "memory")
             response = await get_internal_http_client().post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"

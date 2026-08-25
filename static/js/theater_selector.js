@@ -24,7 +24,7 @@
     var createId = transport.createId;
     var requestJson = transport.requestJson;
     // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
-    var state = { stories: [], storyId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
+    var state = { stories: [], storyId: '', characterId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
     // 同一剧本在切换猫娘后仍保持相同 story_id，单独世代号用于拦截旧角色的迟到响应。
     var characterEpoch = 0;
     var modalResolve = null;
@@ -500,8 +500,9 @@
         } finally { setBusy(false); }
     }
     async function forgetStoryMemory() {
-        if (!state.storyId || state.busy) return;
+        if (!state.storyId || !state.characterId || state.busy) return;
         var targetStoryId = state.storyId;
+        var targetCharacterId = state.characterId;
         var targetCharacterEpoch = characterEpoch;
         var confirmed = await showModal({
             title: t('theater.forgetStoryMemoryTitle', '忘记该剧本？'),
@@ -514,7 +515,10 @@
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.forgetMemory, {
-                method: 'POST', body: { story_id: targetStoryId }
+                method: 'POST', body: {
+                    story_id: targetStoryId,
+                    character_id: targetCharacterId
+                }
             });
             if (targetCharacterEpoch !== characterEpoch || state.storyId !== targetStoryId) return;
             if (!result.ok) throw new Error('forget_failed');
@@ -611,6 +615,7 @@
         if (!result.ok || !Array.isArray(result.stories)) throw new Error('stories_failed');
         if (storiesCharacterEpoch !== characterEpoch) return false;
         state.stories = result.stories;
+        state.characterId = String(result.character_id || '');
         var queryStoryId = new URLSearchParams(window.location.search).get('story_id') || '';
         state.storyId = preferredStoryId || queryStoryId || String((state.stories[0] || {}).story_id || '');
         if (!state.stories.some(function (story) { return String(story.story_id) === state.storyId; })) state.storyId = String((state.stories[0] || {}).story_id || '');
@@ -634,6 +639,7 @@
         } else if (message.action === 'catgirl_switched') {
             // 清除旧角色详情和确认框，并让所有已经发出的同 story_id 请求失效后重新读取当前角色。
             characterEpoch += 1;
+            state.characterId = '';
             state.pendingEnd = null;
             state.session = null;
             state.archives = [];

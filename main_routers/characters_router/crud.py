@@ -1558,6 +1558,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
             numeric_theater_root,
             character_id=deleted_character_id,
             legacy_catgirl_name=name,
+            raise_on_io_error=True,
         )
     ]
     numeric_session_index_path = (

@@ -58,12 +58,17 @@ class CharactersMixin:
             cache = self._characters_cache
             cache_path = self._characters_cache_path
             cache_mtime = self._characters_cache_mtime
+            cache_dirty = self._characters_dirty
         if cache is not None and cache_path == character_json_path:
             try:
                 current_mtime = os.path.getmtime(character_json_path)
             except OSError:
                 current_mtime = None
-            if current_mtime is not None and current_mtime == cache_mtime:
+            if (
+                not cache_dirty
+                and current_mtime is not None
+                and current_mtime == cache_mtime
+            ):
                 return deepcopy(cache)
 
         # 慢路径：独占锁，防止多个线程同时读文件、重复触发迁移和校验警告。
@@ -73,13 +78,39 @@ class CharactersMixin:
                 cache = self._characters_cache
                 cache_path = self._characters_cache_path
                 cache_mtime = self._characters_cache_mtime
+                cache_dirty = self._characters_dirty
             if cache is not None and cache_path == character_json_path:
                 try:
                     current_mtime = os.path.getmtime(character_json_path)
                 except OSError:
                     current_mtime = None
-                if current_mtime is not None and current_mtime == cache_mtime:
-                    return deepcopy(cache)
+                if current_mtime == cache_mtime and (
+                    current_mtime is not None or cache_dirty
+                ):
+                    if not cache_dirty:
+                        return deepcopy(cache)
+                    # 上次迁移已生成稳定角色 ID，但被维护栅栏或暂时性 I/O 阻止写回；
+                    # 每次恢复可写后都先重试持久化，再把该身份交给后续持久化业务使用。
+                    dirty_cache = deepcopy(cache)
+                    try:
+                        self.save_characters(
+                            dirty_cache,
+                            character_json_path=character_json_path,
+                        )
+                        logger.info("已补写此前未持久化的角色保留字段迁移。")
+                    except Exception as persist_err:
+                        try:
+                            from utils.cloudsave_runtime import MaintenanceModeError
+                        except Exception:
+                            MaintenanceModeError = None
+                        if MaintenanceModeError is not None and isinstance(
+                            persist_err,
+                            MaintenanceModeError,
+                        ):
+                            logger.debug("角色保留字段迁移仍处于只读阶段: %s", persist_err)
+                        else:
+                            logger.warning("重试写回角色保留字段迁移失败: %s", persist_err)
+                    return dirty_cache
 
             try:
                 with open(character_json_path, 'r', encoding='utf-8') as f:

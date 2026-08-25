@@ -101,7 +101,8 @@ def test_selector_binds_delayed_confirmations_to_original_selection():
     assert "sessionKind() === targetSessionKind" in begin_block
     assert "targetCharacterEpoch !== characterEpoch" in forget_block
     assert "state.storyId !== targetStoryId" in forget_block
-    assert "body: { story_id: targetStoryId }" in forget_block
+    assert "var targetCharacterId = state.characterId;" in forget_block
+    assert "character_id: targetCharacterId" in forget_block
 
 
 def test_capsule_runtime_separates_narration_and_dialogue_tts():
@@ -271,14 +272,34 @@ def test_theater_character_switch_invalidates_restore_and_selector_requests():
     assert "selectionCharacterEpoch !== characterEpoch" in selector
     assert "loadCharacterEpoch !== characterEpoch" in selector
     assert "characterEpoch += 1;" in selector[selector_switch:]
+    assert "state.characterId = '';" in selector[selector_switch:]
     assert "state.session = null;" in selector[selector_switch:]
     assert "loadStories(selectedStoryId, switchCharacterEpoch)" in selector[selector_switch:]
     stories_start = selector.index("async function loadStories(")
     stories_response = selector.index("var result = await requestJson(api.stories);", stories_start)
     stories_guard = selector.index("storiesCharacterEpoch !== characterEpoch", stories_response)
     stories_publish = selector.index("state.stories = result.stories;", stories_guard)
+    character_publish = selector.index("state.characterId = String(result.character_id || '');", stories_publish)
 
-    assert stories_response < stories_guard < stories_publish
+    assert stories_response < stories_guard < stories_publish < character_publish
+
+
+def test_capsule_runtime_revalidates_conflict_refresh_ownership():
+    """revision 冲突刷新不能用旧 Session 快照覆盖较新的启动。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    submit_start = runtime.index("async function submit(text)")
+    conflict_start = runtime.index("result.reason === 'numeric_base_revision_mismatch'", submit_start)
+    refresh = runtime.index("var refreshed = await requestJson(", conflict_start)
+    ownership_guard = runtime.index(
+        "isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)",
+        refresh,
+    )
+    pending_guard = runtime.index("state.pendingTurn.id === submittedTurnId", ownership_guard)
+    apply_snapshot = runtime.index("applySnapshot(refreshed);", pending_guard)
+
+    assert "var submittedLaunchEpoch = launchEpoch;" in runtime[submit_start:conflict_start]
+    assert refresh < ownership_guard < pending_guard < apply_snapshot
 
 
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():
