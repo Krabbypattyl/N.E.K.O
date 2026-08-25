@@ -51,14 +51,19 @@
         node.textContent = text || '';
         node.dataset.tone = isError ? 'error' : 'info';
     }
-    function postMessage(message) {
+    function postMessage(message, preferOpener) {
         var payload = transport.createMessage('theater-selector', message);
         var sent = false;
+        var opener = window.opener && !window.opener.closed ? window.opener : null;
+        // 启动请求只投递给打开选剧页的本体；没有 opener 的独立页面才退回共享频道发现本体。
+        if (preferOpener === true && opener) {
+            try { opener.postMessage(payload, window.location.origin); return true; } catch (_) {}
+        }
         if (state.channel) {
             try { state.channel.postMessage(payload); sent = true; } catch (_) {}
         }
-        if (window.opener && !window.opener.closed) {
-            try { window.opener.postMessage(payload, window.location.origin); sent = true; } catch (_) {}
+        if (opener) {
+            try { opener.postMessage(payload, window.location.origin); sent = true; } catch (_) {}
         }
         return sent;
     }
@@ -339,8 +344,9 @@
             }
             window.addEventListener('message', ready);
             if (state.channel) state.channel.addEventListener('message', ready);
-            postMessage(payload);
-            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 7000);
+            postMessage(payload, true);
+            // 本体最多等待约 8 秒挂载 React 胶囊；选剧页必须覆盖完整等待窗口。
+            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 10000);
         });
     }
     async function launchSnapshot(snapshot, action) {
@@ -545,6 +551,11 @@
                     cancelLabel: t('theater.skipMemory', '暂不记录'), confirmLabel: t('theater.saveMemory', '记下本次演绎'),
                     persistent: true, keepError: archiveFailed
                 });
+                if (state.pendingEnd !== receipt) {
+                    // 角色切换等程序化关闭不等于玩家选择“暂不记录”，不得发送 skip 请求。
+                    hideModal();
+                    break;
+                }
                 var body = { story_id: receipt.story_id, session_id: receipt.session_id, revision: receipt.revision, end_receipt_id: receipt.end_receipt_id };
                 setModalBusy(true);
                 $('theater-modal-body').textContent = remember

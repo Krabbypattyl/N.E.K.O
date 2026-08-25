@@ -328,8 +328,9 @@
             window.clearInterval(state.hostReadyTimer);
             state.hostReadyTimer = window.setInterval(function () {
                 attempts -= 1;
-                if (bindHostCallbacks() || attempts <= 0) {
-                    window.clearInterval(state.hostReadyTimer); state.hostReadyTimer = 0; resolve(attempts > 0);
+                var ready = bindHostCallbacks();
+                if (ready || attempts <= 0) {
+                    window.clearInterval(state.hostReadyTimer); state.hostReadyTimer = 0; resolve(ready);
                 }
             }, 100);
         });
@@ -487,8 +488,14 @@
         state.history = buildCommittedHistory(snapshot);
         state.active = true;
         rememberPointer();
-        await waitForHost();
+        var hostReady = await waitForHost();
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
+        if (!hostReady) {
+            // React 胶囊尚未挂载时不能谎报启动成功，否则选剧页关闭后演绎会停在不可见状态。
+            delete launchReplyTargets[message.launch_id];
+            clear('launch-host-unavailable');
+            return false;
+        }
         claimAudioPlayback();
         var readyMessage = postMessage({ action: 'theater:launch-ready', launch_id: message.launch_id, story_id: state.storyId, session_id: state.sessionId });
         postDirect(launchReplyTargets[message.launch_id], readyMessage);

@@ -792,6 +792,38 @@ def test_numeric_v2_restore_creates_receipts_inside_lifecycle_locks(
     ]
 
 
+def test_numeric_v2_session_restore_rejects_cross_story_session_id(
+    tmp_path,
+    monkeypatch,
+):
+    """指定 Session 恢复入口不能用另一个剧本的 Runtime 投影节点。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    other_story = numeric_v2_story()
+    other_story["meta"]["story_id"] = "numeric_v2_other_story"
+    with client:
+        imported = client.post(
+            "/api/theater-numeric/packages/import",
+            json=other_story,
+        )
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "cross_story_restore_session",
+            },
+        )
+        mismatched = client.get(
+            "/api/theater-numeric/session/cross_story_restore_session",
+            params={"story_id": "numeric_v2_other_story"},
+        )
+
+    assert imported.status_code == 200
+    assert started.status_code == 200
+    assert mismatched.status_code == 404
+    assert mismatched.json()["reason"] == "numeric_session_not_found"
+
+
 def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
     """跳过归档的校验与提交必须位于角色和剧本生命周期锁内。"""  # noqa: DOCSTRING_CJK
 

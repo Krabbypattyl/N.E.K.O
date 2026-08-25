@@ -697,6 +697,9 @@ class NumericV2SessionStore:
                 if isinstance(exc.__cause__, FileNotFoundError):
                     return None
                 raise
+            # 先按持久化身份拒绝跨剧本 Session，再用当前剧本引擎重放 Ledger。
+            if stored.session.story_package_id != self.engine.story_id:
+                return None
             self._validate_chain(stored)
             return stored
 

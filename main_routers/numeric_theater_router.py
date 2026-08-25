@@ -637,7 +637,11 @@ async def get_numeric_session(session_id: str, story_id: str):
         # 指定 Session 的恢复也要覆盖回执写入，保持与角色、剧本删除事务相同的锁序。
         async with character_config_mutation_lock, runtime.story_session_guard():
             stored = await runtime.restore_session(session_id)
-            if stored is None:
+            if (
+                stored is None
+                or stored.session.story_package_id != runtime.engine.story_id
+            ):
+                # Session ID 是全局定位符，但指定恢复入口只能投影请求剧本自己的节点。
                 return _error("numeric_session_not_found", 404)
             binding = _ensure_current_catgirl(stored.session, config_manager)
             receipt = (

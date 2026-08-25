@@ -63,6 +63,21 @@ def test_selector_uses_two_stage_handoff_and_start_replacement():
     assert "persistent: true" in script
 
 
+def test_selector_targets_launch_to_opener_and_covers_host_wait_window():
+    """有 opener 时启动请求不能广播给其他本体，等待时间必须覆盖宿主挂载窗口。"""  # noqa: DOCSTRING_CJK
+
+    script = _source("static/js/theater_selector.js")
+    post_start = script.index("function postMessage(message, preferOpener)")
+    post_end = script.index("function setBusy(", post_start)
+    handoff_start = script.index("async function handoff(")
+    handoff_end = script.index("async function launchSnapshot(", handoff_start)
+
+    assert "preferOpener === true && opener" in script[post_start:post_end]
+    assert "opener.postMessage(payload, window.location.origin); return true;" in script[post_start:post_end]
+    assert "postMessage(payload, true);" in script[handoff_start:handoff_end]
+    assert "}, 10000);" in script[handoff_start:handoff_end]
+
+
 def test_selector_binds_delayed_confirmations_to_original_selection():
     """排队确认框只能操作弹出时对应的剧本和 Session。"""  # noqa: DOCSTRING_CJK
 
@@ -272,6 +287,24 @@ def test_selector_preserves_newer_end_receipt_during_memory_prompt():
     assert "if (state.pendingEnd === receipt) state.pendingEnd = null;" in prompt
     assert "state.pendingEnd && state.pendingEnd !== receipt" in prompt
     assert "maybePromptMemory().catch" in prompt
+    modal_await = prompt.index("var remember = await showModal(")
+    current_guard = prompt.index("if (state.pendingEnd !== receipt)", modal_await)
+    archive_request = prompt.index("result = await requestJson(", current_guard)
+
+    assert modal_await < current_guard < archive_request
+
+
+def test_capsule_runtime_requires_chat_host_before_launch_ready():
+    """React 胶囊未挂载时不能发送启动成功回执或保留不可见运行态。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    launch_start = runtime.index("async function performLaunch(message, launchToken)")
+    host_wait = runtime.index("var hostReady = await waitForHost();", launch_start)
+    host_guard = runtime.index("if (!hostReady)", host_wait)
+    clear_runtime = runtime.index("clear('launch-host-unavailable');", host_guard)
+    launch_ready = runtime.index("action: 'theater:launch-ready'", clear_runtime)
+
+    assert host_wait < host_guard < clear_runtime < launch_ready
 
 
 def test_capsule_runtime_stops_old_audio_before_loading_replacement_session():
