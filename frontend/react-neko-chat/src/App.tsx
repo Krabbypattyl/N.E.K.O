@@ -5019,12 +5019,14 @@ function CompactChatApp({
     if (submittingRef.current) return;
     const text = (draftOverride ?? visibleDraft).trim();
     if (!text && (theaterActive || catLocalTextOnly || composerAttachments.length === 0)) return;
+    // 小剧场激活时不能回退到普通聊天；宿主回调尚未就绪时保留草稿等待重试。
+    if (theaterActive && !onTheaterSubmit) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
-      if (theaterActive && onTheaterSubmit) {
-        onTheaterSubmit(text);
+      if (theaterActive) {
+        onTheaterSubmit?.(text);
       } else {
         onComposerSubmit?.({ text });
       }

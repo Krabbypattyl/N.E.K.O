@@ -1017,12 +1017,17 @@ async def test_numeric_v2_character_id_survives_rename_but_blocks_same_name_reus
     tmp_path,
 ):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    original_binding = {**_binding(), "player_address": "旧称呼"}
     original = await runtime.start_session(
         session_id="runtime_character_identity",
-        catgirl_binding=_binding(),
+        catgirl_binding=original_binding,
         opening_performance=_opening(),
     )
-    renamed_binding = {**_binding(), "catgirl_name": "Lan Renamed"}
+    renamed_binding = {
+        **_binding(),
+        "catgirl_name": "Lan Renamed",
+        "player_address": "新称呼",
+    }
     await update_numeric_v2_character_bindings(
         tmp_path,
         character_id=_binding()["character_id"],
@@ -1039,7 +1044,10 @@ async def test_numeric_v2_character_id_survives_rename_but_blocks_same_name_reus
 
     assert restored_after_rename is not None
     assert restored_after_rename.session.session_id == original.session.session_id
-    assert restored_after_rename.session.catgirl_binding == renamed_binding
+    assert restored_after_rename.session.catgirl_binding == {
+        **renamed_binding,
+        "player_address": "旧称呼",
+    }
     assert await runtime.restore_story_session(reused_name_binding) is None
 
 

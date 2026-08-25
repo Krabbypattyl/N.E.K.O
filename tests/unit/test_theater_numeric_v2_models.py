@@ -18,7 +18,7 @@ from services.theater.numeric_v2_actor import (
 )
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator
-from services.theater.numeric_v2_performance import mixed_performance_blocks
+from services.theater.numeric_v2_performance import content_blocks, mixed_performance_blocks
 from services.theater.numeric_v2_runtime import (
     NumericV2Engine,
     NumericV2RuntimeError,
@@ -1335,6 +1335,24 @@ def test_numeric_v2_mixed_performance_parser_keeps_arbitrary_interleaving():
     assert blocks[3]["text"] == "我答应了。再说一遍也可以。"
     assert mixed_performance_blocks("（没有闭合的动作后面对白会静音") == []
     assert mixed_performance_blocks("（动作（不能嵌套））对白") == []
+
+
+def test_numeric_v2_scene_narration_does_not_drop_final_mixed_block():
+    """独立场景旁白不能占用混合正文的内容块上限。"""  # noqa: DOCSTRING_CJK
+
+    performance = "".join(f"（动作{i}）对白{i}" for i in range(8))
+    blocks = content_blocks({
+        "scene_narration": "换场后的完整场景旁白。",
+        "performance": performance,
+    })
+
+    assert len(blocks) == 17
+    assert blocks[0] == {"type": "narration", "text": "换场后的完整场景旁白。"}
+    assert blocks[-1] == {
+        "type": "dialogue",
+        "speaker_id": "active_catgirl",
+        "text": "对白7",
+    }
 
 
 def test_numeric_v2_actor_history_uses_complete_current_scene_visit():

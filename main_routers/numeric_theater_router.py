@@ -161,6 +161,21 @@ async def _create_ended_receipt(config_manager: Any, session: Any) -> dict[str, 
     return await _archive_store(config_manager).acreate_or_get(session)
 
 
+async def _create_receipt_for_existing_ended_session(
+    config_manager: Any,
+    runtime: NumericV2Runtime,
+    session: Any,
+) -> dict[str, Any]:
+    """持有生命周期锁复验已结束 Session，再创建或补建回执。"""  # noqa: DOCSTRING_CJK
+
+    # 固定角色锁先于故事锁，避免与删除、改名事务形成反向等待。
+    async with character_config_mutation_lock, runtime.story_session_guard():
+        current = await runtime.restore_session(str(session.session_id))
+        if current is None or current.session.status != "ended":
+            raise NumericV2SessionNotFoundError("numeric_session_not_found")
+        return await _create_ended_receipt(config_manager, current.session)
+
+
 async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
     registry = await _registry(config_manager)
     engine = await asyncio.to_thread(registry.load_engine, story_id)
@@ -404,7 +419,8 @@ async def delete_numeric_story(story_id: str, request: Request):
             await asyncio.to_thread(registry.load_engine, normalized_story_id),
             _numeric_root(config_manager),
         )
-        async with runtime.story_session_guard():
+        # 剧本删除与角色改名/删除会读写同一批 Session、回执和归档，统一按角色锁→故事锁串行。
+        async with character_config_mutation_lock, runtime.story_session_guard():
             await _assert_numeric_writable(config_manager, "packages")
             deleted_session_count = await delete_numeric_v2_story_transactionally(
                 _numeric_root(config_manager),
@@ -609,7 +625,11 @@ async def submit_numeric_input(request: Request):
         # 幂等重放直接返回已提交快照，不能再次调用模型或重复结算。
         if turn.client_turn_id in current.session.processed_client_turn_ids:
             replay_receipt = (
-                await _create_ended_receipt(config_manager, current.session)
+                await _create_receipt_for_existing_ended_session(
+                    config_manager,
+                    runtime,
+                    current.session,
+                )
                 if current.session.status == "ended"
                 else None
             )
@@ -646,6 +666,13 @@ async def submit_numeric_input(request: Request):
         performance = workflow.performance
         stored = workflow.stored
         current_binding = workflow.display_binding
+        end_receipt = None
+        if stored.session.status == "ended":
+            end_receipt = await _create_receipt_for_existing_ended_session(
+                config_manager,
+                runtime,
+                stored.session,
+            )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError) as exc:
@@ -670,9 +697,6 @@ async def submit_numeric_input(request: Request):
         return _error(str(exc), 400)
     except (NumericV2RuntimeError, NumericV2StoreError) as exc:
         return _error(str(exc), 400)
-    end_receipt = None
-    if stored.session.status == "ended":
-        end_receipt = await _create_ended_receipt(config_manager, stored.session)
     return {
         "ok": True,
         "resolved_turn": {
@@ -710,7 +734,11 @@ async def end_numeric_session(request: Request):
         current_binding = _ensure_current_catgirl(current.session, config_manager)
         if current.session.status == "ended":
             # Session 已提交但回执写入失败时，客户端会重试结束请求；此时只补建回执，不能再次推进 revision。
-            receipt = await _create_ended_receipt(config_manager, current.session)
+            receipt = await _create_receipt_for_existing_ended_session(
+                config_manager,
+                runtime,
+                current.session,
+            )
             return {
                 "ok": True,
                 "idempotent_replay": True,
@@ -728,6 +756,11 @@ async def end_numeric_session(request: Request):
                 base_revision=base_revision,
                 reason="user_exit",
             )
+        receipt = await _create_receipt_for_existing_ended_session(
+            config_manager,
+            runtime,
+            stored.session,
+        )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2StoreRevisionConflictError:
@@ -738,7 +771,6 @@ async def end_numeric_session(request: Request):
         return _error(str(exc), 409)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
         return _error(str(exc), 400)
-    receipt = await _create_ended_receipt(config_manager, stored.session)
     return {
         "ok": True,
         **_numeric_payload(

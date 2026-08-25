@@ -634,6 +634,12 @@ class NumericV2Compiler:
                 target = c.require_id(route.get("target_node_id"), f"{route_path}.target_node_id")
                 if target:
                     targets.append(target)
+                    if node_id and target == node_id:
+                        c.add(
+                            "route_self_loop_forbidden",
+                            f"{route_path}.target_node_id",
+                            "路线不能直接回到当前节点。",
+                        )
                 priority = c.require_int(route.get("priority"), f"{route_path}.priority")
                 signature = NumericV2Compiler._validate_conditions(
                     c,

@@ -71,7 +71,8 @@ def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
         if scene_narration:
             blocks.append({"type": "narration", "text": scene_narration})
         blocks.extend(mixed_performance_blocks(container.get("performance")))
-        return blocks[:MAX_CONTENT_BLOCKS]
+        # 完整场景旁白是独立字段，不占混合 performance 自身的 16 块上限。
+        return blocks
 
     raw_content = container.get("content")
     if isinstance(raw_content, list):

@@ -399,6 +399,38 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
 
 def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch):
     """结束状态已提交后，结束重试和回合幂等重放都应补建缺失回执。"""  # noqa: DOCSTRING_CJK
+
+    story_guard_depth = {"value": 0}
+    receipt_lock_states = []
+    original_guard = numeric_theater_router.NumericV2Runtime.story_session_guard
+    original_create_receipt = numeric_theater_router._create_ended_receipt
+
+    @asynccontextmanager
+    async def tracked_story_guard(runtime):
+        async with original_guard(runtime):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
+
+    async def tracked_create_receipt(config_manager, session):
+        receipt_lock_states.append({
+            "character_guard": numeric_theater_router.character_config_mutation_lock.locked(),
+            "story_guard": story_guard_depth["value"] > 0,
+        })
+        return await original_create_receipt(config_manager, session)
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "story_session_guard",
+        tracked_story_guard,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router,
+        "_create_ended_receipt",
+        tracked_create_receipt,
+    )
     client = _client(tmp_path, monkeypatch)
     turn_payload = {
         "story_id": "numeric_v2_contract",
@@ -455,6 +487,11 @@ def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch)
     assert replayed_turn.status_code == 200
     assert replayed_turn.json()["idempotent_replay"] is True
     assert replayed_turn.json()["end_receipt_id"].startswith("theater_end_")
+    assert len(receipt_lock_states) == 3
+    assert all(
+        state == {"character_guard": True, "story_guard": True}
+        for state in receipt_lock_states
+    )
 
 
 def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
@@ -568,6 +605,22 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
                 "主人": {"昵称": "哥哥"},
             }
 
+    delete_lock_states = []
+    original_delete_transaction = (
+        numeric_theater_router.delete_numeric_v2_story_transactionally
+    )
+
+    async def tracked_delete_transaction(*args, **kwargs):
+        delete_lock_states.append(
+            numeric_theater_router.character_config_mutation_lock.locked()
+        )
+        return await original_delete_transaction(*args, **kwargs)
+
+    monkeypatch.setattr(
+        numeric_theater_router,
+        "delete_numeric_v2_story_transactionally",
+        tracked_delete_transaction,
+    )
     manager = _MutableConfigManager(tmp_path)
     client = _client(tmp_path, monkeypatch, config_manager=manager)
     with client:
@@ -615,6 +668,7 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
             / "numeric_v2_contract.json"
         ).exists()
         assert client.get("/api/theater-numeric/stories").json()["stories"] == []
+        assert delete_lock_states == [True]
 
 
 def test_numeric_v2_story_delete_rolls_back_package_sessions_and_index(

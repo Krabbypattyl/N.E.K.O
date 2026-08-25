@@ -619,6 +619,22 @@ def test_numeric_v2_rejects_reachable_scene_that_cannot_reach_an_ending():
     )
 
 
+def test_numeric_v2_rejects_direct_self_loop_even_with_an_ending_route():
+    """同节点转场无法由现有 Ledger 表达，必须在编译期拒绝。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["nodes"][0]["route_gates"][0]["target_node_id"] = "start"
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "route_self_loop_forbidden"
+        and issue.path == "nodes[0].route_gates[0].target_node_id"
+        for issue in caught.value.issues
+    )
+
+
 def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
     package_root = tmp_path / "theater" / "numeric_v2" / "packages"
     registry = NumericV2PackageRegistry(package_root)

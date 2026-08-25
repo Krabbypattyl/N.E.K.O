@@ -452,10 +452,17 @@ async def update_numeric_v2_character_bindings(
                 raw_session = payload.get("session") if isinstance(payload, dict) else None
                 if not isinstance(raw_session, dict):
                     raise NumericV2StoreError("numeric_session_payload_invalid")
-                raw_session["catgirl_binding"] = {
+                existing_binding = raw_session.get("catgirl_binding")
+                refreshed_binding = {
                     str(key): str(value)
                     for key, value in catgirl_binding.items()
                 }
+                if isinstance(existing_binding, Mapping):
+                    # 历史 Ledger 按该 Session 当时的称呼事实重放；角色改名只能刷新猫娘展示字段。
+                    refreshed_binding["player_address"] = str(
+                        existing_binding.get("player_address") or ""
+                    )
+                raw_session["catgirl_binding"] = refreshed_binding
                 _atomic_write_json_payload(path, payload)
                 story_id = str(raw_session.get("story_package_id") or "").strip()
                 session_id = str(raw_session.get("session_id") or path.stem).strip()

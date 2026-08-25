@@ -387,6 +387,45 @@ def test_update_history_compresses_chat_without_swallowing_theater_episode(tmp_p
     )
 
 
+def test_update_history_preserves_legacy_theater_message_before_migration(tmp_path):
+    """旧剧场记录在迁移为单集胶囊前也不能进入普通摘要模型。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name = _make_manager(tmp_path)
+    legacy_theater = SystemMessage(
+        content="旧版剧场记录。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "legacy_story",
+            "session_id": "legacy_session",
+        },
+    )
+    original = [
+        HumanMessage(content="m0"),
+        legacy_theater,
+        AIMessage(content="m1"),
+        HumanMessage(content="m2"),
+        AIMessage(content="m3"),
+        HumanMessage(content="m4"),
+        AIMessage(content="m5"),
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    compressed_inputs = []
+
+    async def _ok(messages, *_args, **_kwargs):
+        compressed_inputs.extend(messages)
+        return (SystemMessage(content="普通聊天摘要"), "普通聊天摘要")
+
+    setattr(mgr, "compress_history", _ok)
+    _run(mgr.update_history([HumanMessage(content="new")], name, compress=True))
+
+    final = _read_recent(mgr.log_file_path[name])
+    assert all(message.metadata.get("source") != "theater_numeric_v2" for message in compressed_inputs)
+    assert any(
+        message.metadata.get("session_id") == "legacy_session"
+        for message in final
+    )
+
+
 def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
     mgr, name = _make_manager(tmp_path)
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]

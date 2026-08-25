@@ -360,6 +360,26 @@ describe('App', () => {
     expect(onComposerSubmit).not.toHaveBeenCalled();
   });
 
+  it('keeps the theater draft when the dedicated callback is unavailable', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({
+      theaterPresentation: {
+        active: true,
+        phase: 'awaiting_player',
+        history: [],
+        suggestedInputs: [],
+      },
+      onComposerSubmit,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '等待剧场宿主就绪' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('等待剧场宿主就绪');
+  });
+
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
     const onComposerSubmit = vi.fn();
     const { rerender } = render(

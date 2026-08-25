@@ -23,6 +23,7 @@
         sessionStatus: '', scene: null, history: [], currentBlock: null, suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, presentationSeq: 0, composerVisibilityRestore: null,
+        chatSurfaceModeRestore: null,
         errorMessage: ''
     };
     var launchRequests = Object.create(null);
@@ -69,6 +70,17 @@
         if (!input || typeof input.value !== 'string') return;
         // 主页面初始化模型时可能重挂 React；退出小剧场时用该快照恢复普通聊天草稿。
         state.ordinaryDraftRestore = { id: createId('theater_ordinary_draft_'), text: input.value };
+    }
+    function captureChatSurfaceMode(chatHost) {
+        if (state.chatSurfaceModeRestore !== null || !chatHost || typeof chatHost.getChatSurfaceMode !== 'function') return;
+        state.chatSurfaceModeRestore = String(chatHost.getChatSurfaceMode() || 'compact');
+    }
+    function restoreChatSurfaceMode(chatHost) {
+        var mode = state.chatSurfaceModeRestore;
+        state.chatSurfaceModeRestore = null;
+        if (!mode || !chatHost || typeof chatHost.setChatSurfaceMode !== 'function') return;
+        // 小剧场只临时占用胶囊界面，退出后恢复用户进入前选择的聊天形态。
+        chatHost.setChatSurfaceMode(mode);
     }
     function claimComposerVisibility(chatHost) {
         if (!state.active || state.composerVisibilityRestore || !chatHost) return;
@@ -281,6 +293,7 @@
     function render() {
         var chatHost = host();
         if (!chatHost || typeof chatHost.setViewProps !== 'function') return false;
+        if (state.active) captureChatSurfaceMode(chatHost);
         claimComposerVisibility(chatHost);
         var compactState = state.active && state.phase === 'awaiting_player' ? 'input' : 'default';
         chatHost.setViewProps({
@@ -443,7 +456,9 @@
         render();
     }
     async function performLaunch(message) {
-        captureOrdinaryDraft(host());
+        var chatHost = host();
+        captureOrdinaryDraft(chatHost);
+        captureChatSurfaceMode(chatHost);
         state.active = true; state.phase = 'loading'; state.storyId = String(message.story_id); state.sessionId = String(message.session_id); render();
         var snapshot = await requestJson(api.session + '/' + encodeURIComponent(state.sessionId) + '?story_id=' + encodeURIComponent(state.storyId));
         if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
@@ -570,6 +585,7 @@
             });
         }
         restoreComposerVisibility(chatHost);
+        restoreChatSurfaceMode(chatHost);
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
     }
     function openSelector(receipt) {

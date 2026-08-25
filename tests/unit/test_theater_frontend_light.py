@@ -91,6 +91,26 @@ def test_capsule_runtime_separates_narration_and_dialogue_tts():
     assert "if (hasScreenshots || hasExtraImages)" not in theater_branch[:600]
 
 
+def test_capsule_runtime_restores_the_pre_theater_chat_surface():
+    """小剧场退出时必须恢复进入前的聊天界面形态。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+
+    assert "chatSurfaceModeRestore: null" in runtime
+    assert "chatHost.getChatSurfaceMode()" in runtime
+    assert "chatHost.setChatSurfaceMode(mode)" in runtime
+    render = runtime.index("function render()")
+    render_capture = runtime.index("captureChatSurfaceMode(chatHost);", render)
+    force_compact = runtime.index("chatSurfaceMode: 'compact'", render)
+    launch = runtime.index("async function performLaunch(message)")
+    capture = runtime.index("captureChatSurfaceMode(chatHost);", launch)
+    launch_render = runtime.index("render();", capture)
+    clear = runtime.index("function clear(reason)")
+    restore = runtime.index("restoreChatSurfaceMode(chatHost);", clear)
+
+    assert render < render_capture < force_compact < launch < capture < launch_render < clear < restore
+
+
 def test_selector_does_not_publish_stale_story_after_archive_load():
     """异步归档返回后必须再次复验当前选择，再更新详情和地址栏。"""  # noqa: DOCSTRING_CJK
 

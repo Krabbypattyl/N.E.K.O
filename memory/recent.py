@@ -1142,12 +1142,12 @@ class CompressedRecentHistoryManager:
                 preserved_theater = [
                     message
                     for message in snapshot
-                    if is_theater_episode_summary(message)
+                    if is_theater_memory_message(message)
                 ]
                 compression_input = [
                     message
                     for message in snapshot
-                    if not is_theater_episode_summary(message)
+                    if not is_theater_memory_message(message)
                 ]
                 if not compression_input:
                     # 当前可压缩头部全是剧场胶囊，只能交给保留胶囊的硬上限裁剪。
