@@ -31,6 +31,7 @@
     var launchReplyTargets = Object.create(null);
     var launchEpoch = 0;
     var endConfirmationPending = false;
+    var committedSnapshot = null;
 
     function t(key, fallback) {
         if (typeof window.t === 'function') {
@@ -359,6 +360,8 @@
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
+        // 保留最近一次服务端已提交快照；表现播放被打断时可直接恢复完整历史和推荐输入。
+        committedSnapshot = snapshot;
     }
     function readingDelay(text) { return Math.min(5000, Math.max(1100, Array.from(String(text || '')).length * 55)); }
     function wait(ms, token) {
@@ -643,6 +646,7 @@
         state.active = false; state.phase = 'inactive'; state.currentBlock = null; state.history = []; state.suggestedInputs = [];
         state.playerName = ''; state.catgirlName = '';
         state.pendingTurn = null; state.draftRestore = null;
+        committedSnapshot = null;
         rememberPointer();
         var chatHost = host();
         if (chatHost && typeof chatHost.setViewProps === 'function') {
@@ -782,6 +786,21 @@
         // 结束接口返回前也可能切换 Session；旧响应不能改变新 Session 的阶段或回执。
         if (!isCurrentEndRequest()) return false;
         if (!result.ok) {
+            var snapshot = committedSnapshot;
+            var committedSession = snapshot && snapshot.session && typeof snapshot.session === 'object'
+                ? snapshot.session
+                : null;
+            if (
+                committedSession
+                && String(committedSession.story_package_id || '') === requestedStoryId
+                && String(committedSession.session_id || '') === requestedSessionId
+                && Number(committedSession.revision || 0) === requestedRevision
+            ) {
+                // 结束动作已经取消逐字播放；失败时从已提交快照重建，不能留下截断正文和空推荐项。
+                applySnapshot(snapshot);
+                state.history = buildCommittedHistory(snapshot);
+                state.currentBlock = null;
+            }
             state.phase = 'awaiting_player';
             state.errorMessage = t('theater.endFailed', '结束演绎失败，请检查网络后重试。');
             render();

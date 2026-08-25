@@ -110,6 +110,101 @@ def test_theater_capsule_reasserts_composer_visibility_on_active_render(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_restores_committed_turn_after_end_failure(
+    mock_page: Page,
+    running_server: str,
+):
+    """逐字播放期间结束失败后，必须恢复完整正文和推荐输入。"""  # noqa: DOCSTRING_CJK
+
+    performance = "（她把旧信压在桌角）这封信我一直没有拆开，因为我想等你回来亲手确认最后一页。"
+    turn = {
+        "revision": 1,
+        "input_text": "把旧信递给她",
+        "performance": performance,
+        "suggested_inputs": ["请她一起拆开", "先问这些年发生了什么"],
+    }
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/capsule-browser-session"):
+            fulfill(route, _snapshot(revision=0))
+            return
+        if path.endswith("/api/theater-numeric/session/input"):
+            payload = _snapshot(revision=1, performance_history=[turn])
+            payload["suggested_inputs"] = turn["suggested_inputs"]
+            payload["performance"] = turn
+            fulfill(route, payload)
+            return
+        if path.endswith("/api/theater-numeric/session/end"):
+            fulfill(route, {"ok": False, "reason": "numeric_end_failed"})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.openOrFocusWindow = () => null;
+            window.showConfirm = (_message, _title, options) => {
+                if (typeof options.onResolve === 'function') options.onResolve(true);
+                return Promise.resolve(true);
+            };
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1',
+                action: 'theater:launch-request',
+                launch_id: 'end-failure-restore-launch',
+                launch_action: 'continue',
+                story_id: 'capsule-browser-story',
+                session_id: 'capsule-browser-session',
+                revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    mock_page.evaluate(
+        "() => window.nekoTheaterRuntime.handleComposerSubmit('把旧信递给她')"
+    )
+    mock_page.wait_for_function(
+        """() => window.nekoTheaterRuntime.getState().history.some((entry) =>
+            entry.status === 'streaming' && entry.text.length > 0
+        )"""
+    )
+    mock_page.evaluate(
+        "() => { window.__failedEndResult = null; window.nekoTheaterRuntime.requestEnd().then((value) => { window.__failedEndResult = value; }); }"
+    )
+    mock_page.wait_for_function(
+        "() => window.__failedEndResult === false"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+
+    state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    assert state["currentBlock"] is None
+    assert all(entry.get("status") != "streaming" for entry in state["history"])
+    assert state["history"][-1]["text"] == performance
+    assert state["suggestedInputs"] == turn["suggested_inputs"]
+    expect(mock_page.locator(".composer-galgame-option")).to_have_count(2)
+    expect(mock_page.locator(".compact-theater-history-error")).to_contain_text(
+        "结束演绎失败"
+    )
+
+
+@pytest.mark.frontend
 def test_theater_capsule_ignores_late_turn_after_launching_another_session(
     mock_page: Page,
     running_server: str,

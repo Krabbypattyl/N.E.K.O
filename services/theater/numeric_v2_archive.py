@@ -393,6 +393,7 @@ class NumericV2ArchiveStore:
         story_id: str = "",
         character_id: str = "",
         legacy_catgirl_name: str = "",
+        raise_on_io_error: bool = False,
     ) -> list[dict[str, Any]]:
         """只返回冷档案摘要，列表接口不暴露完整演绎正文。"""  # noqa: DOCSTRING_CJK
 
@@ -406,7 +407,14 @@ class NumericV2ArchiveStore:
             try:
                 payload = self._read(path)
                 modified_ns = path.stat().st_mtime_ns
-            except (NumericV2ArchiveError, OSError):
+            except NumericV2ArchiveError as exc:
+                # 普通列表允许跳过暂时不可读的档案；破坏性操作必须中止，避免遗漏用户数据。
+                if raise_on_io_error and isinstance(exc.__cause__, OSError):
+                    raise
+                continue
+            except OSError:
+                if raise_on_io_error:
+                    raise
                 continue
             if (
                 payload is None
@@ -629,6 +637,7 @@ class NumericV2ArchiveStore:
             story_id=story_id,
             character_id=character_id,
             legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
         ):
             try:
                 Path(str(archive["path"])).unlink()

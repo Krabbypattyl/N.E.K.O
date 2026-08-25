@@ -74,6 +74,43 @@ def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
         store._receipt_path("theater_end_../../outside")
 
 
+def test_numeric_v2_public_archive_delete_aborts_on_transient_read_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """破坏性删除遇到暂时不可读档案时必须中止，不能静默遗漏。"""  # noqa: DOCSTRING_CJK
+
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+    archive_path = store.public_archive_root / "transient.json"
+    store._write(archive_path, {
+        "schema": "neko.theater.numeric.v2.public-archive",
+        "story_id": "story_transient_delete",
+        "session_id": "session_transient_delete",
+        "character_id": "character_transient_delete",
+        "catgirl_name": "小葵",
+    })
+    path_type = type(archive_path)
+    original_read_text = path_type.read_text
+
+    def transient_read(path, *args, **kwargs):
+        if path == archive_path:
+            raise PermissionError("temporary archive failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", transient_read)
+
+    with pytest.raises(
+        numeric_v2_archive.NumericV2ArchiveError,
+        match="numeric_end_receipt_read_failed",
+    ):
+        store.delete_public_archives(
+            story_id="story_transient_delete",
+            character_id="character_transient_delete",
+        )
+
+    assert archive_path.is_file()
+
+
 def test_numeric_v2_legacy_archives_and_receipts_follow_character_rename(tmp_path):
     """旧版空 character_id 的冷档案、回执和待提交档案必须随角色改名迁移。"""  # noqa: DOCSTRING_CJK
 
