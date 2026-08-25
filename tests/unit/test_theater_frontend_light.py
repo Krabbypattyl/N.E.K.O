@@ -102,7 +102,7 @@ def test_capsule_runtime_restores_the_pre_theater_chat_surface():
     render = runtime.index("function render()")
     render_capture = runtime.index("captureChatSurfaceMode(chatHost);", render)
     force_compact = runtime.index("chatSurfaceMode: 'compact'", render)
-    launch = runtime.index("async function performLaunch(message)")
+    launch = runtime.index("async function performLaunch(message, launchToken)")
     capture = runtime.index("captureChatSurfaceMode(chatHost);", launch)
     launch_render = runtime.index("render();", capture)
     clear = runtime.index("function clear(reason)")
@@ -204,7 +204,8 @@ def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     compact_css = "".join(css.split())
 
     assert "typeof window.showConfirm === 'function'" in runtime
-    assert "if (!confirmed || !state.active) return false" in runtime
+    assert "if (!confirmed || !isCurrentEndRequest()) return false" in runtime
+    assert "if (!isCurrentEndRequest()) return false" in runtime
     assert "cancelText: t('common.cancel', '取消')" in runtime
     assert "skin: 'theater'" in runtime
     assert "onResolve: function (confirmed)" in runtime

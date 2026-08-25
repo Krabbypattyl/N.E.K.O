@@ -253,13 +253,29 @@ def _scene_projection(
                 "summary": cast.text(raw["summary"]),
             }
     return {
-        "id": node["id"],
         "chapter": node["chapter"],
         "summary": cast.text(node["story_beat"]["summary"]),
         "terminal": bool(ending),
         "ending": ending,
         "node_turn_count": stored.session.node_turn_count,
         "min_turns": int(node.get("min_turns") or 0),
+    }
+
+
+_INTERNAL_PERFORMANCE_FIELDS = frozenset({
+    "from_node_id",
+    "to_node_id",
+    "visible_node_id",
+})
+
+
+def _public_performance(performance: Mapping[str, Any]) -> dict[str, Any]:
+    """移除只供 Runtime 重放和校验使用的路线标识。"""  # noqa: DOCSTRING_CJK
+
+    return {
+        str(key): value
+        for key, value in performance.items()
+        if key not in _INTERNAL_PERFORMANCE_FIELDS
     }
 
 
@@ -272,13 +288,15 @@ def _public_session(session: Any) -> dict[str, Any]:
         "story_package_id": session.story_package_id,
         "story_package_revision": session.story_package_revision,
         "story_package_hash": session.story_package_hash,
-        "current_node_id": session.current_node_id,
         "node_turn_count": session.node_turn_count,
         "revision": session.revision,
         "status": session.status,
         "player_address_known": session.player_address_known,
         "opening_performance": session.opening_performance,
-        "performance_history": list(session.performance_history),
+        "performance_history": [
+            _public_performance(record)
+            for record in session.performance_history
+        ],
         "ended_reason": session.ended_reason,
     }
 
@@ -469,6 +487,15 @@ async def start_numeric_session(request: Request):
         # 开场模型调用不占用角色或剧本锁；最终提交前会重新读取并验证全部可变事实。
         opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
         async with character_config_mutation_lock, runtime.story_session_guard():
+            # Actor 调用期间剧本可能已被删除或同 ID 重装；提交前必须复验原包仍是当前事实。
+            current_engine = await asyncio.to_thread(
+                NumericV2PackageRegistry(
+                    _numeric_root(config_manager) / "numeric_v2" / "packages"
+                ).load_engine,
+                story_id,
+            )
+            if current_engine.compiled.package_hash != runtime.engine.compiled.package_hash:
+                raise NumericV2PackageError("numeric_story_changed_during_start")
             if _current_catgirl_binding(config_manager) != binding:
                 raise ValueError("catgirl_changed_requires_new_session")
             existing = await runtime.restore_story_session_unlocked(binding)
@@ -718,7 +745,7 @@ async def submit_numeric_input(request: Request):
             "route_status": outcome.route_status,
             "route_changed": outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"],
         },
-        "performance": performance,
+        "performance": _public_performance(performance),
         **_numeric_payload(
             runtime,
             stored,

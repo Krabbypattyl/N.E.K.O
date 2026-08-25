@@ -1190,6 +1190,34 @@ def test_numeric_v2_cast_projects_multi_word_source_names():
     assert projected["catgirl_identity"] == "测试猫娘，经营花店、保留旧信的年轻女性。"
 
 
+def test_numeric_v2_cast_does_not_replace_latin_name_inside_word():
+    """英文姓名只匹配完整词，不能把普通单词中的同名子串改坏。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["intro"]["player_identity"] = "May，回乡整理旧屋的年轻女性。"
+    cast = NumericV2CastProjection.from_story(
+        story,
+        player_name="你",
+        catgirl_name="测试猫娘",
+    )
+
+    assert cast.text("Maybe May can help.") == "Maybe 你 can help."
+
+
+def test_numeric_v2_cast_only_replaces_standalone_single_character_name():
+    """单字姓名必须作为独立身份出现，不能污染包含该字的普通复合词。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["intro"]["player_identity"] = "林，刚到这里的男主。"
+    cast = NumericV2CastProjection.from_story(
+        story,
+        player_name="你",
+        catgirl_name="测试猫娘",
+    )
+
+    assert cast.text("森林里，林，停在路口。") == "森林里，你，停在路口。"
+
+
 def test_numeric_v2_cast_defaults_missing_player_name_to_you():
     story = numeric_v2_story()
 

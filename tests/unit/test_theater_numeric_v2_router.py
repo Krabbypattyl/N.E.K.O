@@ -55,6 +55,23 @@ def test_numeric_v2_router_idle_request_locks_are_reclaimed():
     assert request_id not in numeric_theater_router._speak_request_locks
 
 
+def test_numeric_v2_public_performance_hides_route_identifiers():
+    """公开演绎只保留展示内容，内部节点和路线标识不能送到浏览器。"""  # noqa: DOCSTRING_CJK
+
+    projected = numeric_theater_router._public_performance({
+        "from_node_id": "start",
+        "to_node_id": "branch_secret",
+        "visible_node_id": "branch_secret",
+        "performance": "（收好地图）我们继续走。",
+        "suggested_inputs": ["继续前进"],
+    })
+
+    assert projected == {
+        "performance": "（收好地图）我们继续走。",
+        "suggested_inputs": ["继续前进"],
+    }
+
+
 def test_llm_role_dict_normalization_strips_internal_metadata():
     """角色字典发送到模型供应商前必须剥离 N.E.K.O 内部元数据。"""  # noqa: DOCSTRING_CJK
     normalized = _normalize_messages([{
@@ -227,6 +244,8 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert body["session"]["schema"] == "neko.script.session.numeric.v2"
         assert body["session"]["opening_performance"]["performance"] == "你回来了。"
         assert "metrics" not in body["session"]
+        assert "current_node_id" not in body["session"]
+        assert "id" not in body["scene"]
         assert body["scene"]["min_turns"] == 2
         assert "recommended_turns" not in body["scene"]
         assert body["story_intro"]["player_identity"].startswith("哥哥，")
@@ -324,6 +343,8 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert submitted.status_code == 200
         assert result["resolved_turn"] == {"route_status": "waiting_min_turns", "route_changed": False}
         assert result["session"]["performance_history"][0]["input_text"] == "我先听你说。"
+        assert "from_node_id" not in result["session"]["performance_history"][0]
+        assert "to_node_id" not in result["session"]["performance_history"][0]
         assert result["suggested_inputs"] == ["继续听她说"]
 
         restored = client.get(
@@ -867,6 +888,39 @@ def test_numeric_v2_router_rechecks_catgirl_after_opening(tmp_path, monkeypatch)
         assert blocked.json()["reason"] == "catgirl_changed_requires_new_session"
         assert events == ["actor", "changed"]
         assert not list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))
+
+
+def test_numeric_v2_router_rechecks_package_after_opening(tmp_path, monkeypatch):
+    """开场生成期间剧本被删除后，迟到结果不能重建孤儿 Session。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    package_path = (
+        tmp_path
+        / "theater"
+        / "numeric_v2"
+        / "packages"
+        / "numeric_v2_contract.json"
+    )
+
+    async def delete_during_opening(*_args, **_kwargs):
+        package_path.unlink()
+        return _performance("这个开场不应提交。", opening=True)
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_opening",
+        delete_during_opening,
+    )
+
+    with client:
+        blocked = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "deleted_story_start"},
+        )
+
+    assert blocked.status_code == 404
+    assert blocked.json()["reason"] == "numeric_story_not_found"
+    assert not list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))
 
 
 def test_numeric_v2_router_locks_final_session_creation_only(tmp_path, monkeypatch):

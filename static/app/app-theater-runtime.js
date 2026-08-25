@@ -29,6 +29,7 @@
     var launchRequests = Object.create(null);
     var launchRequestOrder = [];
     var launchReplyTargets = Object.create(null);
+    var launchEpoch = 0;
     var endConfirmationPending = false;
 
     function t(key, fallback) {
@@ -455,7 +456,13 @@
         }
         render();
     }
-    async function performLaunch(message) {
+    function isCurrentLaunch(launchToken, storyId, sessionId) {
+        return launchToken === launchEpoch
+            && state.active
+            && state.storyId === storyId
+            && state.sessionId === sessionId;
+    }
+    async function performLaunch(message, launchToken) {
         var chatHost = host();
         captureOrdinaryDraft(chatHost);
         captureChatSurfaceMode(chatHost);
@@ -469,6 +476,8 @@
         }
         state.active = true; state.phase = 'loading'; state.storyId = nextStoryId; state.sessionId = nextSessionId; render();
         var snapshot = await requestJson(api.session + '/' + encodeURIComponent(state.sessionId) + '?story_id=' + encodeURIComponent(state.storyId));
+        // 多个选剧页可能交错启动；只有最后一次启动有权应用快照或清空当前状态。
+        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
         if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
             clear('launch-validation-failed');
             return false;
@@ -478,6 +487,7 @@
         state.active = true;
         rememberPointer();
         await waitForHost();
+        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
         claimAudioPlayback();
         var readyMessage = postMessage({ action: 'theater:launch-ready', launch_id: message.launch_id, story_id: state.storyId, session_id: state.sessionId });
         postDirect(launchReplyTargets[message.launch_id], readyMessage);
@@ -498,8 +508,11 @@
     function launch(message) {
         var launchId = String(message.launch_id || '');
         if (launchRequests[launchId]) return launchRequests[launchId];
-        var request = performLaunch(message).catch(function () {
-            clear('launch-request-failed');
+        var launchToken = ++launchEpoch;
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        var request = performLaunch(message, launchToken).catch(function () {
+            if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) clear('launch-request-failed');
             return false;
         });
         launchRequests[launchId] = request;
@@ -689,26 +702,41 @@
         if (state.sessionStatus === 'ended' || state.phase === 'ended') {
             return returnToSelector(state.pendingEnd, 'natural-ending-return');
         }
+        var requestedStoryId = state.storyId;
+        var requestedSessionId = state.sessionId;
+        var requestedRevision = state.revision;
+        function isCurrentEndRequest() {
+            return state.active
+                && state.storyId === requestedStoryId
+                && state.sessionId === requestedSessionId
+                && state.revision === requestedRevision;
+        }
         endConfirmationPending = true;
         var confirmed = false;
         var preparedSelector = null;
         try {
             confirmed = await confirmEnd(function () {
                 // 必须在确认按钮的原始点击事件里取得窗口句柄；等待结束接口后再打开会被桌面窗口策略拦截。
-                preparedSelector = openSelector();
+                if (isCurrentEndRequest()) preparedSelector = openSelector();
             });
         } finally {
             endConfirmationPending = false;
         }
         // 取消只关闭确认框，Session、输入和演绎历史都保持原样。
-        if (!confirmed || !state.active) return false;
+        if (!confirmed || !isCurrentEndRequest()) return false;
         state.phase = 'ending'; state.errorMessage = ''; state.queueToken += 1; render();
         var result;
         try {
-            result = await requestJson(api.end, { method: 'POST', body: { story_id: state.storyId, session_id: state.sessionId, base_revision: state.revision } });
+            result = await requestJson(api.end, { method: 'POST', body: {
+                story_id: requestedStoryId,
+                session_id: requestedSessionId,
+                base_revision: requestedRevision
+            } });
         } catch (_) {
             result = { ok: false };
         }
+        // 结束接口返回前也可能切换 Session；旧响应不能改变新 Session 的阶段或回执。
+        if (!isCurrentEndRequest()) return false;
         if (!result.ok) {
             state.phase = 'awaiting_player';
             state.errorMessage = t('theater.endFailed', '结束演绎失败，请检查网络后重试。');

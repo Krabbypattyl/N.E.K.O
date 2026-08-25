@@ -152,6 +152,177 @@ def test_theater_capsule_ignores_late_turn_after_launching_another_session(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_ignores_late_launch_snapshot(
+    mock_page: Page,
+    running_server: str,
+):
+    """先发起的启动快照迟到时，不能覆盖后启动的 Session。"""  # noqa: DOCSTRING_CJK
+
+    pending_launch: dict[str, Route] = {}
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/session-a"):
+            pending_launch["route"] = route
+            return
+        if path.endswith("/api/theater-numeric/session/session-b"):
+            fulfill(route, _snapshot(revision=0, story_id="story-b", session_id="session-b"))
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+                launch_id: 'late-launch-a', launch_action: 'continue',
+                story_id: 'story-a', session_id: 'session-a', revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    for _ in range(50):
+        if "route" in pending_launch:
+            break
+        mock_page.wait_for_timeout(20)
+    assert "route" in pending_launch
+
+    mock_page.evaluate(
+        """() => window.postMessage({
+            schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+            launch_id: 'latest-launch-b', launch_action: 'continue',
+            story_id: 'story-b', session_id: 'session-b', revision: 0
+        }, window.location.origin)"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+
+    fulfill(
+        pending_launch["route"],
+        _snapshot(revision=0, story_id="story-a", session_id="session-a"),
+    )
+    mock_page.wait_for_timeout(200)
+
+    state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    assert state["active"] is True
+    assert state["storyId"] == "story-b"
+    assert state["sessionId"] == "session-b"
+    assert state["phase"] == "awaiting_player"
+
+
+@pytest.mark.frontend
+def test_theater_capsule_ignores_end_confirmation_after_session_switch(
+    mock_page: Page,
+    running_server: str,
+):
+    """旧 Session 的确认框迟到后，不能结束确认期间切入的新 Session。"""  # noqa: DOCSTRING_CJK
+
+    end_requests: list[dict] = []
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/session-a"):
+            fulfill(route, _snapshot(revision=0, story_id="story-a", session_id="session-a"))
+            return
+        if path.endswith("/api/theater-numeric/session/session-b"):
+            fulfill(route, _snapshot(revision=0, story_id="story-b", session_id="session-b"))
+            return
+        if path.endswith("/api/theater-numeric/session/end"):
+            end_requests.append(json.loads(request.post_data or "{}"))
+            fulfill(route, {"ok": False, "reason": "unexpected_end_request"})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+                launch_id: 'end-confirm-a', launch_action: 'continue',
+                story_id: 'story-a', session_id: 'session-a', revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-a'"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.__endSelectorOpenCalls = 0;
+            window.openOrFocusWindow = () => {
+                window.__endSelectorOpenCalls += 1;
+                return null;
+            };
+            window.showConfirm = (_message, _title, options) => new Promise((resolve) => {
+                window.__resolveOldEnd = () => {
+                    if (typeof options.onResolve === 'function') options.onResolve(true);
+                    resolve(true);
+                };
+            });
+            window.__oldEndResult = null;
+            window.nekoTheaterRuntime.requestEnd().then((value) => {
+                window.__oldEndResult = value;
+            });
+        }"""
+    )
+    mock_page.wait_for_function("() => typeof window.__resolveOldEnd === 'function'")
+
+    mock_page.evaluate(
+        """() => window.postMessage({
+            schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+            launch_id: 'end-confirm-b', launch_action: 'continue',
+            story_id: 'story-b', session_id: 'session-b', revision: 0
+        }, window.location.origin)"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    mock_page.evaluate("() => window.__resolveOldEnd()")
+    mock_page.wait_for_function("() => window.__oldEndResult === false")
+
+    state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    assert state["storyId"] == "story-b"
+    assert state["sessionId"] == "session-b"
+    assert state["phase"] == "awaiting_player"
+    assert end_requests == []
+    assert mock_page.evaluate("() => window.__endSelectorOpenCalls") == 0
+
+
+@pytest.mark.frontend
 def test_theater_capsule_rebuilds_committed_history_after_idempotent_retry(
     mock_page: Page,
     running_server: str,
