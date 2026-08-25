@@ -219,6 +219,12 @@ async def delete_numeric_v2_story_transactionally(
             NumericV2ArchiveStore(theater_root).delete_receipts,
             story_id=story_id,
         )
+        # 完整公开演绎已经纳入事务快照；删除剧本时必须同步移除，失败则由下方统一回滚。
+        await asyncio.to_thread(
+            NumericV2ArchiveStore(theater_root).delete_public_archives,
+            story_id=story_id,
+            character_id="",
+        )
         # Registry 删除包含文件替换，必须离开事件循环执行。
         await asyncio.to_thread(registry.delete_package, story_id)
         manifest["state"] = "committed"

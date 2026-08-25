@@ -1605,6 +1605,13 @@ async def _delete_catgirl_by_name_serialized(name: str):
                     character_id=deleted_character_id,
                     legacy_catgirl_name=name,
                 )
+                # 非法名称救援仍要删除按角色归属的剧场冷档案；这些文件已进入上方事务快照。
+                await asyncio.to_thread(
+                    numeric_archive_store.delete_public_archives,
+                    story_id="",
+                    character_id=deleted_character_id,
+                    legacy_catgirl_name=name,
+                )
                 del characters['猫娘'][name]
                 await _config_manager.asave_characters(characters)
 
@@ -1753,6 +1760,13 @@ async def _delete_catgirl_by_name_serialized(name: str):
             )
             await asyncio.to_thread(
                 numeric_archive_store.delete_receipts,
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+            )
+            # 完整公开演绎属于角色数据，必须与 Session、回执在同一删除事务内级联清理。
+            await asyncio.to_thread(
+                numeric_archive_store.delete_public_archives,
+                story_id="",
                 character_id=deleted_character_id,
                 legacy_catgirl_name=name,
             )

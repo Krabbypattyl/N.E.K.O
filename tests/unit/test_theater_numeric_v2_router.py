@@ -992,6 +992,18 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
             },
         )
         assert ended.status_code == 200
+        archive_store = NumericV2ArchiveStore(tmp_path / "theater")
+        public_archive_path = archive_store._public_archive_path(
+            "delete_story_second"
+        )
+        archive_store._write(public_archive_path, {
+            "schema": "neko.theater.numeric.v2.public-archive",
+            "story_id": "numeric_v2_contract",
+            "session_id": "delete_story_second",
+            "character_id": "",
+            "catgirl_name": "新猫娘",
+        })
+        assert public_archive_path.is_file()
 
         preview = client.get(
             "/api/theater-numeric/packages/numeric_v2_contract/delete-preview"
@@ -1015,6 +1027,7 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
             / "packages"
             / "numeric_v2_contract.json"
         ).exists()
+        assert not public_archive_path.exists()
         assert client.get("/api/theater-numeric/stories").json()["stories"] == []
         assert delete_lock_states == [True]
 
@@ -1046,6 +1059,15 @@ def test_numeric_v2_story_delete_rolls_back_package_sessions_and_index(
         )
         index_path = tmp_path / "theater" / "numeric_v2" / "story_sessions.json"
         original_index = index_path.read_bytes()
+        archive_store = NumericV2ArchiveStore(tmp_path / "theater")
+        public_archive_path = archive_store._public_archive_path("delete_rollback")
+        archive_store._write(public_archive_path, {
+            "schema": "neko.theater.numeric.v2.public-archive",
+            "story_id": "numeric_v2_contract",
+            "session_id": "delete_rollback",
+            "character_id": "",
+            "catgirl_name": "测试猫娘",
+        })
         original_delete = numeric_theater_router.NumericV2PackageRegistry.delete_package
 
         def delete_then_fail(registry, story_id):
@@ -1064,6 +1086,7 @@ def test_numeric_v2_story_delete_rolls_back_package_sessions_and_index(
         assert failed.status_code == 422
         assert package_path.is_file()
         assert session_path.is_file()
+        assert public_archive_path.is_file()
         assert index_path.read_bytes() == original_index
         transaction_root = (
             tmp_path / "theater" / "numeric_v2" / "delete_transactions"

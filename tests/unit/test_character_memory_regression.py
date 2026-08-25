@@ -1540,6 +1540,7 @@ async def test_character_management_and_recent_save_regression():
             assert save_recent_result["success"] is True
             assert recent_path.is_file()
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
             from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
             from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
@@ -1571,6 +1572,20 @@ async def test_character_management_and_recent_save_regression():
                 / f"{numeric_session.session.session_id}.json"
             )
             assert numeric_session_path.is_file()
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_archive_store.write_public_archive(
+                title="角色删除档案",
+                session=numeric_session.session,
+                ending=None,
+            )
+            numeric_public_archive_path = (
+                numeric_archive_store._public_archive_path(
+                    numeric_session.session.session_id
+                )
+            )
+            assert numeric_public_archive_path.is_file()
 
             switch_back_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": initial_name})
@@ -1584,6 +1599,7 @@ async def test_character_management_and_recent_save_regression():
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
             assert not (Path(cm.memory_dir) / "测试角色").exists()
             assert not numeric_session_path.exists()
+            assert not numeric_public_archive_path.exists()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
 
@@ -1673,6 +1689,23 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             sentinel.parent.mkdir(parents=True, exist_ok=True)
             sentinel.write_text("keep", encoding="utf-8")
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_public_archive_path = numeric_archive_store._public_archive_path(
+                "unsafe_name_archive"
+            )
+            numeric_archive_store._write(numeric_public_archive_path, {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": "unsafe_name_story",
+                "session_id": "unsafe_name_archive",
+                "character_id": "",
+                "catgirl_name": ".",
+            })
+            assert numeric_public_archive_path.is_file()
+
             characters_router_module = reload_module("main_routers.characters_router.crud")
             mock_notify_reload = AsyncMock(return_value=True)
             with (
@@ -1687,6 +1720,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             mock_notify_reload.assert_awaited_once()
             assert "." not in cm.load_characters().get("猫娘", {})
             assert sentinel.read_text(encoding="utf-8") == "keep"
+            assert not numeric_public_archive_path.exists()
             mock_delete_memory.assert_not_called()
 
 
@@ -4338,6 +4372,22 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 encoding="utf-8",
             )
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_public_archive_path = numeric_archive_store._public_archive_path(
+                "character_delete_rollback_archive"
+            )
+            numeric_archive_store._write(numeric_public_archive_path, {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": "character_delete_rollback_story",
+                "session_id": "character_delete_rollback_archive",
+                "character_id": "",
+                "catgirl_name": "删除回滚角色",
+            })
+
             fake_response = type(
                 "Resp",
                 (),
@@ -4373,6 +4423,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             assert payload["memory_server_released"] is True
             assert "删除回滚角色" in cm.load_characters().get("猫娘", {})
             assert (memory_dir / "recent.json").is_file()
+            assert numeric_public_archive_path.is_file()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == "删除回滚角色" for entry in tombstones)
 
