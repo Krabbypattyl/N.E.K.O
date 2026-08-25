@@ -887,14 +887,15 @@ def _parse_output(
                 *goal_evidence.get(goal_id, ()),
                 *deterministic_evidence.get(goal_id, ()),
             ))))[-4:]
-            kept = tuple(
-                revision
-                for revision in revisions
-                if revision in retained_revisions or len(retained_revisions) < 8
-            )
+            kept_items: list[int] = []
+            for revision in revisions:
+                if revision not in retained_revisions and len(retained_revisions) >= 8:
+                    continue
+                kept_items.append(revision)
+                retained_revisions.add(revision)
+            kept = tuple(kept_items)
             if kept:
                 merged_evidence[goal_id] = kept
-                retained_revisions.update(kept)
         goal_evidence = merged_evidence
         structured_goals = isinstance(
             engine.nodes[session.current_node_id]["story_beat"].get("goals"),

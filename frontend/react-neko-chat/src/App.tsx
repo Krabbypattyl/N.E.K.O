@@ -1488,7 +1488,7 @@ function CompactChatApp({
     const previous = theaterHistoryRestoreRef.current;
     if (!previous) return;
     theaterHistoryRestoreRef.current = null;
-    if (previous.open || previous.mounted) openCompactExportHistory({ persist: false });
+    if (previous.open) openCompactExportHistory({ persist: false });
     else closeCompactExportHistory({ persist: false });
   }, [theaterActive]);
 

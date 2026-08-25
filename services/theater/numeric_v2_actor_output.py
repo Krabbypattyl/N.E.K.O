@@ -329,7 +329,8 @@ def _parse_output(
     return {
         "performance": _parse_mixed_performance(
             payload.get("performance"),
-            require_narration=True,
+            # 普通回合允许纯对白；只有对白是必需项，括号微动作不应被格式层强制生成。
+            require_narration=False,
         ),
         "suggested_inputs": _suggestions(
             payload.get("suggested_inputs", []),

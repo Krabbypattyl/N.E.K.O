@@ -303,7 +303,10 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("story_package_id_mismatch")
         if session.story_package_revision != str(self.story["meta"]["revision"]):
             raise NumericV2RuntimeError("story_package_revision_mismatch")
-        if session.story_package_hash != self.compiled.package_hash:
+        if session.story_package_hash not in {
+            self.compiled.package_hash,
+            *self.compiled.compatible_package_hashes,
+        }:
             raise NumericV2RuntimeError("story_package_hash_mismatch")
         if session.current_node_id not in self.nodes:
             raise NumericV2RuntimeError("session_current_node_missing")

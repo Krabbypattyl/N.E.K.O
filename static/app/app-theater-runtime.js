@@ -378,11 +378,17 @@
             });
             var dialogueBlockIndexes = dialogueItems.map(function (item) { return item.blockIndex; });
             var dialogueText = dialogueItems.map(function (item) { return item.block.text; }).join(' ');
-            var result = await requestJson(api.speakBlock, { method: 'POST', body: {
-                story_id: state.storyId, session_id: state.sessionId, revision: revision, block_index: blockIndex,
-                dialogue_block_indexes: dialogueBlockIndexes,
-                playback_request_id: 'theater_speech_' + state.sessionId + '_' + revision + '_' + blockIndex
-            }});
+            var result;
+            try {
+                result = await requestJson(api.speakBlock, { method: 'POST', body: {
+                    story_id: state.storyId, session_id: state.sessionId, revision: revision, block_index: blockIndex,
+                    dialogue_block_indexes: dialogueBlockIndexes,
+                    playback_request_id: 'theater_speech_' + state.sessionId + '_' + revision + '_' + blockIndex
+                }});
+            } catch (_) {
+                // TTS 是表现层旁路；请求失败时按阅读时长继续，不能中断正文播放或锁住输入。
+                result = { ok: false };
+            }
             if (result.ok && result.speech_id && (result.audio_queued || result.audio_sent)) alive = await waitForSpeech(result.speech_id, Math.max(5000, readingDelay(dialogueText) * 3), token);
             else alive = await wait(readingDelay(dialogueText), token);
         }
@@ -465,7 +471,10 @@
     function launch(message) {
         var launchId = String(message.launch_id || '');
         if (launchRequests[launchId]) return launchRequests[launchId];
-        var request = performLaunch(message);
+        var request = performLaunch(message).catch(function () {
+            clear('launch-request-failed');
+            return false;
+        });
         launchRequests[launchId] = request;
         launchRequestOrder.push(launchId);
         if (launchRequestOrder.length > 64) delete launchRequests[launchRequestOrder.shift()];
@@ -522,10 +531,18 @@
             render();
             return true;
         }
-        await playPerformance(result.performance, state.revision, {
-            playerInput: message,
-            playerAlreadyShown: true
-        });
+        try {
+            await playPerformance(result.performance, state.revision, {
+                playerInput: message,
+                playerAlreadyShown: true
+            });
+        } catch (_) {
+            state.currentBlock = null;
+            state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
+            state.errorMessage = t('theater.performanceFailed', '演绎播放中断，请继续输入或重新打开小剧场。');
+            render();
+            return false;
+        }
         return true;
     }
     function clear(reason) {
@@ -670,7 +687,13 @@
     async function restorePointer() {
         var pointer = readPointer();
         if (!pointer) return;
-        var snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
+        var snapshot;
+        try {
+            snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
+        } catch (_) {
+            // 暂时性网络失败保留指针供下次恢复，但不让启动 Promise 产生未处理拒绝。
+            return;
+        }
         if (!snapshot.ok || !snapshot.session) { try { window.localStorage.removeItem(POINTER_KEY); } catch (_) {} return; }
         applySnapshot(snapshot);
         if (snapshot.end_receipt_id) state.pendingEnd = {
@@ -704,7 +727,15 @@
 
     var runtime = {
         isActive: function () { return state.active; },
-        handleComposerSubmit: function (text) { if (!state.active) return false; submit(text); return true; },
+        handleComposerSubmit: function (text) {
+            if (!state.active) return false;
+            submit(text).catch(function () {
+                state.phase = 'awaiting_player';
+                state.errorMessage = t('theater.inputFailed', '演绎提交失败，请重试。');
+                render();
+            });
+            return true;
+        },
         requestEnd: requestEnd,
         clear: clear,
         getState: function () { return Object.assign({}, state, { history: state.history.slice() }); }

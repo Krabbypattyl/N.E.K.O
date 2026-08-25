@@ -230,15 +230,17 @@ def list_numeric_v2_sessions(
             continue
         if normalized_story_id and summary["story_id"] != normalized_story_id:
             continue
-        binding_matches = (
-            not normalized_character_id
-            or summary["character_id"] == normalized_character_id
-            or (
+        if normalized_character_id:
+            binding_matches = summary["character_id"] == normalized_character_id or (
                 not summary["character_id"]
                 and normalized_legacy_name
                 and summary["catgirl_name"] == normalized_legacy_name
             )
-        )
+        elif normalized_legacy_name:
+            # 旧角色卡没有 character_id 时，只能按角色名收窄；绝不能把空 ID 解释为“全部角色”。
+            binding_matches = summary["catgirl_name"] == normalized_legacy_name
+        else:
+            binding_matches = True
         if not binding_matches:
             continue
         result.append(summary)
@@ -335,15 +337,16 @@ async def delete_numeric_v2_sessions(
                     continue
                 if normalized_story_id and current["story_id"] != normalized_story_id:
                     continue
-                binding_matches = (
-                    not normalized_character_id
-                    or current["character_id"] == normalized_character_id
-                    or (
+                if normalized_character_id:
+                    binding_matches = current["character_id"] == normalized_character_id or (
                         not current["character_id"]
                         and normalized_legacy_name
                         and current["catgirl_name"] == normalized_legacy_name
                     )
-                )
+                elif normalized_legacy_name:
+                    binding_matches = current["catgirl_name"] == normalized_legacy_name
+                else:
+                    binding_matches = True
                 if not binding_matches:
                     continue
                 try:

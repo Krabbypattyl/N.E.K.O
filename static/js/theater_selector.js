@@ -126,13 +126,22 @@
             var meta = document.createElement('span');
             meta.textContent = [story.author, story.language].filter(Boolean).join(' · ');
             button.append(title, meta);
-            button.addEventListener('click', function () { selectStory(button.dataset.storyId); });
+            button.addEventListener('click', function () {
+                selectStory(button.dataset.storyId).catch(function () {
+                    setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+                });
+            });
             button.addEventListener('keydown', function (event) {
                 if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
                 event.preventDefault();
                 var offset = event.key === 'ArrowDown' ? 1 : -1;
                 var next = list.children[(storyIndex + offset + state.stories.length) % state.stories.length];
-                if (next) { next.focus(); selectStory(next.dataset.storyId); }
+                if (next) {
+                    next.focus();
+                    selectStory(next.dataset.storyId).catch(function () {
+                        setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+                    });
+                }
             });
             list.appendChild(button);
         });
@@ -190,8 +199,8 @@
         state.archives = result.ok && Array.isArray(result.archives) ? result.archives : [];
         renderMemoryArchives();
     }
-    async function selectStory(storyId) {
-        if (state.busy || !storyId) return;
+    async function selectStory(storyId, forceWhileBusy) {
+        if ((state.busy && forceWhileBusy !== true) || !storyId) return;
         state.storyId = storyId;
         state.session = null;
         state.archives = [];
@@ -235,7 +244,7 @@
         }
         $('theater-modal-title').textContent = options.title;
         $('theater-modal-body').textContent = options.body;
-        $('theater-modal-error').hidden = true;
+        if (options.keepError !== true) $('theater-modal-error').hidden = true;
         var cancel = $('theater-modal-cancel');
         var confirm = $('theater-modal-confirm');
         cancel.textContent = options.cancelLabel;
@@ -408,7 +417,8 @@
             state.stories = state.stories.filter(function (story) { return String(story.story_id) !== state.storyId; });
             state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null; state.archives = [];
             renderStories(); renderDetail();
-            if (state.storyId) await selectStory(state.storyId);
+            // 删除动作尚处于 busy 状态；内部刷新必须显式放行，否则详情会停留在旧剧本。
+            if (state.storyId) await selectStory(state.storyId, true);
             setStatus('theater.storyDeleted', '剧本已删除');
         } catch (_) { setFeedback(t('theater.storyDeleteFailed', '剧本删除失败，请重试。'), true); }
         finally { setBusy(false); }
@@ -471,12 +481,14 @@
         // 同一次结束归档的重试必须复用稳定 ID；旧回执没有服务端 ID 时只在首次询问生成一次。
         if (!receipt.archive_request_id) receipt.archive_request_id = createId('theater_archive_');
         state.memoryPromptActive = true;
+        var archiveFailed = false;
         try {
             while (state.pendingEnd === receipt) {
                 var remember = await showModal({
                     title: t('theater.rememberPerformanceTitle', '是否让 N.E.K.O 记下本次演绎内容？'),
                     body: t('theater.rememberPerformanceRetentionBody', '猫娘的日常记忆只保留公开摘要，完整公开演绎保存在小剧场档案中；隐藏数值与路线条件不会写入。'),
-                    cancelLabel: t('theater.skipMemory', '暂不记录'), confirmLabel: t('theater.saveMemory', '记下本次演绎'), persistent: true
+                    cancelLabel: t('theater.skipMemory', '暂不记录'), confirmLabel: t('theater.saveMemory', '记下本次演绎'),
+                    persistent: true, keepError: archiveFailed
                 });
                 var body = { story_id: receipt.story_id, session_id: receipt.session_id, revision: receipt.revision, end_receipt_id: receipt.end_receipt_id };
                 setModalBusy(true);
@@ -494,6 +506,7 @@
                 }
                 setModalBusy(false);
                 if (!result.ok) {
+                    archiveFailed = true;
                     $('theater-modal-error').hidden = false;
                     $('theater-modal-error').textContent = t('theater.memorySaveFailed', '演绎记录写入失败，请稍后重试。');
                     continue;
@@ -519,7 +532,8 @@
         state.storyId = preferredStoryId || queryStoryId || String((state.stories[0] || {}).story_id || '');
         if (!state.stories.some(function (story) { return String(story.story_id) === state.storyId; })) state.storyId = String((state.stories[0] || {}).story_id || '');
         renderStories(); renderDetail();
-        if (state.storyId) await selectStory(state.storyId); else setStatus('theater.ready', '就绪');
+        // 导入/删除期间 loadStories 也会在 busy 状态内运行，允许这一次内部详情刷新。
+        if (state.storyId) await selectStory(state.storyId, true); else setStatus('theater.ready', '就绪');
     }
     // 本体结束演绎后只传定位回执；选择页重新读取服务端状态再显示询问。
     function handleCrossWindowMessage(event) {

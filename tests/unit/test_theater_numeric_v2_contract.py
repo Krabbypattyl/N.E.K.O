@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -156,10 +157,19 @@ def test_numeric_v2_requires_structured_initial_player_address_state():
 def test_numeric_v2_legacy_package_defaults_missing_player_address_state_to_unknown():
     story = numeric_v2_story()
     del story["initial_state"]["player_address_known"]
+    legacy_bytes = json.dumps(
+        story,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
     compiled = NumericV2Compiler().compile(story)
 
     assert compiled.story["initial_state"]["player_address_known"] is False
+    assert compiled.compatible_package_hashes == (
+        f"sha256:{hashlib.sha256(legacy_bytes).hexdigest()}",
+    )
 
 
 def test_numeric_v2_validates_optional_acting_contract():
@@ -634,6 +644,37 @@ def test_numeric_v2_registry_marks_empty_defaults_initialized_without_bundled_st
     registry.ensure_default_packages()
 
     assert registry.list_packages() == []
+
+
+def test_numeric_v2_registry_treats_concurrent_default_install_as_success(
+    tmp_path,
+    monkeypatch,
+):
+    """另一进程抢先安装默认包时，本进程仍应完成初始化标记。"""  # noqa: DOCSTRING_CJK
+    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
+    bundled_root = tmp_path / "bundled"
+    bundled_root.mkdir()
+    story = numeric_v2_story()
+    (bundled_root / "default.json").write_text(
+        json.dumps(story, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    registry = NumericV2PackageRegistry(package_root)
+    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
+
+    def _concurrent_install(payload):
+        compiled = registry.compiler.compile(payload)
+        target = registry.package_path(compiled.story_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(compiled.json_bytes)
+        raise NumericV2PackageExistsError("numeric_v2_package_exists")
+
+    monkeypatch.setattr(registry, "import_package", _concurrent_install)
+
+    registry.ensure_default_packages()
+
+    assert (package_root / ".defaults_initialized").is_file()
+    assert registry.list_packages()[0]["story_id"] == "numeric_v2_contract"
 
 
 def test_numeric_v2_registry_falls_back_to_exclusive_creation(tmp_path, monkeypatch):

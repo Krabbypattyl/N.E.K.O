@@ -305,7 +305,8 @@ def _normalize_messages(messages: Any) -> list[dict]:
     for msg in messages:
         if isinstance(msg, dict):
             if "role" in msg:
-                out.append(msg)
+                # metadata 仅供 N.E.K.O 内部持久化和路由，不属于供应商消息协议。
+                out.append({key: value for key, value in msg.items() if key != "metadata"})
             elif "type" in msg and "data" in msg:
                 role = _TYPE_TO_ROLE.get(msg["type"], msg["type"])
                 content = msg["data"].get("content", "") if isinstance(msg["data"], dict) else msg["data"]

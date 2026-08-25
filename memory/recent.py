@@ -765,6 +765,7 @@ class CompressedRecentHistoryManager:
 
     def _merge_backup_memo_locked(
         self, file_path, lanlan_name, snapshot, memo, expected_generation=None,
+        preserved_messages=(),
     ) -> tuple[str, int, int]:
         """Re-read, locate, merge and persist a backup memo in one critical section."""
         with recent_file.recent_file_access(
@@ -782,7 +783,7 @@ class CompressedRecentHistoryManager:
                 or (cutoff_idx - capacity + 1) != 0
             ):
                 return ('moot', len(current), len(current))
-            new_history = [memo] + current[cutoff_idx + 1:]
+            new_history = [memo] + list(preserved_messages) + current[cutoff_idx + 1:]
             try:
                 recent_file.write_recent_payload_unlocked(
                     file_path, messages_to_dict(new_history),
@@ -1177,18 +1178,14 @@ class CompressedRecentHistoryManager:
                     # 调 enforce_hard_cap，那条路径要拿同一把文件锁，而 threading.Lock
                     # 不可重入 —— 挪进任何一个临界区就是 worker 线程上的无超时死锁。
                     if preserved_theater:
-                        # 后台压缩仍按连续 snapshot 替换，无法安全跳过其中的剧场胶囊；
-                        # 此处取消旧后台任务并使用保留胶囊的硬上限兜底。
+                        # 后台任务会按完整快照定位提交，仅把普通消息交给摘要模型，
+                        # 因而可在保留剧场来源元数据的同时继续进行失败重试。
                         await self._notify_compress_done(
                             on_compress_done,
                             lanlan_name,
                             snapshot,
-                            True,
+                            False,
                             detailed,
-                            admission_generation,
-                        )
-                        await self.enforce_hard_cap(
-                            lanlan_name,
                             admission_generation,
                         )
                     else:
@@ -1696,29 +1693,45 @@ class CompressedRecentHistoryManager:
             if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
                 return None  # 未超，不动
             # 剧场胶囊带有独立来源和周目语义，不能被普通聊天硬裁剪吞掉。
-            theater = [
-                message
-                for message in history
+            theater_indices = {
+                index
+                for index, message in enumerate(history)
                 if is_theater_episode_summary(message)
-            ]
-            ordinary = [
-                message
-                for message in history
-                if not is_theater_episode_summary(message)
+            }
+            ordinary_indices = [
+                index
+                for index in range(len(history))
+                if index not in theater_indices
             ]
             # 普通历史首条若是备忘录则保留，只丢普通正文里最旧的原文。
-            head = [ordinary[0]] if ordinary and isinstance(ordinary[0], SystemMessage) else []
-            body = ordinary[len(head):]
-            kept = []
-            kept_tok = _raw_tokens(head) + _raw_tokens(theater)
-            for msg in reversed(body):
+            head_indices = (
+                {ordinary_indices[0]}
+                if ordinary_indices
+                and isinstance(history[ordinary_indices[0]], SystemMessage)
+                else set()
+            )
+            body_indices = ordinary_indices[len(head_indices):]
+            kept_indices = set(head_indices) | theater_indices
+            kept_tok = _raw_tokens([history[index] for index in kept_indices])
+            kept_body_count = 0
+            for index in reversed(body_indices):
+                msg = history[index]
                 mtok = _raw_tokens([msg])
-                if kept and kept_tok + mtok > RECENT_HARD_CAP_TOKENS and len(kept) >= self.max_history_length:
+                if (
+                    kept_body_count
+                    and kept_tok + mtok > RECENT_HARD_CAP_TOKENS
+                    and kept_body_count >= self.max_history_length
+                ):
                     break
-                kept.append(msg)
+                kept_indices.add(index)
+                kept_body_count += 1
                 kept_tok += mtok
-            kept.reverse()
-            return head + kept + theater
+            # 按原索引回写，避免剧场胶囊被统一移到历史尾部而改变时间顺序。
+            return [
+                message
+                for index, message in enumerate(history)
+                if index in kept_indices
+            ]
 
         # tokenize 始终在锁外；提交时用完整磁盘快照做 CAS。若期间有新批次，重读后
         # 最多再算一次，绝不拿 stale 结果覆盖并发 append。
@@ -1766,6 +1779,7 @@ class CompressedRecentHistoryManager:
 
     async def merge_backup_memo(
         self, lanlan_name, snapshot, memo, expected_generation=None,
+        preserved_messages=(),
     ):
         """Merge a background compression memo when its disk snapshot still matches.
 
@@ -1807,6 +1821,7 @@ class CompressedRecentHistoryManager:
                 snapshot,
                 memo,
                 admission_generation,
+                preserved_messages,
             )
         except recent_file.RecentFileDeletedError:
             return 'moot'

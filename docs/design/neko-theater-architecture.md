@@ -98,7 +98,7 @@ Story Package 是作者事实源，不包含玩家 Session、Ledger、模型演�
 
 ### 3.2 隐藏数值
 
-`metric_schema` 定义数值 ID、范围、bands 和允许的增减规则；`initial_state.metrics` 必须完整覆盖所有 metric。`initial_state.player_address_known` 是结构化布尔状态，声明本剧开场时猫娘是否已经知道玩家称呼，不能从自然语言摘要或“称呼未知”等文案解析；旧 Story Package 缺少该字段时只按 `false` 兼容。可选 `relationship_effect` 只能是 `positive / negative / none`，由作者或生成器明确声明该数值是“越高越亲近”“越高越疏远”还是“不控制关系距离”；旧包缺省按 `none` 兼容，Runtime 不得根据数值 ID、名称或题材猜测。
+`metric_schema` 定义数值 ID、范围、bands 和允许的增减规则；`initial_state.metrics` 必须完整覆盖所有 metric。`initial_state.player_address_known` 是结构化布尔状态，声明本剧开场时猫娘是否已经知道玩家称呼，不能从自然语言摘要或“称呼未知”等文案解析；旧 Story Package 缺少该字段时只按 `false` 兼容。编译器会为当前规范补齐该字段，同时保留补齐前的旧规范哈希作为兼容哈希，Runtime 恢复既有 Session 时接受两者，避免升级后误判剧本包变化。可选 `relationship_effect` 只能是 `positive / negative / none`，由作者或生成器明确声明该数值是“越高越亲近”“越高越疏远”还是“不控制关系距离”；旧包缺省按 `none` 兼容，Runtime 不得根据数值 ID、名称或题材猜测。
 
 Evaluator 只能选择作者已经声明的 `criterion_id` 和有限强度 `weak / normal / strong / decisive`，不能直接决定任意 delta。服务端依据该 metric 对应方向的 `per_turn_limit` 确定性换算：`weak=1`、`normal=ceil(limit/3)`、`strong=ceil(2×limit/3)`、`decisive=limit`，再由 Runtime 限幅。关系型 metric 的相同依据在最近四条 Ledger 事件中已经获得奖励时，仅换一种说法、重复礼貌或延续同一态度不能再次变化；只有出现新的成本、风险、明确兑现或可验证结果时才允许继续计分。玩家端不显示原始值、metric ID、阈值、route gate、强度或内部判定证据。
 

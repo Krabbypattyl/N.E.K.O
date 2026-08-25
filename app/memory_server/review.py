@@ -362,11 +362,18 @@ async def maybe_spawn_review(name: str) -> None:
         except Exception as e:
             logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
             return
-        # 通用 review 会删除中段 system 并允许合并普通 user/ai 消息，无法保持剧场
-        # 片段元数据与正文一一对应。剧场原文留给既有压缩链路收束成带来源的备忘录，
-        # 在此之前保持不可改写，避免虚构剧情失去来源后混入现实对话。
-        if any(is_theater_memory_message(message) for message in history):
-            return
+        # 通用 review 只处理最后一条剧场胶囊之后连续产生的普通聊天。这样既不会
+        # 改写剧场来源元数据，也不会因历史里长期保留一条胶囊而永久停掉日常复盘。
+        last_theater_index = next(
+            (
+                index
+                for index in range(len(history) - 1, -1, -1)
+                if is_theater_memory_message(history[index])
+            ),
+            -1,
+        )
+        if last_theater_index >= 0:
+            history = history[last_theater_index + 1:]
         # Gate 3: history 长度
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return
@@ -782,9 +789,25 @@ async def _run_backup_compress(
 ):
     """Run best-effort background compression and merge the result under lock."""
     try:
-        # 1) 压缩（锁外）。compress_history 内部按输入大小自动分段，避免输入过大超时。
+        # 1) 压缩（锁外）。剧场胶囊不进入普通摘要模型，但仍随完整快照参与提交定位。
+        preserved_theater = [
+            message
+            for message in snapshot
+            if is_theater_memory_message(message)
+        ]
+        compression_input = [
+            message
+            for message in snapshot
+            if not is_theater_memory_message(message)
+        ]
+        if not compression_input:
+            return
         try:
-            result = await runtime.recent_history_manager.compress_history(snapshot, lanlan_name, detailed)
+            result = await runtime.recent_history_manager.compress_history(
+                compression_input,
+                lanlan_name,
+                detailed,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -810,11 +833,14 @@ async def _run_backup_compress(
         # 2) 合并写回（锁内，快）。merge_backup_memo 用 fingerprint 对齐，积压已被
         #    主路径压掉 / 被清空就返回 'moot' 丢弃（白做）。
         async with runtime._get_settle_lock(lanlan_name):
+            merge_kwargs = {"expected_generation": admission_generation}
+            if preserved_theater:
+                merge_kwargs["preserved_messages"] = preserved_theater
             status = await runtime.recent_history_manager.merge_backup_memo(
                 lanlan_name,
                 snapshot,
                 result[0],
-                expected_generation=admission_generation,
+                **merge_kwargs,
             )
         if status == 'failed':
             # 合并落盘失败 → 没真正写成功，bump 退避（不清），下次再试。

@@ -944,7 +944,10 @@ export default function CompactExportHistoryPanel({
               data-compact-hit-region-id={historyInteractive ? 'history:theater-end' : undefined}
               data-compact-hit-region-kind={historyInteractive ? 'theater-end' : undefined}
               data-compact-no-drag="true"
-              onClick={onTheaterEnd}
+              disabled={!historyInteractive}
+              onClick={() => {
+                if (historyInteractive) onTheaterEnd?.();
+              }}
             >
               {theaterEnded
                 ? i18n('theater.returnToStories', 'Return to stories')

@@ -15,6 +15,7 @@
 from utils.llm_client import (
     SQLChatMessageHistory,
     SystemMessage,
+    THEATER_MEMORY_SOURCE,
     is_theater_memory_message,
     messages_from_dict,
     messages_to_dict,
@@ -598,18 +599,23 @@ class TimeIndexedMemory:
                 })
 
         with self.engines[lanlan_name].begin() as conn:
+            # 先由 SQL 按稳定来源标记收窄候选，再逐条反序列化复验，避免每次归档扫描全表。
             rows = conn.execute(
-                text(f"SELECT id, message FROM {original_table}")
+                text(
+                    f"SELECT id, message FROM {original_table} "
+                    "WHERE message LIKE :source_marker"
+                ),
+                {"source_marker": f"%{THEATER_MEMORY_SOURCE}%"},
             ).fetchall()
             theater_row_ids = [
                 int(row[0])
                 for row in rows
                 if self._is_serialized_theater_message(row[1])
             ]
-            for row_id in theater_row_ids:
+            if theater_row_ids:
                 conn.execute(
                     text(f"DELETE FROM {original_table} WHERE id = :row_id"),
-                    {"row_id": row_id},
+                    [{"row_id": row_id} for row_id in theater_row_ids],
                 )
             for event in normalized_events:
                 conn.execute(

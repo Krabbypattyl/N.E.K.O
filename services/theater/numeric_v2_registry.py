@@ -51,7 +51,11 @@ class NumericV2PackageRegistry:
                     target = self.package_path(compiled.story_id)
                     if target.exists():
                         continue
-                    self.import_package(compiled.story)
+                    try:
+                        self.import_package(compiled.story)
+                    except NumericV2PackageExistsError:
+                        # 多进程首次启动可能同时安装同一默认包；另一进程已写入即视为初始化成功。
+                        pass
             marker.touch(exist_ok=True)
         except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
             raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc

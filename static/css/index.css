@@ -34,6 +34,11 @@
     outline: none;
 }
 
+.modal-dialog-theater:focus-visible {
+    outline: 3px solid rgba(23, 167, 255, 0.72);
+    outline-offset: 3px;
+}
+
 .modal-dialog-theater .modal-header {
     padding: 0;
     border: none;

@@ -47,13 +47,14 @@ def ensure_catgirl_character_id(
 ) -> tuple[str, bool]:
     """确保本地角色卡拥有唯一且不可变的系统 ID。"""  # noqa: DOCSTRING_CJK
 
-    existing = normalize_character_id(
-        get_reserved(catgirl_data, "character_id", default="")
-    )
+    raw_existing = get_reserved(catgirl_data, "character_id", default="")
+    existing = normalize_character_id(raw_existing)
     if existing and (used_ids is None or existing not in used_ids):
+        # UUID 接受大写和连字符等多种写法；统一回写规范值，避免同一角色产生多种持久化表示。
+        normalized_changed = set_reserved(catgirl_data, "character_id", existing)
         if used_ids is not None:
             used_ids.add(existing)
-        return existing, False
+        return existing, normalized_changed
     character_id = f"{CHARACTER_ID_PREFIX}{uuid.uuid4().hex}"
     set_reserved(catgirl_data, "character_id", character_id)
     if used_ids is not None:

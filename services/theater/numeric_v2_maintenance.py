@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .numeric_v2_archive import NumericV2ArchiveStore
 from .numeric_v2_registry import NumericV2PackageRegistry
@@ -376,6 +376,7 @@ def maintain_numeric_v2_storage_once(
     registry: NumericV2PackageRegistry,
     *,
     character_ids_by_name: Mapping[str, str],
+    assert_writable: Callable[[], None] | None = None,
 ) -> dict[str, int] | None:
     """每个运行根仅在冷启动初始化时执行一次恢复和全盘核查。"""  # noqa: DOCSTRING_CJK
 
@@ -383,6 +384,9 @@ def maintain_numeric_v2_storage_once(
     with _MAINTENANCE_LOCK:
         if key in _MAINTAINED_ROOTS:
             return None
+        # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
+        if assert_writable is not None:
+            assert_writable()
         recover_numeric_v2_delete_transactions(theater_root)
         registry.ensure_default_packages()
         result = audit_numeric_v2_storage(

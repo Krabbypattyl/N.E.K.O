@@ -100,7 +100,7 @@ left:6px;
 width:2px;
 height:14px;
 border-radius:2px;
-background:currentColor}
+background:currentcolor}
 
 .theater-close-icon::before{transform:rotate(45deg)}
 .theater-close-icon::after{transform:rotate(-45deg)}

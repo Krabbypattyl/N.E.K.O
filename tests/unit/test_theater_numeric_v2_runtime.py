@@ -24,6 +24,7 @@ from services.theater.numeric_v2_runtime import (
     TurnRequestV2,
 )
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+from utils.config_manager import ensure_catgirl_character_id, get_reserved
 
 
 def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
@@ -45,6 +46,81 @@ def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
     gc.collect()
     assert session_key not in numeric_v2_store._LOCKS
     assert receipt_key not in numeric_v2_archive._RECEIPT_LOCKS
+
+
+def test_existing_character_id_is_persisted_in_canonical_form():
+    """已存在的合法 UUID 也要回写统一格式，避免角色绑定出现多种表示。"""  # noqa: DOCSTRING_CJK
+    card = {
+        "_reserved": {
+            "character_id": "character_12345678-1234-5678-9ABC-DEF012345678",
+        },
+    }
+
+    character_id, changed = ensure_catgirl_character_id(card)
+
+    assert changed is True
+    assert character_id == "character_12345678123456789abcdef012345678"
+    assert get_reserved(card, "character_id") == character_id
+
+
+def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
+    """结束回执只接受服务端固定格式，不能借路径片段逃逸归档目录。"""  # noqa: DOCSTRING_CJK
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+
+    with pytest.raises(
+        numeric_v2_archive.NumericV2ArchiveError,
+        match="numeric_end_receipt_invalid",
+    ):
+        store._receipt_path("theater_end_../../outside")
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_empty_character_id_delete_keeps_other_legacy_names(tmp_path):
+    """旧角色卡按名称删除时不能把空 character_id 扩散成全角色删除。"""  # noqa: DOCSTRING_CJK
+    session_root = tmp_path / "numeric_v2" / "sessions"
+    archive_root = tmp_path / "numeric_v2" / "public_archives"
+    session_root.mkdir(parents=True)
+    archive_root.mkdir(parents=True)
+    for session_id, catgirl_name in (("legacy-a", "小葵"), ("legacy-b", "雪奈")):
+        payload = {
+            "schema": numeric_v2_store.STORE_SCHEMA,
+            "session": {
+                "session_id": session_id,
+                "story_package_id": "legacy-story",
+                "status": "ended",
+                "catgirl_binding": {
+                    "catgirl_name": catgirl_name,
+                    "character_id": "",
+                },
+            },
+        }
+        (session_root / f"{session_id}.json").write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        archive_payload = {
+            "schema": "neko.theater.numeric.v2.public-archive",
+            "session_id": session_id,
+            "story_id": "legacy-story",
+            "catgirl_name": catgirl_name,
+            "character_id": "",
+        }
+        (archive_root / f"{session_id}.json").write_text(
+            json.dumps(archive_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    deleted = await numeric_v2_store.delete_numeric_v2_sessions(
+        tmp_path,
+        character_id="",
+        legacy_catgirl_name="小葵",
+    )
+
+    assert [item["session_id"] for item in deleted] == ["legacy-a"]
+    assert not (session_root / "legacy-a.json").exists()
+    assert (session_root / "legacy-b.json").is_file()
+    assert not (archive_root / "legacy-a.json").exists()
+    assert (archive_root / "legacy-b.json").is_file()
 
 
 def _binding() -> dict[str, str]:
@@ -1005,10 +1081,10 @@ async def test_numeric_v2_restore_rejects_tampered_ledger(tmp_path):
     )
     committed = await runtime.commit_turn(outcome, _performance("好。"))
     path = runtime.store._path(committed.session.session_id)
-    payload = deepcopy(__import__("json").loads(path.read_text(encoding="utf-8")))
+    payload = deepcopy(json.loads(path.read_text(encoding="utf-8")))
     payload["ledger_events"][0]["after_metrics"]["trust"] = 99
     payload["session"]["metrics"]["trust"] = 99
-    path.write_text(__import__("json").dumps(payload, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ValueError, match="numeric_ledger_replay_mismatch"):
         await runtime.restore_session("runtime_tamper")

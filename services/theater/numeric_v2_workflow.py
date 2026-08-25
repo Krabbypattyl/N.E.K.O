@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -28,6 +29,7 @@ async def execute_numeric_v2_turn(
     current: NumericV2StoredSession,
     turn: TurnRequestV2,
     ensure_current_binding: Callable[[Any], Mapping[str, str]],
+    before_commit: Callable[[], Awaitable[None]] | None = None,
 ) -> NumericV2TurnWorkflowResult:
     """固定执行 Evaluator、Runtime、Actor、身份复验和原子提交，不增加任何模型步骤。"""  # noqa: DOCSTRING_CJK
 
@@ -54,6 +56,9 @@ async def execute_numeric_v2_turn(
     display_binding = ensure_current_binding(current.session)
     # 模型调用不占剧本锁；只在正式提交阶段与删除、归档和重新开始串行。
     async with runtime.story_session_guard():
+        if before_commit is not None:
+            # 长耗时模型调用结束后再次检查云存档写栅栏，避免请求期间进入维护态仍然提交。
+            await before_commit()
         stored = await runtime.commit_turn(outcome, performance)
     return NumericV2TurnWorkflowResult(
         stored=stored,

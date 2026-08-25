@@ -190,6 +190,10 @@ async function runTheaterElectronSmoke() {
       const timer = setTimeout(() => child.kill(), 15000);
       child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
       child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        resolve({ code: null, signal: null, stdout, stderr: `${stderr}\nspawn error: ${error.message}` });
+      });
       child.on('close', (code, signal) => {
         clearTimeout(timer);
         resolve({ code, signal, stdout, stderr });

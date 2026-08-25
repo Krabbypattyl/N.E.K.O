@@ -186,11 +186,11 @@ async def _drive_spawn(memory_server, name, history):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generic_review_does_not_rewrite_theater_messages():
-    """通用历史 review 不能合并或删除仍携带剧场来源的原始演绎。"""  # noqa: DOCSTRING_CJK
+    """通用 review 跳过剧场胶囊，但仍能处理其后积累的普通聊天。"""  # noqa: DOCSTRING_CJK
     from app import memory_server
 
     name = "测试角色-theater-review"
-    history = _history(10)
+    history = _history(16)
     history[2] = HumanMessage(
         content="把虚构合同递过去。",
         metadata={"source": "theater_numeric_v2", "session_id": "theater_session"},
@@ -200,7 +200,13 @@ async def test_generic_review_does_not_rewrite_theater_messages():
 
     fake_mgr = await _drive_spawn(memory_server, name, history)
 
-    fake_mgr.review_history.assert_not_awaited()
+    fake_mgr.review_history.assert_awaited_once()
+    reviewed_snapshot = fake_mgr.review_history.await_args.args[1]
+    assert reviewed_snapshot == history[3:]
+    assert all(
+        message.metadata.get("source") != "theater_numeric_v2"
+        for message in reviewed_snapshot
+    )
     assert name not in memory_server.correction_tasks
 
 

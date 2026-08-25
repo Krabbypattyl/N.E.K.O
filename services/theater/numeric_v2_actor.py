@@ -11,6 +11,7 @@ import re
 import time
 from typing import Any, Mapping
 
+from config.prompts.prompts_theater import NUMERIC_V2_ACTOR_JSON_INSTRUCTION
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens
@@ -77,12 +78,6 @@ _STYLE_ONLY_PERSONA_FIELDS = frozenset({
     "表达风格",
     "语气",
 })
-_NUMERIC_V2_ACTOR_JSON_INSTRUCTION = (
-    "最终回复必须且只能是一个可由 JSON.parse 直接解析的 JSON object；禁止输出 Markdown 代码围栏、"
-    "JSON 前后解释、标题或任何额外文字。所有键和字符串必须使用 JSON 双引号。"
-)
-
-
 def _output_schema_instruction(phase: str) -> str:
     """只发送当前调用需要的输出形状，避免普通回合重复携带换场协议。"""  # noqa: DOCSTRING_CJK
 
@@ -99,7 +94,7 @@ def _output_schema_instruction(phase: str) -> str:
         )
     else:
         shape = "顶层字段必须且只能是 performance:string、suggested_inputs:string[]。"
-    return _NUMERIC_V2_ACTOR_JSON_INSTRUCTION + shape + "不要照抄其他剧本、人物、地点、物品或推荐语。"
+    return NUMERIC_V2_ACTOR_JSON_INSTRUCTION + shape + "不要照抄其他剧本、人物、地点、物品或推荐语。"
 logger = logging.getLogger(__name__)
 
 _RELATIONSHIP_STAGES = ("stranger", "guarded", "cooperative", "trusted", "intimate")
@@ -1939,7 +1934,8 @@ class NumericV2Actor:
                 )
                 client_finished_at = time.monotonic()
                 async with client:
-                    response = await client.ainvoke(request_messages)
+                    # request_messages 已由 _ensure_actor_messages_fit 按模型输入预算裁剪。
+                    response = await client.ainvoke(request_messages)  # noqa: LLM_INPUT_BUDGET
                     request_finished_at = time.monotonic()
                     parsed = _parse_output(
                         getattr(response, "content", None),

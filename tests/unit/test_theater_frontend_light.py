@@ -116,7 +116,7 @@ def test_capsule_runtime_streams_ordinary_performance_into_one_history_bubble():
     assert "completedEntry.status = 'sent'" in runtime
     assert "status: z.enum(['streaming', 'sent']).optional()" in schema
     assert "const compactMessagePreview = theaterActive" in app
-    assert "? null" in app
+    assert "const compactMessagePreview = theaterActive\n    ? null" in app
     assert "status: entry.status" in app
 
 

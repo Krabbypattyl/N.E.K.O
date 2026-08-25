@@ -1334,7 +1334,12 @@
 
             // 添加到页面
             document.body.appendChild(overlay);
-            if (isTheaterSkin) refreshCompactInteractionGeometry();
+            if (isTheaterSkin) {
+                refreshCompactInteractionGeometry();
+                // 弹入动画使用 transform；动画结束后再上报一次最终命中区域，避免透明窗口沿用起始位置。
+                dialog.addEventListener('animationend', refreshCompactInteractionGeometry, { once: true });
+                window.setTimeout(refreshCompactInteractionGeometry, 320);
+            }
             if (isDecisionPrompt) {
                 emitDecisionPromptLifecycleEvent('neko:decision-prompt-opened', {
                     skin: modalConfig.skin || '',

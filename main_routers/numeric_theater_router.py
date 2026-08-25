@@ -62,6 +62,10 @@ from services.theater.numeric_v2_store import (
 )
 from services.theater.numeric_v2_workflow import execute_numeric_v2_turn
 from services.theater.tts_bridge import speak_committed_line
+from utils.cloudsave_runtime import (
+    MaintenanceModeError,
+    assert_cloudsave_writable,
+)
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
@@ -114,6 +118,17 @@ def _archive_store(config_manager: Any) -> NumericV2ArchiveStore:
     return NumericV2ArchiveStore(_numeric_root(config_manager))
 
 
+async def _assert_numeric_writable(config_manager: Any, target: str) -> None:
+    """所有剧场持久化动作复用云存档全局写栅栏。"""  # noqa: DOCSTRING_CJK
+
+    await asyncio.to_thread(
+        assert_cloudsave_writable,
+        config_manager,
+        operation="save",
+        target=f"theater/numeric_v2/{target}",
+    )
+
+
 async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
     numeric_root = _numeric_root(config_manager)
     registry = NumericV2PackageRegistry(numeric_root / "numeric_v2" / "packages")
@@ -126,8 +141,20 @@ async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
         numeric_root,
         registry,
         character_ids_by_name=character_ids_by_name,
+        assert_writable=lambda: assert_cloudsave_writable(
+            config_manager,
+            operation="repair",
+            target="theater/numeric_v2",
+        ),
     )
     return registry
+
+
+async def _create_ended_receipt(config_manager: Any, session: Any) -> dict[str, Any]:
+    """兼容旧 Session 补建结束回执前，先通过共享写栅栏。"""  # noqa: DOCSTRING_CJK
+
+    await _assert_numeric_writable(config_manager, "end_receipts")
+    return await _archive_store(config_manager).acreate_or_get(session)
 
 
 async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
@@ -303,6 +330,8 @@ async def list_numeric_stories():
         binding = _current_catgirl_binding(config_manager)
         stories = await asyncio.to_thread(_list_story_summaries, registry, binding)
         return {"ok": True, "stories": stories}
+    except MaintenanceModeError:
+        raise
     except Exception:
         return _error("numeric_story_list_failed", 500)
 
@@ -314,7 +343,9 @@ async def import_numeric_story(request: Request):
     if validation_error is not None:
         return validation_error
     try:
-        registry = await _registry(get_config_manager())
+        config_manager = get_config_manager()
+        registry = await _registry(config_manager)
+        await _assert_numeric_writable(config_manager, "packages")
         summary = await asyncio.to_thread(registry.import_package, payload)
     except NumericV2PackageExistsError:
         return _error("numeric_story_exists", 409)
@@ -370,6 +401,7 @@ async def delete_numeric_story(story_id: str, request: Request):
             _numeric_root(config_manager),
         )
         async with runtime.story_session_guard():
+            await _assert_numeric_writable(config_manager, "packages")
             deleted_session_count = await delete_numeric_v2_story_transactionally(
                 _numeric_root(config_manager),
                 registry,
@@ -416,6 +448,7 @@ async def start_numeric_session(request: Request):
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
                 if _current_catgirl_binding(config_manager) != binding:
                     raise ValueError("catgirl_changed_requires_new_session")
+                await _assert_numeric_writable(config_manager, "sessions")
                 archive_store = _archive_store(config_manager)
                 previous_receipt = await archive_store.aload_for_session(
                     existing.session.session_id
@@ -456,6 +489,7 @@ async def start_numeric_session(request: Request):
                 opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
                 if _current_catgirl_binding(config_manager) != binding:
                     raise ValueError("catgirl_changed_requires_new_session")
+                await _assert_numeric_writable(config_manager, "sessions")
                 stored = await runtime.start_session(
                     session_id=session_id,
                     catgirl_binding=binding,
@@ -495,7 +529,7 @@ async def get_active_numeric_session(story_id: str):
     except ValueError as exc:
         return _error(str(exc), 409)
     receipt = (
-        await _archive_store(config_manager).acreate_or_get(stored.session)
+        await _create_ended_receipt(config_manager, stored.session)
         if stored.session.status == "ended"
         else None
     )
@@ -527,7 +561,7 @@ async def get_numeric_session(session_id: str, story_id: str):
     except ValueError as exc:
         return _error(str(exc), 409)
     receipt = (
-        await _archive_store(config_manager).acreate_or_get(stored.session)
+        await _create_ended_receipt(config_manager, stored.session)
         if stored.session.status == "ended"
         else None
     )
@@ -585,6 +619,10 @@ async def submit_numeric_input(request: Request):
                 session,
                 config_manager,
             ),
+            before_commit=lambda: _assert_numeric_writable(
+                config_manager,
+                "sessions",
+            ),
         )
         outcome = workflow.outcome
         performance = workflow.performance
@@ -616,7 +654,7 @@ async def submit_numeric_input(request: Request):
         return _error(str(exc), 400)
     end_receipt = None
     if stored.session.status == "ended":
-        end_receipt = await _archive_store(config_manager).acreate_or_get(stored.session)
+        end_receipt = await _create_ended_receipt(config_manager, stored.session)
     return {
         "ok": True,
         "resolved_turn": {
@@ -653,6 +691,7 @@ async def end_numeric_session(request: Request):
         # 结束操作同样复验当前猫娘，避免角色切换后继续改写旧人格 Session。
         current_binding = _ensure_current_catgirl(current.session, config_manager)
         async with runtime.story_session_guard():
+            await _assert_numeric_writable(config_manager, "sessions")
             stored = await runtime.end_session(
                 session_id,
                 base_revision=base_revision,
@@ -668,7 +707,7 @@ async def end_numeric_session(request: Request):
         return _error(str(exc), 409)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
         return _error(str(exc), 400)
-    receipt = await _archive_store(config_manager).acreate_or_get(stored.session)
+    receipt = await _create_ended_receipt(config_manager, stored.session)
     return {
         "ok": True,
         **_numeric_payload(
@@ -705,6 +744,7 @@ async def resume_numeric_session(request: Request):
             return _error("numeric_session_not_found", 404)
         current_binding = _ensure_current_catgirl(current.session, config_manager)
         async with runtime.story_session_guard():
+            await _assert_numeric_writable(config_manager, "sessions")
             stored = await runtime.resume_session(
                 session_id,
                 base_revision=base_revision,
@@ -936,6 +976,7 @@ async def archive_numeric_session(request: Request):
                 from config import MEMORY_SERVER_PORT
                 from utils.internal_http_client import get_internal_http_client
 
+                await _assert_numeric_writable(config_manager, "archives")
                 receipt = await store.aupdate(
                     receipt,
                     status="writing",
@@ -973,6 +1014,8 @@ async def archive_numeric_session(request: Request):
             return _error(str(exc), 409)
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
+        except MaintenanceModeError:
+            raise
         except Exception:
             if store is not None and receipt is not None and receipt.get("status") == "writing":
                 try:
@@ -998,10 +1041,12 @@ async def skip_numeric_session_archive(request: Request):
     )
     async with lock:
         try:
-            store = _archive_store(get_config_manager())
+            config_manager = get_config_manager()
+            store = _archive_store(config_manager)
             receipt = await _validated_receipt(store, payload)
             if receipt.get("status") == "written":
                 return _error("numeric_archive_already_written", 409)
+            await _assert_numeric_writable(config_manager, "end_receipts")
             await store.adiscard_staged_public_archive(
                 str(receipt.get("receipt_id") or "")
             )
@@ -1059,6 +1104,7 @@ async def pin_numeric_memory_archive(request: Request):
     try:
         runtime = await _runtime_for_story(config_manager, story_id)
         async with runtime.story_session_guard():
+            await _assert_numeric_writable(config_manager, "public_archives")
             binding = _current_catgirl_binding(config_manager)
             result = await asyncio.to_thread(
                 _archive_store(config_manager).set_public_archive_pinned,
@@ -1098,6 +1144,7 @@ async def forget_numeric_story_memory(request: Request):
         from utils.internal_http_client import get_internal_http_client
 
         async with runtime.story_session_guard():
+            await _assert_numeric_writable(config_manager, "memory")
             response = await get_internal_http_client().post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
                 f"{quote(binding['catgirl_name'], safe='')}/theater/forget",

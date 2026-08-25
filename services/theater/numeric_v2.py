@@ -77,6 +77,7 @@ class CompiledNumericV2Package:
     json_bytes: bytes
     package_hash: str
     warnings: tuple[NumericV2Warning, ...]
+    compatible_package_hashes: tuple[str, ...] = ()
 
     @property
     def story_id(self) -> str:
@@ -251,7 +252,16 @@ class NumericV2Compiler:
         collector = _Collector()
         story = collector.obj(payload, "story")
         initial_state = story.get("initial_state")
+        legacy_hash = ""
         if isinstance(initial_state, Mapping) and "player_address_known" not in initial_state:
+            # 先保留旧包原始规范哈希；补默认字段后仍允许既有 Session 复验通过。
+            legacy_bytes = json.dumps(
+                deepcopy(story),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            legacy_hash = f"sha256:{hashlib.sha256(legacy_bytes).hexdigest()}"
             # 老包没有结构化称呼字段时只按“未知”兼容，不从自然语言推断状态。
             story["initial_state"] = {
                 **initial_state,
@@ -292,6 +302,7 @@ class NumericV2Compiler:
             json_bytes=canonical_bytes,
             package_hash=f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}",
             warnings=tuple(warnings),
+            compatible_package_hashes=(legacy_hash,) if legacy_hash else (),
         )
 
     @staticmethod

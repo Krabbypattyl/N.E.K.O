@@ -1104,6 +1104,39 @@ def test_numeric_v2_evaluator_returns_validated_goal_evidence_revisions():
     assert result.goal_evidence == {"goal.1": (1,)}
 
 
+def test_numeric_v2_evaluator_caps_merged_goal_evidence_at_eight_revisions(monkeypatch):
+    """确定性证据合并必须逐条限幅，不能让单个目标整批越过八条上限。"""  # noqa: DOCSTRING_CJK
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = _session(engine)
+    monkeypatch.setattr(
+        numeric_v2_evaluator,
+        "_deterministic_goal_evidence",
+        lambda _engine, _session: {
+            "goal.1": (1, 2, 3, 4),
+            "goal.2": (5, 6, 7, 8),
+            "goal.3": (9, 10, 11),
+        },
+    )
+
+    result = numeric_v2_evaluator._parse_output(
+        json.dumps({
+            "scene_complete": False,
+            "metric_changes": {},
+            "goal_evidence": {},
+        }),
+        engine,
+        "继续。",
+        session,
+    )
+
+    retained = {
+        revision
+        for revisions in result.goal_evidence.values()
+        for revision in revisions
+    }
+    assert retained == set(range(1, 9))
+
+
 def test_numeric_v2_cast_projects_multi_word_source_names():
     story = numeric_v2_story()
     story["intro"]["player_identity"] = "John Smith，回乡整理旧屋的年轻男性。"
@@ -1158,6 +1191,16 @@ def test_numeric_v2_actor_accepts_one_mixed_performance_with_interleaved_actions
         "performance": text,
         "suggested_inputs": [],
     }
+
+
+def test_numeric_v2_actor_accepts_dialogue_only_turn():
+    """普通回合可以只输出对白，微动作不是强制字段。"""  # noqa: DOCSTRING_CJK
+    performance = _parse_output(json.dumps({
+        "performance": "先坐下，我们慢慢说。",
+        "suggested_inputs": [],
+    }, ensure_ascii=False))
+
+    assert performance["performance"] == "先坐下，我们慢慢说。"
 
 
 def test_numeric_v2_actor_drops_indirect_suggestion_instructions():

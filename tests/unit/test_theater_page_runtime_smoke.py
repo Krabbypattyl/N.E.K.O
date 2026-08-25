@@ -3,17 +3,24 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
+import pytest
 
-from main_routers import pages_router
-from main_routers.shared_state import init_shared_state
+from main_routers import pages_router, shared_state
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_shared_state(monkeypatch):
+    """为页面测试复制共享状态，避免初始化结果泄漏到其他单元测试。"""  # noqa: DOCSTRING_CJK
+    monkeypatch.setattr(shared_state, "_state", shared_state._state.copy())
+    monkeypatch.setattr(shared_state, "set_steamworks", lambda _value: None)
+
+
 def _build_pages_client() -> TestClient:
     """构造只挂页面路由的轻量客户端，用于验证 theater 不影响聊天/字幕页面。"""  # noqa: DOCSTRING_CJK
-    init_shared_state(
+    shared_state.init_shared_state(
         role_state={},
         steamworks=None,
         templates=Jinja2Templates(directory=PROJECT_ROOT),

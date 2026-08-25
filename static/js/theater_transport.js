@@ -22,6 +22,7 @@
     async function requestJson(url, options) {
         var opts = options || {};
         var method = opts.method || 'GET';
+        var timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 30000;
         var body = Object.prototype.hasOwnProperty.call(opts, 'body')
             ? JSON.stringify(opts.body)
             : undefined;
@@ -29,7 +30,19 @@
         async function send() {
             var headers = { 'Content-Type': 'application/json' };
             if (method !== 'GET') Object.assign(headers, await mutationHeaders());
-            return fetch(url, { method: method, headers: headers, body: body });
+            // 每次发送（含 CSRF 重试）各自拥有有界超时，避免悬空 fetch 永久锁住剧场 busy/phase。
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            var timeoutId = controller ? window.setTimeout(function () { controller.abort(); }, timeoutMs) : 0;
+            try {
+                return await fetch(url, {
+                    method: method,
+                    headers: headers,
+                    body: body,
+                    signal: controller ? controller.signal : undefined
+                });
+            } finally {
+                if (timeoutId) window.clearTimeout(timeoutId);
+            }
         }
 
         var response = await send();

@@ -22,6 +22,7 @@ from services.theater.numeric_v2_archive import (
 from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult
 from services.theater.numeric_v2_registry import NumericV2PackageError
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.llm_client import (
     AIMessage,
     HumanMessage,
@@ -31,6 +32,7 @@ from utils.llm_client import (
     messages_to_dict,
 )
 from utils.llm_client.history import SQLChatMessageHistory
+from utils.llm_client.messages import _normalize_messages
 
 
 def test_numeric_v2_router_idle_request_locks_are_reclaimed():
@@ -50,6 +52,41 @@ def test_numeric_v2_router_idle_request_locks_are_reclaimed():
     del lock
     gc.collect()
     assert request_id not in numeric_theater_router._speak_request_locks
+
+
+def test_llm_role_dict_normalization_strips_internal_metadata():
+    """角色字典发送到模型供应商前必须剥离 N.E.K.O 内部元数据。"""  # noqa: DOCSTRING_CJK
+    normalized = _normalize_messages([{
+        "role": "user",
+        "content": "继续。",
+        "metadata": {"source": THEATER_MEMORY_SOURCE},
+    }])
+
+    assert normalized == [{"role": "user", "content": "继续。"}]
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_router_uses_cloudsave_write_fence(tmp_path, monkeypatch):
+    """剧场写操作必须在云存档维护态命中共享写栅栏。"""  # noqa: DOCSTRING_CJK
+    calls = []
+
+    def _blocked(_config_manager, *, operation: str, target: str):
+        calls.append((operation, target))
+        raise MaintenanceModeError(
+            "applying_snapshot",
+            operation=operation,
+            target=target,
+        )
+
+    monkeypatch.setattr(numeric_theater_router, "assert_cloudsave_writable", _blocked)
+
+    with pytest.raises(MaintenanceModeError):
+        await numeric_theater_router._assert_numeric_writable(
+            _ConfigManager(tmp_path),
+            "sessions",
+        )
+
+    assert calls == [("save", "theater/numeric_v2/sessions")]
 
 
 def test_numeric_v2_story_list_reuses_compiled_summary_intro():
@@ -87,6 +124,10 @@ class _ConfigManager:
             "猫娘": {"测试猫娘": _catgirl_profile("测试猫娘", "安静而认真。")},
             "主人": {"昵称": "哥哥"},
         }
+
+    def load_root_state(self) -> dict:
+        # 路由测试默认处于可写态；维护态行为由云存档栅栏测试单独覆盖。
+        return {"mode": "normal"}
 
 
 def _catgirl_profile(name: str, personality: str) -> dict:

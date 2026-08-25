@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from .numeric_v2_performance import content_blocks, mixed_performance_blocks
 _RECEIPT_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
 _RECEIPT_LOCKS_GUARD = threading.Lock()
 PUBLIC_ARCHIVES_PER_STORY_CHARACTER = 5
+_RECEIPT_ID_RE = re.compile(r"^theater_end_[0-9a-f]{40}$")
 
 
 def _receipt_lock(path: Path) -> threading.Lock:
@@ -56,7 +58,8 @@ class NumericV2ArchiveStore:
         return self.root / f"session-{self._session_key(session_id)}.json"
 
     def _receipt_path(self, receipt_id: str) -> Path:
-        if not receipt_id.startswith("theater_end_") or len(receipt_id) > 96:
+        # 回执 ID 只能采用服务端生成的固定格式，禁止路径分隔符和父目录片段逃逸回执根目录。
+        if not _RECEIPT_ID_RE.fullmatch(str(receipt_id or "")):
             raise NumericV2ArchiveError("numeric_end_receipt_invalid")
         return self.root / f"{receipt_id}.json"
 
