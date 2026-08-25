@@ -75,7 +75,7 @@ def test_selector_targets_launch_to_opener_and_covers_host_wait_window():
     assert "preferOpener === true && opener" in script[post_start:post_end]
     assert "opener.postMessage(payload, window.location.origin); return true;" in script[post_start:post_end]
     assert "postMessage(payload, true);" in script[handoff_start:handoff_end]
-    assert "}, 10000);" in script[handoff_start:handoff_end]
+    assert "}, 40000);" in script[handoff_start:handoff_end]
 
 
 def test_selector_binds_delayed_confirmations_to_original_selection():

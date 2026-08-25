@@ -122,6 +122,49 @@ class NumericV2ArchiveStore:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink()
 
+    @staticmethod
+    def _reconciled_written_pointer(
+        pointer: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """返回 written 回执应补写的 Session 水位；更新回执已经接管时不得回退指针。"""  # noqa: DOCSTRING_CJK
+
+        if receipt.get("status") != "written":
+            return None
+        receipt_id = str(receipt.get("receipt_id") or "")
+        if not receipt_id or str(pointer.get("receipt_id") or "") != receipt_id:
+            return None
+        completed_revision = receipt.get(
+            "archive_through_revision",
+            receipt.get("revision"),
+        )
+        if not isinstance(completed_revision, int) or isinstance(completed_revision, bool):
+            return None
+        current_revision = pointer.get("archived_through_revision", -1)
+        if not isinstance(current_revision, int) or isinstance(current_revision, bool):
+            current_revision = -1
+        if current_revision >= completed_revision:
+            return None
+        return {
+            "receipt_id": receipt_id,
+            "archived_through_revision": completed_revision,
+        }
+
+    def reconcile_written_receipt(self, receipt: Mapping[str, Any]) -> bool:
+        """修复回执已写入但 Session 水位尚未提交的中断窗口。"""  # noqa: DOCSTRING_CJK
+
+        session_id = str(receipt.get("session_id") or "")
+        if not session_id:
+            return False
+        session_path = self._session_path(session_id)
+        with _receipt_lock(session_path):
+            pointer = self._read(session_path) or {}
+            reconciled = self._reconciled_written_pointer(pointer, receipt)
+            if reconciled is None:
+                return False
+            self._write(session_path, reconciled)
+            return True
+
     def create_or_get(self, session: Any) -> dict[str, Any]:
         session_id = str(session.session_id)
         session_path = self._session_path(session_id)
@@ -130,6 +173,11 @@ class NumericV2ArchiveStore:
             previous_receipt_id = str((pointer or {}).get("receipt_id") or "")
             if pointer and pointer.get("receipt_id"):
                 existing = self.load(str(pointer["receipt_id"]))
+                reconciled = self._reconciled_written_pointer(pointer, existing or {})
+                if reconciled is not None:
+                    # 进程可能在 written 回执和水位指针两次原子写之间中断；创建下一回执前先对账。
+                    self._write(session_path, reconciled)
+                    pointer = reconciled
                 # 同一 Session 可以多次退出后继续；只有相同 revision 才是同一次退出回执。
                 if existing is not None and existing.get("revision") == int(session.revision):
                     return existing
@@ -203,7 +251,10 @@ class NumericV2ArchiveStore:
         pointer = self._read(self._session_path(str(session_id)))
         if not pointer or not pointer.get("receipt_id"):
             return None
-        return self.load(str(pointer["receipt_id"]))
+        receipt = self.load(str(pointer["receipt_id"]))
+        if receipt is not None:
+            self.reconcile_written_receipt(receipt)
+        return receipt
 
     def has_written_receipt_for_session(self, session_id: str) -> bool:
         """检查升级前遗留的 written 回执，供重开前补写冷档案。"""  # noqa: DOCSTRING_CJK
@@ -261,6 +312,9 @@ class NumericV2ArchiveStore:
 
     async def aload_for_session(self, session_id: str) -> dict[str, Any] | None:
         return await asyncio.to_thread(self.load_for_session, session_id)
+
+    async def areconcile_written_receipt(self, receipt: Mapping[str, Any]) -> bool:
+        return await asyncio.to_thread(self.reconcile_written_receipt, receipt)
 
     async def aupdate(
         self,

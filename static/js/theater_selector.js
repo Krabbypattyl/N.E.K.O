@@ -441,8 +441,9 @@
             window.addEventListener('message', ready);
             if (state.channel) state.channel.addEventListener('message', ready);
             postMessage(payload, true);
-            // 本体最多等待约 8 秒挂载 React 胶囊；选剧页必须覆盖完整等待窗口。
-            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 10000);
+            // 本体先用最长 30 秒读取权威 Session，再最多等待约 8 秒挂载 React 胶囊；
+            // 选剧页必须覆盖完整链路，不能在本体仍可能成功启动时提前允许第二次启动。
+            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 40000);
         });
     }
     async function launchSnapshot(snapshot, action) {

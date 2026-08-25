@@ -13,6 +13,8 @@ import json
 import re
 from typing import Any, Mapping
 
+from utils.tokenize import count_tokens
+
 
 STORY_SCHEMA = "neko.story.numeric.v2"
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -20,6 +22,8 @@ _COMPARATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
 _VISIBILITIES = frozenset({"hidden"})
 _NODE_TYPES = frozenset({"start", "scene", "ending"})
 MAX_RECOMMENDED_TURNS = 40
+# Actor 的固定输入预算是 4800 tokens；单个作者字段必须有硬上限，避免导入后才发现剧本永远无法开场。
+MAX_ACTOR_PROMPT_FIELD_TOKENS = 384
 _ACTING_CONTRACT_COGNITION_STATES = frozenset({"fresh_boot", "limited", "normal"})
 _ACTING_CONTRACT_MEMORY_STATES = frozenset({"empty", "partial", "available"})
 _ACTING_CONTRACT_SELF_REFERENCE_MODES = frozenset({"system_neutral", "persona_allowed"})
@@ -219,7 +223,14 @@ class _Collector:
         if not _text(value):
             self.add("required_text", path, "必须填写非空文本。")
             return ""
-        return str(value)
+        text = str(value)
+        if count_tokens(text) > MAX_ACTOR_PROMPT_FIELD_TOKENS:
+            self.add(
+                "actor_prompt_field_too_large",
+                path,
+                f"单个文本字段不能超过 {MAX_ACTOR_PROMPT_FIELD_TOKENS} tokens。",
+            )
+        return text
 
     def require_id(self, value: Any, path: str) -> str:
         if not isinstance(value, str) or not _ID_RE.fullmatch(value):

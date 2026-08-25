@@ -1101,6 +1101,9 @@ async def archive_numeric_session(request: Request):
             store = _archive_store(config_manager)
             receipt = await _validated_receipt(store, payload)
             if receipt.get("status") == "written":
+                # 上次进程可能在 written 回执与 Session 水位两次原子写之间中断；
+                # 幂等重试返回成功前先修复水位，避免续演后重复归档旧回合。
+                await store.areconcile_written_receipt(receipt)
                 return {"ok": True, "status": "already_written"}
             if receipt.get("status") == "skipped":
                 return _error("numeric_archive_already_skipped", 409)

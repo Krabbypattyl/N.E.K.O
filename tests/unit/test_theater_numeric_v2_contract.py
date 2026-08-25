@@ -140,6 +140,22 @@ def test_numeric_v2_compiles_canonical_package():
     assert json.loads(compiled.json_bytes)["meta"]["story_id"] == "numeric_v2_contract"
 
 
+def test_numeric_v2_rejects_actor_prompt_field_over_budget():
+    """导入时必须拒绝必然挤占 Actor 固定上下文的超长作者字段。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["intro"]["background"] = "无法用于开场的超长背景。" * 500
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(
+        issue.code == "actor_prompt_field_too_large"
+        and issue.path == "intro.background"
+        for issue in caught.value.issues
+    )
+
+
 def test_numeric_v2_requires_structured_initial_player_address_state():
     story = numeric_v2_story()
     story["initial_state"]["player_address_known"] = "称呼未知"

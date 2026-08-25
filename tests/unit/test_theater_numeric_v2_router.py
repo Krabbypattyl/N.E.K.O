@@ -1768,9 +1768,21 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
                 "session_id": "archive_session",
             },
         )
+        archive_store = NumericV2ArchiveStore(tmp_path / "theater")
+        # 模拟进程在 written 回执落盘后、Session 水位指针写入前中断。
+        archive_store._write(
+            archive_store._session_path("archive_session"),
+            {
+                "receipt_id": ended["end_receipt_id"],
+                "archived_through_revision": -1,
+            },
+        )
         replay = client.post(
             "/api/theater-numeric/session/archive",
             json={**receipt, "archive_request_id": ended["archive_request_id"]},
+        )
+        repaired_pointer = archive_store._read(
+            archive_store._session_path("archive_session")
         )
         restored = client.get(
             "/api/theater-numeric/session/active",
@@ -1802,6 +1814,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
     assert "metrics" not in json.dumps(public_archive, ensure_ascii=False)
     assert replay.status_code == 200
     assert replay.json()["status"] == "already_written"
+    assert repaired_pointer["archived_through_revision"] == 1
     assert restored.json()["end_receipt_id"] == receipt["end_receipt_id"]
     assert restored.json()["archive_status"] == "written"
     assert restarted.status_code == 200
@@ -2290,6 +2303,39 @@ def test_numeric_archive_receipt_advances_incremental_watermark_after_success(tm
 
     assert resumed_receipt["archive_from_revision"] == 4
     assert resumed_receipt["archive_through_revision"] == 6
+    assert resumed_receipt["include_opening"] is False
+
+
+def test_numeric_archive_receipt_repairs_watermark_before_next_revision(tmp_path):
+    """没有发生接口重试时，下一次退出也必须先从 written 回执修复水位。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    binding = {
+        "character_id": "character_" + "1" * 32,
+        "catgirl_name": "测试猫娘",
+    }
+    first_session = SimpleNamespace(
+        story_package_id="numeric_v2_contract",
+        session_id="interrupted_watermark",
+        revision=3,
+        catgirl_binding=binding,
+    )
+    first_receipt = store.create_or_get(first_session)
+    interrupted_written = {**first_receipt, "status": "written"}
+    # 只写回执，不写 Session 指针，精确模拟两次原子写之间掉电。
+    store._write(
+        store._receipt_path(first_receipt["receipt_id"]),
+        interrupted_written,
+    )
+
+    resumed_receipt = store.create_or_get(SimpleNamespace(
+        story_package_id=first_session.story_package_id,
+        session_id=first_session.session_id,
+        revision=6,
+        catgirl_binding=binding,
+    ))
+
+    assert resumed_receipt["archive_from_revision"] == 4
     assert resumed_receipt["include_opening"] is False
 
 
