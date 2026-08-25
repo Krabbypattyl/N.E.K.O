@@ -786,8 +786,13 @@
             archive_request_id: snapshot.archive_request_id || ''
         };
         state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot); state.currentBlock = null;
-        await waitForHost();
+        var hostReady = await waitForHost();
         if (restoreLaunchEpoch !== launchEpoch) return;
+        if (!hostReady) {
+            // 指针恢复同样依赖 React 胶囊；宿主不可用时清除不可见运行态和失效指针。
+            clear('pointer-host-unavailable');
+            return;
+        }
         render();
     }
     function handleCrossWindowMessage(event) {
@@ -806,6 +811,11 @@
             && message.story_id === state.storyId
             && message.session_id === state.sessionId
         ) clear('selector-ended');
+        else if (
+            message.action === 'theater:story-deleted'
+            && state.active
+            && message.story_id === state.storyId
+        ) clear('story-deleted');
         else if (message.action === 'catgirl_switched') {
             // 角色切换即使发生在启动指针恢复期间，也必须立即使旧角色的异步快照失效。
             launchEpoch += 1;

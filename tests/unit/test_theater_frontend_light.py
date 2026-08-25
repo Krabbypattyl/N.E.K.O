@@ -272,7 +272,13 @@ def test_theater_character_switch_invalidates_restore_and_selector_requests():
     assert "loadCharacterEpoch !== characterEpoch" in selector
     assert "characterEpoch += 1;" in selector[selector_switch:]
     assert "state.session = null;" in selector[selector_switch:]
-    assert "selectStory(selectedStoryId, true)" in selector[selector_switch:]
+    assert "loadStories(selectedStoryId, switchCharacterEpoch)" in selector[selector_switch:]
+    stories_start = selector.index("async function loadStories(")
+    stories_response = selector.index("var result = await requestJson(api.stories);", stories_start)
+    stories_guard = selector.index("storiesCharacterEpoch !== characterEpoch", stories_response)
+    stories_publish = selector.index("state.stories = result.stories;", stories_guard)
+
+    assert stories_response < stories_guard < stories_publish
 
 
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():
@@ -305,6 +311,35 @@ def test_capsule_runtime_requires_chat_host_before_launch_ready():
     launch_ready = runtime.index("action: 'theater:launch-ready'", clear_runtime)
 
     assert host_wait < host_guard < clear_runtime < launch_ready
+
+
+def test_capsule_runtime_clears_pointer_restore_when_chat_host_is_unavailable():
+    """启动指针恢复也必须在 React 胶囊真实可用后才能保留 active 状态。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    restore_start = runtime.index("async function restorePointer()")
+    host_wait = runtime.index("var hostReady = await waitForHost();", restore_start)
+    host_guard = runtime.index("if (!hostReady)", host_wait)
+    clear_runtime = runtime.index("clear('pointer-host-unavailable');", host_guard)
+    final_render = runtime.index("render();", clear_runtime)
+
+    assert host_wait < host_guard < clear_runtime < final_render
+
+
+def test_story_deletion_clears_matching_capsule_runtime():
+    """删除剧本成功后，仍在本体展示该剧本的运行态必须同步释放。"""  # noqa: DOCSTRING_CJK
+
+    selector = _source("static/js/theater_selector.js")
+    runtime = _source("static/app/app-theater-runtime.js")
+    delete_start = selector.index("async function deleteStory()")
+    delete_end = selector.index("async function toggleArchivePin(", delete_start)
+    delete_block = selector[delete_start:delete_end]
+    runtime_handler = runtime.index("message.action === 'theater:story-deleted'")
+
+    assert "var deletedStoryId = state.storyId;" in delete_block
+    assert "postMessage({ action: 'theater:story-deleted', story_id: deletedStoryId });" in delete_block
+    assert "message.story_id === state.storyId" in runtime[runtime_handler:]
+    assert "clear('story-deleted')" in runtime[runtime_handler:]
 
 
 def test_capsule_runtime_stops_old_audio_before_loading_replacement_session():

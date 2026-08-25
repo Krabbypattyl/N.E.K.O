@@ -991,18 +991,25 @@ async def speak_numeric_block(request: Request):
             )
             from main_routers.shared_state import get_session_manager
 
-            result = await speak_committed_line(
-                dialogue_text,
-                session_id=session_id,
-                state_revision=revision,
-                # TTS 必须使用 character_id 解析出的当前名称；角色改名后旧名称已无语音配置。
-                lanlan_name=str(current_binding.get("catgirl_name") or ""),
-                resolve_current_catgirl=lambda: _current_catgirl_binding(config_manager)["catgirl_name"],
-                get_session_manager=get_session_manager,
-                metadata_kind="theater_numeric_v2_dialogue_block",
-                request_id=playback_request_id,
-                interrupt_audio=block_index == first_dialogue_index,
-            )
+            # 最终身份复验与 TTS 入队共用角色生命周期锁；切换只能发生在旧对白入队前或入队后，
+            # 后者会沿用既有切换通知清理旧角色音频，不能在清理完成后迟到写回。
+            async with character_config_mutation_lock:
+                current_binding = _ensure_current_catgirl(
+                    stored.session,
+                    config_manager,
+                )
+                result = await speak_committed_line(
+                    dialogue_text,
+                    session_id=session_id,
+                    state_revision=revision,
+                    # TTS 必须使用 character_id 解析出的当前名称；角色改名后旧名称已无语音配置。
+                    lanlan_name=str(current_binding.get("catgirl_name") or ""),
+                    resolve_current_catgirl=lambda: _current_catgirl_binding(config_manager)["catgirl_name"],
+                    get_session_manager=get_session_manager,
+                    metadata_kind="theater_numeric_v2_dialogue_block",
+                    request_id=playback_request_id,
+                    interrupt_audio=block_index == first_dialogue_index,
+                )
             response = {
                 "ok": True,
                 "block_index": block_index,

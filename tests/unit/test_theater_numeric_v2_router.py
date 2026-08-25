@@ -17,6 +17,7 @@ from main_routers import numeric_theater_router
 from memory.recent import CompressedRecentHistoryManager
 from services.theater.numeric_v2_actor import NumericV2ActorError
 from services.theater.numeric_v2_archive import (
+    NumericV2ArchiveError,
     NumericV2ArchiveStore,
     build_numeric_v2_memory_messages,
 )
@@ -1520,6 +1521,9 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
     async def capture_speech(*args, **kwargs):
         captured["args"] = args
         captured.update(kwargs)
+        captured["character_lock_held"] = (
+            numeric_theater_router.character_config_mutation_lock.locked()
+        )
         return {"audio_queued": True, "speech_id": "speech-1"}
 
     monkeypatch.setattr(numeric_theater_router, "speak_committed_line", capture_speech)
@@ -1566,6 +1570,7 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
     assert captured["lanlan_name"] == "测试猫娘"
     assert captured["args"][0] == "你回来了。 先进来吧。"
     assert captured["interrupt_audio"] is True
+    assert captured["character_lock_held"] is True
 
 
 def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypatch):
@@ -2120,6 +2125,45 @@ def test_numeric_receipt_gc_preserves_legacy_written_receipt_until_cold_archive_
     assert store.has_written_receipt_for_session(first.session_id) is True
     assert store._receipt_path(first_receipt["receipt_id"]).is_file()
     assert store.load_for_session(first.session_id)["receipt_id"] == second_receipt["receipt_id"]
+
+
+def test_numeric_receipt_gc_aborts_on_transient_receipt_read_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """回执暂时不可读时必须中止 GC，不能删除其指针或兼容证据。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    session = SimpleNamespace(
+        story_package_id="story_receipt_transient_io",
+        session_id="receipt_transient_io_session",
+        revision=1,
+        catgirl_binding={
+            "character_id": "character_receipt_transient_io",
+            "catgirl_name": "小葵",
+        },
+    )
+    receipt = store.create_or_get(session)
+    receipt_path = store._receipt_path(receipt["receipt_id"])
+    pointer_path = store._session_path(session.session_id)
+    path_type = type(receipt_path)
+    original_read_text = path_type.read_text
+
+    def transient_read(path, *args, **kwargs):
+        if path == receipt_path:
+            raise PermissionError("temporary receipt failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", transient_read)
+
+    with pytest.raises(
+        NumericV2ArchiveError,
+        match="numeric_end_receipt_read_failed",
+    ):
+        store.cleanup_receipts({session.session_id})
+
+    assert receipt_path.is_file()
+    assert pointer_path.is_file()
 
 
 def test_numeric_public_archives_keep_latest_five_plus_pinned(tmp_path):

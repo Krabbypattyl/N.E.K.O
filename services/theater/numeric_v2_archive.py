@@ -715,12 +715,17 @@ class NumericV2ArchiveStore:
         for pointer_path in self.root.glob("session-*.json"):
             try:
                 pointer = self._read(pointer_path)
-            except NumericV2ArchiveError:
+            except NumericV2ArchiveError as exc:
+                # 暂时性 I/O 故障不能被解释为垃圾数据，否则会删除仍有效的回执指针。
+                if isinstance(exc.__cause__, OSError):
+                    raise
                 pointer = None
             receipt_id = str((pointer or {}).get("receipt_id") or "")
             try:
                 receipt = self.load(receipt_id) if receipt_id else None
-            except NumericV2ArchiveError:
+            except NumericV2ArchiveError as exc:
+                if isinstance(exc.__cause__, OSError):
+                    raise
                 receipt = None
             session_id = str((receipt or {}).get("session_id") or "")
             if receipt is not None and session_id in normalized_active:
@@ -742,7 +747,10 @@ class NumericV2ArchiveStore:
                 continue
             try:
                 receipt = self._read(receipt_path)
-            except NumericV2ArchiveError:
+            except NumericV2ArchiveError as exc:
+                # written 兼容回执可能是升级补档的唯一证据，I/O 失败时必须保留并中止清理。
+                if isinstance(exc.__cause__, OSError):
+                    raise
                 receipt = None
             receipt_session_id = str((receipt or {}).get("session_id") or "")
             if (

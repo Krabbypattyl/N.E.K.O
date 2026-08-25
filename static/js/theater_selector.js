@@ -458,9 +458,10 @@
     // 删除前由服务端汇总活跃角色，确认后再执行剧本包和 Session 的事务删除。
     async function deleteStory() {
         if (!state.storyId || state.busy) return;
+        var deletedStoryId = state.storyId;
         setBusy(true);
         try {
-            var preview = await requestJson(api.packages + '/' + encodeURIComponent(state.storyId) + '/delete-preview');
+            var preview = await requestJson(api.packages + '/' + encodeURIComponent(deletedStoryId) + '/delete-preview');
             if (!preview.ok) throw new Error('preview_failed');
             var names = Array.isArray(preview.active_catgirl_names) ? preview.active_catgirl_names.filter(Boolean) : [];
             var body = names.length
@@ -468,9 +469,11 @@
                 : t('theater.deleteStoryConfirm', '是否确认删除？');
             var confirmed = await showModal({ title: t('theater.deleteStory', '删除剧本'), body: body, cancelLabel: t('common.cancel', '取消'), confirmLabel: t('theater.deleteStory', '删除剧本'), danger: true });
             if (!confirmed) return;
-            var result = await requestJson(api.packages + '/' + encodeURIComponent(state.storyId), { method: 'DELETE' });
+            var result = await requestJson(api.packages + '/' + encodeURIComponent(deletedStoryId), { method: 'DELETE' });
             if (!result.ok) throw new Error('delete_failed');
-            state.stories = state.stories.filter(function (story) { return String(story.story_id) !== state.storyId; });
+            // 服务端已级联删除该剧本的 Session；通知所有本体释放仍在展示的胶囊运行态。
+            postMessage({ action: 'theater:story-deleted', story_id: deletedStoryId });
+            state.stories = state.stories.filter(function (story) { return String(story.story_id) !== deletedStoryId; });
             state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null; state.archives = [];
             renderStories(); renderDetail();
             // 删除动作尚处于 busy 状态；内部刷新必须显式放行，否则详情会停留在旧剧本。
@@ -599,10 +602,14 @@
             }
         }
     }
-    async function loadStories(preferredStoryId) {
+    async function loadStories(preferredStoryId, expectedCharacterEpoch) {
+        var storiesCharacterEpoch = expectedCharacterEpoch === undefined
+            ? characterEpoch
+            : expectedCharacterEpoch;
         setStatus('theater.loading', '正在准备舞台...');
         var result = await requestJson(api.stories);
         if (!result.ok || !Array.isArray(result.stories)) throw new Error('stories_failed');
+        if (storiesCharacterEpoch !== characterEpoch) return false;
         state.stories = result.stories;
         var queryStoryId = new URLSearchParams(window.location.search).get('story_id') || '';
         state.storyId = preferredStoryId || queryStoryId || String((state.stories[0] || {}).story_id || '');
@@ -610,6 +617,7 @@
         renderStories(); renderDetail();
         // 导入/删除期间 loadStories 也会在 busy 状态内运行，允许这一次内部详情刷新。
         if (state.storyId) await selectStory(state.storyId, true); else setStatus('theater.ready', '就绪');
+        return true;
     }
     // 本体结束演绎后只传定位回执；选择页重新读取服务端状态再显示询问。
     function handleCrossWindowMessage(event) {
@@ -634,12 +642,12 @@
             setFeedback('');
             renderDetail();
             var selectedStoryId = state.storyId;
-            if (selectedStoryId) {
-                selectStory(selectedStoryId, true).catch(function () {
-                    setStatus('theater.failed', '出错了');
-                    setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
-                });
-            }
+            var switchCharacterEpoch = characterEpoch;
+            loadStories(selectedStoryId, switchCharacterEpoch).catch(function () {
+                if (switchCharacterEpoch !== characterEpoch) return;
+                setStatus('theater.failed', '出错了');
+                setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true);
+            });
         }
     }
     function bindModalKeyboard() {
