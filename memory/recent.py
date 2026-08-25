@@ -957,7 +957,8 @@ class CompressedRecentHistoryManager:
                     f"[RecentHistory] {lanlan_name} 历史文件读取失败，"
                     "剧场单集摘要暂存内存等下次补写"
                 )
-                return incoming
+                # pending 只保证当前进程内可重试，不等于已经持久化；必须让上游保留归档回执。
+                raise RuntimeError("theater_episode_persist_failed")
 
             merged, stored_incoming = _merge_theater_episode_summary(
                 list(history) + list(pending),
@@ -981,7 +982,8 @@ class CompressedRecentHistoryManager:
                     f"[RecentHistory] 保存 {lanlan_name} 剧场单集摘要失败: {exc}",
                     exc_info=True,
                 )
-                return incoming
+                # 不能把内存 pending 伪装成写盘成功，否则进程退出后摘要会永久丢失。
+                raise RuntimeError("theater_episode_persist_failed") from exc
 
             self._set_pending_batches(lanlan_name, [], file_path)
             self._cache_history_view(file_path, lanlan_name, merged)

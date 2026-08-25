@@ -869,6 +869,66 @@ def test_numeric_v2_router_rechecks_catgirl_after_opening(tmp_path, monkeypatch)
         assert not list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))
 
 
+def test_numeric_v2_router_locks_final_session_creation_only(tmp_path, monkeypatch):
+    """开场生成不长占锁，最终复验与 Session 创建必须同时持有两层生命周期锁。"""  # noqa: DOCSTRING_CJK
+
+    story_guard_depth = {"value": 0}
+    actor_lock_states = []
+    commit_lock_states = []
+    original_guard = numeric_theater_router.NumericV2Runtime.story_session_guard
+    original_start = numeric_theater_router.NumericV2Runtime.start_session
+
+    @asynccontextmanager
+    async def tracked_story_guard(runtime):
+        async with original_guard(runtime):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
+
+    async def tracked_opening(*_args, **_kwargs):
+        actor_lock_states.append({
+            "character": numeric_theater_router.character_config_mutation_lock.locked(),
+            "story": story_guard_depth["value"] > 0,
+        })
+        return _performance("开场生成完成。", opening=True)
+
+    async def tracked_start(runtime, *args, **kwargs):
+        commit_lock_states.append({
+            "character": numeric_theater_router.character_config_mutation_lock.locked(),
+            "story": story_guard_depth["value"] > 0,
+        })
+        return await original_start(runtime, *args, **kwargs)
+
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "story_session_guard",
+        tracked_story_guard,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Runtime,
+        "start_session",
+        tracked_start,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_opening",
+        tracked_opening,
+    )
+
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "locked_start"},
+        )
+
+    assert started.status_code == 200
+    assert actor_lock_states == [{"character": False, "story": False}]
+    assert commit_lock_states == [{"character": True, "story": True}]
+
+
 def test_numeric_v2_router_preserves_each_catgirls_story_session(tmp_path, monkeypatch):
     class _MutableConfigManager(_ConfigManager):
         def __init__(self, root: Path):

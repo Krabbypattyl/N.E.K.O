@@ -94,13 +94,14 @@ def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        # 已存在但不可读的索引不能等同于全新空索引，否则任一写请求都会覆盖全部恢复槽位。
+        raise NumericV2StoreError("numeric_story_session_index_read_failed") from exc
     if not isinstance(payload, dict) or payload.get("schema") != STORY_SESSION_INDEX_SCHEMA:
-        return {}
+        raise NumericV2StoreError("numeric_story_session_index_invalid")
     stories = payload.get("stories")
     if not isinstance(stories, dict):
-        return {}
+        raise NumericV2StoreError("numeric_story_session_index_invalid")
     normalized: dict[str, dict[str, str]] = {}
     for story_id, slots in stories.items():
         normalized_story_id = str(story_id or "").strip()
@@ -337,6 +338,8 @@ async def delete_numeric_v2_sessions(
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
     async with _lock(index_path):
+        # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
+        stories = _read_story_session_slots(index_path)
         candidates = list_numeric_v2_sessions(
             theater_storage_root,
             story_id=normalized_story_id,
@@ -384,7 +387,6 @@ async def delete_numeric_v2_sessions(
                 except FileNotFoundError:
                     pass
 
-        stories = _read_story_session_slots(index_path)
         if (
             normalized_story_id
             and not normalized_character_id
@@ -609,11 +611,11 @@ class NumericV2SessionStore:
                     raise NumericV2SessionExistsError("numeric_session_exists")
                 self.engine.validate_session(session)
                 stored = NumericV2StoredSession(session, ())
-                self._write(path, stored, exclusive=True)
                 stories = self._read_story_session_index()
                 stories.setdefault(session.story_package_id, {})[
                     character_id
                 ] = session.session_id
+                self._write(path, stored, exclusive=True)
                 try:
                     self._write_story_session_index(stories)
                 except Exception:
@@ -653,12 +655,12 @@ class NumericV2SessionStore:
                         raise NumericV2SessionExistsError("numeric_session_exists")
                     self.engine.validate_session(session)
                     stored = NumericV2StoredSession(session, ())
-                    self._write(next_path, stored, exclusive=True)
                     stories = self._read_story_session_index()
                     previous_stories = deepcopy(stories)
                     stories.setdefault(session.story_package_id, {})[
                         str(session.catgirl_binding.get("character_id") or "")
                     ] = session.session_id
+                    self._write(next_path, stored, exclusive=True)
                     try:
                         self._write_story_session_index(stories)
                         previous_path.unlink()
@@ -774,7 +776,7 @@ class NumericV2SessionStore:
             return resumed
 
     def _read(self, path: Path) -> NumericV2StoredSession:
-        from .numeric_v2_runtime import ScriptSessionV2
+        from .numeric_v2_runtime import ScriptSessionV2, _player_address_disclosed
 
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -803,7 +805,10 @@ class NumericV2SessionStore:
                     and configured_address not in {"你", "男主"}
                     and isinstance(events, list)
                     and any(
-                        configured_address in str(event.get("input_text") or "")
+                        _player_address_disclosed(
+                            str(event.get("input_text") or ""),
+                            configured_address,
+                        )
                         for event in events
                         if isinstance(event, Mapping)
                     )
@@ -917,12 +922,24 @@ class NumericV2SessionStore:
             ):
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
-            if (
-                "player_address_known" in event
-                and event.get("player_address_known")
-                != expected_event.get("player_address_known")
-            ):
+            replayed_session = replayed.session
+            disclosure_version = event.get("player_address_disclosure_version")
+            if disclosure_version not in {None, 2}:
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if disclosure_version == 2 and "player_address_known" not in event:
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if "player_address_known" in event:
+                committed_address_known = event.get("player_address_known")
+                if not isinstance(committed_address_known, bool):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                if committed_address_known != expected_event.get("player_address_known"):
+                    if disclosure_version == 2 or committed_address_known is False:
+                        raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                    # 版本字段加入前，任意昵称出现都会被提交为知情；既成 Session 不能因规则收紧而损坏。
+                    replayed_session = replace(
+                        replayed_session,
+                        player_address_known=True,
+                    )
             for field in ("scene_completion_ready", "scene_goal_evidence"):
                 if field in event and event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1000,8 +1017,8 @@ class NumericV2SessionStore:
                     raise NumericV2StoreError("numeric_transition_performance_invalid")
             # 下一条 Ledger 的目标证据只能引用已正式提交的演绎记录，因此重放时同步补回历史。
             replay_session = replace(
-                replayed.session,
-                performance_history=(*replayed.session.performance_history, deepcopy(dict(performance))),
+                replayed_session,
+                performance_history=(*replayed_session.performance_history, deepcopy(dict(performance))),
             )
             expected_node = str(expected_event["to_node_id"])
             expected_metrics = dict(expected_event["after_metrics"])

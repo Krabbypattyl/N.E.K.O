@@ -258,6 +258,15 @@ async def test_numeric_v2_player_address_is_committed_only_with_successful_turn(
     assert stored.session.player_address_known is False
     assert stored.session.to_dict()["player_address_known"] is False
 
+    mentioned = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("address_mentioned", 0, "你认识哥哥吗？"),
+        (),
+        scene_complete=False,
+    )
+    assert mentioned.session.player_address_known is False
+    assert mentioned.ledger_event["player_address_known"] is False
+
     disclosed = runtime.prepare_turn(
         stored,
         TurnRequestV2("address_disclosure", 0, "我叫哥哥。"),
@@ -332,9 +341,42 @@ async def test_numeric_v2_legacy_session_derives_address_state_from_submitted_in
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["session"].pop("player_address_known")
     payload["ledger_events"][0].pop("player_address_known")
+    payload["ledger_events"][0].pop("player_address_disclosure_version")
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     restored = await runtime.restore_session(stored.session.session_id)
+    assert restored is not None
+    assert restored.session.player_address_known is True
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_legacy_substring_disclosure_remains_replayable(tmp_path):
+    """旧版已经提交的宽松称呼事实必须可恢复，但不能影响新回合规则。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story(player_address_known=False)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_legacy_substring_address",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    disclosed = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("legacy_substring_disclosure", 0, "我叫哥哥。"),
+        (),
+        scene_complete=False,
+    )
+    await runtime.commit_turn(disclosed, _performance("记住了。"))
+
+    path = tmp_path / "numeric_v2" / "sessions" / "runtime_legacy_substring_address.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["ledger_events"][0]["input_text"] = "你认识哥哥吗？"
+    payload["ledger_events"][0].pop("player_address_disclosure_version")
+    payload["session"]["performance_history"][0]["input_text"] = "你认识哥哥吗？"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    restored = await runtime.restore_session(stored.session.session_id)
+
     assert restored is not None
     assert restored.session.player_address_known is True
 
@@ -713,6 +755,55 @@ async def test_numeric_v2_story_session_index_survives_runtime_recreation(tmp_pa
     index = (tmp_path / "numeric_v2" / "story_sessions.json").read_text(encoding="utf-8")
     assert "runtime_story_resume" in index
     assert '"character_11111111111111111111111111111111":"runtime_story_resume"' in index
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_session_writer_rejects_unreadable_story_index(tmp_path):
+    """损坏索引不能被新 Session 当作空索引覆盖。"""  # noqa: DOCSTRING_CJK
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text("{broken-json", encoding="utf-8")
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_story_session_index_read_failed",
+    ):
+        await runtime.start_session(
+            session_id="runtime_unreadable_index",
+            catgirl_binding=_binding(),
+            opening_performance=_opening(),
+        )
+
+    assert index_path.read_text(encoding="utf-8") == "{broken-json"
+    assert not runtime.store._path("runtime_unreadable_index").exists()
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_session_delete_rejects_unreadable_story_index(tmp_path):
+    """损坏索引时删除请求不能先移除 Session 文件。"""  # noqa: DOCSTRING_CJK
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_delete_unreadable_index",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index_path.write_text("{broken-json", encoding="utf-8")
+
+    with pytest.raises(
+        numeric_v2_store.NumericV2StoreError,
+        match="numeric_story_session_index_read_failed",
+    ):
+        await numeric_v2_store.delete_numeric_v2_sessions(
+            tmp_path,
+            story_id=stored.session.story_package_id,
+        )
+
+    assert runtime.store._path(stored.session.session_id).is_file()
+    assert index_path.read_text(encoding="utf-8") == "{broken-json"
 
 
 @pytest.mark.asyncio

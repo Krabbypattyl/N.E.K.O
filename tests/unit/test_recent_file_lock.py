@@ -878,6 +878,38 @@ def test_read_includes_pending_after_failed_persist(tmp_path, monkeypatch, seed_
     assert [message.content for message in mgr._pending_batches(name)] == ["pending"]
 
 
+def test_theater_episode_write_failure_is_not_reported_as_persisted(
+    tmp_path,
+    monkeypatch,
+):
+    """剧场摘要只进入内存 pending 时必须让归档回执保持可重试。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name, path = _make_manager(tmp_path)
+    incoming = SystemMessage(
+        content="这一周目仍在继续。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story-persist-failure",
+            "session_id": "session-persist-failure",
+        },
+    )
+    monkeypatch.setattr(
+        recent_file,
+        "write_recent_payload_unlocked",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(RuntimeError, match="theater_episode_persist_failed"):
+        asyncio.run(mgr.upsert_theater_episode(incoming, name))
+
+    assert not Path(path).exists()
+    assert [message.content for message in mgr._pending_batches(name)] == [
+        "这一周目仍在继续。",
+    ]
+
+
 def test_authoritative_replace_discards_previous_pending(tmp_path, monkeypatch):
     """A user replacement must not resurrect an older failed append."""
     mgr, name, path = _make_manager(tmp_path)

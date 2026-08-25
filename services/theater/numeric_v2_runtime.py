@@ -66,18 +66,42 @@ def _integer(value: Any, field: str) -> int:
     return value
 
 
+def _player_address_disclosed(message: str, configured_address: str) -> bool:
+    """只接受包含完整昵称的明确自我介绍或称呼请求。"""  # noqa: DOCSTRING_CJK
+
+    text = str(message or "").strip()
+    address = str(configured_address or "").strip()
+    if not text or not address or address in {"你", "男主"}:
+        return False
+    escaped = re.escape(address)
+    left = r"(?:^|[\s,，。.!！;；:：])"
+    right = r"(?=$|[\s,，。.!！;；:：])"
+    quoted_address = rf"[\"'“‘「『]?{escaped}[\"'”’」』]?"
+    patterns = (
+        # 中文：限定为第一人称身份陈述或明确的称呼指令，排除“你认识小明吗”。
+        rf"{left}(?:我(?:的名字)?(?:是|叫)|请?(?:叫|称呼)我(?:为)?|你可以叫我)\s*{quoted_address}(?:吧|就好|即可)?{right}",
+        rf"{left}{quoted_address}\s*(?:就是我|是我){right}",
+        # 其他已支持界面的常见自我介绍形式；昵称本身始终按完整精确字符串匹配。
+        rf"{left}(?:i\s+am|i['’]m|my\s+name\s+is|call\s+me|you\s+can\s+call\s+me)\s+{quoted_address}{right}",
+        rf"{left}(?:me\s+llamo|ll[aá]mame|me\s+chamo|pode\s+me\s+chamar\s+de|меня\s+зовут)\s+{quoted_address}{right}",
+        rf"{left}(?:私は|僕は|俺は|名前は)\s*{quoted_address}\s*(?:です|だ){right}",
+        rf"{left}{quoted_address}\s*と呼んで{right}",
+        rf"{left}(?:저는|나는|제\s*이름은|내\s*이름은)\s*{quoted_address}\s*(?:입니다|예요|이에요){right}",
+        rf"{left}{quoted_address}\s*(?:라고|이라고)\s*불러{right}",
+    )
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def _player_address_known_after_turn(
     session: "ScriptSessionV2",
     message: str,
 ) -> bool:
-    """仅按完整配置昵称的精确字符串判断本轮是否披露称呼。"""  # noqa: DOCSTRING_CJK
+    """仅在玩家明确披露完整配置昵称后推进称呼知情状态。"""  # noqa: DOCSTRING_CJK
 
     if session.player_address_known:
         return True
     configured_address = str(session.catgirl_binding.get("player_address") or "").strip()
-    if not configured_address or configured_address in {"你", "男主"}:
-        return False
-    return configured_address in str(message or "")
+    return _player_address_disclosed(message, configured_address)
 
 
 def _scene_completion_ready(value: Mapping[str, Any]) -> bool:
@@ -517,6 +541,8 @@ class NumericV2Engine:
             "node_turn_count": next_turn_count,
             "status": next_status,
             "player_address_known": player_address_known,
+            # 版本 2 表示称呼状态由“完整昵称 + 明确披露句式”确定，旧事件按已提交事实兼容重放。
+            "player_address_disclosure_version": 2,
         }
         if persist_scene_progress:
             # Ledger 保存累计状态，恢复时无需重新询问模型，也不会把旧幕证据带入新幕。

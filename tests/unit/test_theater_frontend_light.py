@@ -183,6 +183,20 @@ def test_capsule_runtime_shows_player_action_before_waiting_for_actor():
     assert "participants.catgirl_name" in runtime
 
 
+def test_capsule_runtime_discards_turn_response_after_session_switch():
+    """旧 Session 的迟到响应不能覆盖新剧本的胶囊状态。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+    submit_start = runtime.index("async function submit(text)")
+    request = runtime.index("result = await requestJson(api.input", submit_start)
+    stale_guard = runtime.index("state.storyId !== submittedStoryId", request)
+    apply_snapshot = runtime.index("applySnapshot(result);", stale_guard)
+
+    assert "var submittedSessionId = state.sessionId" in runtime[submit_start:request]
+    assert "state.pendingTurn.id !== submittedTurnId" in runtime[request:apply_snapshot]
+    assert request < stale_guard < apply_snapshot
+
+
 def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     runtime = _source("static/app/app-theater-runtime.js")
     geometry = _source("static/app/app-react-chat-window/geometry-and-messages.js")

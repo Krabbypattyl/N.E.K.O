@@ -459,7 +459,15 @@
         var chatHost = host();
         captureOrdinaryDraft(chatHost);
         captureChatSurfaceMode(chatHost);
-        state.active = true; state.phase = 'loading'; state.storyId = String(message.story_id); state.sessionId = String(message.session_id); render();
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        if (state.active && (state.storyId !== nextStoryId || state.sessionId !== nextSessionId)) {
+            // 切换 Session 时终止旧正文播放并解除旧回合占位，迟到响应只能留在服务端权威历史中。
+            state.queueToken += 1;
+            state.pendingTurn = null;
+            state.currentBlock = null;
+        }
+        state.active = true; state.phase = 'loading'; state.storyId = nextStoryId; state.sessionId = nextSessionId; render();
         var snapshot = await requestJson(api.session + '/' + encodeURIComponent(state.sessionId) + '?story_id=' + encodeURIComponent(state.storyId));
         if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
             clear('launch-validation-failed');
@@ -504,6 +512,10 @@
         if (!state.active || state.phase !== 'awaiting_player' || !message) return false;
         var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + message;
         if (!state.pendingTurn || state.pendingTurn.signature !== signature) state.pendingTurn = { signature: signature, id: createId('theater_turn_') };
+        // 请求期间可能从另一个选剧页切换剧本；响应只能写回发起它的 Session。
+        var submittedStoryId = state.storyId;
+        var submittedSessionId = state.sessionId;
+        var submittedTurnId = state.pendingTurn.id;
         var optimisticHistoryId = 'player-pending-' + state.pendingTurn.id;
         // 玩家行动先进入历史区，让推荐输入和手动提交都立即得到可见反馈。
         if (!state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
@@ -519,6 +531,15 @@
         } catch (_) {
             result = { ok: false, reason: 'numeric_input_request_failed' };
         }
+        if (
+            !state.active
+            || state.storyId !== submittedStoryId
+            || state.sessionId !== submittedSessionId
+        ) {
+            // 服务端可能已经提交旧 Session；这里只丢弃迟到显示，恢复时仍会读到权威历史。
+            return false;
+        }
+        if (!state.pendingTurn || state.pendingTurn.id !== submittedTurnId) return false;
         if (!result.ok) {
             // 未提交的玩家行动不能伪装成已发生事实；失败时撤回气泡并恢复原输入。
             state.history = state.history.filter(function (entry) { return entry.id !== optimisticHistoryId; });

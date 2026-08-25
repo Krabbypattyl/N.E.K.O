@@ -9,7 +9,13 @@ import pytest
 from playwright.sync_api import Page, Route, expect
 
 
-def _snapshot(*, revision: int, performance_history: list[dict] | None = None) -> dict:
+def _snapshot(
+    *,
+    revision: int,
+    performance_history: list[dict] | None = None,
+    story_id: str = "capsule-browser-story",
+    session_id: str = "capsule-browser-session",
+) -> dict:
     return {
         "ok": True,
         "story_title": "雨巷来信",
@@ -33,8 +39,8 @@ def _snapshot(*, revision: int, performance_history: list[dict] | None = None) -
         },
         "suggested_inputs": ["把旧信递给她", "问她这些年过得好吗"],
         "session": {
-            "session_id": "capsule-browser-session",
-            "story_package_id": "capsule-browser-story",
+            "session_id": session_id,
+            "story_package_id": story_id,
             "revision": revision,
             "status": "active",
             "opening_performance": {
@@ -45,6 +51,104 @@ def _snapshot(*, revision: int, performance_history: list[dict] | None = None) -
             "performance_history": performance_history or [],
         },
     }
+
+
+@pytest.mark.frontend
+def test_theater_capsule_ignores_late_turn_after_launching_another_session(
+    mock_page: Page,
+    running_server: str,
+):
+    """A 回合等待期间切到 B 后，A 的迟到响应只能留在服务端。"""  # noqa: DOCSTRING_CJK
+
+    pending_input: dict[str, Route] = {}
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/session-a"):
+            fulfill(route, _snapshot(revision=0, story_id="story-a", session_id="session-a"))
+            return
+        if path.endswith("/api/theater-numeric/session/session-b"):
+            fulfill(route, _snapshot(revision=0, story_id="story-b", session_id="session-b"))
+            return
+        if path.endswith("/api/theater-numeric/session/input"):
+            pending_input["route"] = route
+            return
+        if path.endswith("/api/theater-numeric/session/speak-block"):
+            fulfill(route, {"ok": True, "audio_queued": False})
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+                launch_id: 'launch-a', launch_action: 'continue',
+                story_id: 'story-a', session_id: 'session-a', revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-a'"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    mock_page.evaluate(
+        "() => window.nekoTheaterRuntime.handleComposerSubmit('A 的待处理输入')"
+    )
+    for _ in range(50):
+        if "route" in pending_input:
+            break
+        mock_page.wait_for_timeout(20)
+    assert "route" in pending_input
+
+    mock_page.evaluate(
+        """() => window.postMessage({
+            schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+            launch_id: 'launch-b', launch_action: 'continue',
+            story_id: 'story-b', session_id: 'session-b', revision: 0
+        }, window.location.origin)"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    late_turn = {
+        "revision": 1,
+        "input_text": "A 的待处理输入",
+        "performance": "这是不应显示在 B 中的 A 回复。",
+        "suggested_inputs": [],
+    }
+    late_payload = _snapshot(
+        revision=1,
+        performance_history=[late_turn],
+        story_id="story-a",
+        session_id="session-a",
+    )
+    late_payload["performance"] = late_turn
+    fulfill(pending_input["route"], late_payload)
+    mock_page.wait_for_timeout(200)
+
+    state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    assert state["storyId"] == "story-b"
+    assert state["sessionId"] == "session-b"
+    assert state["revision"] == 0
+    assert all("不应显示" not in item.get("text", "") for item in state["history"])
 
 
 @pytest.mark.frontend

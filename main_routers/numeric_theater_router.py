@@ -448,7 +448,8 @@ async def start_numeric_session(request: Request):
     replace_existing = payload.get("replace_existing") is True
     try:
         runtime = await _runtime_for_story(config_manager, story_id)
-        async with runtime.story_session_guard():
+        # 先在统一锁顺序下取得角色与恢复槽位快照；已有进度可直接恢复，不浪费一次开场生成。
+        async with character_config_mutation_lock, runtime.story_session_guard():
             binding = _current_catgirl_binding(config_manager)
             existing = await runtime.restore_story_session_unlocked(binding)
             if existing is not None:
@@ -464,11 +465,29 @@ async def start_numeric_session(request: Request):
                     return _error("numeric_replacement_session_id_must_differ", 400)
                 if existing.session.status != "ended":
                     return _error("numeric_active_session_cannot_restart", 409)
-                # 重新开始必须生成新开场和新推荐输入；生成成功前不替换旧 Session。
-                opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
-                if _current_catgirl_binding(config_manager) != binding:
-                    raise ValueError("catgirl_changed_requires_new_session")
-                await _assert_numeric_writable(config_manager, "sessions")
+
+        # 开场模型调用不占用角色或剧本锁；最终提交前会重新读取并验证全部可变事实。
+        opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+        async with character_config_mutation_lock, runtime.story_session_guard():
+            if _current_catgirl_binding(config_manager) != binding:
+                raise ValueError("catgirl_changed_requires_new_session")
+            existing = await runtime.restore_story_session_unlocked(binding)
+            if existing is not None:
+                _ensure_current_catgirl(existing.session, config_manager)
+                # 等待 Actor 期间另一个开始请求可能已经提交；沿用原有“继续已有进度”语义。
+                if not replace_existing:
+                    return {
+                        "ok": True,
+                        "resumed": True,
+                        **_numeric_payload(runtime, existing, display_binding=binding),
+                    }
+                if session_id == existing.session.session_id:
+                    return _error("numeric_replacement_session_id_must_differ", 400)
+                if existing.session.status != "ended":
+                    return _error("numeric_active_session_cannot_restart", 409)
+
+            await _assert_numeric_writable(config_manager, "sessions")
+            if existing is not None:
                 archive_store = _archive_store(config_manager)
                 previous_receipt = await archive_store.aload_for_session(
                     existing.session.session_id
@@ -514,10 +533,6 @@ async def start_numeric_session(request: Request):
                     )
             else:
                 # 开场 Actor 成功后才创建 Session，避免空壳 Session 污染恢复指针。
-                opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
-                if _current_catgirl_binding(config_manager) != binding:
-                    raise ValueError("catgirl_changed_requires_new_session")
-                await _assert_numeric_writable(config_manager, "sessions")
                 stored = await runtime.start_session(
                     session_id=session_id,
                     catgirl_binding=binding,

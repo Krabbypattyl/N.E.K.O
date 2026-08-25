@@ -213,6 +213,52 @@ async def test_cache_upserts_theater_episode_summary_instead_of_appending():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cache_reports_theater_episode_persist_failure():
+    """剧场摘要未写盘时不能继续更新时间索引或返回 cached。"""  # noqa: DOCSTRING_CJK
+
+    from app import memory_server
+
+    payload = json.dumps([{
+        "role": "system",
+        "content": "这一周目仍在继续。",
+        "metadata": {
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story_write_failure",
+            "session_id": "session_write_failure",
+        },
+    }], ensure_ascii=False)
+    fake_recent = MagicMock()
+    fake_recent.upsert_theater_episode = AsyncMock(
+        side_effect=RuntimeError("theater_episode_persist_failed")
+    )
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock()
+    fake_spawn_outbox = AsyncMock()
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time), \
+         patch.object(
+             memory_server.post_turn,
+             "_spawn_outbox_post_turn_signals",
+             fake_spawn_outbox,
+         ):
+        result = await memory_server.cache_conversation(
+            memory_server.HistoryRequest(input_history=payload),
+            "测试角色",
+        )
+
+    assert result == {
+        "status": "error",
+        "message": "theater_episode_persist_failed",
+    }
+    fake_time.areconcile_theater_conversations.assert_not_awaited()
+    fake_spawn_outbox.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_forget_theater_memory_rebuilds_remaining_story_index():
     """忘记一个剧本后，其他剧本的有界时间索引必须保留。"""  # noqa: DOCSTRING_CJK
 
@@ -636,7 +682,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
-    """powerful_memory ON 模式：Stage-1 per-turn fact_extract 已按 RFC §3.4.3
+    """powerful_memory ON 模式：Stage-1 per-turn fact_extract 已按 RFC §3.4.3  # noqa: DOCSTRING_CJK
     迁到 ``_periodic_signal_extraction_loop`` 做 batch 抽取，per-turn 主路径
     不应再调 ``fact_store.extract_facts``。
 
