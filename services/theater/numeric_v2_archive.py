@@ -706,6 +706,7 @@ class NumericV2ArchiveStore:
         story_id: str = "",
         character_id: str = "",
         legacy_catgirl_name: str = "",
+        raise_on_io_error: bool = False,
     ) -> list[Path]:
         """列出指定范围内的回执和 Session 指针，供事务备份与删除共用。"""  # noqa: DOCSTRING_CJK
 
@@ -718,7 +719,10 @@ class NumericV2ArchiveStore:
         for path in self.root.glob("theater_end_*.json"):
             try:
                 receipt = self._read(path)
-            except NumericV2ArchiveError:
+            except NumericV2ArchiveError as exc:
+                # 普通查询允许跳过暂时不可读的回执；破坏性操作必须中止，避免遗漏残留数据。
+                if raise_on_io_error and isinstance(exc.__cause__, OSError):
+                    raise
                 continue
             if receipt is None:
                 continue
@@ -755,6 +759,7 @@ class NumericV2ArchiveStore:
             story_id=story_id,
             character_id=character_id,
             legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
         )
         removed = 0
         for path in paths:

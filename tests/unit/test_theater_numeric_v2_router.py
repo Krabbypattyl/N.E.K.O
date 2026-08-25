@@ -2050,6 +2050,69 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
     assert active.json()["archive_status"] == "skipped"
 
 
+def test_numeric_story_memory_forget_aborts_before_partial_delete_on_receipt_io_error(
+    tmp_path,
+    monkeypatch,
+):
+    """回执暂时不可读时必须在删除记忆摘要前中止遗忘。"""  # noqa: DOCSTRING_CJK
+
+    memory_calls = []
+
+    class _UnexpectedMemoryClient:
+        async def post(self, *_args, **_kwargs):
+            memory_calls.append(True)
+            raise AssertionError("本地遗忘目标预检失败后不能删除记忆摘要")
+
+    monkeypatch.setattr(
+        "utils.internal_http_client.get_internal_http_client",
+        lambda: _UnexpectedMemoryClient(),
+    )
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "forget_receipt_io_failure",
+            },
+        )
+        assert started.status_code == 200
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "forget_receipt_io_failure",
+                "base_revision": 0,
+            },
+        ).json()
+
+        archive_store = NumericV2ArchiveStore(tmp_path / "theater")
+        receipt_path = archive_store._receipt_path(ended["end_receipt_id"])
+        pointer_path = archive_store._session_path("forget_receipt_io_failure")
+        path_type = type(receipt_path)
+        original_read_text = path_type.read_text
+
+        def transient_read(path, *args, **kwargs):
+            if path == receipt_path:
+                raise PermissionError("temporary receipt failure")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(path_type, "read_text", transient_read)
+        forgotten = client.post(
+            "/api/theater-numeric/memory/forget",
+            json={
+                "story_id": "numeric_v2_contract",
+                "character_id": "character_" + "1" * 32,
+            },
+        )
+
+    assert forgotten.status_code == 502
+    assert forgotten.json()["reason"] == "numeric_theater_memory_forget_failed"
+    assert memory_calls == []
+    assert receipt_path.is_file()
+    assert pointer_path.is_file()
+
+
 def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
     tmp_path,
     monkeypatch,

@@ -1364,6 +1364,23 @@ async def forget_numeric_story_memory(request: Request):
             if binding["character_id"] != expected_character_id:
                 return _error("catgirl_changed_requires_refresh", 409)
             await _assert_numeric_writable(config_manager, "memory")
+            archive_store = _archive_store(config_manager)
+            archive_scope = {
+                "story_id": story_id,
+                "character_id": binding["character_id"],
+                "legacy_catgirl_name": binding["catgirl_name"],
+            }
+            # 先严格确认全部本地遗忘目标可枚举，再删除记忆摘要，避免临时 I/O 故障造成部分遗忘。
+            await asyncio.to_thread(
+                archive_store.list_public_archives,
+                **archive_scope,
+                raise_on_io_error=True,
+            )
+            await asyncio.to_thread(
+                archive_store.receipt_paths_for_scope,
+                **archive_scope,
+                raise_on_io_error=True,
+            )
             response = await get_internal_http_client().post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
                 f"{quote(binding['catgirl_name'], safe='')}/theater/forget",
@@ -1373,18 +1390,13 @@ async def forget_numeric_story_memory(request: Request):
             data = response.json() if response.content else {}
             if not response.is_success or data.get("ok") is not True:
                 return _error("numeric_theater_memory_forget_failed", 502)
-            archive_store = _archive_store(config_manager)
             removed_archives = await asyncio.to_thread(
                 archive_store.delete_public_archives,
-                story_id=story_id,
-                character_id=binding["character_id"],
-                legacy_catgirl_name=binding["catgirl_name"],
+                **archive_scope,
             )
             removed_receipts = await asyncio.to_thread(
                 archive_store.delete_receipts,
-                story_id=story_id,
-                character_id=binding["character_id"],
-                legacy_catgirl_name=binding["catgirl_name"],
+                **archive_scope,
             )
             stored = (
                 await runtime.restore_story_session_unlocked(binding)
