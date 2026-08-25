@@ -74,11 +74,20 @@ def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
         store._receipt_path("theater_end_../../outside")
 
 
-@pytest.mark.parametrize("read_failure", ["permission", "invalid_json"])
+@pytest.mark.parametrize(
+    ("read_failure", "expected_error"),
+    [
+        ("permission", "numeric_end_receipt_read_failed"),
+        ("invalid_json", "numeric_end_receipt_read_failed"),
+        ("invalid_payload", "numeric_public_archive_invalid"),
+        ("invalid_schema", "numeric_public_archive_invalid"),
+    ],
+)
 def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
     tmp_path,
     monkeypatch,
     read_failure,
+    expected_error,
 ):
     """破坏性删除遇到不可读或损坏档案时必须中止，不能静默遗漏。"""  # noqa: DOCSTRING_CJK
 
@@ -98,6 +107,10 @@ def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
         if path == archive_path:
             if read_failure == "invalid_json":
                 return "{"
+            if read_failure == "invalid_payload":
+                return "[]"
+            if read_failure == "invalid_schema":
+                return json.dumps({"schema": "unknown"})
             raise PermissionError("temporary archive failure")
         return original_read_text(path, *args, **kwargs)
 
@@ -105,7 +118,7 @@ def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
 
     with pytest.raises(
         numeric_v2_archive.NumericV2ArchiveError,
-        match="numeric_end_receipt_read_failed",
+        match=expected_error,
     ):
         store.delete_public_archives(
             story_id="story_transient_delete",

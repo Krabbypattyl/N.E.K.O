@@ -474,6 +474,9 @@ class NumericV2ArchiveStore:
                 payload is None
                 or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
             ):
+                # 严格枚举无法确认未知载荷的故事与角色归属，必须中止而不能宣称删除完整。
+                if raise_on_io_error:
+                    raise NumericV2ArchiveError("numeric_public_archive_invalid")
                 continue
             if normalized_story_id and str(payload.get("story_id") or "") != normalized_story_id:
                 continue
