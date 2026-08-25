@@ -338,7 +338,9 @@ def test_selector_reads_saved_performance_through_archive_detail_api():
     assert "async function viewMemoryArchive(summary)" in selector
     assert "api.memoryArchive" in selector
     assert "function formatMemoryArchive(archive)" in selector
-    assert "function formatTurnPerformance(turn)" in selector
+    assert "function formatStoredPerformance(entry, attributeLegacy)" in selector
+    assert "formatStoredPerformance(opening, false)" in selector
+    assert "formatStoredPerformance(turn, true)" in selector
     assert "part.kind === 'action' || part.kind === 'dialogue'" in selector
     assert "singleAction: true" in selector
     assert "transcript: true" in selector
