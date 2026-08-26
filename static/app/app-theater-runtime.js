@@ -112,10 +112,11 @@
     }
     async function stopOrdinaryVoiceInput() {
         var sharedState = window.appState || {};
+        var voiceStartWasPending = sharedState.voiceStartPending === true
+            || window.isMicStarting === true;
         var voiceWasActive = sharedState.isRecording === true
             || sharedState.voiceChatActive === true
-            || sharedState.voiceStartPending === true
-            || window.isMicStarting === true;
+            || voiceStartWasPending;
         if (!voiceWasActive) return true;
         var capture = window.appAudioCapture || {};
         var stopCapture = typeof capture.stopMicCapture === 'function'
@@ -123,6 +124,11 @@
             : window.stopMicCapture;
         if (typeof stopCapture !== 'function') return false;
         var recordingWasActive = sharedState.isRecording === true;
+        if (voiceStartWasPending) {
+            // 停麦只能清理采集资源；必须先推进语音启动世代，阻止等待中的旧协程稍后重新开麦。
+            if (typeof window.cancelPendingSessionStart !== 'function') return false;
+            window.cancelPendingSessionStart('Voice start cancelled by theater');
+        }
         try {
             await stopCapture();
         } catch (_) {

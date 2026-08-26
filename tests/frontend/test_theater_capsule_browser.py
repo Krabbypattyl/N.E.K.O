@@ -140,9 +140,15 @@ def test_theater_capsule_stops_ordinary_voice_before_launch(
         """() => {
             window.__theaterVoiceStopEvents = [];
             window.appState.voiceStartPending = true;
+            window.appState.voiceSessionStartEpoch = 7;
+            window.isMicStarting = true;
+            const originalCancelPendingSessionStart = window.cancelPendingSessionStart;
+            window.cancelPendingSessionStart = (reason) => {
+                window.__theaterVoiceStopEvents.push('cancel-pending');
+                originalCancelPendingSessionStart(reason);
+            };
             window.appAudioCapture.stopMicCapture = async () => {
                 window.__theaterVoiceStopEvents.push('stop-capture');
-                window.appState.voiceStartPending = false;
             };
             const originalSend = window.appWebSocket.send.bind(window.appWebSocket);
             window.appWebSocket.send = (payload) => {
@@ -168,9 +174,13 @@ def test_theater_capsule_stops_ordinary_voice_before_launch(
     )
 
     assert mock_page.evaluate("() => window.__theaterVoiceStopEvents") == [
+        "cancel-pending",
         "stop-capture",
         "pause-session",
     ]
+    assert mock_page.evaluate("() => window.appState.voiceSessionStartEpoch") == 8
+    assert mock_page.evaluate("() => window.appState.voiceStartPending") is False
+    assert mock_page.evaluate("() => window.isMicStarting") is False
     assert mock_page.evaluate("() => window.startMicCapture()") is False
 
 
