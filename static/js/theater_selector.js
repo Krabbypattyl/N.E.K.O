@@ -290,7 +290,9 @@
             : expectedCharacterEpoch;
         var result = await requestJson(api.memoryArchives + '?story_id=' + encodeURIComponent(storyId));
         if (state.storyId !== storyId || loadCharacterEpoch !== characterEpoch) return;
-        state.archives = result.ok && Array.isArray(result.archives) ? result.archives : [];
+        // 后端读取失败不能伪装成空归档；交给 selectStory 的错误链路显示可重试反馈。
+        if (!result.ok || !Array.isArray(result.archives)) throw new Error('archive_list_load_failed');
+        state.archives = result.archives;
         renderMemoryArchives();
     }
     async function selectStory(storyId, forceWhileBusy) {

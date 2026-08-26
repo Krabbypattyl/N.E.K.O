@@ -171,6 +171,42 @@ def test_selector_recovers_status_when_story_detail_request_loses_network(
 
 
 @pytest.mark.frontend
+def test_selector_reports_archive_list_failure_instead_of_empty_history(
+    mock_page: Page,
+    running_server: str,
+):
+    """归档接口失败必须进入可重试错误态，不能发布就绪和空记录。"""  # noqa: DOCSTRING_CJK
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            _fulfill(
+                route,
+                {"ok": True, "stories": [STORY], "character_id": CHARACTER_ID},
+            )
+            return
+        if path.endswith("/api/theater-numeric/session/active"):
+            _fulfill(
+                route,
+                {"ok": False, "reason": "numeric_session_not_found"},
+                404,
+            )
+            return
+        if path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": False, "reason": "numeric_archive_read_failed"}, 500)
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+
+    expect(mock_page.locator("#theater-selector-status")).to_have_text("出错了")
+    expect(mock_page.locator("#theater-inline-feedback")).to_contain_text(
+        "演绎进度读取失败"
+    )
+
+
+@pytest.mark.frontend
 def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, running_server: str):
     """选剧页用最小记录列表提供收藏与显式忘记入口。"""  # noqa: DOCSTRING_CJK
 
