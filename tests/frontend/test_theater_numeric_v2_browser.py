@@ -371,6 +371,7 @@ def test_selector_can_end_active_story_when_capsule_button_is_unavailable(
             "session_id": "active-session",
             "story_package_id": STORY["story_id"],
             "revision": 4,
+            "lifecycle_revision": 0,
             "status": "active",
         },
         end_calls=end_calls,
@@ -380,6 +381,7 @@ def test_selector_can_end_active_story_when_capsule_button_is_unavailable(
                 "session_id": "active-session",
                 "story_package_id": STORY["story_id"],
                 "revision": 5,
+                "lifecycle_revision": 1,
                 "status": "ended",
                 "ended_reason": "user_exit",
             },
@@ -402,6 +404,7 @@ def test_selector_can_end_active_story_when_capsule_button_is_unavailable(
         "story_id": STORY["story_id"],
         "session_id": "active-session",
         "base_revision": 4,
+        "base_lifecycle_revision": 0,
     }
     expect(mock_page.locator("#theater-modal-title")).to_contain_text("记下本次演绎内容")
     mock_page.locator("#theater-modal-cancel").click()
@@ -412,6 +415,7 @@ def test_selector_can_end_active_story_when_capsule_button_is_unavailable(
         "story_id": STORY["story_id"],
         "session_id": "active-session",
         "base_revision": 4,
+        "base_lifecycle_revision": 0,
     }]
 
 
@@ -422,6 +426,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
         session={
             "session_id": "paused-session",
             "revision": 4,
+            "lifecycle_revision": 1,
             "status": "ended",
             "ended_reason": "user_exit",
         },
@@ -432,6 +437,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
                 "session_id": "paused-session",
                 "story_package_id": STORY["story_id"],
                 "revision": 4,
+                "lifecycle_revision": 2,
                 "status": "active",
                 "ended_reason": None,
             },
@@ -450,6 +456,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
         "story_id": STORY["story_id"],
         "session_id": "paused-session",
         "base_revision": 4,
+        "base_lifecycle_revision": 1,
     }
 
 

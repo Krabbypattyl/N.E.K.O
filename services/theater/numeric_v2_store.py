@@ -781,7 +781,14 @@ class NumericV2SessionStore:
             self._write(path, stored)
             return stored
 
-    async def end_session(self, session_id: str, *, base_revision: int, reason: str) -> NumericV2StoredSession:
+    async def end_session(
+        self,
+        session_id: str,
+        *,
+        base_revision: int,
+        base_lifecycle_revision: int,
+        reason: str,
+    ) -> NumericV2StoredSession:
         path = self._path(session_id)
         async with _lock(path):
             if not path.is_file():
@@ -790,13 +797,32 @@ class NumericV2SessionStore:
             if current.session.revision != base_revision:
                 raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
             if current.session.status == "ended":
-                return current
-            ended = replace(current.session, status="ended", ended_reason=str(reason or "user_exit"))
+                # 仅接受紧邻本次请求的成功重放；更早生命周期的延迟请求必须冲突。
+                if (
+                    current.session.ended_reason == str(reason or "user_exit")
+                    and current.session.lifecycle_revision == base_lifecycle_revision + 1
+                ):
+                    return current
+                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+            if current.session.lifecycle_revision != base_lifecycle_revision:
+                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+            ended = replace(
+                current.session,
+                status="ended",
+                ended_reason=str(reason or "user_exit"),
+                lifecycle_revision=current.session.lifecycle_revision + 1,
+            )
             stored = NumericV2StoredSession(ended, current.ledger_events)
             self._write(path, stored)
             return stored
 
-    async def resume_session(self, session_id: str, *, base_revision: int) -> NumericV2StoredSession:
+    async def resume_session(
+        self,
+        session_id: str,
+        *,
+        base_revision: int,
+        base_lifecycle_revision: int,
+    ) -> NumericV2StoredSession:
         """恢复玩家主动退出的 Session；剧情自然结局仍保持不可继续。"""  # noqa: DOCSTRING_CJK
 
         path = self._path(session_id)
@@ -807,11 +833,21 @@ class NumericV2SessionStore:
             if current.session.revision != base_revision:
                 raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
             if current.session.status == "active":
-                return current
+                # 已成功继续后的同一请求可以安全重试，旧请求不能借当前 active 状态蒙混通过。
+                if current.session.lifecycle_revision == base_lifecycle_revision + 1:
+                    return current
+                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+            if current.session.lifecycle_revision != base_lifecycle_revision:
+                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
             if current.session.status != "ended" or current.session.ended_reason != "user_exit":
                 raise NumericV2StoreError("numeric_session_not_resumable")
             resumed = NumericV2StoredSession(
-                replace(current.session, status="active", ended_reason=None),
+                replace(
+                    current.session,
+                    status="active",
+                    ended_reason=None,
+                    lifecycle_revision=current.session.lifecycle_revision + 1,
+                ),
                 current.ledger_events,
             )
             self._validate_chain(resumed)

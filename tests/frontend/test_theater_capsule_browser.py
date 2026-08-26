@@ -12,6 +12,7 @@ from playwright.sync_api import Page, Route, expect
 def _snapshot(
     *,
     revision: int,
+    lifecycle_revision: int = 0,
     performance_history: list[dict] | None = None,
     story_id: str = "capsule-browser-story",
     session_id: str = "capsule-browser-session",
@@ -42,6 +43,7 @@ def _snapshot(
             "session_id": session_id,
             "story_package_id": story_id,
             "revision": revision,
+            "lifecycle_revision": lifecycle_revision,
             "status": "active",
             "opening_performance": {
                 "scene_narration": "雨落在花店檐角。",
@@ -981,10 +983,12 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
         "story_id": "capsule-browser-story",
         "session_id": "capsule-browser-session",
         "base_revision": 1,
+        "base_lifecycle_revision": 0,
     }, {
         "story_id": "capsule-browser-story",
         "session_id": "capsule-browser-session",
         "base_revision": 1,
+        "base_lifecycle_revision": 0,
     }]
     confirm_calls = mock_page.evaluate("() => window.__theaterEndConfirmCalls")
     assert len(confirm_calls) == 3

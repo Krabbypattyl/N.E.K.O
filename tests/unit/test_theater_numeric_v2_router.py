@@ -287,6 +287,7 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         )
         body = started.json()
         assert started.status_code == 200
+        assert started.json()["session"]["lifecycle_revision"] == 0
         assert body["story_intro"]["player_identity"].startswith("你，")
         assert body["participants"]["player_name"] == "你"
 
@@ -355,6 +356,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
                 "story_id": "numeric_v2_contract",
                 "session_id": "http_v2",
                 "base_revision": 1,
+                "base_lifecycle_revision": 0,
             },
         )
         assert ended.status_code == 200
@@ -446,11 +448,13 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
                 "story_id": "numeric_v2_contract",
                 "session_id": "resumable_exit",
                 "base_revision": 1,
+                "base_lifecycle_revision": 0,
             },
         )
         assert exited.status_code == 200
         assert exited.json()["session"]["status"] == "ended"
         assert exited.json()["session"]["ended_reason"] == "user_exit"
+        assert exited.json()["session"]["lifecycle_revision"] == 1
 
         resumed = client.post(
             "/api/theater-numeric/session/resume",
@@ -458,6 +462,7 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
                 "story_id": "numeric_v2_contract",
                 "session_id": "resumable_exit",
                 "base_revision": 1,
+                "base_lifecycle_revision": 1,
             },
         )
         assert resumed.status_code == 200
@@ -466,6 +471,7 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
         assert resumed_session["status"] == "active"
         assert resumed_session["ended_reason"] is None
         assert resumed_session["revision"] == 1
+        assert resumed_session["lifecycle_revision"] == 2
         assert resumed_session["performance_history"][0]["input_text"] == "我先把信收好。"
 
         continued = client.post(
@@ -516,6 +522,7 @@ def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
                 "story_id": "numeric_v2_contract",
                 "session_id": "resume_lock_guard",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).status_code == 200
 
@@ -556,6 +563,7 @@ def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
                 "story_id": "numeric_v2_contract",
                 "session_id": "resume_lock_guard",
                 "base_revision": 0,
+                "base_lifecycle_revision": 1,
             },
         )
 
@@ -626,6 +634,7 @@ def test_numeric_v2_end_rechecks_catgirl_inside_lifecycle_locks(
                 "story_id": "numeric_v2_contract",
                 "session_id": "end_lock_guard",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         )
 
@@ -695,6 +704,7 @@ def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch)
                 "story_id": "numeric_v2_contract",
                 "session_id": "receipt_retry_session",
                 "base_revision": 1,
+                "base_lifecycle_revision": 0,
             },
         )
         assert ended.status_code == 200
@@ -708,6 +718,7 @@ def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch)
                 "story_id": "numeric_v2_contract",
                 "session_id": "receipt_retry_session",
                 "base_revision": 1,
+                "base_lifecycle_revision": 0,
             },
         )
         assert retried_end.status_code == 200
@@ -783,6 +794,7 @@ def test_numeric_v2_restore_creates_receipts_inside_lifecycle_locks(
                 "story_id": "numeric_v2_contract",
                 "session_id": "restore_receipt_lock_session",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).status_code == 200
         receipt_lock_states.clear()
@@ -885,6 +897,7 @@ def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
                 "story_id": "numeric_v2_contract",
                 "session_id": "skip_locked",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).json()
         skipped = client.post(
@@ -1006,6 +1019,7 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
                 "story_id": "numeric_v2_contract",
                 "session_id": "delete_story_second",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         )
         assert ended.status_code == 200
@@ -1157,6 +1171,7 @@ def test_numeric_v2_router_rejects_stale_or_ended_turn_before_evaluator(tmp_path
                 "story_id": "numeric_v2_contract",
                 "session_id": "router_precheck",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         )
         assert ended.status_code == 200
@@ -1556,6 +1571,7 @@ def test_numeric_v2_restart_keeps_ended_session_when_new_opening_fails(tmp_path,
                 "story_id": "numeric_v2_contract",
                 "session_id": "restart_source",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         )
         assert ended.status_code == 200
@@ -1609,6 +1625,7 @@ def test_numeric_v2_restart_stays_successful_when_old_receipt_cleanup_fails(
                 "story_id": "numeric_v2_contract",
                 "session_id": "cleanup_source",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).status_code == 200
 
@@ -1778,6 +1795,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
                 "story_id": "numeric_v2_contract",
                 "session_id": "archive_session",
                 "base_revision": 1,
+                "base_lifecycle_revision": 0,
             },
         ).json()
         receipt = {
@@ -1915,6 +1933,7 @@ def test_numeric_archive_written_retry_respects_cloudsave_write_fence(
                 "story_id": "numeric_v2_contract",
                 "session_id": "archive_fence_replay",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).json()
 
@@ -2023,6 +2042,7 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
                 "story_id": "numeric_v2_contract",
                 "session_id": "forget_session",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).json()
         archived = client.post(
@@ -2115,6 +2135,7 @@ def test_numeric_story_memory_forget_aborts_before_partial_delete_on_receipt_rea
                 "story_id": "numeric_v2_contract",
                 "session_id": "forget_receipt_io_failure",
                 "base_revision": 0,
+                "base_lifecycle_revision": 0,
             },
         ).json()
 

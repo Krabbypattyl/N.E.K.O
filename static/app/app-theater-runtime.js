@@ -18,7 +18,7 @@
     // 旧 Session 可能已保存过去的空桥段占位句；只在转场桥段中精确隐藏，不改写正式演绎记录。
     var LEGACY_EMPTY_TRANSITION_BRIDGE = '时间向前流转，现场随之转换。';
     var state = {
-        active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0,
+        active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
         playerName: '', catgirlName: '',
         sessionStatus: '', scene: null, history: [], currentBlock: null, suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
@@ -353,6 +353,7 @@
         state.storyId = String(session.story_package_id || state.storyId);
         state.sessionId = String(session.session_id || state.sessionId);
         state.revision = Number(session.revision || 0);
+        state.lifecycleRevision = Number(session.lifecycle_revision || 0);
         state.sessionStatus = String(session.status || 'active');
         // 玩家和猫娘署名都由服务端当前绑定提供，恢复旧记录时也不回退成通用占位名。
         state.playerName = String(participants.player_name || t('theater.player', 'Player'));
@@ -763,6 +764,7 @@
         var requestedStoryId = state.storyId;
         var requestedSessionId = state.sessionId;
         var requestedRevision = state.revision;
+        var requestedLifecycleRevision = state.lifecycleRevision;
         function isCurrentEndRequest() {
             return state.active
                 && state.storyId === requestedStoryId
@@ -788,7 +790,8 @@
             result = await requestJson(api.end, { method: 'POST', body: {
                 story_id: requestedStoryId,
                 session_id: requestedSessionId,
-                base_revision: requestedRevision
+                base_revision: requestedRevision,
+                base_lifecycle_revision: requestedLifecycleRevision
             } });
         } catch (_) {
             result = { ok: false };

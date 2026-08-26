@@ -211,6 +211,8 @@ class ScriptSessionV2:
     processed_client_turn_ids: tuple[str, ...]
     opening_performance: dict[str, Any]
     performance_history: tuple[dict[str, Any], ...]
+    # 演绎 revision 只表示正式回合；结束与继续使用独立版本，避免延迟请求互相覆盖。
+    lifecycle_revision: int = 0
     player_address_known: bool = False
     ended_reason: str | None = None
     # 本幕目标一旦被 Evaluator 判定完成，就保持到满足 min_turns 或离开节点。
@@ -234,6 +236,7 @@ class ScriptSessionV2:
             "processed_client_turn_ids": list(self.processed_client_turn_ids),
             "opening_performance": deepcopy(self.opening_performance),
             "performance_history": deepcopy(list(self.performance_history)),
+            "lifecycle_revision": self.lifecycle_revision,
             "player_address_known": self.player_address_known,
             "ended_reason": self.ended_reason,
             "scene_completion_ready": self.scene_completion_ready,
@@ -264,6 +267,8 @@ class ScriptSessionV2:
             processed_client_turn_ids=tuple(str(item) for item in value.get("processed_client_turn_ids") or []),
             opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
             performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
+            # 旧 Session 没有生命周期版本时视为尚未发生主动结束或继续。
+            lifecycle_revision=_integer(value.get("lifecycle_revision", 0), "lifecycle_revision"),
             player_address_known=raw_player_address_known,
             ended_reason=(str(value.get("ended_reason")) if value.get("ended_reason") is not None else None),
             scene_completion_ready=_scene_completion_ready(value),
@@ -342,7 +347,7 @@ class NumericV2Engine:
             definition = self.metric_schema[metric_id]
             if not definition["min"] <= value <= definition["max"]:
                 raise NumericV2RuntimeError("session_metric_out_of_range")
-        if session.node_turn_count < 0 or session.revision < 0:
+        if session.node_turn_count < 0 or session.revision < 0 or session.lifecycle_revision < 0:
             raise NumericV2RuntimeError("session_counter_invalid")
         if not isinstance(session.player_address_known, bool):
             raise NumericV2RuntimeError("session_player_address_known_invalid")
@@ -806,11 +811,33 @@ class NumericV2Runtime:
         )
         return await self.store.commit(session, outcome.ledger_event)
 
-    async def end_session(self, session_id: str, *, base_revision: int, reason: str) -> NumericV2StoredSession:
-        return await self.store.end_session(session_id, base_revision=base_revision, reason=reason)
+    async def end_session(
+        self,
+        session_id: str,
+        *,
+        base_revision: int,
+        base_lifecycle_revision: int,
+        reason: str,
+    ) -> NumericV2StoredSession:
+        return await self.store.end_session(
+            session_id,
+            base_revision=base_revision,
+            base_lifecycle_revision=base_lifecycle_revision,
+            reason=reason,
+        )
 
-    async def resume_session(self, session_id: str, *, base_revision: int) -> NumericV2StoredSession:
-        return await self.store.resume_session(session_id, base_revision=base_revision)
+    async def resume_session(
+        self,
+        session_id: str,
+        *,
+        base_revision: int,
+        base_lifecycle_revision: int,
+    ) -> NumericV2StoredSession:
+        return await self.store.resume_session(
+            session_id,
+            base_revision=base_revision,
+            base_lifecycle_revision=base_lifecycle_revision,
+        )
 
 
 __all__ = [

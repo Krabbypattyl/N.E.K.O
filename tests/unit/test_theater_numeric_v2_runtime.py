@@ -1086,6 +1086,7 @@ async def test_numeric_v2_commit_rejects_session_ended_during_model_wait(tmp_pat
     await runtime.end_session(
         stored.session.session_id,
         base_revision=0,
+        base_lifecycle_revision=0,
         reason="user_exit",
     )
 
@@ -1096,6 +1097,62 @@ async def test_numeric_v2_commit_rejects_session_ended_during_model_wait(tmp_pat
     assert restored is not None
     assert restored.session.status == "ended"
     assert restored.session.revision == 0
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_lifecycle_revision_rejects_delayed_end_and_resume(tmp_path):
+    """同一演绎回合内，旧的结束或继续请求不能覆盖更新的生命周期状态。"""  # noqa: DOCSTRING_CJK
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    started = await runtime.start_session(
+        session_id="runtime_lifecycle_fence",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    ended = await runtime.end_session(
+        started.session.session_id,
+        base_revision=0,
+        base_lifecycle_revision=0,
+        reason="user_exit",
+    )
+    resumed = await runtime.resume_session(
+        started.session.session_id,
+        base_revision=0,
+        base_lifecycle_revision=1,
+    )
+    ended_again = await runtime.end_session(
+        started.session.session_id,
+        base_revision=0,
+        base_lifecycle_revision=2,
+        reason="user_exit",
+    )
+
+    with pytest.raises(numeric_v2_store.NumericV2StoreRevisionConflictError):
+        await runtime.resume_session(
+            started.session.session_id,
+            base_revision=0,
+            base_lifecycle_revision=1,
+        )
+
+    resumed_again = await runtime.resume_session(
+        started.session.session_id,
+        base_revision=0,
+        base_lifecycle_revision=3,
+    )
+    with pytest.raises(numeric_v2_store.NumericV2StoreRevisionConflictError):
+        await runtime.end_session(
+            started.session.session_id,
+            base_revision=0,
+            base_lifecycle_revision=2,
+            reason="user_exit",
+        )
+
+    assert ended.session.lifecycle_revision == 1
+    assert resumed.session.lifecycle_revision == 2
+    assert ended_again.session.lifecycle_revision == 3
+    assert resumed_again.session.lifecycle_revision == 4
+    assert resumed_again.session.status == "active"
+    assert resumed_again.session.revision == 0
 
 
 @pytest.mark.asyncio
@@ -1323,6 +1380,7 @@ async def test_numeric_v2_restart_replaces_ended_session_in_same_catgirl_slot(tm
     ended = await runtime.end_session(
         old.session.session_id,
         base_revision=0,
+        base_lifecycle_revision=0,
         reason="user_exit",
     )
     # 重开必须显式指出被替换的旧 Session，测试与生产接口保持同一条原子替换链。

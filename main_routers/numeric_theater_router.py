@@ -291,6 +291,7 @@ def _public_session(session: Any) -> dict[str, Any]:
         "story_package_hash": session.story_package_hash,
         "node_turn_count": session.node_turn_count,
         "revision": session.revision,
+        "lifecycle_revision": session.lifecycle_revision,
         "status": session.status,
         "player_address_known": session.player_address_known,
         "opening_performance": session.opening_performance,
@@ -798,7 +799,17 @@ async def end_numeric_session(request: Request):
     story_id = str(payload.get("story_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     base_revision = payload.get("base_revision")
-    if not story_id or not session_id or isinstance(base_revision, bool) or not isinstance(base_revision, int):
+    base_lifecycle_revision = payload.get("base_lifecycle_revision")
+    if (
+        not story_id
+        or not session_id
+        or isinstance(base_revision, bool)
+        or not isinstance(base_revision, int)
+        or base_revision < 0
+        or isinstance(base_lifecycle_revision, bool)
+        or not isinstance(base_lifecycle_revision, int)
+        or base_lifecycle_revision < 0
+    ):
         return _error("numeric_session_end_request_invalid", 400)
     try:
         config_manager = get_config_manager()
@@ -814,13 +825,20 @@ async def end_numeric_session(request: Request):
             )
             idempotent_replay = current.session.status == "ended"
             if idempotent_replay:
-                # Session 已提交但回执写入失败时只补建回执，不能再次推进 revision。
+                # Session 已提交但回执写入失败时只补建回执；仅相邻生命周期允许幂等重放。
+                if (
+                    current.session.revision != base_revision
+                    or current.session.ended_reason != "user_exit"
+                    or current.session.lifecycle_revision != base_lifecycle_revision + 1
+                ):
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
                 stored = current
             else:
                 await _assert_numeric_writable(config_manager, "sessions")
                 stored = await runtime.end_session(
                     session_id,
                     base_revision=base_revision,
+                    base_lifecycle_revision=base_lifecycle_revision,
                     reason="user_exit",
                 )
             receipt = await _create_ended_receipt(
@@ -874,7 +892,17 @@ async def resume_numeric_session(request: Request):
     story_id = str(payload.get("story_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     base_revision = payload.get("base_revision")
-    if not story_id or not session_id or isinstance(base_revision, bool) or not isinstance(base_revision, int):
+    base_lifecycle_revision = payload.get("base_lifecycle_revision")
+    if (
+        not story_id
+        or not session_id
+        or isinstance(base_revision, bool)
+        or not isinstance(base_revision, int)
+        or base_revision < 0
+        or isinstance(base_lifecycle_revision, bool)
+        or not isinstance(base_lifecycle_revision, int)
+        or base_lifecycle_revision < 0
+    ):
         return _error("numeric_session_resume_request_invalid", 400)
     try:
         config_manager = get_config_manager()
@@ -889,6 +917,7 @@ async def resume_numeric_session(request: Request):
             stored = await runtime.resume_session(
                 session_id,
                 base_revision=base_revision,
+                base_lifecycle_revision=base_lifecycle_revision,
             )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)

@@ -489,7 +489,8 @@
                 ? await requestJson(api.resume, { method: 'POST', body: {
                     story_id: state.storyId,
                     session_id: state.session.session_id,
-                    base_revision: state.session.revision
+                    base_revision: state.session.revision,
+                    base_lifecycle_revision: state.session.lifecycle_revision
                 }})
                 : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?story_id=' + encodeURIComponent(state.storyId));
             if (continueCharacterEpoch !== characterEpoch) return;
@@ -506,6 +507,7 @@
         var targetStoryId = state.storyId;
         var targetSessionId = String(state.session.session_id || '');
         var targetRevision = Number(state.session.revision || 0);
+        var targetLifecycleRevision = Number(state.session.lifecycle_revision || 0);
         var targetCharacterEpoch = characterEpoch;
         var confirmed = await showModal({
             title: t('theater.endPerformance', '结束演绎'),
@@ -520,7 +522,8 @@
             var result = await requestJson(api.end, { method: 'POST', body: {
                 story_id: targetStoryId,
                 session_id: targetSessionId,
-                base_revision: targetRevision
+                base_revision: targetRevision,
+                base_lifecycle_revision: targetLifecycleRevision
             }});
             if (targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId)) return;
             if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
