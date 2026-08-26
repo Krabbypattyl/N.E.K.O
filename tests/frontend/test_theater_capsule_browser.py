@@ -378,6 +378,91 @@ def test_theater_capsule_ignores_late_launch_snapshot(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_rejects_stale_launch_without_replacing_active_runtime(
+    mock_page: Page,
+    running_server: str,
+):
+    """同 Session 的旧 revision 启动不能清空健康演绎或中断当前音频。"""  # noqa: DOCSTRING_CJK
+
+    turn = {
+        "revision": 1,
+        "input_text": "把旧信递给她",
+        "performance": "（她接过旧信）这一页，我们一起看。",
+        "suggested_inputs": ["请她拆开信封"],
+    }
+    session_requests = []
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/session-a"):
+            session_requests.append(path)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    _snapshot(
+                        revision=1,
+                        performance_history=[turn],
+                        story_id="story-a",
+                        session_id="session-a",
+                    ),
+                    ensure_ascii=False,
+                ),
+            )
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+                launch_id: 'healthy-launch', launch_action: 'continue',
+                story_id: 'story-a', session_id: 'session-a', revision: 1
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().revision === 1"
+        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+    before = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+
+    mock_page.evaluate(
+        """() => {
+            window.__theaterAudioClears = 0;
+            window.appAudioPlayback = {
+                clearAudioQueueWithoutDecoderReset: () => { window.__theaterAudioClears += 1; }
+            };
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1', action: 'theater:launch-request',
+                launch_id: 'stale-launch', launch_action: 'continue',
+                story_id: 'story-a', session_id: 'session-a', revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_timeout(200)
+
+    after = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    assert after["active"] is True
+    assert after["storyId"] == "story-a"
+    assert after["sessionId"] == "session-a"
+    assert after["revision"] == 1
+    assert after["phase"] == "awaiting_player"
+    assert after["history"] == before["history"]
+    assert len(session_requests) == 2
+    assert mock_page.evaluate("() => window.__theaterAudioClears") == 0
+
+
+@pytest.mark.frontend
 def test_theater_capsule_ignores_pointer_restore_superseded_by_launch(
     mock_page: Page,
     running_server: str,

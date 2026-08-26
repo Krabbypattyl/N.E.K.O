@@ -478,11 +478,28 @@
             && state.sessionId === sessionId;
     }
     async function performLaunch(message, launchToken) {
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        var snapshot;
+        try {
+            snapshot = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId));
+        } catch (_) {
+            // 候选快照读取失败时还未接管全局状态，保留当前健康演绎并只结束本次启动。
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
+        // 多个选剧页可能交错启动；候选快照通过世代与 revision 校验后才有权接管当前运行态。
+        if (launchToken !== launchEpoch) {
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
+        if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
         var chatHost = host();
         captureOrdinaryDraft(chatHost);
         captureChatSurfaceMode(chatHost);
-        var nextStoryId = String(message.story_id);
-        var nextSessionId = String(message.session_id);
         if (state.active) {
             // 即使重新启动同一 Session，也必须先使旧正文和旧语音失效，避免两个播放协程交错写回。
             claimAudioPlayback();
@@ -491,13 +508,6 @@
             state.currentBlock = null;
         }
         state.active = true; state.phase = 'loading'; state.storyId = nextStoryId; state.sessionId = nextSessionId; render();
-        var snapshot = await requestJson(api.session + '/' + encodeURIComponent(state.sessionId) + '?story_id=' + encodeURIComponent(state.storyId));
-        // 多个选剧页可能交错启动；只有最后一次启动有权应用快照或清空当前状态。
-        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
-        if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
-            clear('launch-validation-failed');
-            return false;
-        }
         applySnapshot(snapshot);
         state.history = buildCommittedHistory(snapshot);
         state.active = true;
