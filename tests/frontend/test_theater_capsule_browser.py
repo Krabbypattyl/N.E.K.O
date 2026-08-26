@@ -112,6 +112,69 @@ def test_theater_capsule_reasserts_composer_visibility_on_active_render(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_stops_ordinary_voice_before_launch(
+    mock_page: Page,
+    running_server: str,
+):
+    """剧场接管前必须先停止准备中的普通语音，并在活跃期间拒绝重新开麦。"""  # noqa: DOCSTRING_CJK
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/capsule-browser-session"):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(_snapshot(revision=0), ensure_ascii=False),
+            )
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+        " && window.appAudioCapture && window.appWebSocket && window.appState"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.__theaterVoiceStopEvents = [];
+            window.appState.voiceStartPending = true;
+            window.appAudioCapture.stopMicCapture = async () => {
+                window.__theaterVoiceStopEvents.push('stop-capture');
+                window.appState.voiceStartPending = false;
+            };
+            const originalSend = window.appWebSocket.send.bind(window.appWebSocket);
+            window.appWebSocket.send = (payload) => {
+                if (payload && payload.action === 'pause_session') {
+                    window.__theaterVoiceStopEvents.push('pause-session');
+                    return;
+                }
+                return originalSend(payload);
+            };
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1',
+                action: 'theater:launch-request',
+                launch_id: 'voice-stop-launch',
+                launch_action: 'continue',
+                story_id: 'capsule-browser-story',
+                session_id: 'capsule-browser-session',
+                revision: 0
+            }, window.location.origin);
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+    )
+
+    assert mock_page.evaluate("() => window.__theaterVoiceStopEvents") == [
+        "stop-capture",
+        "pause-session",
+    ]
+    assert mock_page.evaluate("() => window.startMicCapture()") is False
+
+
+@pytest.mark.frontend
 def test_theater_capsule_restores_committed_turn_after_end_failure(
     mock_page: Page,
     running_server: str,

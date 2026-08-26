@@ -110,6 +110,32 @@
             audio.clearAudioQueueWithoutDecoderReset();
         }
     }
+    async function stopOrdinaryVoiceInput() {
+        var sharedState = window.appState || {};
+        var voiceWasActive = sharedState.isRecording === true
+            || sharedState.voiceChatActive === true
+            || sharedState.voiceStartPending === true
+            || window.isMicStarting === true;
+        if (!voiceWasActive) return true;
+        var capture = window.appAudioCapture || {};
+        var stopCapture = typeof capture.stopMicCapture === 'function'
+            ? capture.stopMicCapture
+            : window.stopMicCapture;
+        if (typeof stopCapture !== 'function') return false;
+        var recordingWasActive = sharedState.isRecording === true;
+        try {
+            await stopCapture();
+        } catch (_) {
+            return false;
+        }
+        if (!recordingWasActive) {
+            // 语音 Session 可能已启动但麦克风仍在准备；此时停麦不会发送 pause，需要显式收口后端。
+            var websocket = window.appWebSocket;
+            if (!websocket || typeof websocket.send !== 'function') return false;
+            websocket.send({ action: 'pause_session' });
+        }
+        return true;
+    }
     var TYPEWRITER_INTERVAL_MS = 32;
     function historyEntry(id, type, text, author, displayKind, status) {
         return {
@@ -495,6 +521,11 @@
             return false;
         }
         if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
+        // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
+        if (!await stopOrdinaryVoiceInput() || launchToken !== launchEpoch) {
             delete launchReplyTargets[message.launch_id];
             return false;
         }

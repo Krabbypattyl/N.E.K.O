@@ -2052,6 +2052,10 @@
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
             if (micButton.disabled || S.isRecording) return;
+            // 浮动麦克风仍可能位于胶囊之外；在任何语音 Session 状态写入前阻止剧场期间启动。
+            if (window.nekoTheaterRuntime
+                    && typeof window.nekoTheaterRuntime.getState === 'function'
+                    && window.nekoTheaterRuntime.getState().active === true) return;
             if (mod._textSessionStartPromise) {
                 window.showStatusToast(
                     window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...',
