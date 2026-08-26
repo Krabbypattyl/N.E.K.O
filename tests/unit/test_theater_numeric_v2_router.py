@@ -957,13 +957,30 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
     original_delete_transaction = (
         numeric_theater_router.delete_numeric_v2_story_transactionally
     )
+    original_story_guard = numeric_theater_router.numeric_v2_story_session_guard
+    story_guard_depth = {"value": 0}
+
+    @asynccontextmanager
+    async def tracked_story_guard(theater_root, story_id):
+        async with original_story_guard(theater_root, story_id):
+            story_guard_depth["value"] += 1
+            try:
+                yield
+            finally:
+                story_guard_depth["value"] -= 1
 
     async def tracked_delete_transaction(*args, **kwargs):
-        delete_lock_states.append(
-            numeric_theater_router.character_config_mutation_lock.locked()
-        )
+        delete_lock_states.append({
+            "character": numeric_theater_router.character_config_mutation_lock.locked(),
+            "story": story_guard_depth["value"] > 0,
+        })
         return await original_delete_transaction(*args, **kwargs)
 
+    monkeypatch.setattr(
+        numeric_theater_router,
+        "numeric_v2_story_session_guard",
+        tracked_story_guard,
+    )
     monkeypatch.setattr(
         numeric_theater_router,
         "delete_numeric_v2_story_transactionally",
@@ -1012,6 +1029,25 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
         assert preview.json()["active_catgirl_names"] == ["测试猫娘"]
         assert preview.json()["session_count"] == 2
 
+        package_path = (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "packages"
+            / "numeric_v2_contract.json"
+        )
+        # 损坏包会从列表隐藏，但删除恢复入口仍须绕过 Engine 编译并完成原子级联。
+        package_path.write_text("{invalid-json", encoding="utf-8")
+        assert client.get("/api/theater-numeric/stories").json()["stories"] == []
+
+        def unexpected_load(*_args, **_kwargs):
+            raise AssertionError("删除损坏包不应加载或编译 Engine")
+
+        monkeypatch.setattr(
+            numeric_theater_router.NumericV2PackageRegistry,
+            "load_engine",
+            unexpected_load,
+        )
         deleted = client.delete(
             "/api/theater-numeric/packages/numeric_v2_contract"
         )
@@ -1020,16 +1056,10 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
         assert not list(
             (tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json")
         )
-        assert not (
-            tmp_path
-            / "theater"
-            / "numeric_v2"
-            / "packages"
-            / "numeric_v2_contract.json"
-        ).exists()
+        assert not package_path.exists()
         assert not public_archive_path.exists()
         assert client.get("/api/theater-numeric/stories").json()["stories"] == []
-        assert delete_lock_states == [True]
+        assert delete_lock_states == [{"character": True, "story": True}]
 
 
 def test_numeric_v2_story_delete_rolls_back_package_sessions_and_index(

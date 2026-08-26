@@ -450,12 +450,15 @@ async def delete_numeric_story(story_id: str, request: Request):
     normalized_story_id = str(story_id or "").strip()
     try:
         registry = await _registry(config_manager)
-        runtime = NumericV2Runtime(
-            await asyncio.to_thread(registry.load_engine, normalized_story_id),
-            _numeric_root(config_manager),
-        )
+        # 删除恢复入口只校验安全路径与文件存在性；损坏包无法编译时也必须允许原子清理。
+        package_path = registry.package_path(normalized_story_id)
         # 剧本删除与角色改名/删除会读写同一批 Session、回执和归档，统一按角色锁→故事锁串行。
-        async with character_config_mutation_lock, runtime.story_session_guard():
+        async with character_config_mutation_lock, numeric_v2_story_session_guard(
+            _numeric_root(config_manager),
+            normalized_story_id,
+        ):
+            if not await asyncio.to_thread(package_path.is_file):
+                raise NumericV2PackageNotFoundError("numeric_story_not_found")
             await _assert_numeric_writable(config_manager, "packages")
             deleted_session_count = await delete_numeric_v2_story_transactionally(
                 _numeric_root(config_manager),
