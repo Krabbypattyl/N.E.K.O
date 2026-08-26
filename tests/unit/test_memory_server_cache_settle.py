@@ -260,10 +260,10 @@ async def test_cache_reports_theater_episode_persist_failure():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_forget_theater_memory_rebuilds_remaining_story_index():
-    """忘记一个剧本后，其他剧本的有界时间索引必须保留。"""  # noqa: DOCSTRING_CJK
+    """忘记一个剧本后，其他剧本的新胶囊和旧正文索引都必须保留。"""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
-    from utils.llm_client import SystemMessage
+    from utils.llm_client import AIMessage, HumanMessage, SystemMessage
 
     remaining = SystemMessage(content="另一个剧本摘要", metadata={
         "source": "theater_numeric_v2",
@@ -272,9 +272,23 @@ async def test_forget_theater_memory_rebuilds_remaining_story_index():
         "story_id": "story_keep",
         "session_id": "session_keep",
     })
+    legacy_remaining = [
+        HumanMessage(content="旧版玩家输入", metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "story_legacy_keep",
+            "session_id": "legacy_session_keep",
+        }),
+        AIMessage(content="旧版猫娘回复", metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "story_legacy_keep",
+            "session_id": "legacy_session_keep",
+        }),
+    ]
     fake_recent = MagicMock()
     fake_recent.forget_theater_story = AsyncMock(return_value=2)
-    fake_recent.aget_recent_history = AsyncMock(return_value=[remaining])
+    fake_recent.aget_recent_history = AsyncMock(
+        return_value=[remaining, *legacy_remaining]
+    )
     fake_time = MagicMock()
     fake_time.areconcile_theater_conversations = AsyncMock(
         return_value={"removed": 77, "stored": 1}
@@ -293,7 +307,8 @@ async def test_forget_theater_memory_rebuilds_remaining_story_index():
         "removed_time_index": 77,
     }
     events = fake_time.areconcile_theater_conversations.await_args.args[0]
-    assert list(events) == ["story_keep"]
+    assert set(events) == {"story_keep", "story_legacy_keep"}
+    assert events["story_legacy_keep"][1] == legacy_remaining
 
 
 @pytest.mark.unit

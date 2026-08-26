@@ -109,11 +109,12 @@ def _theater_story_event_id(lanlan_name: str, message) -> str:
 
 
 def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[str, list]]:
-    """把 recent 中所有剧本胶囊组成有界时间索引事件。"""  # noqa: DOCSTRING_CJK
+    """把 recent 中所有剧场记忆组成按剧本聚合的时间索引事件。"""  # noqa: DOCSTRING_CJK
 
     grouped: dict[str, list] = {}
     for message in messages:
-        if not is_theater_episode_summary(message):
+        # 忘记单个剧本时，其他剧本尚未迁移的旧正文仍在 recent；重建索引必须原样保留。
+        if not is_theater_memory_message(message):
             continue
         story_id, _ = theater_memory_episode_key(message)
         if story_id:
