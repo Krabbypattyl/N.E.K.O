@@ -112,6 +112,7 @@ class CharactersMixin:
                             logger.warning("重试写回角色保留字段迁移失败: %s", persist_err)
                     return dirty_cache
 
+            migration_persistence_allowed = True
             try:
                 with open(character_json_path, 'r', encoding='utf-8') as f:
                     character_data = json.load(f)
@@ -125,13 +126,23 @@ class CharactersMixin:
                 loaded_mtime = None
             except Exception as e:
                 logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
-                character_data = self.get_default_characters()
+                # 故障回退不是磁盘文件的权威内容，后续迁移只能在内存中使用，绝不能反写覆盖原文件。
+                character_data = (
+                    deepcopy(cache)
+                    if cache is not None
+                    and cache_path == character_json_path
+                    and not cache_dirty
+                    else self.get_default_characters()
+                )
                 loaded_mtime = None
+                migration_persistence_allowed = False
 
             migrated = False
             if not isinstance(character_data, dict):
                 logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
                 character_data = self.get_default_characters()
+                loaded_mtime = None
+                migration_persistence_allowed = False
             catgirl_map = character_data.get("猫娘")
             if isinstance(catgirl_map, dict):
                 all_schema_errors: list[str] = []
@@ -152,7 +163,7 @@ class CharactersMixin:
                         all_schema_errors.append(f"{name}: {err}")
                 if all_schema_errors:
                     logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(all_schema_errors))
-            if migrated:
+            if migrated and migration_persistence_allowed:
                 try:
                     self.save_characters(character_data, character_json_path=character_json_path)
                     logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
@@ -175,6 +186,8 @@ class CharactersMixin:
                     else:
                         logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
             else:
+                if migrated and not migration_persistence_allowed:
+                    logger.warning("角色配置读取失败，保留原文件并仅在内存中应用保留字段迁移。")
                 with self._characters_cache_lock:
                     self._characters_cache = deepcopy(character_data)
                     self._characters_cache_mtime = loaded_mtime

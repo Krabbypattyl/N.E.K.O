@@ -149,6 +149,34 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
 
 
 @pytest.mark.unit
+def test_character_read_failure_never_persists_fallback_defaults(tmp_path):
+    """损坏的角色文件只能触发内存回退，不能被默认角色覆盖。"""  # noqa: DOCSTRING_CJK
+
+    cm = _make_config_manager(tmp_path)
+    characters_path = cm.config_dir / "characters.json"
+    characters_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed_payload = '{"猫娘":'
+    characters_path.write_text(malformed_payload, encoding="utf-8")
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+
+    loaded = cm.load_characters()
+    loaded_again = cm.load_characters()
+
+    assert loaded == cm._characters_cache
+    assert loaded_again == loaded
+    assert all(
+        catgirl.get("_reserved", {}).get("character_id", "").startswith("character_")
+        for catgirl in loaded.get("猫娘", {}).values()
+    )
+    assert characters_path.read_text(encoding="utf-8") == malformed_payload
+    assert cm._characters_dirty is False
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancelled_thread_call_returns_retained_lock_transaction():
     """Cancellation must wait for the worker and preserve its cleanup token."""
