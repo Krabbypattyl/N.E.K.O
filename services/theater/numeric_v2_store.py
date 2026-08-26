@@ -854,6 +854,30 @@ class NumericV2SessionStore:
             self._write(path, resumed)
             return resumed
 
+    async def forget_history_through_current_revision(
+        self,
+        session_id: str,
+    ) -> NumericV2StoredSession:
+        """记录显式遗忘边界，防止继续旧 Session 后重新投影已忘内容。"""  # noqa: DOCSTRING_CJK
+
+        path = self._path(session_id)
+        async with _lock(path):
+            if not path.is_file():
+                raise NumericV2SessionNotFoundError("numeric_session_not_found")
+            current = self._read(path)
+            if current.session.forgotten_through_revision >= current.session.revision:
+                return current
+            forgotten = NumericV2StoredSession(
+                replace(
+                    current.session,
+                    forgotten_through_revision=current.session.revision,
+                ),
+                current.ledger_events,
+            )
+            self._validate_chain(forgotten)
+            self._write(path, forgotten)
+            return forgotten
+
     def _read(self, path: Path) -> NumericV2StoredSession:
         from .numeric_v2_runtime import ScriptSessionV2, _player_address_disclosed
 

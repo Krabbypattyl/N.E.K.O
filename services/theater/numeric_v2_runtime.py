@@ -215,6 +215,8 @@ class ScriptSessionV2:
     lifecycle_revision: int = 0
     player_address_known: bool = False
     ended_reason: str | None = None
+    # 显式遗忘只切断后续记忆与冷档案投影，不删除继续演绎所需的 Session 历史。
+    forgotten_through_revision: int = -1
     # 本幕目标一旦被 Evaluator 判定完成，就保持到满足 min_turns 或离开节点。
     # 旧 Session 缺少这两个字段时使用空状态，恢复后从下一回合开始采用新合同。
     scene_completion_ready: bool = False
@@ -239,6 +241,7 @@ class ScriptSessionV2:
             "lifecycle_revision": self.lifecycle_revision,
             "player_address_known": self.player_address_known,
             "ended_reason": self.ended_reason,
+            "forgotten_through_revision": self.forgotten_through_revision,
             "scene_completion_ready": self.scene_completion_ready,
             "scene_goal_evidence": {
                 goal_id: list(revisions)
@@ -271,6 +274,11 @@ class ScriptSessionV2:
             lifecycle_revision=_integer(value.get("lifecycle_revision", 0), "lifecycle_revision"),
             player_address_known=raw_player_address_known,
             ended_reason=(str(value.get("ended_reason")) if value.get("ended_reason") is not None else None),
+            # 旧 Session 没有遗忘水位时，全部已提交内容仍可按原规则归档。
+            forgotten_through_revision=_integer(
+                value.get("forgotten_through_revision", -1),
+                "forgotten_through_revision",
+            ),
             scene_completion_ready=_scene_completion_ready(value),
             scene_goal_evidence=_scene_goal_evidence(value.get("scene_goal_evidence")),
         )
@@ -349,6 +357,8 @@ class NumericV2Engine:
                 raise NumericV2RuntimeError("session_metric_out_of_range")
         if session.node_turn_count < 0 or session.revision < 0 or session.lifecycle_revision < 0:
             raise NumericV2RuntimeError("session_counter_invalid")
+        if not -1 <= session.forgotten_through_revision <= session.revision:
+            raise NumericV2RuntimeError("session_forgotten_revision_invalid")
         if not isinstance(session.player_address_known, bool):
             raise NumericV2RuntimeError("session_player_address_known_invalid")
         self._validate_scene_goal_evidence(session, session.scene_goal_evidence)
@@ -838,6 +848,14 @@ class NumericV2Runtime:
             base_revision=base_revision,
             base_lifecycle_revision=base_lifecycle_revision,
         )
+
+    async def forget_history_through_current_revision(
+        self,
+        session_id: str,
+    ) -> NumericV2StoredSession:
+        """持久化遗忘水位，继续演绎时仍保留 Runtime 上下文。"""  # noqa: DOCSTRING_CJK
+
+        return await self.store.forget_history_through_current_revision(session_id)
 
 
 __all__ = [

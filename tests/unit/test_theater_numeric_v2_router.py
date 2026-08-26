@@ -20,6 +20,7 @@ from services.theater.numeric_v2_archive import (
     NumericV2ArchiveError,
     NumericV2ArchiveStore,
     build_numeric_v2_memory_messages,
+    build_numeric_v2_public_archive,
 )
 from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult
 from services.theater.numeric_v2_registry import NumericV2PackageError
@@ -2083,6 +2084,16 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
             params={"story_id": "numeric_v2_contract"},
         )
 
+    session_payload = json.loads(
+        (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "sessions"
+            / "forget_session.json"
+        ).read_text(encoding="utf-8")
+    )
+
     assert archived.json()["status"] == "written"
     assert len(listed.json()["archives"]) == 1
     assert pinned.json()["archive"]["pinned"] is True
@@ -2098,6 +2109,7 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
     assert after.json()["archives"] == []
     assert active.json()["session"]["session_id"] == "forget_session"
     assert active.json()["archive_status"] == "skipped"
+    assert session_payload["session"]["forgotten_through_revision"] == 0
 
 
 @pytest.mark.parametrize("read_failure", ["permission", "invalid_json"])
@@ -2496,6 +2508,51 @@ def test_numeric_archive_receipt_advances_incremental_watermark_after_success(tm
     assert resumed_receipt["archive_from_revision"] == 4
     assert resumed_receipt["archive_through_revision"] == 6
     assert resumed_receipt["include_opening"] is False
+
+
+def test_numeric_archive_forget_watermark_excludes_previous_transcript(tmp_path):
+    """继续旧 Session 后归档时，只能写入显式遗忘之后的新回合。"""  # noqa: DOCSTRING_CJK
+
+    store = NumericV2ArchiveStore(tmp_path)
+    session = SimpleNamespace(
+        story_package_id="numeric_v2_contract",
+        session_id="forgotten_archive",
+        revision=2,
+        forgotten_through_revision=1,
+        catgirl_binding={
+            "character_id": "character_" + "1" * 32,
+            "catgirl_name": "测试猫娘",
+            "player_address": "哥哥",
+        },
+        opening_performance={"performance": "这是已遗忘的开场。"},
+        performance_history=(
+            {
+                "revision": 1,
+                "input_text": "这是已遗忘的输入。",
+                "performance": "这是已遗忘的回应。",
+            },
+            {
+                "revision": 2,
+                "input_text": "这是遗忘后的输入。",
+                "performance": "这是遗忘后的回应。",
+            },
+        ),
+    )
+
+    receipt = store.create_or_get(session)
+    archive = build_numeric_v2_public_archive(
+        title="遗忘边界测试",
+        session=session,
+        ending=None,
+    )
+
+    assert receipt["archive_from_revision"] == 2
+    assert receipt["archive_through_revision"] == 2
+    assert receipt["include_opening"] is False
+    assert archive["opening"] == {"performance": "", "parts": []}
+    assert [turn["revision"] for turn in archive["turns"]] == [2]
+    assert archive["turns"][0]["player_input"] == "这是遗忘后的输入。"
+    assert archive["turns"][0]["performance"] == "这是遗忘后的回应。"
 
 
 def test_numeric_archive_receipt_repairs_watermark_before_next_revision(tmp_path):

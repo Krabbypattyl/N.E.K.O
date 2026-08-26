@@ -194,6 +194,13 @@ class NumericV2ArchiveStore:
                         previous_revision = previous.get("revision")
                         if isinstance(previous_revision, int) and not isinstance(previous_revision, bool):
                             archived_through_revision = previous_revision
+            # 显式遗忘等价于“这些 revision 永不再进入记忆”；其水位不能被新回执重置。
+            forgotten_through_revision = getattr(session, "forgotten_through_revision", -1)
+            if isinstance(forgotten_through_revision, int) and not isinstance(forgotten_through_revision, bool):
+                archived_through_revision = max(
+                    archived_through_revision,
+                    forgotten_through_revision,
+                )
             # 回执和归档请求 ID 都由不可变结束事实确定，进程崩溃或并发创建后仍会收敛。
             seed = "\x1f".join(
                 (
@@ -1020,13 +1027,22 @@ def build_numeric_v2_public_archive(
 ) -> dict[str, Any]:
     """投影一份不含隐藏状态的完整公开演绎冷档案。"""  # noqa: DOCSTRING_CJK
 
-    opening_parts, opening_text = _performance_memory_projection(
-        session.opening_performance,
-        fallback_phase="opening",
-    )
+    forgotten_through_revision = getattr(session, "forgotten_through_revision", -1)
+    if not isinstance(forgotten_through_revision, int) or isinstance(forgotten_through_revision, bool):
+        forgotten_through_revision = -1
+    if forgotten_through_revision < 0:
+        opening_parts, opening_text = _performance_memory_projection(
+            session.opening_performance,
+            fallback_phase="opening",
+        )
+    else:
+        # 开场属于 revision 0 之前的初始事实；一旦显式遗忘就不能在后续冷档案中复活。
+        opening_parts, opening_text = [], ""
     turns: list[dict[str, Any]] = []
     for record in session.performance_history:
         revision = int(record.get("revision") or 0)
+        if revision <= forgotten_through_revision:
+            continue
         parts, performance_text = _performance_memory_projection(
             record,
             fallback_phase="ordinary",

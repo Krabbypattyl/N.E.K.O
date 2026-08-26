@@ -1435,6 +1435,11 @@ async def forget_numeric_story_memory(request: Request):
                 if runtime is not None
                 else None
             )
+            if stored is not None:
+                # Session 继续保留用于续演，但任何后续记忆与冷档案只能从本次遗忘之后开始。
+                stored = await runtime.forget_history_through_current_revision(
+                    stored.session.session_id,
+                )
             if stored is not None and stored.session.status == "ended":
                 # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
                 skipped = await archive_store.acreate_or_get(stored.session)
