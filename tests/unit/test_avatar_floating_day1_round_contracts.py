@@ -1058,6 +1058,9 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert avatar_zoom_hint_block.index("operation: 'cleanup'") < avatar_zoom_hint_block.index("command: 'chat.message'")
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
+    assert "{ at: 0, command: 'operation.run', operation: 'cleanup', blocking: true }" in return_control_scene
+    assert "{ at: 0, command: 'chat.message' }" in return_control_scene
+    assert return_control_scene.index("operation: 'cleanup'") < return_control_scene.index("command: 'chat.message'")
     assert "cursorAction: 'move'" in return_control_scene
     assert "cursorAction: 'wobble'" not in return_control_scene
 
@@ -1135,7 +1138,19 @@ def test_day1_takeover_restores_original_agent_switches():
     assert "'day1-before-avatar-zoom-hint'" in cleanup_operation
     assert "sceneId === 'day1_takeover_return_control'" in cleanup_operation
     assert "'day1-return-control'" in cleanup_operation
-    assert "return await this.director.restoreDay1TakeoverAgentSwitches(day1RestoreReason);" in cleanup_operation
+    assert "this.setDay1AvatarZoomInteractionActive(false);" in cleanup_operation
+    assert "this.setDay1AvatarZoomInteractionActive(true);" in cleanup_operation
+    assert "await this.director.restoreDay1TakeoverAgentSwitches(day1RestoreReason);" in cleanup_operation
+    interaction_block = operations.split("setDay1AvatarZoomInteractionActive(active)", 1)[1].split(
+        "async runCleanup(scene)",
+        1,
+    )[0]
+    assert "director.overlay.setInteractionShieldSuppressed(isActive);" in interaction_block
+    assert "director.disableInterrupts();" in interaction_block
+    assert "director.cursor.hide();" in interaction_block
+    assert "document.documentElement.classList.toggle('yui-user-cursor-revealed', isActive);" in interaction_block
+    assert "document.body.classList.toggle('yui-user-cursor-revealed', isActive);" in interaction_block
+    assert "director.syncSystemCursorHidden(" in interaction_block
     assert "setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)" in restore_block
     assert "setAgentMasterEnabled(false)" in restore_block
     assert "restoreDay1TakeoverAgentSwitches('termination_cleanup')" in director

@@ -202,6 +202,13 @@
                 {
                     id: 'day1_takeover_return_control',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'cleanup', blocking: true },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', target: 'chat-capsule-input' },
+                        { at: 220, command: 'cursor.move', target: 'chat-capsule-input', action: 'move', durationMs: 900 }
+                    ],
                     textKey: 'tutorial.yuiGuide.lines.takeoverReturnControl',
                     voiceKey: 'takeover_return_control',
                     emotion: 'happy',
