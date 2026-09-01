@@ -59,6 +59,7 @@ test('OperationRegistry built-ins are registered declaratively', async () => {
 test('Day1 avatar zoom hint temporarily returns wheel interaction and the real cursor', async () => {
     const calls = [];
     const previousDocument = global.document;
+    const previousWindow = global.window;
     const createClassList = (scope) => ({
         toggle(name, active) {
             calls.push(['class', scope, name, active]);
@@ -67,6 +68,15 @@ test('Day1 avatar zoom hint temporarily returns wheel interaction and the real c
     global.document = {
         documentElement: { classList: createClassList('html') },
         body: { classList: createClassList('body') }
+    };
+    global.window = {
+        live2dManager: {
+            isLocked: true,
+            setLocked(locked, options) {
+                this.isLocked = locked;
+                calls.push(['live2d-locked', locked, options.updateFloatingButtons]);
+            }
+        }
     };
     const registry = new OperationRegistry({
         overlay: {
@@ -102,6 +112,7 @@ test('Day1 avatar zoom hint temporarily returns wheel interaction and the real c
         assert.equal(await registry.run({ id: 'day1_takeover_return_control', operation: 'cleanup' }), true);
     } finally {
         global.document = previousDocument;
+        global.window = previousWindow;
     }
 
     assert.deepEqual(calls, [
@@ -111,11 +122,13 @@ test('Day1 avatar zoom hint temporarily returns wheel interaction and the real c
         'disable-interrupts',
         'cancel-ghost-cursor',
         'hide-ghost-cursor',
+        ['live2d-locked', false, false],
         ['class', 'html', 'yui-user-cursor-revealed', true],
         ['class', 'body', 'yui-user-cursor-revealed', true],
         ['system-cursor-hidden', false, 'day1-avatar-zoom-hint'],
         ['shield', false],
         ['clear-user-cursor-reveal', true],
+        ['live2d-locked', true, false],
         ['class', 'html', 'yui-user-cursor-revealed', false],
         ['class', 'body', 'yui-user-cursor-revealed', false],
         ['system-cursor-hidden', true, 'day1-return-control'],

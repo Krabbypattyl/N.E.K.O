@@ -1148,9 +1148,18 @@ def test_day1_takeover_restores_original_agent_switches():
     assert "director.overlay.setInteractionShieldSuppressed(isActive);" in interaction_block
     assert "director.disableInterrupts();" in interaction_block
     assert "director.cursor.hide();" in interaction_block
+    assert "this.setDay1AvatarZoomModelLocked(isActive);" in interaction_block
     assert "document.documentElement.classList.toggle('yui-user-cursor-revealed', isActive);" in interaction_block
     assert "document.body.classList.toggle('yui-user-cursor-revealed', isActive);" in interaction_block
     assert "director.syncSystemCursorHidden(" in interaction_block
+    model_lock_block = operations.split("setDay1AvatarZoomModelLocked(active)", 1)[1].split(
+        "async runCleanup(scene)",
+        1,
+    )[0]
+    assert "this.day1AvatarZoomOriginalLive2dLocked = manager.isLocked === true;" in model_lock_block
+    assert "manager.setLocked(false, { updateFloatingButtons: false });" in model_lock_block
+    assert "manager.setLocked(this.day1AvatarZoomOriginalLive2dLocked, { updateFloatingButtons: false });" in model_lock_block
+    assert "this.day1AvatarZoomOriginalLive2dLocked = null;" in model_lock_block
     assert "setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)" in restore_block
     assert "setAgentMasterEnabled(false)" in restore_block
     assert "restoreDay1TakeoverAgentSwitches('termination_cleanup')" in director

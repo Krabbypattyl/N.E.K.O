@@ -21,6 +21,7 @@
                 ? normalizedOptions.resolveGuideLocale
                 : () => '';
             this.operationHandlers = [];
+            this.day1AvatarZoomOriginalLive2dLocked = null;
             this.registerBuiltInOperations();
         }
 
@@ -369,6 +370,7 @@
                     }
                 }
             }
+            this.setDay1AvatarZoomModelLocked(isActive);
 
             if (typeof document !== 'undefined' && document.body) {
                 document.documentElement.classList.toggle('yui-user-cursor-revealed', isActive);
@@ -380,6 +382,26 @@
                     isActive ? 'day1-avatar-zoom-hint' : 'day1-return-control'
                 );
             }
+            return true;
+        }
+
+        setDay1AvatarZoomModelLocked(active) {
+            const manager = typeof window !== 'undefined' ? window.live2dManager : null;
+            if (!manager || typeof manager.setLocked !== 'function') {
+                return false;
+            }
+            if (active === true) {
+                if (typeof this.day1AvatarZoomOriginalLive2dLocked !== 'boolean') {
+                    this.day1AvatarZoomOriginalLive2dLocked = manager.isLocked === true;
+                }
+                manager.setLocked(false, { updateFloatingButtons: false });
+                return true;
+            }
+            if (typeof this.day1AvatarZoomOriginalLive2dLocked !== 'boolean') {
+                return false;
+            }
+            manager.setLocked(this.day1AvatarZoomOriginalLive2dLocked, { updateFloatingButtons: false });
+            this.day1AvatarZoomOriginalLive2dLocked = null;
             return true;
         }
 
