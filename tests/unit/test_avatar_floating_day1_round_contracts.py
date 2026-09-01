@@ -1053,6 +1053,9 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "voiceKey: 'day1_avatar_zoom_hint'" in avatar_zoom_hint_block
     assert "spotlight: false" in avatar_zoom_hint_block
     assert "cursorAction: 'none'" in avatar_zoom_hint_block
+    assert "{ at: 0, command: 'operation.run', operation: 'cleanup', blocking: true }" in avatar_zoom_hint_block
+    assert "{ at: 0, command: 'chat.message' }" in avatar_zoom_hint_block
+    assert avatar_zoom_hint_block.index("operation: 'cleanup'") < avatar_zoom_hint_block.index("command: 'chat.message'")
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
     assert "cursorAction: 'move'" in return_control_scene
@@ -1128,9 +1131,11 @@ def test_day1_takeover_restores_original_agent_switches():
     assert "this.takeoverOriginalAgentSwitches = null;" in director
     assert "async captureDay1TakeoverAgentSwitches()" in director
     assert "await director.captureDay1TakeoverAgentSwitches();" in capture_operation
+    assert "sceneId === 'day1_avatar_zoom_hint'" in cleanup_operation
+    assert "'day1-before-avatar-zoom-hint'" in cleanup_operation
     assert "sceneId === 'day1_takeover_return_control'" in cleanup_operation
-    assert "restoreDay1TakeoverAgentSwitches('day1-return-control')" in cleanup_operation
-    assert "return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');" in cleanup_operation
+    assert "'day1-return-control'" in cleanup_operation
+    assert "return await this.director.restoreDay1TakeoverAgentSwitches(day1RestoreReason);" in cleanup_operation
     assert "setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)" in restore_block
     assert "setAgentMasterEnabled(false)" in restore_block
     assert "restoreDay1TakeoverAgentSwitches('termination_cleanup')" in director

@@ -345,12 +345,15 @@
 
         async runCleanup(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            const day1RestoreReason = sceneId === 'day1_avatar_zoom_hint'
+                ? 'day1-before-avatar-zoom-hint'
+                : (sceneId === 'day1_takeover_return_control' ? 'day1-return-control' : '');
             if (
-                sceneId === 'day1_takeover_return_control'
+                day1RestoreReason
                 && this.director
                 && typeof this.director.restoreDay1TakeoverAgentSwitches === 'function'
             ) {
-                return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');
+                return await this.director.restoreDay1TakeoverAgentSwitches(day1RestoreReason);
             }
             return true;
         }

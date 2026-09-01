@@ -186,12 +186,18 @@
                 {
                     id: 'day1_avatar_zoom_hint',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'cleanup', blocking: true },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' }
+                    ],
                     textKey: 'tutorial.avatarFloating.day1.avatarZoomHint',
                     text: '对啦，如果想把我看得更清楚一点，就把鼠标移到我身上，轻轻滚动滚轮吧！这样就能随时把我放大或缩小，调到你最喜欢的大小啦~',
                     voiceKey: 'day1_avatar_zoom_hint',
                     emotion: 'happy',
                     spotlight: false,
-                    cursorAction: 'none'
+                    cursorAction: 'none',
+                    operation: 'cleanup'
                 },
                 {
                     id: 'day1_takeover_return_control',
