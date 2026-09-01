@@ -40,6 +40,7 @@ EXPECTED_DAY1_SCENES = [
     "day1_screen_entry",
     "day1_screen_entry_invite",
     "day1_takeover_capture_cursor",
+    "day1_avatar_zoom_hint",
     "day1_takeover_return_control",
 ]
 
@@ -1016,8 +1017,13 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
         "id: 'day1_takeover_capture_cursor'",
         1,
     )[0]
+    avatar_zoom_hint_block = round_block.split("id: 'day1_avatar_zoom_hint'", 1)[1].split(
+        "id: 'day1_takeover_return_control'",
+        1,
+    )[0]
 
     assert "id: 'day1_intro_greeting'" in round_block
+    assert "id: 'day1_avatar_zoom_hint'" in round_block
     assert "id: 'day1_takeover_return_control'" in round_block
     assert "cursorAction: 'wobble'" not in greeting_scene_block
     assert "timelinePlayback: true" in greeting_scene_block
@@ -1043,6 +1049,10 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorAction: 'wobble'" not in screen_invite_block
     assert "target: '#${p}-popup-mic [data-neko-mic-main-action-row=\"screen\"]'" in screen_invite_block
     assert "target: '#${p}-btn-screen'" not in screen_invite_block
+    assert "textKey: 'tutorial.avatarFloating.day1.avatarZoomHint'" in avatar_zoom_hint_block
+    assert "voiceKey: 'day1_avatar_zoom_hint'" in avatar_zoom_hint_block
+    assert "spotlight: false" in avatar_zoom_hint_block
+    assert "cursorAction: 'none'" in avatar_zoom_hint_block
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
     assert "cursorAction: 'move'" in return_control_scene
