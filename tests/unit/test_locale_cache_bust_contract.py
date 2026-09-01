@@ -128,6 +128,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-08-29-turn-image-budget-notices",
         "2026-08-29-repetition-insights",
         "2026-08-31-openfang-removal",
+        "2026-09-01-day1-avatar-zoom-hint",
+        "2026-09-01-day2-tool-wheel-rotation",
     }
 )
 

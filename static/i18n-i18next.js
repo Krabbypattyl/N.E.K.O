@@ -29,10 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：新增本轮图片被裁剪、语音多模态发送失败、OpenClaw 指令下发失败三条
-    // 语言包新增 key 时递增版本，让 Electron、Docker 等长期缓存重新拉取完整语言包；
-    // 否则缓存住旧语言包的客户端会把新 key 当作字面量渲染出来。
-    const LOCALE_VERSION = '2026-09-01-day1-avatar-zoom-hint';
+    // Day 1 模型缩放与 Day 2 弧形菜单引导都新增了 key；递增版本让
+    // Electron、Docker 等长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-01-add-guide-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
