@@ -2773,6 +2773,8 @@
         }
     },
     "theater": {
+        "endStateFailed": "Não foi possível encerrar o estado atual da apresentação. Volte à página de histórias e tente novamente.",
+        "endConnectionFailed": "Não foi possível acessar o serviço local do N.E.K.O. Confirme que o aplicativo ainda está aberto e tente novamente.",
         "title": "Teatro",
         "modeLabel": "Modo",
         "scriptMode": "Modo roteiro",
@@ -2797,6 +2799,11 @@
         "collapseStage": "Recolher palco",
         "expandStage": "Expandir palco",
         "inputPlaceholder": "Digite o que quer dizer ou use *...* para descrever uma ação",
+        "actorBudgetLabel": "Contexto por turno",
+        "actorBudgetEconomy": "Compacto · entrada 6k · histórico 6 turnos",
+        "actorBudgetBalanced": "Padrão · entrada 10k · histórico 12 turnos",
+        "actorBudgetQuality": "Rico · entrada 16k · histórico 20 turnos",
+        "actorBudgetHint": "Limita o contexto por turno da interpretação e das sugestões. Os valores indicam o limite de entrada da interpretação e o máximo de turnos do histórico. Continuar mantém o perfil original; Reiniciar usa esta seleção.",
         "storySelect": "Selecionar história do teatro",
         "importStory": "Importar roteiro",
         "importStoryAria": "Importar um roteiro Numeric v2",

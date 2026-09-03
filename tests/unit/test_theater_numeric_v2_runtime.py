@@ -21,6 +21,7 @@ from services.theater.numeric_v2_runtime import (
     MetricChangeV2,
     NumericV2Engine,
     NumericV2Runtime,
+    NumericV2RuntimeError,
     TurnRequestV2,
 )
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
@@ -46,6 +47,45 @@ def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
     gc.collect()
     assert session_key not in numeric_v2_store._LOCKS
     assert receipt_key not in numeric_v2_archive._RECEIPT_LOCKS
+
+
+def test_numeric_v2_session_budget_profile_persists_and_legacy_defaults_balanced():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="budget_profile",
+        catgirl_binding={"catgirl_id": "catgirl:test", "catgirl_name": "测试猫娘"},
+        opening_performance=_opening(),
+        actor_budget_profile="economy",
+    )
+
+    assert session.actor_budget_profile == "economy"
+    assert type(session).from_mapping(session.to_dict()).actor_budget_profile == "economy"
+    legacy = session.to_dict()
+    legacy.pop("actor_budget_profile")
+    assert type(session).from_mapping(legacy).actor_budget_profile == "balanced"
+
+
+def test_numeric_v2_session_rejects_unknown_budget_profile():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+
+    with pytest.raises(
+        NumericV2RuntimeError,
+        match="numeric_actor_budget_profile_invalid",
+    ):
+        engine.create_session(
+            session_id="invalid_budget_profile",
+            catgirl_binding={"catgirl_id": "catgirl:test", "catgirl_name": "测试猫娘"},
+            opening_performance=_opening(),
+            actor_budget_profile="unlimited",
+        )
+
+
+def test_numeric_v2_runtime_has_no_hard_goal_delivery_directive():
+    """Runtime 只记录自然发生的证据，不再生成强制交付指令。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+
+    assert not hasattr(engine, "build_delivery_directive")
 
 
 def test_existing_character_id_is_persisted_in_canonical_form():
@@ -332,47 +372,6 @@ def _branch_story() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_waits_for_min_turns_then_selects_route(tmp_path):
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_wait",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-
-    first = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("turn_1", 0, "我会先听你说。"),
-        (),
-        scene_complete=False,
-    )
-    assert first.route is None
-    assert first.route_status == "waiting_min_turns"
-    assert first.session.current_node_id == "start"
-    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
-
-    change = MetricChangeV2.from_mapping(
-        {
-            "metric_id": "trust",
-            "delta": 5,
-            "criterion": "玩家兑现承诺",
-            "evidence": "玩家明确表示会留下倾听",
-        },
-        runtime.engine.metric_schema,
-    )
-    second = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("turn_2", 1, "我答应留下来把话说完。"),
-        (change,),
-        scene_complete=True,
-    )
-
-    assert second.route_status == "advanced"
-    assert second.session.current_node_id == "ending_stay"
-    assert second.session.status == "ended"
-
-
-@pytest.mark.asyncio
 async def test_numeric_v2_player_address_is_committed_only_with_successful_turn(tmp_path):
     runtime = NumericV2Runtime(
         NumericV2Engine.from_mapping(numeric_v2_story(player_address_known=False)),
@@ -449,250 +448,6 @@ async def test_numeric_v2_surface_you_fallback_does_not_count_as_disclosed_name(
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_legacy_session_derives_address_state_from_submitted_input(tmp_path):
-    story = numeric_v2_story(player_address_known=False)
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_legacy_player_address",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-    disclosed = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("legacy_address_disclosure", 0, "我叫哥哥。"),
-        (),
-        scene_complete=False,
-    )
-    await runtime.commit_turn(disclosed, _performance("记住了。"))
-
-    path = tmp_path / "numeric_v2" / "sessions" / "runtime_legacy_player_address.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["session"].pop("player_address_known")
-    payload["ledger_events"][0].pop("player_address_known")
-    payload["ledger_events"][0].pop("player_address_disclosure_version")
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    restored = await runtime.restore_session(stored.session.session_id)
-    assert restored is not None
-    assert restored.session.player_address_known is True
-
-
-@pytest.mark.asyncio
-async def test_numeric_v2_legacy_substring_disclosure_remains_replayable(tmp_path):
-    """旧版已经提交的宽松称呼事实必须可恢复，但不能影响新回合规则。"""  # noqa: DOCSTRING_CJK
-
-    story = numeric_v2_story(player_address_known=False)
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_legacy_substring_address",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-    disclosed = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("legacy_substring_disclosure", 0, "我叫哥哥。"),
-        (),
-        scene_complete=False,
-    )
-    await runtime.commit_turn(disclosed, _performance("记住了。"))
-
-    path = tmp_path / "numeric_v2" / "sessions" / "runtime_legacy_substring_address.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["ledger_events"][0]["input_text"] = "你认识哥哥吗？"
-    payload["ledger_events"][0].pop("player_address_disclosure_version")
-    payload["session"]["performance_history"][0]["input_text"] = "你认识哥哥吗？"
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    restored = await runtime.restore_session(stored.session.session_id)
-
-    assert restored is not None
-    assert restored.session.player_address_known is True
-
-
-@pytest.mark.asyncio
-async def test_numeric_v2_remembers_scene_completion_until_min_turns(tmp_path):
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_scene_completion_latch",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-
-    first = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("completion_latch_1", 0, "这一幕的目标已经完成。"),
-        (),
-        scene_complete=True,
-    )
-    assert first.route_status == "waiting_min_turns"
-    assert first.session.scene_completion_ready is True
-    stored = await runtime.commit_turn(first, _performance("我已经把该说明的都说清楚了。"))
-
-    restored = await runtime.restore_session(stored.session.session_id)
-    assert restored is not None
-    assert restored.session.scene_completion_ready is True
-
-    second = runtime.prepare_turn(
-        restored,
-        TurnRequestV2("completion_latch_2", 1, "那我们继续。"),
-        (),
-        scene_complete=False,
-    )
-
-    assert second.route_status == "advanced"
-    assert second.session.current_node_id == "ending_leave"
-    assert second.session.scene_completion_ready is False
-
-
-@pytest.mark.asyncio
-async def test_numeric_v2_restores_goal_evidence_from_ledger(tmp_path):
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_goal_evidence_restore",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-    stored = await runtime.commit_turn(
-        runtime.prepare_turn(
-            stored,
-            TurnRequestV2("goal_evidence_1", 0, "先听你说明。"),
-            (),
-            scene_complete=False,
-        ),
-        _performance("我先说明第一部分。"),
-    )
-    stored = await runtime.commit_turn(
-        runtime.prepare_turn(
-            stored,
-            TurnRequestV2("goal_evidence_2", 1, "继续说。"),
-            (),
-            scene_complete=False,
-            goal_evidence={"goal.1": (1,)},
-        ),
-        _performance("还有一部分需要确认。"),
-    )
-
-    restored = await runtime.restore_session(stored.session.session_id)
-
-    assert restored is not None
-    assert restored.session.current_node_id == "start"
-    assert restored.session.scene_goal_evidence == {"goal.1": (1,)}
-    assert restored.ledger_events[-1]["scene_goal_evidence"] == {"goal.1": [1]}
-
-
-def test_numeric_v2_runtime_accepts_structured_goal_ids():
-    """Runtime 应直接校验作者目标 ID，避免结构化目标又退回按序号猜测。"""  # noqa: DOCSTRING_CJK
-
-    story = numeric_v2_story()
-    beat = story["nodes"][0]["story_beat"]
-    beat["goals"] = [{
-        "id": "confirm_old_letter",
-        "owner": "catgirl",
-        "description": "女主确认旧信保管状态。",
-        "evidence": {"mode": "semantic", "anchors": []},
-    }]
-    beat.pop("must_happen")
-    engine = NumericV2Engine.from_mapping(story)
-    session = replace(
-        engine.create_session(
-            session_id="runtime_structured_goal_id",
-            catgirl_binding=_binding(),
-            opening_performance=_opening(),
-        ),
-        node_turn_count=1,
-        revision=1,
-        performance_history=({
-            "revision": 1,
-            "from_node_id": "start",
-            "to_node_id": "start",
-            "input_text": "请继续说明。",
-            "performance": "（按住信封）这封信一直由我保管。",
-        },),
-    )
-
-    outcome = engine.resolve_turn(
-        session,
-        TurnRequestV2("structured_goal_id", 1, "我明白了。"),
-        (),
-        goal_evidence={"confirm_old_letter": (1,)},
-    )
-
-    assert outcome.session.scene_goal_evidence == {"confirm_old_letter": (1,)}
-
-
-@pytest.mark.asyncio
-async def test_numeric_v2_clears_goal_evidence_after_scene_completion_is_latched(tmp_path):
-    story = _branch_story()
-    story["nodes"][0]["min_turns"] = 3
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_goal_evidence_consumed",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-    stored = await runtime.commit_turn(
-        runtime.prepare_turn(
-            stored,
-            TurnRequestV2("goal_consumed_1", 0, "先完成第一部分。"),
-            (),
-            scene_complete=False,
-        ),
-        _performance("第一部分已经完成。"),
-    )
-    completed = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("goal_consumed_2", 1, "这一幕已经说清楚了。"),
-        (),
-        scene_complete=True,
-        goal_evidence={"goal.1": (1,)},
-    )
-
-    assert completed.route_status == "waiting_min_turns"
-    assert completed.session.scene_completion_ready is True
-    assert completed.session.scene_goal_evidence == {}
-    assert completed.ledger_event["scene_completion_ready"] is True
-    assert completed.ledger_event["scene_goal_evidence"] == {}
-
-
-def test_numeric_v2_keeps_only_recent_goal_evidence_revisions():
-    engine = NumericV2Engine.from_mapping(numeric_v2_story())
-    base = engine.create_session(
-        session_id="runtime_recent_goal_evidence",
-        catgirl_binding={
-            "catgirl_id": "catgirl:test",
-            "catgirl_name": "测试猫娘",
-            "player_address": "哥哥",
-        },
-        opening_performance={"narration": "开场", "dialogue": [], "suggested_inputs": []},
-    )
-    records = tuple({
-        "revision": revision,
-        "from_node_id": "start",
-        "to_node_id": "start",
-        "input_text": f"第 {revision} 轮。",
-        "narration": "事实",
-        "dialogue": [],
-    } for revision in range(1, 10))
-    session = replace(
-        base,
-        revision=9,
-        node_turn_count=9,
-        processed_client_turn_ids=tuple(f"turn_{revision}" for revision in range(1, 10)),
-        performance_history=records,
-        scene_goal_evidence={"goal.1": (1, 2, 3, 4)},
-    )
-
-    outcome = engine.resolve_turn(
-        session,
-        TurnRequestV2("turn_10", 9, "继续。"),
-        (),
-        goal_evidence={"goal.1": (5, 6, 7, 8, 9)},
-    )
-
-    assert outcome.session.scene_goal_evidence == {"goal.1": (6, 7, 8, 9)}
-
-
-@pytest.mark.asyncio
 async def test_numeric_v2_route_change_requires_visible_transition_before_commit(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -706,12 +461,22 @@ async def test_numeric_v2_route_change_requires_visible_transition_before_commit
         (),
         scene_complete=False,
     )
-    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
+    # 只有已提交正文中出现具体提议，下一轮接受时才允许换幕。
+    offered = replace(
+        first,
+        session=replace(first.session, transition_offered=True),
+        ledger_event={**first.ledger_event, "transition_offered": True},
+    )
+    stored = await runtime.commit_turn(
+        offered,
+        {**_performance("那就先坐一会儿。"), "transition_offered": True},
+    )
     second = runtime.prepare_turn(
         stored,
         TurnRequestV2("transition_turn_2", 1, "我答应把话说完。"),
         (),
         scene_complete=True,
+        transition_intent="accept",
     )
 
     with pytest.raises(ValueError, match="numeric_transition_performance_invalid"):
@@ -742,12 +507,22 @@ async def test_numeric_v2_route_change_accepts_empty_deduplicated_bridge(tmp_pat
         (),
         scene_complete=False,
     )
-    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
+    # 先把转场提议写入上一轮的可见结果，模拟 Actor 已经公开提出下一步。
+    offered = replace(
+        first,
+        session=replace(first.session, transition_offered=True),
+        ledger_event={**first.ledger_event, "transition_offered": True},
+    )
+    stored = await runtime.commit_turn(
+        offered,
+        {**_performance("那就先坐一会儿。"), "transition_offered": True},
+    )
     second = runtime.prepare_turn(
         stored,
         TurnRequestV2("empty_bridge_2", 1, "我答应把话说完。"),
         (),
         scene_complete=True,
+        transition_intent="accept",
     )
     finalized = runtime.engine.finalize_transition_performance(
         second,
@@ -778,48 +553,6 @@ async def test_numeric_v2_route_change_accepts_empty_deduplicated_bridge(tmp_pat
     transition = restored.session.performance_history[-1]
     assert transition["segments"][1]["scene_narration"] == ""
     assert transition["segments"][2]["scene_narration"] == "第二天清晨，花店重新开门。"
-
-
-@pytest.mark.asyncio
-async def test_numeric_v2_restore_accepts_legacy_route_performance_without_transition_segments(tmp_path):
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
-    stored = await runtime.start_session(
-        session_id="runtime_legacy_transition",
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-    first = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("legacy_transition_1", 0, "我先听你说。"),
-        (),
-        scene_complete=False,
-    )
-    stored = await runtime.commit_turn(first, _performance("那就先坐一会儿。"))
-    second = runtime.prepare_turn(
-        stored,
-        TurnRequestV2("legacy_transition_2", 1, "我答应把话说完。"),
-        (),
-        scene_complete=True,
-    )
-    committed = await runtime.commit_turn(
-        second,
-        _transition_performance(second.session.current_node_id),
-    )
-    path = runtime.store._path(committed.session.session_id)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    legacy = payload["session"]["performance_history"][-1]
-    legacy.pop("performance_contract_version")
-    legacy.pop("segments")
-    legacy.pop("transition_delivered")
-    legacy.pop("visible_node_id")
-    legacy["narration"] = "她回应后收住话题，夜色过去，第二天清晨花店重新开门。"
-    legacy["dialogue"] = [{"speaker_id": "active_catgirl", "text": "明天再说。"}]
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    restored = await runtime.restore_session(committed.session.session_id)
-
-    assert restored is not None
-    assert restored.session.current_node_id == second.session.current_node_id
 
 
 @pytest.mark.asyncio
@@ -1192,37 +925,6 @@ async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_startup_audit_migrates_legacy_name_slot(tmp_path):
-    story = _branch_story()
-    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
-    registry.import_package(story)
-    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
-    legacy_binding = {
-        key: value
-        for key, value in _binding().items()
-        if key != "character_id"
-    }
-    legacy_binding["catgirl_id"] = "catgirl:Lan"
-    legacy_session = runtime.engine.create_session(
-        session_id="runtime_legacy_name_slot",
-        catgirl_binding=legacy_binding,
-        opening_performance=_opening(),
-    )
-    await runtime.store.create(legacy_session)
-
-    audit_numeric_v2_storage(
-        tmp_path,
-        registry,
-        character_ids_by_name={"Lan": _binding()["character_id"]},
-    )
-    restored = await runtime.restore_story_session(_binding())
-
-    assert restored is not None
-    assert restored.session.session_id == "runtime_legacy_name_slot"
-    assert restored.session.catgirl_binding == _binding()
-
-
-@pytest.mark.asyncio
 async def test_numeric_v2_startup_audit_bounds_corrupt_quarantine(tmp_path):
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
@@ -1533,7 +1235,7 @@ async def test_numeric_v2_character_id_survives_rename_but_blocks_same_name_reus
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_does_not_advance_when_min_turns_reached_but_scene_is_incomplete(tmp_path):
+async def test_numeric_v2_keeps_playing_when_scene_is_incomplete(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
         session_id="runtime_scene_incomplete",
@@ -1558,7 +1260,7 @@ async def test_numeric_v2_does_not_advance_when_min_turns_reached_but_scene_is_i
     )
 
     assert second.route is None
-    assert second.route_status == "scene_incomplete"
+    assert second.route_status == "playing"
     assert second.session.current_node_id == "start"
     assert second.ledger_event["scene_complete"] is False
 

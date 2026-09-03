@@ -29,6 +29,7 @@
     var launchRequests = Object.create(null);
     var launchRequestOrder = [];
     var launchReplyTargets = Object.create(null);
+    var desktopLaunchRelayTimers = Object.create(null);
     var launchEpoch = 0;
     var endConfirmationPending = false;
     var committedSnapshot = null;
@@ -49,15 +50,48 @@
         if (!target || typeof target.postMessage !== 'function') return false;
         try { target.postMessage(message, window.location.origin); return true; } catch (_) { return false; }
     }
+    function desktopRuntimeRole() {
+        var body = document.body;
+        // 桌面端本体页和独立聊天页都会加载本 Runtime；角色必须由现有宿主标记确定，
+        // 不能按剧本或窗口名称硬编码，否则会再次出现正文写入不可见窗口的问题。
+        if (window.__LANLAN_IS_ELECTRON_PET__ === true) return 'pet';
+        if (!body || !body.classList.contains('neko-electron-runtime')) return '';
+        if (!body.classList.contains('electron-chat-window')) return '';
+        return String(body.getAttribute('data-chat-host-kind') || 'compact');
+    }
+    function stopDesktopLaunchRelay(launchId) {
+        var key = String(launchId || '');
+        var timer = desktopLaunchRelayTimers[key];
+        if (timer) window.clearInterval(timer);
+        delete desktopLaunchRelayTimers[key];
+    }
+    function relayLaunchToDesktopChat(message) {
+        var launchId = String(message && message.launch_id || '');
+        if (!launchId || !state.channel) return false;
+        stopDesktopLaunchRelay(launchId);
+        var attempts = 0;
+        function relay() {
+            attempts += 1;
+            // Electron Pet 只负责把选剧页的启动交给真正可见的紧凑胶囊窗口；
+            // 同一 launch_id 在目标 Runtime 内幂等，短时重发只用于覆盖聊天页尚在加载的竞态。
+            postMessage(Object.assign({}, message, { runtime_host_kind: 'compact' }));
+            if (attempts >= 40) stopDesktopLaunchRelay(launchId);
+        }
+        relay();
+        desktopLaunchRelayTimers[launchId] = window.setInterval(relay, 200);
+        return true;
+    }
     function rememberPointer() {
         try {
-            if (!state.active) { window.localStorage.removeItem(POINTER_KEY); return; }
-            window.localStorage.setItem(POINTER_KEY, JSON.stringify({ story_id: state.storyId, session_id: state.sessionId }));
+            // 演绎指针只服务当前程序生命周期内的页面刷新；完整退出后必须回到普通模式。
+            // Session 和 Ledger 仍由后端保存，玩家下次可从剧本页主动“继续演绎”。
+            if (!state.active) { window.sessionStorage.removeItem(POINTER_KEY); return; }
+            window.sessionStorage.setItem(POINTER_KEY, JSON.stringify({ story_id: state.storyId, session_id: state.sessionId }));
         } catch (_) {}
     }
     function readPointer() {
         try {
-            var value = JSON.parse(window.localStorage.getItem(POINTER_KEY) || 'null');
+            var value = JSON.parse(window.sessionStorage.getItem(POINTER_KEY) || 'null');
             return value && value.story_id && value.session_id ? value : null;
         } catch (_) { return null; }
     }
@@ -697,7 +731,11 @@
         committedSnapshot = null;
         rememberPointer();
         var chatHost = host();
+        restoreComposerVisibility(chatHost);
+        restoreChatSurfaceMode(chatHost);
         if (chatHost && typeof chatHost.setViewProps === 'function') {
+            // full/compact 恢复可能重挂 React；草稿恢复必须作为最后一次视图更新交付，
+            // 否则前一步刚写回的普通聊天草稿会被后续重挂清空。
             chatHost.setViewProps({
                 theaterPresentation: {
                     active: false,
@@ -709,8 +747,6 @@
                 composerDisabled: false
             });
         }
-        restoreComposerVisibility(chatHost);
-        restoreChatSurfaceMode(chatHost);
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
     }
     function openSelector(receipt) {
@@ -823,6 +859,7 @@
         if (!confirmed || !isCurrentEndRequest()) return false;
         state.phase = 'ending'; state.errorMessage = ''; state.queueToken += 1; render();
         var result;
+        var endRequestFailed = false;
         try {
             result = await requestJson(api.end, { method: 'POST', body: {
                 story_id: requestedStoryId,
@@ -831,6 +868,7 @@
                 base_lifecycle_revision: requestedLifecycleRevision
             } });
         } catch (_) {
+            endRequestFailed = true;
             result = { ok: false };
         }
         // 结束接口返回前也可能切换 Session；旧响应不能改变新 Session 的阶段或回执。
@@ -852,7 +890,10 @@
                 state.currentBlock = null;
             }
             state.phase = 'awaiting_player';
-            state.errorMessage = t('theater.endFailed', '结束演绎失败，请检查网络后重试。');
+            // 只有请求本身未取得响应时才提示本地服务连接；后端拒绝属于业务状态错误。
+            state.errorMessage = endRequestFailed
+                ? t('theater.endConnectionFailed', '无法连接 N.E.K.O 本地服务，请确认程序仍在运行后重试。')
+                : t('theater.endStateFailed', '当前演绎状态无法结束，请返回剧本页后重试。');
             render();
             return false;
         }
@@ -867,6 +908,10 @@
         return returnToSelector(receipt, 'user-ended', preparedSelector);
     }
     async function restorePointer() {
+        // 桌面端只有独立紧凑胶囊拥有演绎投影；Pet 与 full 窗口不能从各自会话存储
+        // 恢复并重复驱动正文或 TTS。Web 单页没有该宿主角色，仍保留原刷新恢复语义。
+        var role = desktopRuntimeRole();
+        if (role && role !== 'compact') return;
         var pointer = readPointer();
         if (!pointer) return;
         // 启动恢复只属于读取指针时的 launch 世代；任何更新的选剧启动都有更高优先级。
@@ -879,7 +924,7 @@
             return;
         }
         if (restoreLaunchEpoch !== launchEpoch) return;
-        if (!snapshot.ok || !snapshot.session) { try { window.localStorage.removeItem(POINTER_KEY); } catch (_) {} return; }
+        if (!snapshot.ok || !snapshot.session) { try { window.sessionStorage.removeItem(POINTER_KEY); } catch (_) {} return; }
         applySnapshot(snapshot);
         if (snapshot.end_receipt_id) state.pendingEnd = {
             story_id: state.storyId,
@@ -903,7 +948,22 @@
         var message = event && event.data;
         if (!message || typeof message !== 'object') return;
         if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
-        if (message.action === 'theater:launch-request' && message.launch_id && message.story_id && message.session_id && Number.isInteger(message.revision)) {
+        if (message.action === 'theater:launch-ready' && message.launch_id) {
+            stopDesktopLaunchRelay(message.launch_id);
+        }
+        else if (message.action === 'theater:launch-request' && message.launch_id && message.story_id && message.session_id && Number.isInteger(message.revision)) {
+            var role = desktopRuntimeRole();
+            if (role === 'pet') {
+                if (message.runtime_host_kind) return;
+                // 选剧页通常由 Pet 打开，window.opener 会把启动请求直送 Pet；必须显式转交
+                // 给独立胶囊，不能在不可见的 Pet React 宿主里只播放 TTS。
+                relayLaunchToDesktopChat(message);
+                return;
+            }
+            // 桌面 full 与 compact 页面可能同时存活；小剧场固定进入本体紧凑胶囊，
+            // 只允许 compact Runtime 接管，避免两个窗口重复请求正文和 TTS。
+            if (role && role !== 'compact') return;
+            if (message.runtime_host_kind && role && message.runtime_host_kind !== role) return;
             if (event.source && event.source !== window) launchReplyTargets[message.launch_id] = event.source;
             launch(message);
         }

@@ -10,14 +10,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
-import re
+import string
 from typing import Any, Mapping
 
 from utils.tokenize import count_tokens
 
 
 STORY_SCHEMA = "neko.story.numeric.v2"
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_ID_FIRST_CHARACTERS = frozenset(string.ascii_letters + string.digits)
+_ID_CHARACTERS = _ID_FIRST_CHARACTERS | frozenset("._-")
 _COMPARATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
 _VISIBILITIES = frozenset({"hidden"})
 _NODE_TYPES = frozenset({"start", "scene", "ending"})
@@ -28,24 +29,42 @@ _ACTING_CONTRACT_COGNITION_STATES = frozenset({"fresh_boot", "limited", "normal"
 _ACTING_CONTRACT_MEMORY_STATES = frozenset({"empty", "partial", "available"})
 _ACTING_CONTRACT_SELF_REFERENCE_MODES = frozenset({"system_neutral", "persona_allowed"})
 _ACTING_CONTRACT_PERSONA_SCOPES = frozenset({"style_only", "full"})
-# 新 Story beat 使用有限枚举表达关系和目标证据；旧包缺少这些字段时继续走兼容投影。
+# Story beat 使用有限枚举表达关系和可选创作素材。
 _RELATIONSHIP_CEILINGS = frozenset({"stranger", "guarded", "cooperative", "trusted", "intimate"})
 _GOAL_OWNERS = frozenset({"catgirl", "player", "shared", "environment"})
 _GOAL_EVIDENCE_MODES = frozenset({"semantic", "exact"})
+# 运行时只接受新合同；旧包必须在作者侧升级后才能导入或运行。
+_NUMERIC_CONTRACT_VERSIONS = frozenset({"v2.2"})
+_GOAL_DELIVERY_TIMINGS = frozenset({"opening", "turn"})
+_DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
+# v2.2 只允许有限交付类型，避免 Runtime 再从目标描述中猜“谁在什么位置完成了什么”。
+_GOAL_DELIVERY_OUTPUTS = {
+    "catgirl_dialogue": "performance_dialogue",
+    "catgirl_action": "performance_action",
+    "environment_fact": "scene_update",
+    "player_action": "player_input",
+    "shared_agreement": "shared",
+    "semantic_state": "evaluator",
+}
+_GOAL_DELIVERY_OWNERS = {
+    "catgirl_dialogue": frozenset({"catgirl"}),
+    "catgirl_action": frozenset({"catgirl"}),
+    "environment_fact": frozenset({"environment"}),
+    "player_action": frozenset({"player"}),
+    "shared_agreement": frozenset({"shared"}),
+    "semantic_state": frozenset({"catgirl", "player", "shared"}),
+}
 MAX_STORY_GOALS = 8
 _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
-_IDENTITY_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
-_PLAYER_OWNED_SUBJECT_RE = re.compile(
-    r"(?:^|[，,。！？；;：:])\s*(?:为了[^，,；;]{0,20}[，,]\s*)?"
-    r"(?:在|由|当|随着|经过|根据)?\s*(?:你|您|玩家|男主|哥哥|他|你们|双方|两人|共同)(?!的)"
-)
-_FORCED_PLAYER_ACTION_RE = re.compile(
-    r"(?:女主|猫娘|她).{0,20}(?:强迫|逼迫|迫使|强制|命令).{0,20}"
-    r"(?:你|您|玩家|男主|哥哥|他)"
-)
-
+_IDENTITY_SEPARATORS = frozenset("，,；;：:\n（(")
+_CHARACTER_STATE_SUBJECTS = {
+    "catgirl_state": "女主",
+    "player_state": "男主",
+    "environment_state": "环境",
+}
+_NEGATIVE_STATE_BOUNDARY_PREFIXES = ("不得", "禁止", "不能")
 
 @dataclass(frozen=True)
 class NumericV2Issue:
@@ -96,48 +115,26 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value == value.strip()
 
 
+def _valid_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 128
+        and value[0] in _ID_FIRST_CHARACTERS
+        and all(character in _ID_CHARACTERS for character in value)
+    )
+
+
 def _identity_source_name(value: Any) -> str:
     text = str(value or "").strip()
-    separator = _IDENTITY_SEPARATOR_RE.search(text)
-    if separator is None:
+    separator_indexes = [
+        index
+        for index, character in enumerate(text)
+        if character in _IDENTITY_SEPARATORS
+    ]
+    if not separator_indexes:
         return ""
-    name = text[:separator.start()].strip()
+    name = text[:separator_indexes[0]].strip()
     return name if 0 < len(name) <= 24 else ""
-
-
-def _first_sentence(value: Any) -> str:
-    """只检查会被 Runtime 确定性交付的节点开场句。"""  # noqa: DOCSTRING_CJK
-
-    text = str(value or "").strip()
-    endings = [index for mark in "。！？" if (index := text.find(mark)) >= 0]
-    return text[:min(endings) + 1] if endings else text
-
-
-def numeric_v2_story_goal_contracts(beat: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-    """把新旧目标统一投影为稳定合同，但绝不把兼容默认值写回作者包。"""  # noqa: DOCSTRING_CJK
-
-    structured = beat.get("goals")
-    if isinstance(structured, list):
-        return tuple(
-            {
-                "goal_id": str(item.get("id") or ""),
-                "owner": str(item.get("owner") or ""),
-                "text": str(item.get("description") or ""),
-                "evidence": deepcopy(dict(item.get("evidence") or {})),
-            }
-            for item in structured
-            if isinstance(item, Mapping)
-        )
-    # 旧包继续使用稳定的 goal.N，owner 留空后由既有兼容规则从作者原文投影。
-    return tuple(
-        {
-            "goal_id": f"goal.{index + 1}",
-            "owner": "",
-            "text": str(item or ""),
-            "evidence": {},
-        }
-        for index, item in enumerate(list(beat.get("must_happen") or [])[:MAX_STORY_GOALS])
-    )
 
 
 def _condition_branches(conditions: Mapping[str, Any]) -> list[list[Mapping[str, Any]]]:
@@ -238,7 +235,7 @@ class _Collector:
         return text
 
     def require_id(self, value: Any, path: str) -> str:
-        if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        if not _valid_id(value):
             self.add("invalid_id", path, "必须是安全且稳定的 ID。")
             return ""
         return value
@@ -267,22 +264,6 @@ class NumericV2Compiler:
     def compile(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
         collector = _Collector()
         story = collector.obj(payload, "story")
-        initial_state = story.get("initial_state")
-        legacy_hash = ""
-        if isinstance(initial_state, Mapping) and "player_address_known" not in initial_state:
-            # 先保留旧包原始规范哈希；补默认字段后仍允许既有 Session 复验通过。
-            legacy_bytes = json.dumps(
-                deepcopy(story),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            legacy_hash = f"sha256:{hashlib.sha256(legacy_bytes).hexdigest()}"
-            # 老包没有结构化称呼字段时只按“未知”兼容，不从自然语言推断状态。
-            story["initial_state"] = {
-                **initial_state,
-                "player_address_known": False,
-            }
         if story.get("schema") != STORY_SCHEMA:
             collector.add("invalid_schema", "schema", f"schema 必须是 {STORY_SCHEMA}。")
         for field in sorted(_FORBIDDEN_LEGACY_FIELDS.intersection(story)):
@@ -318,8 +299,54 @@ class NumericV2Compiler:
             json_bytes=canonical_bytes,
             package_hash=f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}",
             warnings=tuple(warnings),
-            compatible_package_hashes=(legacy_hash,) if legacy_hash else (),
+            # v2.2 不再接受旧包哈希；升级后的包必须使用新的规范字节重新生成哈希。
+            compatible_package_hashes=(),
         )
+
+    def compile_v2_1(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
+        """旧版编译入口已停用；作者必须重新导出 v2.2 包。"""  # noqa: DOCSTRING_CJK
+
+        raise NumericV2CompileError([
+            NumericV2Issue(
+                "numeric_v2_upgrade_required",
+                "meta.contract_version",
+                "旧版剧本包必须升级到 v2.2 后才能编译或运行。",
+            )
+        ])
+
+    def compile_v2_2(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
+        """只接受显式声明 v2.2 的新包，并执行不依赖旧证据链的数值限幅门禁。"""  # noqa: DOCSTRING_CJK
+
+        # 先做版本门禁，确保 CLI、注册表和直接编译入口对旧包返回同一个升级提示。
+        meta = payload.get("meta") if isinstance(payload, Mapping) else None
+        if not isinstance(meta, Mapping) or meta.get("contract_version") != "v2.2":
+            raise NumericV2CompileError([
+                NumericV2Issue(
+                    "numeric_v2_upgrade_required",
+                    "meta.contract_version",
+                    "旧版剧本包必须升级到 v2.2 后才能编译或运行。",
+                )
+            ])
+        compiled = self.compile(payload)
+        issues: list[NumericV2Issue] = []
+        # v2.2 的目标字段只作为创作素材；数值限幅与版本门禁独立校验。
+        for metric_id, metric in (compiled.story.get("metric_schema") or {}).items():
+            if not isinstance(metric, Mapping):
+                continue
+            limits = metric.get("per_turn_limit")
+            if not isinstance(limits, Mapping):
+                continue
+            for direction in ("increase", "decrease"):
+                value = limits.get(direction)
+                if _is_int(value) and not 1 <= value <= 5:
+                    issues.append(NumericV2Issue(
+                        "v2_2_turn_limit_out_of_range",
+                        f"metric_schema.{metric_id}.per_turn_limit.{direction}",
+                        "v2.2 每个方向的单回合限幅必须是 1—5 的正整数。",
+                    ))
+        if issues:
+            raise NumericV2CompileError(issues)
+        return compiled
 
     @staticmethod
     def _validate_meta(c: _Collector, value: Any) -> None:
@@ -327,6 +354,15 @@ class NumericV2Compiler:
         c.require_id(meta.get("story_id"), "meta.story_id")
         for field in ("title", "author", "revision", "language"):
             c.require_text(meta.get(field), f"meta.{field}")
+        if (
+            "contract_version" in meta
+            and meta.get("contract_version") not in _NUMERIC_CONTRACT_VERSIONS
+        ):
+            c.add(
+                "invalid_numeric_contract_version",
+                "meta.contract_version",
+                f"演绎合同版本必须是 {', '.join(sorted(_NUMERIC_CONTRACT_VERSIONS))}。",
+            )
 
     @staticmethod
     def _validate_intro(c: _Collector, value: Any) -> None:
@@ -456,19 +492,13 @@ class NumericV2Compiler:
     def _validate_story_beat(c: _Collector, value: Any, path: str) -> None:
         beat = c.obj(value, path)
         summary = c.require_text(beat.get("summary"), f"{path}.summary")
-        # 新包的 opening_scene 是唯一可见开场；旧包才从摘要首句兼容提取。
+        # opening_scene 是显式可见开场；缺失时仅使用当前摘要首句作为作者输入。
         opening_path = f"{path}.opening_scene" if "opening_scene" in beat else f"{path}.summary"
         opening_scene = (
             c.require_text(beat.get("opening_scene"), opening_path)
             if "opening_scene" in beat
             else summary
         )
-        if opening_scene and _PLAYER_OWNED_SUBJECT_RE.search(_first_sentence(opening_scene)):
-            c.add(
-                "player_owned_opening_forbidden",
-                opening_path,
-                "节点开场只能建立环境或猫娘可见行动，不得替玩家执行行动或决定。",
-            )
         if "relationship_ceiling" in beat and beat.get("relationship_ceiling") not in _RELATIONSHIP_CEILINGS:
             c.add(
                 "invalid_relationship_ceiling",
@@ -484,27 +514,65 @@ class NumericV2Compiler:
                 )
             NumericV2Compiler._validate_structured_goals(c, beat.get("goals"), f"{path}.goals")
         else:
-            # 兼容目标仍沿用原有玩家归属保护；结构化目标依靠显式 owner 分配职责。
-            must_happen = c.require_text_list(
+            c.require_text_list(
                 beat.get("must_happen"),
                 f"{path}.must_happen",
                 allow_empty=False,
             )
-            for index, item in enumerate(must_happen):
-                if (
-                    _PLAYER_OWNED_SUBJECT_RE.search(item)
-                    or _FORCED_PLAYER_ACTION_RE.search(item)
-                ):
-                    c.add(
-                        "player_owned_goal_forbidden",
-                        f"{path}.must_happen[{index}]",
-                        "幕目标必须由猫娘或环境主动呈现，不得预先规定玩家行动。",
-                    )
         c.require_text_list(beat.get("must_not_happen"), f"{path}.must_not_happen", allow_empty=True)
         c.require_text(beat.get("catgirl_situation"), f"{path}.catgirl_situation")
         c.require_text(beat.get("transition_goal"), f"{path}.transition_goal")
+        if "character_state" in beat:
+            NumericV2Compiler._validate_character_state(
+                c,
+                beat.get("character_state"),
+                f"{path}.character_state",
+            )
         if "acting_contract" in beat:
             NumericV2Compiler._validate_acting_contract(c, beat.get("acting_contract"), f"{path}.acting_contract")
+
+    @staticmethod
+    def _validate_character_state(c: _Collector, value: Any, path: str) -> None:
+        """校验作者写定的三方入幕状态；它只约束演绎，不进入 Session 数值。"""  # noqa: DOCSTRING_CJK
+
+        state = c.obj(value, path)
+        for field, subject in _CHARACTER_STATE_SUBJECTS.items():
+            text = c.require_text(state.get(field), f"{path}.{field}")
+            if text and not text.startswith(subject):
+                c.add(
+                    "character_state_subject_invalid",
+                    f"{path}.{field}",
+                    f"{field} 必须以“{subject}”开头，避免角色状态和行为职责倒置。",
+                )
+        continuity = c.require_text_list(
+            state.get("continuity_from_previous"),
+            f"{path}.continuity_from_previous",
+            allow_empty=True,
+        )
+        if len(continuity) > 4:
+            c.add(
+                "too_many_character_state_continuity_items",
+                f"{path}.continuity_from_previous",
+                "每幕最多保留四条跨幕连续事实。",
+            )
+        boundaries = c.require_text_list(
+            state.get("scene_boundaries"),
+            f"{path}.scene_boundaries",
+            allow_empty=True,
+        )
+        if len(boundaries) > 4:
+            c.add(
+                "too_many_character_state_boundaries",
+                f"{path}.scene_boundaries",
+                "每幕最多保留四条状态边界。",
+            )
+        for index, boundary in enumerate(boundaries):
+            if not boundary.startswith(_NEGATIVE_STATE_BOUNDARY_PREFIXES):
+                c.add(
+                    "character_state_boundary_polarity_invalid",
+                    f"{path}.scene_boundaries[{index}]",
+                    "状态边界必须以“不得”“禁止”或“不能”开头；正向状态应写入对应角色状态。",
+                )
 
     @staticmethod
     def _validate_structured_goals(c: _Collector, value: Any, path: str) -> None:
@@ -559,6 +627,144 @@ class NumericV2Compiler:
                     f"{evidence_path}.anchors",
                     "semantic 模式不读取字面锚点；需要硬核验时请改用 exact。",
                 )
+            if "delivery" in goal:
+                NumericV2Compiler._validate_goal_delivery(
+                    c,
+                    goal.get("delivery"),
+                    f"{goal_path}.delivery",
+                    owner=str(goal.get("owner") or ""),
+                    evidence_mode=str(mode or ""),
+                    evidence_anchors=anchors,
+                    evidence_path=evidence_path,
+                )
+
+    @staticmethod
+    def _validate_goal_delivery(
+        c: _Collector,
+        value: Any,
+        path: str,
+        *,
+        owner: str,
+        evidence_mode: str,
+        evidence_anchors: list[str],
+        evidence_path: str,
+    ) -> None:
+        """校验 v2.1 原子交付；旧目标未声明 delivery 时继续走兼容投影。"""  # noqa: DOCSTRING_CJK
+
+        delivery = c.obj(value, path)
+        delivery_type = delivery.get("type")
+        if delivery_type not in _GOAL_DELIVERY_OUTPUTS:
+            c.add(
+                "invalid_goal_delivery_type",
+                f"{path}.type",
+                f"交付类型必须是 {', '.join(sorted(_GOAL_DELIVERY_OUTPUTS))} 之一。",
+            )
+            return
+        allowed_owners = _GOAL_DELIVERY_OWNERS[delivery_type]
+        if owner not in allowed_owners:
+            c.add(
+                "goal_delivery_owner_mismatch",
+                f"{path}.type",
+                "交付类型与目标 owner 不一致，不能把角色或环境职责交给另一方。",
+            )
+        expected_output = _GOAL_DELIVERY_OUTPUTS[delivery_type]
+        output_field = delivery.get("output_field")
+        if output_field != expected_output:
+            c.add(
+                "goal_delivery_output_mismatch",
+                f"{path}.output_field",
+                f"{delivery_type} 必须写入 {expected_output}。",
+            )
+        if delivery_type == "semantic_state" and evidence_mode != "semantic":
+            c.add(
+                "semantic_delivery_requires_semantic_evidence",
+                f"{path}.type",
+                "semantic_state 只能交给 Evaluator 做语义判断。",
+            )
+        # typed delivery 只声明“谁在什么输出位置完成目标”，不等同于要求逐字复述。
+        # 自然对白、动作和环境变化可以交给 Evaluator 做 semantic 取证；只有作者确实
+        # 需要保留口令、编号或界面原文时才使用 exact anchors。
+        if delivery_type == "catgirl_action":
+            for index, anchor in enumerate(evidence_anchors):
+                if anchor.strip().startswith(("她", "女主", "猫娘")):
+                    # 动作锚点会原样写进括号微动作；第三人称主语属于旁白，进入该字段后会破坏
+                    # “括号内不朗读”的表现协议，也会诱导模型在括号外复述同一句。
+                    c.add(
+                        "catgirl_action_anchor_third_person",
+                        f"{evidence_path}.anchors[{index}]",
+                        "猫娘动作锚点必须直接写动作，不得以‘她/女主/猫娘’等第三人称主语开头。",
+                    )
+        source_ids = c.array(delivery.get("source_ids", []), f"{path}.source_ids")
+        if len(source_ids) > 8:
+            c.add(
+                "too_many_goal_delivery_sources",
+                f"{path}.source_ids",
+                "每项目标最多引用八个正式事实来源。",
+            )
+        seen_sources: set[str] = set()
+        for index, source_id in enumerate(source_ids):
+            source_path = f"{path}.source_ids[{index}]"
+            parsed = c.require_id(source_id, source_path)
+            if parsed and parsed in seen_sources:
+                c.add(
+                    "duplicate_goal_delivery_source",
+                    source_path,
+                    "同一事实来源不能重复声明。",
+                )
+            if parsed:
+                seen_sources.add(parsed)
+        timing = delivery.get("timing", "turn")
+        if timing not in _GOAL_DELIVERY_TIMINGS:
+            c.add(
+                "invalid_goal_delivery_timing",
+                f"{path}.timing",
+                f"交付时机必须是 {', '.join(sorted(_GOAL_DELIVERY_TIMINGS))} 之一。",
+            )
+        state_effects = delivery.get("state_effects")
+        if state_effects is not None:
+            effects = c.obj(state_effects, f"{path}.state_effects")
+            unexpected = set(effects).difference({"dialogue_policy"})
+            for field in sorted(unexpected):
+                c.add(
+                    "unexpected_goal_state_effect",
+                    f"{path}.state_effects.{field}",
+                    "目标状态效果只能修改已声明的发声政策。",
+                )
+            if (
+                "dialogue_policy" in effects
+                and effects.get("dialogue_policy") not in _DIALOGUE_POLICIES
+            ):
+                c.add(
+                    "invalid_dialogue_policy",
+                    f"{path}.state_effects.dialogue_policy",
+                    f"发声政策必须是 {', '.join(sorted(_DIALOGUE_POLICIES))} 之一。",
+                )
+        fallback_inputs = delivery.get("fallback_player_inputs")
+        if fallback_inputs is not None:
+            rows = c.require_text_list(
+                fallback_inputs,
+                f"{path}.fallback_player_inputs",
+                allow_empty=False,
+            )
+            if owner not in {"player", "shared"}:
+                c.add(
+                    "fallback_player_inputs_owner_mismatch",
+                    f"{path}.fallback_player_inputs",
+                    "只有 player 或 shared 目标可以声明玩家推荐兜底。",
+                )
+            if len(rows) > 3:
+                c.add(
+                    "too_many_fallback_player_inputs",
+                    f"{path}.fallback_player_inputs",
+                    "每项目标最多允许三条玩家推荐兜底。",
+                )
+            for index, row in enumerate(rows):
+                if count_tokens(row) > 80:
+                    c.add(
+                        "fallback_player_input_too_long",
+                        f"{path}.fallback_player_inputs[{index}]",
+                        "玩家推荐兜底必须保持为可直接发送的短句。",
+                    )
 
     @staticmethod
     def _validate_acting_contract(c: _Collector, value: Any, path: str) -> None:
@@ -577,6 +783,15 @@ class NumericV2Compiler:
                     f"{path}.{field}",
                     f"{label}必须是 {', '.join(sorted(allowed))} 之一。",
                 )
+        if (
+            "dialogue_policy" in contract
+            and contract.get("dialogue_policy") not in _DIALOGUE_POLICIES
+        ):
+            c.add(
+                "invalid_dialogue_policy",
+                f"{path}.dialogue_policy",
+                f"发声政策必须是 {', '.join(sorted(_DIALOGUE_POLICIES))} 之一。",
+            )
         c.require_text_list(
             contract.get("allowed_behaviors"),
             f"{path}.allowed_behaviors",
@@ -778,21 +993,16 @@ class NumericV2Compiler:
     def _validate_transition(c: _Collector, value: Any, path: str) -> None:
         contract = c.obj(value, path)
         c.require_text(contract.get("reason"), f"{path}.reason")
-        must_deliver = c.require_text_list(
+        c.require_text_list(
             contract.get("must_deliver"),
             f"{path}.must_deliver",
             allow_empty=False,
         )
-        for index, item in enumerate(must_deliver):
-            if (
-                _PLAYER_OWNED_SUBJECT_RE.search(item)
-                or _FORCED_PLAYER_ACTION_RE.search(item)
-            ):
-                c.add(
-                    "player_owned_transition_forbidden",
-                    f"{path}.must_deliver[{index}]",
-                    "过渡合同不得把玩家尚未执行的行动写成必须交付的事实。",
-                )
+        if "bridge_scene_narration" in contract:
+            c.require_text(
+                contract.get("bridge_scene_narration"),
+                f"{path}.bridge_scene_narration",
+            )
         c.require_text_list(contract.get("must_preserve"), f"{path}.must_preserve", allow_empty=True)
         c.require_text(contract.get("tone"), f"{path}.tone")
 
@@ -877,7 +1087,7 @@ class NumericV2Compiler:
                 conditions = route.get("conditions", {})
                 rows = conditions.get("all") or conditions.get("any") or []
                 used.update(row.get("metric") for row in rows if isinstance(row, Mapping))
-        return [
+        warnings = [
             NumericV2Warning(
                 "unused_metric",
                 f"metric_schema.{metric_id}",
@@ -886,7 +1096,7 @@ class NumericV2Compiler:
             for metric_id in story.get("metric_schema", {})
             if metric_id not in used
         ]
-
+        return warnings
 
 __all__ = [
     "CompiledNumericV2Package",
@@ -897,5 +1107,4 @@ __all__ = [
     "MAX_RECOMMENDED_TURNS",
     "MAX_STORY_GOALS",
     "STORY_SCHEMA",
-    "numeric_v2_story_goal_contracts",
 ]

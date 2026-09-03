@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -11,6 +11,7 @@ from services.theater import numeric_v2_registry
 from services.theater.numeric_v2 import NumericV2CompileError, NumericV2Compiler
 from services.theater.numeric_v2_registry import (
     NumericV2PackageExistsError,
+    NumericV2PackageError,
     NumericV2PackageRegistry,
 )
 
@@ -76,6 +77,8 @@ def numeric_v2_story(*, player_address_known: bool = True) -> dict:
             "author": "test",
             "revision": "r1",
             "language": "zh-CN",
+            # 默认测试包代表当前唯一可运行的 v2.2 合同；旧包测试显式改写为 v2.1。
+            "contract_version": "v2.2",
         },
         "intro": {
             "background": "玩家多年后回到小镇，在花店遇到旧友。",
@@ -132,12 +135,237 @@ def numeric_v2_story(*, player_address_known: bool = True) -> dict:
     }
 
 
+def numeric_v2_1_story() -> dict:
+    """把基础包升级为带事实来源与作者桥段的严格 v2.1 测试包。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["meta"]["contract_version"] = "v2.1"
+    for node in story["nodes"]:
+        beat = node["story_beat"]
+        summary = beat["summary"]
+        beat["opening_scene"] = summary
+        beat.pop("must_happen")
+        beat["goals"] = [{
+            "id": f"{node['id']}.opening_fact",
+            "owner": "environment",
+            "description": "环境明确交付当前场景事实。",
+            "evidence": {"mode": "exact", "anchors": [summary]},
+            "delivery": {
+                "type": "environment_fact",
+                "output_field": "scene_update",
+                "source_ids": [f"opening.{node['id']}"],
+            },
+        }]
+        for route in node["route_gates"]:
+            route["transition_contract"]["bridge_scene_narration"] = (
+                "雨声停下，花店外的长街重新亮起路灯。"
+            )
+            route["transition_contract"]["source_ids"] = [
+                f"goal.{node['id']}.opening_fact"
+            ]
+    return story
+
+
 def test_numeric_v2_compiles_canonical_package():
     compiled = NumericV2Compiler().compile(numeric_v2_story())
 
     assert compiled.story["schema"] == "neko.story.numeric.v2"
     assert compiled.package_hash.startswith("sha256:")
     assert json.loads(compiled.json_bytes)["meta"]["story_id"] == "numeric_v2_contract"
+
+
+def test_numeric_v2_old_compile_entry_requires_upgrade():
+    """旧版编译入口只返回升级错误，不再生成可运行包。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_1_story()
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_1(story)
+    assert {issue.code for issue in caught.value.issues} == {"numeric_v2_upgrade_required"}
+
+
+def test_numeric_v2_v21_package_cannot_compile():
+    story = numeric_v2_1_story()
+
+    with pytest.raises(NumericV2CompileError, match="numeric_v2_compile_failed"):
+        NumericV2Compiler().compile_v2_1(story)
+
+
+def test_numeric_v2_accepts_structured_character_state_line():
+    story = numeric_v2_1_story()
+    story["nodes"][0]["story_beat"]["character_state"] = {
+        "catgirl_state": "女主仍在观察男主是否可信。",
+        "player_state": "男主刚回到小镇，身体状态正常。",
+        "environment_state": "环境为雨后的花店，旧信仍在桌面。",
+        "continuity_from_previous": [],
+        "scene_boundaries": ["不得把旧信持有人从女主改成男主。"],
+    }
+
+    with pytest.raises(NumericV2CompileError):
+        NumericV2Compiler().compile_v2_1(story)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "issue_code"),
+    [
+        ("player_state", "女主刚回到小镇。", "character_state_subject_invalid"),
+        ("scene_boundaries", ["保持旧信持有人不变。"], "character_state_boundary_polarity_invalid"),
+    ],
+)
+def test_numeric_v2_rejects_ambiguous_character_state_line(field, value, issue_code):
+    story = numeric_v2_1_story()
+    state = {
+        "catgirl_state": "女主仍在观察男主是否可信。",
+        "player_state": "男主刚回到小镇，身体状态正常。",
+        "environment_state": "环境为雨后的花店，旧信仍在桌面。",
+        "continuity_from_previous": [],
+        "scene_boundaries": ["不得把旧信持有人从女主改成男主。"],
+    }
+    state[field] = value
+    story["nodes"][0]["story_beat"]["character_state"] = state
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_1(story)
+
+    assert "numeric_v2_upgrade_required" in {issue.code for issue in caught.value.issues}
+
+
+def test_numeric_v2_v2_1_accepts_long_context_delivery_controls():
+    story = numeric_v2_1_story()
+    goal = story["nodes"][0]["story_beat"]["goals"][0]
+    goal["owner"] = "player"
+    goal["evidence"] = {"mode": "semantic", "anchors": []}
+    goal["delivery"] = {
+        "type": "semantic_state",
+        "output_field": "evaluator",
+        "source_ids": ["runtime.player_input"],
+        "timing": "turn",
+        "fallback_player_inputs": ["我先说明自己的打算。"],
+        "state_effects": {"dialogue_policy": "forbidden"},
+    }
+
+    with pytest.raises(NumericV2CompileError):
+        NumericV2Compiler().compile_v2_1(story)
+
+
+def test_numeric_v2_v2_1_rejects_multiple_opening_deliveries():
+    story = numeric_v2_1_story()
+    goals = story["nodes"][0]["story_beat"]["goals"]
+    goals[0]["delivery"]["timing"] = "opening"
+    goals.append(deepcopy(goals[0]))
+    goals[1]["id"] = "start.second_opening"
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_1(story)
+
+    assert "numeric_v2_upgrade_required" in {issue.code for issue in caught.value.issues}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "issue_code"),
+    [
+        (
+            lambda story: story["nodes"][0]["story_beat"]["goals"][0]["delivery"].update(
+                source_ids=["fact.does_not_exist"]
+            ),
+            "v2_1_fact_source_unknown",
+        ),
+        (
+            lambda story: story["nodes"][0]["story_beat"]["goals"][0]["delivery"].update(
+                source_ids=["goal.ending_stay.opening_fact"]
+            ),
+            "v2_1_fact_source_not_available",
+        ),
+        (
+            lambda story: story.update(facts=[
+                {"id": "fact.a", "text": "事实 A。", "source_ids": ["fact.b"]},
+                {"id": "fact.b", "text": "事实 B。", "source_ids": ["fact.a"]},
+            ]),
+            "v2_1_fact_cycle",
+        ),
+    ],
+)
+def test_numeric_v2_strict_fact_graph_rejects_invalid_sources(mutate, issue_code):
+    story = numeric_v2_1_story()
+    mutate(story)
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_1(story)
+
+    assert "numeric_v2_upgrade_required" in {issue.code for issue in caught.value.issues}
+
+
+def test_numeric_v2_declared_v2_1_cannot_bypass_registry_strict_gate(tmp_path):
+    registry = NumericV2PackageRegistry(tmp_path / "packages")
+    legacy = numeric_v2_story()
+    legacy["meta"]["contract_version"] = "v2.1"
+
+    with pytest.raises(NumericV2CompileError) as direct_compile_error:
+        NumericV2Compiler().compile_v2_2(legacy)
+    assert {issue.code for issue in direct_compile_error.value.issues} == {
+        "numeric_v2_upgrade_required"
+    }
+
+    with pytest.raises(NumericV2PackageError) as caught:
+        registry.import_package(legacy)
+
+    assert str(caught.value) == "numeric_v2_upgrade_required"
+
+    strict_story = numeric_v2_1_story()
+    with pytest.raises(NumericV2PackageError, match="numeric_v2_upgrade_required"):
+        registry.import_package(strict_story)
+
+
+def test_numeric_v2_registry_hides_and_rejects_legacy_package_on_load(tmp_path):
+    """磁盘上的旧包只供作者升级，不能出现在运行列表或直接加载。"""  # noqa: DOCSTRING_CJK
+
+    package_root = tmp_path / "packages"
+    package_root.mkdir()
+    registry = NumericV2PackageRegistry(package_root)
+    legacy = numeric_v2_story()
+    legacy["meta"].update({
+        "story_id": "legacy_on_disk",
+        "contract_version": "v2.1",
+    })
+    (package_root / "legacy_on_disk.json").write_text(
+        json.dumps(legacy, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    # 旧包不进入可运行列表；即使知道 story_id，也必须先升级到 v2.2。
+    assert registry.list_packages() == []
+    with pytest.raises(NumericV2PackageError, match="numeric_v2_upgrade_required"):
+        registry.load_engine("legacy_on_disk")
+
+
+def test_numeric_v2_v22_uses_strict_limit_gate_and_registry_dispatch(tmp_path):
+    """新生成包必须显式声明 v2.2，并把单回合变化限制在 1—5。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_1_story()
+    story["meta"]["contract_version"] = "v2.2"
+    compiled = NumericV2Compiler().compile_v2_2(story)
+    assert compiled.story["meta"]["contract_version"] == "v2.2"
+
+    registry = NumericV2PackageRegistry(tmp_path / "packages")
+    imported = registry.import_package(story)
+    assert imported["contract_version"] == "v2.2"
+
+    story["metric_schema"]["trust"]["per_turn_limit"]["increase"] = 6
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+    assert any(
+        issue.code == "v2_2_turn_limit_out_of_range"
+        for issue in caught.value.issues
+    )
+
+
+def test_numeric_v2_v22_does_not_require_legacy_typed_goal_contract():
+    """v2.2 目标是创作素材，不再因缺少旧 typed evidence/delivery 被编译器阻断。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["meta"]["contract_version"] = "v2.2"
+    compiled = NumericV2Compiler().compile_v2_2(story)
+
+    assert compiled.story["meta"]["contract_version"] == "v2.2"
 
 
 def test_numeric_v2_rejects_actor_prompt_field_over_budget():
@@ -167,24 +395,6 @@ def test_numeric_v2_requires_structured_initial_player_address_state():
         issue.code == "invalid_initial_player_address_known"
         and issue.path == "initial_state.player_address_known"
         for issue in error.value.issues
-    )
-
-
-def test_numeric_v2_legacy_package_defaults_missing_player_address_state_to_unknown():
-    story = numeric_v2_story()
-    del story["initial_state"]["player_address_known"]
-    legacy_bytes = json.dumps(
-        story,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    compiled = NumericV2Compiler().compile(story)
-
-    assert compiled.story["initial_state"]["player_address_known"] is False
-    assert compiled.compatible_package_hashes == (
-        f"sha256:{hashlib.sha256(legacy_bytes).hexdigest()}",
     )
 
 
@@ -259,6 +469,139 @@ def test_numeric_v2_accepts_structured_story_beat_contract_without_rewriting_leg
     assert "opening_scene" not in compiled.story["nodes"][1]["story_beat"]
     assert "relationship_ceiling" not in compiled.story["nodes"][1]["story_beat"]
     assert "goals" not in compiled.story["nodes"][1]["story_beat"]
+
+
+def test_numeric_v2_accepts_typed_goal_delivery_contract():
+    """v2.1 交付类型必须原样进入 canonical 包，供 Runtime 确定性消费。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat.pop("must_happen")
+    beat["goals"] = [{
+        "id": "confirm_old_letter",
+        "owner": "catgirl",
+        "description": "女主明确说明旧信由她保管。",
+        "evidence": {"mode": "exact", "anchors": ["旧信由我保管"]},
+        "delivery": {
+            "type": "catgirl_dialogue",
+            "output_field": "performance_dialogue",
+            "source_ids": ["opening.old_letter"],
+        },
+    }]
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert compiled.story["nodes"][0]["story_beat"]["goals"][0]["delivery"] == {
+        "type": "catgirl_dialogue",
+        "output_field": "performance_dialogue",
+        "source_ids": ["opening.old_letter"],
+    }
+
+
+def test_numeric_v2_rejects_third_person_exact_anchor_for_catgirl_action():
+    """动作锚点会原样进入括号，不能把第三人称旁白交给 TTS。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat.pop("must_happen")
+    beat["goals"] = [{
+        "id": "disconnect_leg",
+        "owner": "catgirl",
+        "description": "女主切断右腿运动模块。",
+        "evidence": {"mode": "exact", "anchors": ["她切断右腿运动模块"]},
+        "delivery": {
+            "type": "catgirl_action",
+            "output_field": "performance_action",
+            "source_ids": ["opening.old_letter"],
+        },
+    }]
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert "catgirl_action_anchor_third_person" in {
+        issue.code for issue in caught.value.issues
+    }
+
+
+@pytest.mark.parametrize(
+    ("delivery", "owner", "evidence", "issue_code"),
+    [
+        (
+            {"type": "environment_fact", "output_field": "scene_update"},
+            "catgirl",
+            {"mode": "exact", "anchors": ["雨停了"]},
+            "goal_delivery_owner_mismatch",
+        ),
+        (
+            {"type": "catgirl_dialogue", "output_field": "scene_update"},
+            "catgirl",
+            {"mode": "exact", "anchors": ["由我保管"]},
+            "goal_delivery_output_mismatch",
+        ),
+        (
+            {"type": "semantic_state", "output_field": "evaluator"},
+            "catgirl",
+            {"mode": "exact", "anchors": ["愿意信任"]},
+            "semantic_delivery_requires_semantic_evidence",
+        ),
+    ],
+)
+def test_numeric_v2_rejects_invalid_typed_goal_delivery(
+    delivery,
+    owner,
+    evidence,
+    issue_code,
+):
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat.pop("must_happen")
+    beat["goals"] = [{
+        "id": "typed_goal",
+        "owner": owner,
+        "description": "用于验证 typed delivery 的目标。",
+        "evidence": evidence,
+        "delivery": delivery,
+    }]
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert any(issue.code == issue_code for issue in caught.value.issues)
+
+
+@pytest.mark.parametrize(
+    ("delivery_type", "owner", "output_field"),
+    [
+        ("catgirl_dialogue", "catgirl", "performance_dialogue"),
+        ("catgirl_action", "catgirl", "performance_action"),
+        ("environment_fact", "environment", "scene_update"),
+        ("player_action", "player", "player_input"),
+        ("shared_agreement", "shared", "shared"),
+    ],
+)
+def test_numeric_v2_accepts_natural_semantic_typed_delivery(
+    delivery_type,
+    owner,
+    output_field,
+):
+    """输出位置不等于逐字合同；自然动作与对白由 Evaluator 做语义取证。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat.pop("must_happen")
+    beat["goals"] = [{
+        "id": "semantic_typed_goal",
+        "owner": owner,
+        "description": "用自然、可观察的方式推进当前目标。",
+        "evidence": {"mode": "semantic", "anchors": []},
+        "delivery": {
+            "type": delivery_type,
+            "output_field": output_field,
+        },
+    }]
+
+    NumericV2Compiler().compile(story)
 
 
 @pytest.mark.parametrize(
@@ -388,66 +731,92 @@ def test_numeric_v2_rejects_identity_without_bounded_source_name(field, identity
         "在决定离开后，两人登上了前往城市的列车。",
     ],
 )
-def test_numeric_v2_rejects_target_opening_that_executes_player_action(summary):
+def test_numeric_v2_does_not_validate_opening_natural_language_with_word_lists(summary):
     story = numeric_v2_story()
     story["nodes"][1]["story_beat"]["summary"] = summary
 
-    with pytest.raises(NumericV2CompileError) as error:
-        NumericV2Compiler().compile(story)
+    compiled = NumericV2Compiler().compile(story)
 
-    assert any(
-        issue.code == "player_owned_opening_forbidden"
-        and issue.path == "nodes[1].story_beat.summary"
-        for issue in error.value.issues
+    assert compiled.story["nodes"][1]["story_beat"]["summary"] == summary
+
+
+def test_numeric_v2_accepts_target_opening_with_causal_player_injury():
+    story = numeric_v2_story()
+    story["nodes"][1]["story_beat"]["summary"] = (
+        "爆炸震裂舱壁，你被冲击波掀倒，手臂被碎片划伤。"
     )
 
+    compiled = NumericV2Compiler().compile(story)
 
-def test_numeric_v2_rejects_transition_that_delivers_player_action():
+    assert "你被冲击波掀倒" in compiled.story["nodes"][1]["story_beat"]["summary"]
+
+
+def test_numeric_v2_does_not_validate_transition_natural_language_with_word_lists():
     story = numeric_v2_story()
     story["nodes"][0]["route_gates"][0]["transition_contract"]["must_deliver"] = [
         "男主在打烊后展示一份商业改革计划书。",
     ]
 
-    with pytest.raises(NumericV2CompileError) as error:
-        NumericV2Compiler().compile(story)
+    compiled = NumericV2Compiler().compile(story)
 
-    assert any(
-        issue.code == "player_owned_transition_forbidden"
-        and issue.path == "nodes[0].route_gates[0].transition_contract.must_deliver[0]"
-        for issue in error.value.issues
-    )
+    assert compiled.story["nodes"][0]["route_gates"][0]["transition_contract"][
+        "must_deliver"
+    ] == ["男主在打烊后展示一份商业改革计划书。"]
 
 
-def test_numeric_v2_rejects_player_owned_scene_goal():
+def test_numeric_v2_accepts_author_transition_bridge_without_semantic_validation():
+    story = numeric_v2_story()
+    contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
+    contract["bridge_scene_narration"] = "雨声停下，花店外的长街重新亮起路灯。"
+
+    compiled = NumericV2Compiler().compile(story)
+    assert compiled.story["nodes"][0]["route_gates"][0]["transition_contract"][
+        "bridge_scene_narration"
+    ] == "雨声停下，花店外的长街重新亮起路灯。"
+
+    contract["bridge_scene_narration"] = "男主走出花店并替两人作出决定。"
+    compiled = NumericV2Compiler().compile(story)
+    assert compiled.story["nodes"][0]["route_gates"][0]["transition_contract"][
+        "bridge_scene_narration"
+    ] == contract["bridge_scene_narration"]
+
+
+def test_numeric_v2_accepts_author_transition_bridge_with_causal_player_result():
+    story = numeric_v2_story()
+    contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
+    contract["bridge_scene_narration"] = "爆炸掀起冲击波，你被气浪推入门后的掩体。"
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert compiled.story["nodes"][0]["route_gates"][0]["transition_contract"][
+        "bridge_scene_narration"
+    ] == "爆炸掀起冲击波，你被气浪推入门后的掩体。"
+
+
+def test_numeric_v2_does_not_validate_legacy_goal_natural_language_with_word_lists():
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["must_happen"] = [
         "男主展示合同并承诺留下。",
     ]
 
-    with pytest.raises(NumericV2CompileError) as error:
-        NumericV2Compiler().compile(story)
+    compiled = NumericV2Compiler().compile(story)
 
-    assert any(
-        issue.code == "player_owned_goal_forbidden"
-        and issue.path == "nodes[0].story_beat.must_happen[0]"
-        for issue in error.value.issues
-    )
+    assert compiled.story["nodes"][0]["story_beat"]["must_happen"] == [
+        "男主展示合同并承诺留下。"
+    ]
 
 
-def test_numeric_v2_rejects_scene_goal_that_forces_player_action():
+def test_numeric_v2_does_not_guess_forced_action_from_legacy_goal_text():
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["must_happen"] = [
         "女主强迫男主在契约上签字。",
     ]
 
-    with pytest.raises(NumericV2CompileError) as error:
-        NumericV2Compiler().compile(story)
+    compiled = NumericV2Compiler().compile(story)
 
-    assert any(
-        issue.code == "player_owned_goal_forbidden"
-        and issue.path == "nodes[0].story_beat.must_happen[0]"
-        for issue in error.value.issues
-    )
+    assert compiled.story["nodes"][0]["story_beat"]["must_happen"] == [
+        "女主强迫男主在契约上签字。"
+    ]
 
 
 def test_numeric_v2_rejects_legacy_interaction_fields_and_band_gaps():

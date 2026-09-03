@@ -1,10 +1,10 @@
 # N.E.K.O 小剧场胶囊演绎迁移方案
 
-状态：实施中（阶段 A—C2 已落地并进入自动回归；阶段 C2 仍需真实模型复测；阶段 D 待完成表现合同与道具方案讨论后实施）
+状态：历史迁移记录（当前实现合同以 `neko-theater-architecture.md` 的 Numeric v2.2 为准）
 
 本文描述小剧场从“独立页面内选剧、输入和回放”迁移到“N.E.K.O 本体胶囊输入框演绎”的目标方案。它是迁移期间的专项实施记录，不是第三份长期小剧场合同；实施完成并通过验收后，应把仍然有效的规则合并回[小剧场架构开发文档](./neko-theater-architecture.md)，把真实演绎问题写入[小剧场实测问题描述以及解决方案](./neko-theater-issues-and-solutions.md)，再归档或删除本文。
 
-当前代码和测试仍是“已经实现了什么”的事实源。对于目标状态，本文记录的“删除自由模式、收敛选剧入口、把演绎迁入本体胶囊”是本次已确认的迁移决策，临时覆盖长期架构文档第 1、7、9 节中与双模式和独立演绎页冲突的内容；Session、Ledger、模型权限、隐藏状态和原子提交等其余长期合同继续有效。本文没有授权立即修改代码。
+当前代码和测试仍是“已经实现了什么”的事实源。对于目标状态，本文记录的“删除自由模式、收敛选剧入口、把演绎迁入本体胶囊”是本次已确认的迁移决策，临时覆盖长期架构文档第 1、7、9 节中与双模式和独立演绎页冲突的内容；Session、Ledger、模型权限、隐藏状态和原子提交等其余长期合同继续有效。本文没有授权立即修改代码。文中关于旧包、旧 Session、旧正文或独立推荐代理的兼容描述均为当时的迁移记录，当前实现已删除这些运行时兼容；旧包必须先升级到 v2.2。
 
 ## 1. 迁移目标
 
@@ -155,6 +155,8 @@ sequenceDiagram
 交接消息只传 Story ID、Session ID、revision、`launch_id` 和动作类型，不把整份 Session 或隐藏状态跨窗口复制。N.E.K.O 本体必须重新向服务端读取快照，服务端仍是事实源。
 
 消息通过现有 `neko_page_channel` 增加独立 `theater:*` 命名空间，并保留同源 `window.opener.postMessage` 后备。必须校验同源、消息 schema、`launch_id`、目标角色与超时。不能把剧场消息塞进 `yui_guide_*` 教程协议。
+
+Electron 的 Pet 本体页与独立 `/chat` 页都会加载剧场 Runtime，但只有紧凑胶囊窗口可以拥有演绎投影和 TTS。选剧页若由 Pet 打开，Pet 只把 `launch-request` 确定性转交给 `data-chat-host-kind="compact"` 的 Runtime，自身不得读取快照或播放正文；`/chat_full` 即使仍存活也不得并行接管。同一 `launch_id` 的短时重发只覆盖聊天页尚在加载的竞态，目标 Runtime 必须幂等去重。
 
 只有收到 `theater:launch-ready` 后才关闭选择窗口。若 Session 已成功创建但本体未确认，选择窗口保持打开，显示“演出已准备好，正在连接 N.E.K.O 本体”，允许重试交接；重试只能恢复同一 Session，不能创建第二个 Session。
 
@@ -315,7 +317,7 @@ type TheaterPresentation = {
 - 前端按原始字符顺序逐字显示，不给解析片段额外插入换行；
 - `speak-block` 只接受服务端从已提交正文解析出的对白片段索引，不信任前端提交的文本；
 - 开场、换场桥和目标开场使用独立 `scene_narration`，继续进入 system 气泡且不进入 TTS；
-- 旧 `content` 和 `narration/dialogue` Session 继续由兼容读取器按原顺序恢复。
+- 当前 Session 只接受 `performance` 与 v2.2 合同；带旧 `content` 或 `narration/dialogue` 字段的存档不再由运行时恢复演绎，必须先升级。维护/删除链路可读取生命周期快照做结束、归档补齐或清理，但不会开放新回合。
 
 前端展开 `performance` 时保留 `opening / ordinary / source_response / transition_bridge / target_opening` 阶段，并为解析片段生成内部 `displayKind: action | scene`。实时播放时，Runtime 为混合正文创建一条临时 `streaming` 猫娘历史消息，按原始字符串逐字追加，同时按解析顺序逐段请求括号外对白 TTS；完成后切为 `sent`。React 继续复用现有历史消息组件，不新增第三套气泡；胶囊只保留玩家输入职责。
 
@@ -332,7 +334,7 @@ Numeric v2 页面载荷通过 `participants.player_name / catgirl_name` 显式�
 | `_system_prompt()` | 普通回合只生成 `performance`；开场和换场使用 `scene_narration`；括号外只能是猫娘实际发言，括号内不能替玩家行动 |
 | `_opening_messages()` 的 `instruction` | 开场只允许一句必要场景锚点和猫娘主动对白，不把章节正文展开成长旁白 |
 | `_turn_messages()` 的 `turn_instruction` / `response_instruction` | 普通回合先直接回应玩家，只推进一个互动节拍；接近 `recommended_turns` 时用猫娘动作、对白或环境动态把待发生目标带入现场，而不是增加叙述长度 |
-| `_parse_output()` 与 `numeric_v2_performance.py` | 校验混合正文并确定性拆出动作/对白；普通回合至少包含一个动作和一句对白；兼容旧 Session 内容块 |
+| `_parse_output()` 与 `numeric_v2_performance.py` | 校验混合正文并确定性拆出动作/对白；普通回合至少包含一个动作和一句对白；不兼容旧 Session 内容块 |
 
 可直接落入 `NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION` 的 Prompt 草案为：
 
@@ -355,8 +357,8 @@ summary. Parentheses must be balanced and cannot be nested.
 
 | 文件 | 目标修改 |
 | --- | --- |
-| `static/app/app-theater-runtime.js` | 解析混合正文并保留原始字符顺序；微动作与对白组成 assistant 消息，独立 `scene_narration` 组成 system 消息；TTS 只消费括号外片段；恢复历史兼容新旧合同 |
-| `frontend/react-neko-chat/src/message-schema.ts` | 给剧场历史条目增加可选 `displayKind` 和前端临时 `streaming / sent` 状态；旧投影缺失时保持兼容 |
+| `static/app/app-theater-runtime.js` | 解析混合正文并保留原始字符顺序；微动作与对白组成 assistant 消息，独立 `scene_narration` 组成 system 消息；TTS 只消费括号外片段；恢复历史仅接受当前 v2.2 投影 |
+| `frontend/react-neko-chat/src/message-schema.ts` | 给剧场历史条目增加可选 `displayKind` 和前端临时 `streaming / sent` 状态；缺失字段只按当前 v2.2 默认投影，不恢复旧合同 |
 | `frontend/react-neko-chat/src/App.tsx` | 小剧场输出只映射到历史消息；narration 与 dialogue 都使用猫娘 assistant 气泡，结局卡仍可使用 system；胶囊只作为玩家输入框 |
 | `frontend/react-neko-chat/src/CompactExportHistoryPanel.tsx` | 直接复用既有 assistant 气泡和 `SmartTextBlock` 的 streaming 呈现，不新增旁白或打字机组件 |
 | `frontend/react-neko-chat/src/styles.css` | 删除只服务胶囊旁白预览的样式；不能改普通聊天消息的共享基线 |
@@ -373,29 +375,32 @@ Runtime 不再补写括号，而是原样显示已经校验的混合正文。内
 - `transition_goal` → `scene_direction`；
 - 章节标题 → 软主题锚点。
 
-不应把约 400 字的 `story_beat.summary` 原样作为每回合 Prompt：详细大纲中允许描述预计发生的双角色互动，直接交给 Actor 容易把玩家尚未做出的行动当成事实、一次演完整章、增加旁白长度，并挤占最新玩家输入和工作记忆预算。
+当前 v2.2 已改为把当前幕完整 `story_beat.summary` 直接放入普通回合的 `current_scene`，并把下一幕完整简介压入 `next_scene`；这两块都只是剧情方向，不是已发生事实或待办清单。早期迁移草案中的 `summary_after_acceptance`、`opening_after_acceptance`、`transition_direction` 不再作为普通回合的独立 Prompt 字段：它们只可能作为 Runtime/Actor 的内部换场预览数据存在，正式换场另行发送紧凑的 `transition` 数据。Actor 根据当前回合数与推荐回合数决定何时收束，但在玩家接受和 Runtime 正式换场前，不得把未来简介中的事件、地点、角色、道具或玩家行动写成已经发生。
 
-分阶段决策如下：
+分阶段决策当前状态如下：
 
-1. 阶段 C2 已只修改 N.E.K.O Actor Prompt 与胶囊显示，下一步使用新 Story ID、新 Session ID 做真实模型复测；
-2. 若对白主导后剧情仍能稳定推进，生成器保持不变；
-3. 若实测出现“旁白变短但每幕只围绕一个目标反复打转”，再进入生成器阶段 G1：让生成器为每幕提供 2—4 个按顺序但非强制完成的 `interaction_beats`；
+1. 阶段 C2 的代码、Prompt、胶囊显示和自动回归已完成；首轮免费端点探针记录到开场半截 JSON；改用临时 `qwen3.7-plus` 后，两本样本各 8 回合均形成成功提交轨迹，可用于初步观察换场流畅度；
+2. 当前 v2.2 保持生成器与 Runtime 合同不变，真实模型失败按输出合同记录，不用新增剧本专属 Prompt 或自动 Repair 掩盖；
+3. 迁移期间提出的生成器阶段 G1（`interaction_beats`）没有进入当前设计和实现范围；若未来重新讨论，必须作为新的产品方案单独确认，不能把下方备选设计当作现行待办。
+
+以下 G1 内容仅保留为迁移期间的历史备选方案，不代表当前实现要求：
+
 4. `interaction_beats` 只能描述猫娘或环境可以主动呈现的互动机会，例如“女主把旧信摊开并指出日期矛盾”，不能规定玩家回答、接受物品、靠近或承诺；
-5. 这些节拍只作为 Actor 的软场景计划，不参与 Evaluator `scene_complete`、Runtime 路由、Ledger 或隐藏数值；Actor 单回合不能压缩演完多个节拍，也不能把计划倒写成已发生事实；是否已经发生仍以 `recent_context` 为准，不增加独立节拍状态机；
-6. G1 必须同时修改生成器合同、N.E.K.O 编译合同、Actor 投影和两边文档，不能只在生成器中增加一个 N.E.K.O 不读取的字段。
+5. 这些节拍只能作为 Actor 的软场景计划，不参与 Evaluator `scene_complete`、Runtime 路由、Ledger 或隐藏数值；Actor 单回合不能压缩演完多个节拍，也不能把计划倒写成已发生事实；是否已经发生仍以 `recent_context` 为准，不增加独立节拍状态机；
+6. 若未来重新启动 G1，必须同时修改生成器合同、N.E.K.O 编译合同、Actor 投影和两边文档，不能只在生成器中增加一个 N.E.K.O 不读取的字段。
 
-如果进入 G1，预计涉及：
+如果未来重新立项 G1，预计涉及（历史备选，不是当前待办）：
 
 | 仓库 | 文件 / 区域 | 目标修改 |
 | --- | --- | --- |
 | `NEKO_Numeric_drama` | `theater_generator/generation/numeric_v2.py` | 主线、节点完善和支线 Prompt 生成安全的 `interaction_beats`，并投影进 `story_beat` |
 | `NEKO_Numeric_drama` | `theater_generator/numeric_v2.py`、`neko_v2_bridge.py` | 校验字段数量、玩家行动归属和 N.E.K.O 编译结果 |
 | `NEKO_Numeric_drama` | 生成器设计文档、前端节点编辑器 | 让作者能查看和编辑互动节拍，不要求理解 Prompt 或 JSON |
-| `N.E.K.O` | `services/theater/numeric_v2.py` | 编译并兼容可选 `interaction_beats`；旧包缺失时仍正常运行 |
+| `N.E.K.O` | `services/theater/numeric_v2.py` | 若未来启用 G1，再决定是否编译可选 `interaction_beats`；不得借此恢复旧包运行兼容 |
 | `N.E.K.O` | `services/theater/numeric_v2_actor.py` | 在 Token 预算内投影软节拍，并明确其不是已发生事实和完成条件 |
 | `N.E.K.O` | `services/theater/numeric_v2_evaluator.py` | 默认不消费该字段；测试保护它不能改变 `scene_complete` 判断 |
 
-`min_turns` 仍只决定 Runtime 最早允许完成当前节点的回合，不能控制旁白长度；盲目提高它会让所有节点被硬性拖长。`recommended_turns` 更适合表达作者希望的互动空间：它提示 Actor 何时聚焦和收束，但不强制推进。若 G1 提供多个互动节拍，可由程序根据节拍数量建议 `recommended_turns`，但仍应允许作者修改，且不能让模型直接生成阈值或路线条件。
+`min_turns` 仍只决定 Runtime 最早允许完成当前节点的回合，不能控制旁白长度；盲目提高它会让所有节点被硬性拖长。`recommended_turns` 更适合表达作者希望的互动空间：它提示 Actor 何时聚焦和收束，但不强制推进。上段关于按互动节拍建议 `recommended_turns` 的内容属于未采用的 G1 备选，不是当前 v2.2 运行要求。
 
 #### 6.3.6 验证标准
 
@@ -403,7 +408,7 @@ Runtime 不再补写括号，而是原样显示已经校验的混合正文。内
 
 1. Actor Prompt 明确要求普通 `performance` 使用“括号微动作 + 括号外对白”，动作和对白数量不使用固定模板；
 2. 普通回合至少包含一个括号动作和有效括号外对白，括号不成对、嵌套括号或纯动作输出不能提交；
-3. 混合正文在历史区按原始字符顺序逐字显示，恢复旧 Session 不重复套括号；
+3. 混合正文在历史区按原始字符顺序逐字显示；旧 Session 不再恢复，不能通过显示层重新套括号兼容；
 4. `transition_bridge`、`target_opening` 和开场第一块仍按独立旁白显示，不被误包成连续微动作；
 5. TTS 端点继续拒绝动作和场景旁白，只朗读从已提交正文解析出的括号外对白；
 6. 玩家行动即时气泡、推荐输入直接提交、失败撤回和普通聊天草稿隔离不受影响；
@@ -416,7 +421,7 @@ Runtime 不再补写括号，而是原样显示已经校验的混合正文。内
 - 对白是否成为主要信息和情感载体；
 - 三张不同角色卡的动作选择、句长和说话节奏是否仍有明显差异；
 - `recommended_turns` 前后是否能自然从展开转为聚焦，而不是靠加长旁白或突然跳幕；
-- 精简后是否出现剧情信息不足或同一 `pending_goal` 反复打转，以决定是否启动生成器 G1。
+- 精简后是否出现剧情信息不足或同一 `pending_goal` 反复打转；若确需处理，另立 G1 产品讨论，不在本次迁移中自动启动。
 
 ### 6.4 推荐输入复用 GalGame 选项框
 
@@ -427,7 +432,7 @@ Runtime 不再补写括号，而是原样显示已经校验的混合正文。内
 - 新增 `theaterSuggestedInputs` 和 `onTheaterSuggestedInputSelect`，不写入 `galgameOptions`，也不调用 `onGalgameOptionSelect`；
 - GalGame 模式保持关闭；点击 A / B / C 后只取对应自然语言文本，走与手动输入完全相同的 Numeric 提交链；
 - 选项不携带 route、Choice ID、隐藏条件或 priority，A / B / C 只是视觉序号；
-- 现有 GalGame 选项框一次最多显示三项。Actor 新输出应从当前 2—4 条收敛为 2—3 条；旧 Session 若保存了四条，兼容显示前三条，不能改变剧情状态；
+- 现有 GalGame 选项框一次最多显示三项。当前 v2.2 由同一次 Actor 调用生成 2—3 条推荐，不存在独立推荐代理；旧 Session 不恢复，推荐文本也不携带剧情状态；
 - 仅在 `awaiting_player` 展示；玩家开始输入、提交、进入 `performing`、结束或角色切换时立即清理。
 
 现有 GalGame 请求、正式选项、通用 `choicePrompt`、小游戏邀约和破冰回调保持不变；剧场推荐输入存在时不得同时显示这些其他选项层。
@@ -477,7 +482,7 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 
 允许值只包括：`neutral`、`surprised`、`angry`、`happy`、`agree`、`confused`、`thinking`。Actor 只选择语义提示；Runtime / 解析器校验白名单并随已提交 performance 保存；前端不能提交或覆盖该字段。提示缺失或非法时使用 `neutral`，不阻止文字演绎。
 
-这是对当前“Actor 只输出旁白、对白、推荐输入”的表现 DTO 扩展，不赋予 Actor 修改数值、路线、节点或事实的权力，也不增加模型调用。实施前必须同步修改长期架构文档、Actor 严格字段校验和兼容读取；旧 Session 没有该字段时正常恢复。
+这是迁移期间拟议的 Performance Actor 表现 DTO 扩展，当前 v2.2 尚未实施；它不应赋予 Actor 修改数值、路线、节点或事实的权力，也不应重新引入独立推荐代理或旧 Session 兼容。若未来重新立项，必须同步修改长期架构文档和 Performance 严格字段校验，并另行设计版本升级路径。
 
 确定性映射为：
 
@@ -566,7 +571,8 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 
 ### 10.4 刷新和重启
 
-- 本体刷新后，若存在当前角色对应的活跃剧场指针，向服务端重新读取 Session 并恢复到 `awaiting_player` 或自然终局的 `ended`；玩家已主动退出时不自动进入演绎，应从选剧页点击“继续”；
+- 本体在当前程序生命周期内刷新后，若存在当前角色对应的会话级剧场指针，向服务端重新读取 Session 并恢复到 `awaiting_player` 或自然终局的 `ended`；
+- 完整退出 N.E.K.O 后不保留该前端指针，重启时默认关闭小剧场；后端 Session 与 Ledger 不结束，玩家可从选剧页点击“继续演绎”恢复；
 - 已提交历史只用于 Actor 连续性和必要的当前画面恢复，不在胶囊中高速重播；
 - 恢复时重建胶囊上方的公开剧场历史，并把最后一个旁白 / 对白显示为静态上下文，但不自动播放历史 TTS 和动效；
 - 记忆询问属于剧本页，不属于本体胶囊状态；剧本页刷新后按结束 receipt 恢复询问或写入结果，不能要求本体重新播放演绎正文；
@@ -625,7 +631,7 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 | `main_routers/numeric_theater_router.py` | `/stories` 增加当前角色的 `display_intro`；停止整段自动 TTS；结束时生成 receipt；增加只朗读已提交 block 和归档已结束 Session 的接口 |
 | 剧场记忆归档适配 | 从完整 Session 生成单条单集摘要胶囊，按 Session 幂等 upsert 到 memory server `/cache/{lanlan_name}`，不直写记忆文件 |
 | `services/theater/numeric_v2_performance.py` | 提供稳定内容块坐标 / 兼容读取，支持对白 cue |
-| `services/theater/numeric_v2_actor.py` | 先落实括号微动作与独立场景旁白的 Prompt 边界；后续阶段再严格解析可选 `performance_cue`；新推荐输入收敛为 2—3 条，旧四条记录兼容显示前三条 |
+| `services/theater/numeric_v2_actor.py` | 先落实括号微动作与独立场景旁白的 Prompt 边界；后续阶段如重新立项再严格解析可选 `performance_cue`；当前推荐由同次 Actor 调用生成 2—3 条，旧 Session 不兼容 |
 | Live2D manager 相关文件 | 增加模型专属外层表现容器和可取消效果 API |
 | `main_routers/pages_router.py`、`app/main_server/web_app.py` | 收敛路由和资源挂载，移除自由 Router |
 | `static/locales/*.json` | 同步 8 语言文案 |
@@ -655,7 +661,7 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 
 ### 阶段 C：有序旁白、对白与逐句 TTS
 
-实施状态：已完成代码迁移与自动回归；仍需真实模型与桌面窗口复测。
+实施状态：代码迁移与自动回归已完成；真实模型换场复测受当前免费端点非 JSON 返回阻断，桌面窗口和真实 TTS 设备仍待人工验收。
 
 - 使用现有历史面板把普通微动作与对白逐字追加到猫娘气泡，开场和换场旁白逐字追加到独立旁白气泡；
 - 历史面板与普通聊天历史隔离，恢复时直接展示完整气泡；
@@ -666,13 +672,13 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 
 ### 阶段 C2：括号动作与旁白精简
 
-实施状态：代码、Prompt、React 构建产物与自动回归已完成；仍需新 Story ID、新 Session ID 的真实模型复测。
+实施状态：代码、Prompt、React 构建产物与自动回归已完成；新 Story ID、新 Session ID 的真实模型探针已执行，但两本代表剧本均在开场返回非 JSON，尚不能宣称换场体验通过。
 
 - 普通回合由模型一次生成 `performance` 混合正文，括号微动作和对白可自然穿插，不限制固定对白句数；
 - 每个括号只写一项不超过目标长度的动态微动作，括号外全部是猫娘对白；
 - 开场、三段式换场桥和目标开场继续使用独立 `scene_narration`；
-- Runtime 确定性解析动作和对白，TTS 只读取括号外片段；Session 使用合同版本 3，旧内容块合同继续兼容；
-- 先用新 Story / Session 做 8—10 回合真实模型复测，再决定是否启动生成器 `interaction_beats` 扩展。
+- Runtime 确定性解析动作和对白，TTS 只读取括号外片段；Session 使用 `neko.script.session.numeric.v2` 与 Story Package `v2.2` 合同，旧内容块合同不再兼容；
+- 真实模型需在可返回结构化 JSON 的端点上完成 8—10 回合复测；是否扩展生成器不由本次迁移自动触发，必须另立产品讨论。
 
 ### 阶段 D：情绪 cue、Live2D 整体效果与瞬时道具
 
@@ -717,12 +723,12 @@ Actor 的 `performance` 括号外片段是正式对白段。连续对白句可�
 4. 当前 performance 从第一个字开始进入上方历史；普通微动作和对白按分组进入猫娘气泡，开场和换场旁白进入独立旁白气泡；胶囊不显示演绎正文；
 5. 玩家行动提交后立即以临时气泡进入历史；提交成功后原位保留，请求失败时撤回且恢复剧场草稿；
 6. TTS 不可用时按文字阅读时长继续，不回滚已提交剧情；
-7. 刷新和重启能重建公开剧场历史，但不重播历史 TTS；
-8. 旧 `narration/dialogue` Session 仍能按兼容顺序恢复；
+7. 当前程序内刷新能重建公开剧场历史且不重播历史 TTS；完整重启默认关闭小剧场，主动继续后再从 Session 重建历史；
+8. 当前程序内刷新能重建 v2.2 公开剧场历史；旧 `narration/dialogue` Session 不再恢复；
 9. 头部气泡不显示对白正文，思考和情绪主题仍正确。
 10. 普通未换场 narration 在猫娘历史气泡中显示为一层中文括号动作；开场、`transition_bridge` 与 `target_opening` 保持原有场景旁白样式和独立 system 气泡，不受微动作字数限制；
 11. 普通回合不设固定动作数或对白句数；每个动作只描述一个动态焦点，不用静态情绪解释、心理总结或连续动作代替对白；
-12. 括号动作不进入 TTS，混合正文原样保存，解析结果不会重复写入 Session，旧 Session 仍可恢复。
+12. 括号动作不进入 TTS，混合正文原样保存，解析结果不会重复写入 Session；旧 Session 不可恢复并返回升级提示。
 
 ### 14.4 Live2D 与道具
 

@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 
 from .numeric_v2_archive import NumericV2ArchiveStore
 from .numeric_v2_registry import NumericV2PackageRegistry
+from .numeric_v2_runtime import NumericV2RuntimeError
 from .numeric_v2_store import (
     NumericV2SessionStore,
     NumericV2StoreError,
@@ -339,7 +340,17 @@ def audit_numeric_v2_storage(
                 engine_cache[story_id] = registry.load_engine(story_id)
             store = NumericV2SessionStore(theater_root, engine_cache[story_id])
             stored = store._read(path)
-            store._validate_chain(stored)
+            try:
+                store._validate_chain(stored)
+            except NumericV2RuntimeError as exc:
+                if str(exc) not in {
+                    "story_package_revision_mismatch",
+                    "story_package_hash_mismatch",
+                }:
+                    raise
+                # 合法旧 Session 不能因剧本升级被隔离；保留它供用户结束或删除，
+                # 日常恢复仍会走严格重放并拒绝继续旧版本剧情。
+                store._validate_lifecycle_chain(stored)
             effective_character_id = summary["character_id"] or known_characters.get(
                 summary["catgirl_name"],
                 "",

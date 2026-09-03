@@ -1924,7 +1924,8 @@ function CompactChatApp({
     && !compactPreservedSpeechMatchesEndingGap;
   const compactRestoreEmptyStateAfterTurnEnd = compactSuppressAssistantFallback
     && compactAssistantStreamingGap.turnEnded;
-  const compactPreservedSpeechActive = !compactMessagePreview
+  const compactPreservedSpeechActive = !theaterActive
+    && !compactMessagePreview
     && !compactSuppressAssistantFallback
     && !!compactSpeechPreviewIdRef.current
     && !!compactSpeechPreviewTextRef.current;

@@ -14,7 +14,8 @@ from typing import Any, Mapping, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from .numeric_v2_performance import (
-    valid_mixed_performance,
+    transition_source_dialogue_policy,
+    valid_mixed_performance_policy,
     valid_ordered_content,
     valid_scene_narration,
 )
@@ -631,6 +632,21 @@ class NumericV2SessionStore:
             self._write(path, stored, exclusive=True)
             return stored
 
+    async def create_isolated_snapshot(
+        self,
+        stored: NumericV2StoredSession,
+    ) -> NumericV2StoredSession:
+        """原子写入已重放快照，但不发布到剧本恢复槽位，供压测分叉使用。"""  # noqa: DOCSTRING_CJK
+
+        path = self._path(stored.session.session_id)
+        async with _lock(path):
+            if path.exists():
+                raise NumericV2SessionExistsError("numeric_session_exists")
+            # 先在内存中验证完整账本，再一次落盘；失败时不会留下半条分叉链。
+            self._validate_chain(stored)
+            self._write(path, stored, exclusive=True)
+            return stored
+
     async def create_story_session(
         self,
         session: "ScriptSessionV2",
@@ -728,6 +744,25 @@ class NumericV2SessionStore:
             self._validate_chain(stored)
             return stored
 
+    async def load_for_lifecycle(
+        self,
+        session_id: str,
+    ) -> NumericV2StoredSession | None:
+        """读取只用于结束/删除的快照，不把旧剧本状态恢复到当前 Runtime。"""  # noqa: DOCSTRING_CJK
+
+        path = self._path(session_id)
+        async with _lock(path):
+            try:
+                stored = self._read(path)
+            except NumericV2StoreError as exc:
+                if isinstance(exc.__cause__, FileNotFoundError):
+                    return None
+                raise
+            if stored.session.story_package_id != self.engine.story_id:
+                return None
+            self._validate_lifecycle_chain(stored)
+            return stored
+
     async def update_catgirl_binding(
         self,
         session_id: str,
@@ -794,6 +829,9 @@ class NumericV2SessionStore:
             if not path.is_file():
                 raise NumericV2SessionNotFoundError("numeric_session_not_found")
             current = self._read(path)
+            # 剧本包可能已升级，结束动作只改生命周期；仍需复验持久化账本自身连续，
+            # 但不能拿新剧本规则重放旧剧情，否则用户会永久卡在演绎状态。
+            self._validate_lifecycle_chain(current)
             if current.session.revision != base_revision:
                 raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
             if current.session.status == "ended":
@@ -923,6 +961,88 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_ledger_invalid")
         return NumericV2StoredSession(session, tuple(deepcopy(events)))
 
+    def _validate_lifecycle_chain(self, stored: NumericV2StoredSession) -> None:
+        """校验与剧本内容无关的存档链，仅供生命周期收尾和启动审计。"""  # noqa: DOCSTRING_CJK
+
+        session = stored.session
+        if session.story_package_id != self.engine.story_id:
+            raise NumericV2StoreError("story_package_id_mismatch")
+        if session.status not in {"active", "ended"}:
+            raise NumericV2StoreError("session_status_invalid")
+        if (
+            session.node_turn_count < 0
+            or session.revision < 0
+            or session.lifecycle_revision < 0
+            or not -1 <= session.forgotten_through_revision <= session.revision
+        ):
+            raise NumericV2StoreError("session_counter_invalid")
+
+        events = stored.ledger_events
+        if len(events) != session.revision:
+            raise NumericV2StoreError("numeric_ledger_revision_mismatch")
+        if len(session.performance_history) != len(events):
+            raise NumericV2StoreError("numeric_performance_history_mismatch")
+
+        expected_node: str | None = None
+        expected_metrics: dict[str, int] | None = None
+        seen_turns: set[str] = set()
+        for event_index, event in enumerate(events):
+            expected_revision = event_index + 1
+            if (
+                not isinstance(event, Mapping)
+                or event.get("session_id") != session.session_id
+                or event.get("base_revision") != expected_revision - 1
+                or event.get("result_revision") != expected_revision
+            ):
+                raise NumericV2StoreError("numeric_ledger_revision_chain_invalid")
+
+            from_node_id = str(event.get("from_node_id") or "")
+            to_node_id = str(event.get("to_node_id") or "")
+            if not from_node_id or not to_node_id:
+                raise NumericV2StoreError("numeric_ledger_node_chain_invalid")
+            if expected_node is not None and from_node_id != expected_node:
+                raise NumericV2StoreError("numeric_ledger_node_chain_invalid")
+
+            before_metrics = event.get("before_metrics")
+            after_metrics = event.get("after_metrics")
+            if (
+                not isinstance(before_metrics, Mapping)
+                or not isinstance(after_metrics, Mapping)
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in before_metrics.values())
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in after_metrics.values())
+            ):
+                raise NumericV2StoreError("numeric_ledger_metric_chain_invalid")
+            if expected_metrics is not None and dict(before_metrics) != expected_metrics:
+                raise NumericV2StoreError("numeric_ledger_metric_chain_invalid")
+
+            turn_id = str(event.get("client_turn_id") or "")
+            if not turn_id or turn_id in seen_turns:
+                raise NumericV2StoreError("numeric_ledger_turn_id_invalid")
+            performance = session.performance_history[event_index]
+            if (
+                not isinstance(performance, Mapping)
+                or performance.get("client_turn_id") != turn_id
+                or performance.get("revision") != expected_revision
+                or performance.get("from_node_id") != from_node_id
+                or performance.get("to_node_id") != to_node_id
+            ):
+                raise NumericV2StoreError("numeric_performance_record_mismatch")
+
+            expected_node = to_node_id
+            expected_metrics = dict(after_metrics)
+            seen_turns.add(turn_id)
+
+        if events and (
+            expected_node != session.current_node_id
+            or expected_metrics != session.metrics
+        ):
+            raise NumericV2StoreError("numeric_session_not_at_ledger_tail")
+        if (
+            seen_turns != set(session.processed_client_turn_ids)
+            or len(seen_turns) != len(session.processed_client_turn_ids)
+        ):
+            raise NumericV2StoreError("numeric_processed_turn_ids_mismatch")
+
     def _validate_chain(self, stored: NumericV2StoredSession) -> None:
         self.engine.validate_session(stored.session)
         events = stored.ledger_events
@@ -938,6 +1058,7 @@ class NumericV2SessionStore:
             session_id=stored.session.session_id,
             catgirl_binding=stored.session.catgirl_binding,
             opening_performance=stored.session.opening_performance,
+            actor_budget_profile=stored.session.actor_budget_profile,
         )
         if len(stored.session.performance_history) != len(events):
             raise NumericV2StoreError("numeric_performance_history_mismatch")
@@ -974,16 +1095,6 @@ class NumericV2SessionStore:
                 scene_complete = event.get("scene_complete")
                 if not isinstance(scene_complete, bool):
                     raise ValueError("scene_complete_shape")
-                raw_goal_evidence = event.get("scene_goal_evidence", {})
-                if not isinstance(raw_goal_evidence, Mapping):
-                    raise ValueError("scene_goal_evidence_shape")
-                goal_evidence = {
-                    str(goal_id): tuple(revisions)
-                    for goal_id, revisions in raw_goal_evidence.items()
-                    if isinstance(revisions, list)
-                }
-                if len(goal_evidence) != len(raw_goal_evidence):
-                    raise ValueError("scene_goal_evidence_shape")
                 request = TurnRequestV2.from_mapping(
                     {
                         "client_turn_id": turn_id,
@@ -996,13 +1107,11 @@ class NumericV2SessionStore:
                     request,
                     changes,
                     scene_complete=scene_complete,
-                    goal_evidence=goal_evidence,
-                    # 老 Ledger 没有进度字段时严格按旧规则重放；新回合从写入字段开始启用记忆。
-                    persist_scene_progress=(
-                        "scene_completion_ready" in event
-                        or "scene_goal_evidence" in event
-                    ),
+                    transition_intent=str(event.get("transition_intent") or "unclear"),
                 )
+                performance = stored.session.performance_history[event_index]
+                if not isinstance(performance, Mapping):
+                    raise ValueError("performance_record_shape")
             except Exception as exc:
                 raise NumericV2StoreError("numeric_ledger_replay_invalid") from exc
             expected_event = replayed.ledger_event
@@ -1026,6 +1135,17 @@ class NumericV2SessionStore:
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             replayed_session = replayed.session
+            if "transition_offered" in event:
+                # 新 Ledger 的提议状态来自同 revision 的 Actor 正文；重放时只复用已提交值。
+                committed_transition_offered = event.get("transition_offered")
+                if not isinstance(committed_transition_offered, bool):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                if performance.get("transition_offered", False) != committed_transition_offered:
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                replayed_session = replace(
+                    replayed_session,
+                    transition_offered=committed_transition_offered,
+                )
             disclosure_version = event.get("player_address_disclosure_version")
             if disclosure_version not in {None, 2}:
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1043,12 +1163,14 @@ class NumericV2SessionStore:
                         replayed_session,
                         player_address_known=True,
                     )
-            for field in ("scene_completion_ready", "scene_goal_evidence"):
+            for field in (
+                "transition_intent",
+                "before_dialogue_policy",
+                "performance_dialogue_policy",
+                "dialogue_policy",
+            ):
                 if field in event and event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
-            performance = stored.session.performance_history[event_index]
-            if not isinstance(performance, Mapping):
-                raise NumericV2StoreError("numeric_performance_record_invalid")
             performance_contract_version = performance.get("performance_contract_version")
             if performance_contract_version not in {None, 1, 2, 3}:
                 raise NumericV2StoreError("numeric_performance_record_invalid")
@@ -1082,9 +1204,12 @@ class NumericV2SessionStore:
                         raise NumericV2StoreError("numeric_transition_performance_invalid")
             if performance_contract_version == 3:
                 if expected_event["from_node_id"] == expected_event["to_node_id"]:
-                    if not valid_mixed_performance(
+                    if not valid_mixed_performance_policy(
                         performance,
-                        require_dialogue=True,
+                        str(
+                            event.get("performance_dialogue_policy")
+                            or replayed_session.dialogue_policy
+                        ),
                     ):
                         raise NumericV2StoreError("numeric_performance_record_invalid")
                 else:
@@ -1098,11 +1223,18 @@ class NumericV2SessionStore:
                         or set(segments[0]) != {"phase", "performance"}
                         or set(segments[1]) != {"phase", "scene_narration"}
                         or set(segments[2]) != {"phase", "scene_narration", "performance"}
-                        or not valid_mixed_performance(segments[0], require_dialogue=True)
+                        or not valid_mixed_performance_policy(
+                            segments[0],
+                            transition_source_dialogue_policy(
+                                replay_session.dialogue_policy
+                            ),
+                        )
                         # 合同版本 3 允许去重后的空桥段；目标开场仍必须非空并由 Runtime 注入。
                         or not valid_scene_narration(segments[1], allow_empty=True)
                         or not valid_scene_narration(segments[2])
-                        or not valid_mixed_performance(segments[2], require_dialogue=True)
+                        or not valid_mixed_performance_policy(
+                            segments[2], replayed_session.dialogue_policy
+                        )
                     ):
                         raise NumericV2StoreError("numeric_transition_performance_invalid")
             if (
@@ -1118,7 +1250,7 @@ class NumericV2SessionStore:
                     != ["source_response", "transition_bridge", "target_opening"]
                 ):
                     raise NumericV2StoreError("numeric_transition_performance_invalid")
-            # 下一条 Ledger 的目标证据只能引用已正式提交的演绎记录，因此重放时同步补回历史。
+            # 重放时同步补回正式正文历史，供后续上下文继续使用。
             replay_session = replace(
                 replayed_session,
                 performance_history=(*replayed_session.performance_history, deepcopy(dict(performance))),
@@ -1142,9 +1274,9 @@ class NumericV2SessionStore:
         if replay_session.revision != stored.session.revision:
             raise NumericV2StoreError("numeric_session_revision_mismatch")
         if (
-            replay_session.scene_completion_ready != stored.session.scene_completion_ready
-            or replay_session.scene_goal_evidence != stored.session.scene_goal_evidence
-            or replay_session.player_address_known != stored.session.player_address_known
+            replay_session.player_address_known != stored.session.player_address_known
+            or replay_session.dialogue_policy != stored.session.dialogue_policy
+            or replay_session.transition_offered != stored.session.transition_offered
         ):
             raise NumericV2StoreError("numeric_session_scene_progress_mismatch")
 

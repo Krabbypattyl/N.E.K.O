@@ -76,6 +76,10 @@ class NumericV2PackageError(ValueError):
     """Numeric v2 包无法复验或写入。"""  # noqa: DOCSTRING_CJK
 
 
+class NumericV2PackageUpgradeRequiredError(NumericV2PackageError):
+    """旧版剧本包必须先升级到 v2.2 才能导入或运行。"""  # noqa: DOCSTRING_CJK
+
+
 class NumericV2PackageExistsError(NumericV2PackageError):
     """目标 story_id 已存在，默认不允许覆盖。"""  # noqa: DOCSTRING_CJK
 
@@ -90,6 +94,26 @@ class NumericV2PackageRegistry:
     def __init__(self, root: Path, compiler: NumericV2Compiler | None = None):
         self.root = Path(root)
         self.compiler = compiler or NumericV2Compiler()
+
+    @staticmethod
+    def _declares_v2_2(payload: Mapping[str, Any]) -> bool:
+        """识别新生成包，确保导入时不会退回旧版宽松限幅。"""  # noqa: DOCSTRING_CJK
+
+        meta = payload.get("meta")
+        return isinstance(meta, Mapping) and meta.get("contract_version") == "v2.2"
+
+    def compile_for_import(
+        self,
+        payload: Mapping[str, Any],
+    ):
+        """导入入口只接受 v2.2，旧包统一返回可操作的升级错误。"""  # noqa: DOCSTRING_CJK
+
+        if not self._declares_v2_2(payload):
+            # 旧包文件保留在磁盘上供作者升级，但不能再进入运行时或安装槽位。
+            raise NumericV2PackageUpgradeRequiredError(
+                "numeric_v2_upgrade_required"
+            )
+        return self.compiler.compile_v2_2(payload)
 
     def ensure_default_packages(self) -> None:
         """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""  # noqa: DOCSTRING_CJK
@@ -108,7 +132,11 @@ class NumericV2PackageRegistry:
             handled_story_ids = _read_default_package_ids(marker)
             for source in bundled_sources:
                 payload = json.loads(source.read_text(encoding="utf-8"))
-                compiled = self.compiler.compile(payload)
+                # 内置包也必须沿用导入入口的版本门禁；旧内置包跳过安装，不能绕过升级要求。
+                try:
+                    compiled = self.compile_for_import(payload)
+                except NumericV2PackageUpgradeRequiredError:
+                    continue
                 if compiled.story_id in handled_story_ids:
                     continue
                 target = self.package_path(compiled.story_id)
@@ -140,7 +168,7 @@ class NumericV2PackageRegistry:
         return self.root / f"{story_id}.json"
 
     def validate_package(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        compiled = self.compiler.compile(payload)
+        compiled = self.compile_for_import(payload)
         meta = compiled.story["meta"]
         return {
             "story_id": meta["story_id"],
@@ -148,6 +176,7 @@ class NumericV2PackageRegistry:
             "author": meta["author"],
             "revision": meta["revision"],
             "language": meta["language"],
+            "contract_version": meta.get("contract_version", "v2"),
             "schema": compiled.story["schema"],
             "package_hash": compiled.package_hash,
             "warnings": [warning.__dict__ for warning in compiled.warnings],
@@ -165,7 +194,14 @@ class NumericV2PackageRegistry:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 result.append(self.validate_package(payload))
-            except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError):
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                NumericV2CompileError,
+                NumericV2PackageUpgradeRequiredError,
+            ):
+                # 旧包文件保留给作者升级，但不出现在可运行剧本列表中。
                 continue
         return result
 
@@ -179,15 +215,20 @@ class NumericV2PackageRegistry:
             raise NumericV2PackageNotFoundError("numeric_story_not_found")
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            return NumericV2Engine.from_mapping(payload)
+            # 运行时加载与导入使用同一版本门禁，旧包只能先经过作者升级流程。
+            compiled = self.compile_for_import(payload)
+            return NumericV2Engine(compiled)
         except NumericV2CompileError as exc:
             raise NumericV2PackageError("numeric_v2_contract_invalid") from exc
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise NumericV2PackageError("numeric_v2_package_read_failed") from exc
 
-    def import_package(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def import_package(
+        self,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
         try:
-            compiled = self.compiler.compile(payload)
+            compiled = self.compile_for_import(payload)
         except NumericV2CompileError as exc:
             raise NumericV2PackageError("numeric_v2_contract_invalid") from exc
         target = self.package_path(compiled.story_id)
@@ -247,5 +288,6 @@ __all__ = [
     "NumericV2PackageError",
     "NumericV2PackageExistsError",
     "NumericV2PackageNotFoundError",
+    "NumericV2PackageUpgradeRequiredError",
     "NumericV2PackageRegistry",
 ]

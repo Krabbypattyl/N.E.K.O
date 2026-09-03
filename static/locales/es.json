@@ -2773,6 +2773,8 @@
         }
     },
     "theater": {
+        "endStateFailed": "No se pudo finalizar el estado actual de la actuación. Vuelve a la página de historias e inténtalo de nuevo.",
+        "endConnectionFailed": "No se pudo acceder al servicio local de N.E.K.O. Comprueba que la aplicación siga abierta e inténtalo de nuevo.",
         "title": "Teatro",
         "modeLabel": "Modo",
         "scriptMode": "Modo guion",
@@ -2797,6 +2799,11 @@
         "collapseStage": "Contraer escenario",
         "expandStage": "Expandir escenario",
         "inputPlaceholder": "Escribe lo que quieres decir o usa *...* para describir una acción",
+        "actorBudgetLabel": "Contexto por turno",
+        "actorBudgetEconomy": "Compacto · entrada 6k · historial 6 turnos",
+        "actorBudgetBalanced": "Estándar · entrada 10k · historial 12 turnos",
+        "actorBudgetQuality": "Amplio · entrada 16k · historial 20 turnos",
+        "actorBudgetHint": "Limita el contexto por turno de la interpretación y las sugerencias. Los valores indican el límite de entrada de la interpretación y los turnos máximos de historial. Continuar conserva el perfil original; Reiniciar usa esta selección.",
         "storySelect": "Seleccionar historia del teatro",
         "importStory": "Importar guion",
         "importStoryAria": "Importar un guion Numeric v2",

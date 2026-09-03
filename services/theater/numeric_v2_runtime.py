@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -14,12 +14,16 @@ from utils.tokenize import truncate_to_tokens
 from .numeric_v2 import (
     CompiledNumericV2Package,
     NumericV2Compiler,
-    numeric_v2_story_goal_contracts,
 )
 from .numeric_v2_performance import (
-    valid_mixed_performance,
+    transition_source_dialogue_policy,
+    valid_mixed_performance_policy,
     valid_ordered_content,
     valid_scene_narration,
+)
+from .numeric_v2_budget import (
+    NUMERIC_V2_ACTOR_BUDGET_PROFILES,
+    NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
 )
 from .numeric_v2_store import (
     NumericV2SessionStore,
@@ -31,6 +35,8 @@ SESSION_SCHEMA = "neko.script.session.numeric.v2"
 LEDGER_EVENT_SCHEMA = "neko.script.ledger_event.numeric.v2"
 PERFORMANCE_RECORD_SCHEMA = "neko.script.performance_record.numeric.v2"
 NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS = 140
+# 当前 Session 只保存正文、数值和转场状态；旧证据链 Session 不再可恢复。
+_DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPARATORS = {
     "==": lambda left, right: left == right,
@@ -104,29 +110,20 @@ def _player_address_known_after_turn(
     return _player_address_disclosed(message, configured_address)
 
 
-def _scene_completion_ready(value: Mapping[str, Any]) -> bool:
-    raw = value.get("scene_completion_ready")
-    if raw is None:
-        return False
+def _transition_offered(value: Mapping[str, Any]) -> bool:
+    """读取上一轮 Actor 是否交付了可见的具体转场提议。"""  # noqa: DOCSTRING_CJK
+
+    raw = value.get("transition_offered", False)
     if not isinstance(raw, bool):
-        raise NumericV2RuntimeError("scene_completion_ready_invalid")
+        raise NumericV2RuntimeError("session_transition_offered_invalid")
     return raw
 
 
-def _scene_goal_evidence(value: Any) -> dict[str, tuple[int, ...]]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise NumericV2RuntimeError("scene_goal_evidence_invalid")
-    result: dict[str, tuple[int, ...]] = {}
-    for goal_id, revisions in value.items():
-        if not isinstance(revisions, (list, tuple)):
-            raise NumericV2RuntimeError("scene_goal_evidence_invalid")
-        result[str(goal_id)] = tuple(
-            _integer(revision, "scene_goal_evidence_revision")
-            for revision in revisions
-        )
-    return result
+def _dialogue_policy(value: Any, *, default: str = "required") -> str:
+    policy = str(value if value is not None else default)
+    if policy not in _DIALOGUE_POLICIES:
+        raise NumericV2RuntimeError("session_dialogue_policy_invalid")
+    return policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,16 +208,18 @@ class ScriptSessionV2:
     processed_client_turn_ids: tuple[str, ...]
     opening_performance: dict[str, Any]
     performance_history: tuple[dict[str, Any], ...]
+    # 预算档位属于 Session 快照；继续演绎必须沿用原档位，重新开始才允许重选。
+    actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE
     # 演绎 revision 只表示正式回合；结束与继续使用独立版本，避免延迟请求互相覆盖。
     lifecycle_revision: int = 0
     player_address_known: bool = False
     ended_reason: str | None = None
     # 显式遗忘只切断后续记忆与冷档案投影，不删除继续演绎所需的 Session 历史。
     forgotten_through_revision: int = -1
-    # 本幕目标一旦被 Evaluator 判定完成，就保持到满足 min_turns 或离开节点。
-    # 旧 Session 缺少这两个字段时使用空状态，恢复后从下一回合开始采用新合同。
-    scene_completion_ready: bool = False
-    scene_goal_evidence: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    # 发声能力是确定性 Session 状态；沉睡、失声或关机不能靠自由文本临时猜测。
+    dialogue_policy: str = "required"
+    # 只有 Actor 在已提交正文中明确提出具体下一步时才锁存为真。
+    transition_offered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -238,24 +237,43 @@ class ScriptSessionV2:
             "processed_client_turn_ids": list(self.processed_client_turn_ids),
             "opening_performance": deepcopy(self.opening_performance),
             "performance_history": deepcopy(list(self.performance_history)),
+            "actor_budget_profile": self.actor_budget_profile,
             "lifecycle_revision": self.lifecycle_revision,
             "player_address_known": self.player_address_known,
             "ended_reason": self.ended_reason,
             "forgotten_through_revision": self.forgotten_through_revision,
-            "scene_completion_ready": self.scene_completion_ready,
-            "scene_goal_evidence": {
-                goal_id: list(revisions)
-                for goal_id, revisions in self.scene_goal_evidence.items()
-            },
+            "dialogue_policy": self.dialogue_policy,
+            "transition_offered": self.transition_offered,
         }
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ScriptSessionV2":
         if value.get("schema") != SESSION_SCHEMA:
             raise NumericV2RuntimeError("numeric_session_schema_invalid")
+        if any(
+            key in value
+            for key in (
+                "scene_completion_ready",
+                "scene_goal_evidence",
+                "in_progress_goal_evidence",
+                "continuity_goal_evidence",
+                "evidence_chain_version",
+            )
+        ):
+            # 旧证据链存档已删除；重新导入必须先由作者升级为 v2.2，而不是隐式迁移。
+            raise NumericV2RuntimeError("numeric_v2_legacy_session_unsupported")
         raw_player_address_known = value.get("player_address_known", False)
         if not isinstance(raw_player_address_known, bool):
             raise NumericV2RuntimeError("session_player_address_known_invalid")
+        actor_budget_profile = str(
+            value.get(
+                "actor_budget_profile",
+                NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
+            )
+            or ""
+        )
+        if actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
+            raise NumericV2RuntimeError("numeric_actor_budget_profile_invalid")
         return cls(
             session_id=_stable_id(value.get("session_id"), "session_id"),
             story_package_id=_stable_id(value.get("story_package_id"), "story_package_id"),
@@ -270,17 +288,16 @@ class ScriptSessionV2:
             processed_client_turn_ids=tuple(str(item) for item in value.get("processed_client_turn_ids") or []),
             opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
             performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
-            # 旧 Session 没有生命周期版本时视为尚未发生主动结束或继续。
+            actor_budget_profile=actor_budget_profile,
             lifecycle_revision=_integer(value.get("lifecycle_revision", 0), "lifecycle_revision"),
             player_address_known=raw_player_address_known,
             ended_reason=(str(value.get("ended_reason")) if value.get("ended_reason") is not None else None),
-            # 旧 Session 没有遗忘水位时，全部已提交内容仍可按原规则归档。
             forgotten_through_revision=_integer(
                 value.get("forgotten_through_revision", -1),
                 "forgotten_through_revision",
             ),
-            scene_completion_ready=_scene_completion_ready(value),
-            scene_goal_evidence=_scene_goal_evidence(value.get("scene_goal_evidence")),
+            dialogue_policy=_dialogue_policy(value.get("dialogue_policy")),
+            transition_offered=_transition_offered(value),
         )
 
 
@@ -295,9 +312,13 @@ class TurnOutcomeV2:
 
 
 class NumericV2Engine:
-    """只在候选 Session 上应用数值、最少回合和作者路线。"""  # noqa: DOCSTRING_CJK
+    """只在候选 Session 上应用 v2.2 的数值、作者路线和转场规则。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, compiled: CompiledNumericV2Package):
+        # 防止调用方绕过 from_mapping/注册表，直接把旧合同编译结果注入运行时。
+        meta = compiled.story.get("meta")
+        if not isinstance(meta, Mapping) or meta.get("contract_version") != "v2.2":
+            raise NumericV2RuntimeError("numeric_v2_upgrade_required")
         self.compiled = compiled
         self.story = compiled.story
         self.nodes = {str(node["id"]): node for node in self.story["nodes"]}
@@ -305,11 +326,25 @@ class NumericV2Engine:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "NumericV2Engine":
-        return cls(NumericV2Compiler().compile(value))
+        compiler = NumericV2Compiler()
+        meta = value.get("meta")
+        # 运行时只接受 v2.2；旧包必须先由作者升级，不能绕过注册表直接加载。
+        contract_version = meta.get("contract_version") if isinstance(meta, Mapping) else None
+        if contract_version != "v2.2":
+            raise NumericV2RuntimeError("numeric_v2_upgrade_required")
+        compiled = compiler.compile_v2_2(value)
+        return cls(compiled)
 
     @property
     def story_id(self) -> str:
         return self.compiled.story_id
+
+    @staticmethod
+    def _node_dialogue_policy(node: Mapping[str, Any], fallback: str) -> str:
+        beat = node.get("story_beat")
+        contract = beat.get("acting_contract") if isinstance(beat, Mapping) else None
+        value = contract.get("dialogue_policy") if isinstance(contract, Mapping) else None
+        return _dialogue_policy(value, default=fallback)
 
     def create_session(
         self,
@@ -317,7 +352,10 @@ class NumericV2Engine:
         session_id: str,
         catgirl_binding: Mapping[str, Any],
         opening_performance: Mapping[str, Any],
+        actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
     ) -> ScriptSessionV2:
+        if actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
+            raise NumericV2RuntimeError("numeric_actor_budget_profile_invalid")
         return ScriptSessionV2(
             session_id=_stable_id(session_id, "session_id"),
             story_package_id=self.story_id,
@@ -332,7 +370,12 @@ class NumericV2Engine:
             processed_client_turn_ids=(),
             opening_performance=deepcopy(dict(opening_performance)),
             performance_history=(),
+            actor_budget_profile=actor_budget_profile,
             player_address_known=bool(self.story["initial_state"]["player_address_known"]),
+            dialogue_policy=self._node_dialogue_policy(
+                self.nodes[str(self.story["start_node_id"])],
+                "required",
+            ),
         )
 
     def validate_session(self, session: ScriptSessionV2) -> None:
@@ -349,6 +392,8 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("session_current_node_missing")
         if session.status not in {"active", "ended"}:
             raise NumericV2RuntimeError("session_status_invalid")
+        if session.actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
+            raise NumericV2RuntimeError("numeric_actor_budget_profile_invalid")
         if set(session.metrics) != set(self.metric_schema):
             raise NumericV2RuntimeError("session_metrics_mismatch")
         for metric_id, value in session.metrics.items():
@@ -361,69 +406,9 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("session_forgotten_revision_invalid")
         if not isinstance(session.player_address_known, bool):
             raise NumericV2RuntimeError("session_player_address_known_invalid")
-        self._validate_scene_goal_evidence(session, session.scene_goal_evidence)
-
-    def _current_scene_evidence_revisions(self, session: ScriptSessionV2) -> set[int]:
-        """返回当前节点最近一次访问中可被 Evaluator 引用的正式记录版本。"""  # noqa: DOCSTRING_CJK
-
-        revisions: set[int] = set()
-        entered_current_node = False
-        current_node_id = str(session.current_node_id)
-        for record in reversed(session.performance_history):
-            from_node_id = str(record.get("from_node_id") or "")
-            to_node_id = str(record.get("to_node_id") or "")
-            if from_node_id == current_node_id and to_node_id == current_node_id:
-                revision = record.get("revision")
-                if isinstance(revision, int) and not isinstance(revision, bool):
-                    revisions.add(revision)
-                continue
-            if to_node_id == current_node_id and from_node_id != current_node_id:
-                revision = record.get("revision")
-                if isinstance(revision, int) and not isinstance(revision, bool):
-                    revisions.add(revision)
-                entered_current_node = True
-            break
-        if not entered_current_node and current_node_id == str(self.story["start_node_id"]):
-            revisions.add(0)
-        return revisions
-
-    def _validate_scene_goal_evidence(
-        self,
-        session: ScriptSessionV2,
-        evidence: Mapping[str, tuple[int, ...]],
-        *,
-        pending_revision: int | None = None,
-    ) -> None:
-        """只接受当前节点目标和当前访问中的记录版本，防止跨幕事实串用。"""  # noqa: DOCSTRING_CJK
-
-        # 新包直接校验作者目标 ID；旧包由兼容投影稳定得到 goal.N。
-        goal_contracts = {
-            str(goal["goal_id"]): goal
-            for goal in numeric_v2_story_goal_contracts(
-                self.nodes[session.current_node_id]["story_beat"]
-            )
-        }
-        valid_goal_ids = set(goal_contracts)
-        valid_revisions = self._current_scene_evidence_revisions(session)
-        for goal_id, revisions in evidence.items():
-            if goal_id not in valid_goal_ids:
-                raise NumericV2RuntimeError("scene_goal_evidence_goal_invalid")
-            if (
-                not isinstance(revisions, tuple)
-                or len(revisions) > 8
-                or len(set(revisions)) != len(revisions)
-            ):
-                raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
-            allowed_revisions = set(valid_revisions)
-            if (
-                pending_revision is not None
-                and str(goal_contracts[goal_id].get("owner") or "") == "player"
-            ):
-                allowed_revisions.add(pending_revision)
-            if any(revision not in allowed_revisions for revision in revisions):
-                raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
-        if len({revision for revisions in evidence.values() for revision in revisions}) > 8:
-            raise NumericV2RuntimeError("scene_goal_evidence_revision_invalid")
+        if not isinstance(session.transition_offered, bool):
+            raise NumericV2RuntimeError("session_transition_offered_invalid")
+        _dialogue_policy(session.dialogue_policy)
 
     def resolve_turn(
         self,
@@ -432,9 +417,10 @@ class NumericV2Engine:
         changes: tuple[MetricChangeV2, ...],
         *,
         scene_complete: bool = False,
-        goal_evidence: Mapping[str, tuple[int, ...]] | None = None,
-        persist_scene_progress: bool = True,
+        transition_intent: str = "unclear",
     ) -> TurnOutcomeV2:
+        """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
+
         self.validate_session(session)
         if session.status == "ended":
             raise NumericV2RuntimeError("session_already_ended")
@@ -444,39 +430,15 @@ class NumericV2Engine:
             raise NumericV2DuplicateTurnError("duplicate_client_turn_id")
         if len({change.metric_id for change in changes}) != len(changes):
             raise NumericV2RuntimeError("metric_change_duplicate")
-
-        submitted_goal_evidence = dict(goal_evidence or {})
-        self._validate_scene_goal_evidence(
-            session,
-            submitted_goal_evidence,
-            pending_revision=session.revision + 1,
-        )
-        merged_goal_evidence = {
-            goal_id: tuple(dict.fromkeys((
-                *session.scene_goal_evidence.get(goal_id, ()),
-                *submitted_goal_evidence.get(goal_id, ()),
-            )))[-4:]
-            for goal_id in dict.fromkeys((
-                *session.scene_goal_evidence,
-                *submitted_goal_evidence,
-            ))
-        }
-        # 目标证据只承担跨越最近窗口的短期保留职责。始终优先保存最近八个
-        # 正式 revision，避免同一目标长期积累后反过来让合法 Session 无法复验。
-        newest_evidence_revisions = set(sorted({
-            revision
-            for revisions in merged_goal_evidence.values()
-            for revision in revisions
-        })[-8:])
-        merged_goal_evidence = {
-            goal_id: tuple(
-                revision
-                for revision in revisions
-                if revision in newest_evidence_revisions
-            )
-            for goal_id, revisions in merged_goal_evidence.items()
-            if any(revision in newest_evidence_revisions for revision in revisions)
-        }
+        if transition_intent not in {"accept", "reject", "unclear"}:
+            raise NumericV2RuntimeError("transition_intent_invalid")
+        # 没有上一轮可见的具体提议时，Evaluator 的 accept/reject 不能改变路线。
+        effective_transition_intent = transition_intent
+        if (
+            transition_intent in {"accept", "reject"}
+            and not session.transition_offered
+        ):
+            effective_transition_intent = "unclear"
 
         before = dict(session.metrics)
         after = dict(before)
@@ -490,18 +452,19 @@ class NumericV2Engine:
         source = self.nodes[session.current_node_id]
         next_turn_count = session.node_turn_count + 1
         route = None
-        route_status = "waiting_min_turns"
-        min_turns = int(source.get("min_turns") or 1)
-        scene_completion_ready = (
-            session.scene_completion_ready or scene_complete
-            if persist_scene_progress
-            else scene_complete
-        )
-        if next_turn_count >= min_turns and not scene_completion_ready:
-            # min_turns 只是最短停留时间；本幕目标尚未兑现时不能按轮数硬切剧情。
-            route_status = "scene_incomplete"
-        elif next_turn_count >= min_turns:
+        route_status = "playing"
+        if effective_transition_intent == "accept" and session.transition_offered:
+            # 玩家只能接受上一轮已经可见的具体提议；目标和完成信号不参与换幕门槛。
             route, route_status = self._select_route(source, after)
+            if route is None:
+                # 提议对应的路线当前仍不可达时，留在当前幕而不伪造 advanced。
+                route_status = "transition_offered"
+        elif session.transition_offered and effective_transition_intent == "unclear":
+            # unclear 保留提议，下一轮只回应玩家，不重复催促。
+            route_status = "transition_offered"
+        elif effective_transition_intent == "reject":
+            # reject 清除当前提议；Actor 可在出现新因果后重新提出。
+            route_status = "playing"
 
         target_node_id = session.current_node_id
         next_status = "active"
@@ -514,15 +477,13 @@ class NumericV2Engine:
             transition = deepcopy(dict(route["transition_contract"]))
             route_status = "advanced"
 
-        next_scene_completion_ready = scene_completion_ready if route is None else False
-        # 完成信号已由 Runtime 锁存后，旧证据不再参与后续判定；即使仍在等待
-        # min_turns，也只保留完成状态，避免反复占用 Evaluator 输入预算。
-        next_scene_goal_evidence = (
-            merged_goal_evidence
-            if route is None and not scene_completion_ready
-            else {}
-        )
         player_address_known = _player_address_known_after_turn(session, request.message)
+        dialogue_policy = session.dialogue_policy
+        if route is not None:
+            dialogue_policy = self._node_dialogue_policy(
+                self.nodes[target_node_id],
+                dialogue_policy,
+            )
 
         revision = session.revision + 1
         next_session = replace(
@@ -534,8 +495,14 @@ class NumericV2Engine:
             status=next_status,
             processed_client_turn_ids=(*session.processed_client_turn_ids, request.client_turn_id),
             player_address_known=player_address_known,
-            scene_completion_ready=next_scene_completion_ready,
-            scene_goal_evidence=next_scene_goal_evidence,
+            dialogue_policy=dialogue_policy,
+            # 当前回合的 Actor 正文尚未生成；接受、拒绝或正式换场都会先清除旧提议，
+            # unclear 才保留它等待下一轮继续回应。
+            transition_offered=(
+                session.transition_offered
+                if route is None and effective_transition_intent == "unclear"
+                else False
+            ),
         )
         event = {
             "schema": LEDGER_EVENT_SCHEMA,
@@ -556,16 +523,21 @@ class NumericV2Engine:
             "node_turn_count": next_turn_count,
             "status": next_status,
             "player_address_known": player_address_known,
+            "before_dialogue_policy": session.dialogue_policy,
+            # Evaluator 与节点覆盖先于 Actor 生效；Actor exact 交付产生的状态效果只影响下一回合。
+            # 单独锁存正文生成时看到的发声合同，避免提交时用更新后的状态反向否定本轮合法对白。
+            "performance_dialogue_policy": dialogue_policy,
+            "dialogue_policy": dialogue_policy,
+            # 工作流在正文通过校验后会覆盖本回合的新提议状态；这里先记录状态机清除结果。
+            "transition_offered": (
+                session.transition_offered
+                if route is None and effective_transition_intent == "unclear"
+                else False
+            ),
             # 版本 2 表示称呼状态由“完整昵称 + 明确披露句式”确定，旧事件按已提交事实兼容重放。
             "player_address_disclosure_version": 2,
         }
-        if persist_scene_progress:
-            # Ledger 保存累计状态，恢复时无需重新询问模型，也不会把旧幕证据带入新幕。
-            event["scene_completion_ready"] = scene_completion_ready
-            event["scene_goal_evidence"] = {
-                goal_id: list(revisions)
-                for goal_id, revisions in next_scene_goal_evidence.items()
-            }
+        event["transition_intent"] = effective_transition_intent
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
 
     def finalize_transition_performance(
@@ -574,13 +546,51 @@ class NumericV2Engine:
         performance: Mapping[str, Any],
         *,
         target_opening: str,
+        bridge_required: bool = False,
+        bridge_scene_narration: str = "",
+        source_dialogue_policy: str = "required",
+        target_dialogue_policy: str = "required",
     ) -> dict[str, Any]:
-        """由 Runtime 注入目标开场原文，模型只负责三段换场中的演绎内容。"""  # noqa: DOCSTRING_CJK
+        """由 Runtime 注入作者桥段和目标开场，统一生成可原子提交的三段换场。"""  # noqa: DOCSTRING_CJK
 
         target_node_id = str(outcome.ledger_event["to_node_id"])
         if outcome.ledger_event["from_node_id"] == target_node_id:
             return deepcopy(dict(performance))
-        segments = performance.get("segments")
+        result = deepcopy(dict(performance))
+        segments = result.get("segments")
+        authored_bridge = str(bridge_scene_narration or "").strip()
+        if authored_bridge and {
+            "source_performance",
+            "target_performance",
+        }.issubset(result):
+            # 严格版本紧凑合同只让 Actor 生成两侧角色正文。段位标签、作者桥段与目标开场均由
+            # Runtime 按固定顺序组装，避免模型的数组长度或字段漂移把一次有效演绎变成发送失败。
+            segments = [
+                {
+                    "phase": "source_response",
+                    "performance": str(result.pop("source_performance") or "").strip(),
+                },
+                {
+                    "phase": "transition_bridge",
+                    "scene_narration": authored_bridge,
+                },
+                {
+                    "phase": "target_opening",
+                    "performance": str(result.pop("target_performance") or "").strip(),
+                },
+            ]
+            result["segments"] = segments
+        if (
+            authored_bridge
+            and isinstance(segments, list)
+            and len(segments) == 3
+            and isinstance(segments[1], Mapping)
+        ):
+            # 作者显式桥段属于剧本事实，模型只负责两侧角色演绎；提交前原文覆盖可消除转场漏项和近义漂移。
+            segments[1] = {
+                "phase": "transition_bridge",
+                "scene_narration": authored_bridge,
+            }
         if (
             not valid_scene_narration({"scene_narration": target_opening})
             or not isinstance(segments, list)
@@ -591,13 +601,16 @@ class NumericV2Engine:
             or set(segments[0]) != {"phase", "performance"}
             or set(segments[1]) != {"phase", "scene_narration"}
             or set(segments[2]) != {"phase", "performance"}
-            or not valid_mixed_performance(segments[0], require_dialogue=True)
-            # 去重后没有独立过渡事实时允许空桥段，前端直接展示 Runtime 目标开场。
-            or not valid_scene_narration(segments[1], allow_empty=True)
-            or not valid_mixed_performance(segments[2], require_dialogue=True)
+            or not valid_mixed_performance_policy(
+                segments[0], source_dialogue_policy
+            )
+            # 合同仍有独立时间、地点或环境事实时桥段必须可见；仅同场连续且无独立事实时可为空。
+            or not valid_scene_narration(segments[1], allow_empty=not bridge_required)
+            or not valid_mixed_performance_policy(
+                segments[2], target_dialogue_policy
+            )
         ):
             raise NumericV2RuntimeError("numeric_transition_performance_invalid")
-        result = deepcopy(dict(performance))
         result["segments"] = [
             deepcopy(dict(segments[0])),
             deepcopy(dict(segments[1])),
@@ -620,6 +633,19 @@ class NumericV2Engine:
         if len(winners) != 1:
             raise NumericV2RuntimeError("route_priority_tie")
         return deepcopy(dict(winners[0])), "eligible"
+
+    def preview_route(
+        self,
+        node_id: str,
+        metrics: Mapping[str, int],
+    ) -> dict[str, Any] | None:
+        """只读返回按当前数值会被 Runtime 选中的路线，不改变 Session。"""  # noqa: DOCSTRING_CJK
+
+        node = self.nodes.get(str(node_id))
+        if node is None:
+            raise NumericV2RuntimeError("node_not_found")
+        route, _status = self._select_route(node, metrics)
+        return route
 
     @staticmethod
     def _conditions_match(conditions: Mapping[str, Any], metrics: Mapping[str, int]) -> bool:
@@ -645,11 +671,13 @@ class NumericV2Runtime:
         session_id: str,
         catgirl_binding: Mapping[str, Any],
         opening_performance: Mapping[str, Any],
+        actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
     ) -> NumericV2StoredSession:
         session = self.engine.create_session(
             session_id=session_id,
             catgirl_binding=catgirl_binding,
             opening_performance=opening_performance,
+            actor_budget_profile=actor_budget_profile,
         )
         return await self.store.create_story_session(session)
 
@@ -662,7 +690,7 @@ class NumericV2Runtime:
             str(catgirl_binding.get("character_id") or ""),
             str(catgirl_binding.get("catgirl_name") or ""),
         )
-        return await self._migrate_legacy_binding(stored, catgirl_binding)
+        return stored
 
     @asynccontextmanager
     async def story_session_guard(self):
@@ -678,35 +706,7 @@ class NumericV2Runtime:
             str(catgirl_binding.get("character_id") or ""),
             str(catgirl_binding.get("catgirl_name") or ""),
         )
-        return await self._migrate_legacy_binding(stored, catgirl_binding)
-
-    async def _migrate_legacy_binding(
-        self,
-        stored: NumericV2StoredSession | None,
-        current_binding: Mapping[str, Any],
-    ) -> NumericV2StoredSession | None:
-        if stored is None or stored.session.catgirl_binding.get("character_id"):
-            return stored
-        legacy_expected = {
-            str(key): str(value)
-            for key, value in current_binding.items()
-            if key != "character_id"
-        }
-        legacy_expected["catgirl_id"] = (
-            f"catgirl:{current_binding.get('catgirl_name') or ''}"
-        )
-        if stored.session.catgirl_binding != legacy_expected:
-            return stored
-        migrated = await self.store.update_catgirl_binding(
-            stored.session.session_id,
-            current_binding,
-        )
-        await self.store.set_story_session_id(
-            self.engine.story_id,
-            str(current_binding.get("character_id") or ""),
-            migrated.session.session_id,
-        )
-        return migrated
+        return stored
 
     async def replace_active_session(
         self,
@@ -715,17 +715,129 @@ class NumericV2Runtime:
         session_id: str,
         catgirl_binding: Mapping[str, Any],
         opening_performance: Mapping[str, Any],
+        actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
     ) -> NumericV2StoredSession:
         session = self.engine.create_session(
             session_id=session_id,
             catgirl_binding=catgirl_binding,
             opening_performance=opening_performance,
+            actor_budget_profile=actor_budget_profile,
         )
         stored = await self.store.replace_active(previous_session_id, session)
         return stored
 
     async def restore_session(self, session_id: str) -> NumericV2StoredSession | None:
         return await self.store.load(session_id)
+
+    async def restore_session_for_lifecycle(
+        self,
+        session_id: str,
+    ) -> NumericV2StoredSession | None:
+        """只为结束旧演绎读取存档；调用方不得据此继续生成剧情。"""  # noqa: DOCSTRING_CJK
+
+        return await self.store.load_for_lifecycle(session_id)
+
+    async def fork_session_for_test(
+        self,
+        source_session_id: str,
+        *,
+        session_id: str,
+        through_revision: int,
+    ) -> NumericV2StoredSession:
+        """从指定 revision 建立隔离压测分叉，不覆盖正式剧本的继续演绎槽位。"""  # noqa: DOCSTRING_CJK
+
+        source = await self.store.load(source_session_id)
+        if source is None:
+            raise NumericV2RuntimeError("numeric_source_session_not_found")
+        if (
+            isinstance(through_revision, bool)
+            or not isinstance(through_revision, int)
+            or not 0 <= through_revision <= source.session.revision
+        ):
+            raise NumericV2RuntimeError("numeric_fork_revision_invalid")
+
+        replay_session = self.engine.create_session(
+            session_id=session_id,
+            catgirl_binding=source.session.catgirl_binding,
+            opening_performance=source.session.opening_performance,
+            actor_budget_profile=source.session.actor_budget_profile,
+        )
+        replay_events: list[dict[str, Any]] = []
+        for index, source_event in enumerate(source.ledger_events[:through_revision]):
+            changes = tuple(
+                MetricChangeV2.from_mapping(
+                    {
+                        key: change.get(key)
+                        for key in ("metric_id", "delta", "criterion", "evidence")
+                    },
+                    self.engine.metric_schema,
+                )
+                for change in source_event.get("metric_changes") or []
+                if isinstance(change, Mapping)
+            )
+            request = TurnRequestV2.from_mapping({
+                "client_turn_id": source_event.get("client_turn_id"),
+                "base_revision": replay_session.revision,
+                "message": source_event.get("input_text"),
+            })
+            outcome = self.engine.resolve_turn(
+                replay_session,
+                request,
+                changes,
+                scene_complete=bool(source_event.get("scene_complete")),
+                transition_intent=str(source_event.get("transition_intent") or "unclear"),
+            )
+            source_performance = deepcopy(
+                dict(source.session.performance_history[index])
+            )
+            replayed_event = deepcopy(outcome.ledger_event)
+            replayed_session_after_turn = outcome.session
+            if "transition_offered" in source_event:
+                # 分叉重放沿用原回合已经提交的提议状态；不能把 Actor 结果重新猜一遍。
+                committed_transition_offered = source_event.get("transition_offered")
+                if not isinstance(committed_transition_offered, bool):
+                    raise NumericV2RuntimeError("session_transition_offered_invalid")
+                replayed_event["transition_offered"] = committed_transition_offered
+                replayed_session_after_turn = replace(
+                    outcome.session,
+                    transition_offered=committed_transition_offered,
+                )
+            if (
+                source_event.get("player_address_disclosure_version") is None
+                and source_event.get("player_address_known") is True
+                and outcome.session.player_address_known is False
+            ):
+                # 旧 Ledger 曾按“昵称出现即知情”提交。来源 Session 已通过兼容审计，
+                # 测试分叉必须保持该既成状态，不能用新规则悄悄改写历史。
+                replayed_event.pop("player_address_disclosure_version", None)
+                replayed_event["player_address_known"] = True
+                replayed_session_after_turn = replace(
+                    outcome.session,
+                    player_address_known=True,
+                )
+            # 分叉只更换 Session 身份；剧情正文和每轮正式输入保持逐字一致。
+            source_performance.update({
+                "schema": PERFORMANCE_RECORD_SCHEMA,
+                "client_turn_id": request.client_turn_id,
+                "revision": outcome.session.revision,
+                "input_text": request.message,
+                "from_node_id": outcome.ledger_event["from_node_id"],
+                "to_node_id": outcome.ledger_event["to_node_id"],
+            })
+            replay_session = replace(
+                replayed_session_after_turn,
+                performance_history=(
+                    *replayed_session_after_turn.performance_history,
+                    source_performance,
+                ),
+            )
+            replay_events.append(replayed_event)
+
+        snapshot = NumericV2StoredSession(
+            replay_session,
+            tuple(replay_events),
+        )
+        return await self.store.create_isolated_snapshot(snapshot)
 
     def prepare_turn(
         self,
@@ -734,14 +846,14 @@ class NumericV2Runtime:
         changes: tuple[MetricChangeV2, ...],
         *,
         scene_complete: bool = False,
-        goal_evidence: Mapping[str, tuple[int, ...]] | None = None,
+        transition_intent: str = "unclear",
     ) -> TurnOutcomeV2:
         return self.engine.resolve_turn(
             current.session,
             request,
             changes,
             scene_complete=scene_complete,
-            goal_evidence=goal_evidence,
+            transition_intent=transition_intent,
         )
 
     async def commit_turn(
@@ -770,10 +882,20 @@ class NumericV2Runtime:
                         set(segments[0]) != {"phase", "performance"}
                         or set(segments[1]) != {"phase", "scene_narration"}
                         or set(segments[2]) != {"phase", "scene_narration", "performance"}
-                        or not valid_mixed_performance(segments[0], require_dialogue=True)
+                        or not valid_mixed_performance_policy(
+                            segments[0],
+                            transition_source_dialogue_policy(
+                                str(
+                                    outcome.ledger_event.get("before_dialogue_policy")
+                                    or "required"
+                                )
+                            ),
+                        )
                         or not valid_scene_narration(segments[1], allow_empty=True)
                         or not valid_scene_narration(segments[2])
-                        or not valid_mixed_performance(segments[2], require_dialogue=True)
+                        or not valid_mixed_performance_policy(
+                            segments[2], outcome.session.dialogue_policy
+                        )
                     )
                 )
                 or (
@@ -786,9 +908,21 @@ class NumericV2Runtime:
                 )
             ):
                 raise NumericV2RuntimeError("numeric_transition_performance_invalid")
-        elif "performance" in performance and not valid_mixed_performance(
-            performance,
-            require_dialogue=True,
+        elif (
+            "performance" in performance
+            and (
+                not valid_mixed_performance_policy(
+                    performance,
+                    str(
+                        outcome.ledger_event.get("performance_dialogue_policy")
+                        or outcome.session.dialogue_policy
+                    ),
+                )
+                or (
+                    "scene_narration" in performance
+                    and not valid_scene_narration(performance)
+                )
+            )
         ):
             raise NumericV2RuntimeError("numeric_performance_invalid")
         new_contract = "performance" in performance or (

@@ -921,7 +921,7 @@ def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tu
         performance = str(container.get("performance") or "").strip()
         if performance:
             for block in mixed_performance_blocks(performance):
-                kind = "action" if block.get("type") == "narration" else "dialogue"
+                kind = "action" if block.get("type") == "action" else "dialogue"
                 visible_text = _visible_action(block["text"]) if kind == "action" else block["text"]
                 parts.append({"kind": kind, "phase": phase, "text": visible_text})
             chunks.append(performance)
@@ -933,6 +933,9 @@ def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tu
         if block_type == "dialogue":
             kind = "dialogue"
             text = str(block.get("text") or "").strip()
+        elif block_type == "action":
+            kind = "action"
+            text = _visible_action(str(block.get("text") or "").strip())
         else:
             kind = "action" if phase in {"ordinary", "source_response"} else "scene_narration"
             raw_text = str(block.get("text") or "").strip()

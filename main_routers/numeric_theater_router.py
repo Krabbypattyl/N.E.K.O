@@ -21,6 +21,10 @@ from services.theater.numeric_v2_actor import (
     NumericV2ActorError,
     NumericV2ActorUnavailableError,
 )
+from services.theater.numeric_v2_budget import (
+    NUMERIC_V2_ACTOR_BUDGET_PROFILES,
+    NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
+)
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_identity import (
     numeric_v2_catgirl_binding,
@@ -267,6 +271,7 @@ _INTERNAL_PERFORMANCE_FIELDS = frozenset({
     "from_node_id",
     "to_node_id",
     "visible_node_id",
+    "suggestion_candidates",
 })
 
 
@@ -294,11 +299,13 @@ def _public_session(session: Any) -> dict[str, Any]:
         "lifecycle_revision": session.lifecycle_revision,
         "status": session.status,
         "player_address_known": session.player_address_known,
-        "opening_performance": session.opening_performance,
+        # 候选用途和目标 ID 只服务 Runtime/压测选择；开场与历史都必须经过同一公开投影。
+        "opening_performance": _public_performance(session.opening_performance),
         "performance_history": [
             _public_performance(record)
             for record in session.performance_history
         ],
+        "actor_budget_profile": session.actor_budget_profile,
         "ended_reason": session.ended_reason,
     }
 
@@ -309,9 +316,32 @@ def _numeric_payload(
     *,
     end_receipt: Mapping[str, Any] | None = None,
     display_binding: Mapping[str, str] | None = None,
+    story_projection_compatible: bool = True,
 ) -> dict[str, Any]:
-    latest = stored.session.performance_history[-1] if stored.session.performance_history else stored.session.opening_performance
     binding = display_binding or stored.session.catgirl_binding
+    if not story_projection_compatible:
+        # 旧 Session 可以在剧本升级后结束，但不能把新剧本的场景投影伪装成旧剧情。
+        payload = {
+            "session": _public_session(stored.session),
+            "story_title": str(runtime.engine.story["meta"]["title"]),
+            "participants": {
+                "player_name": _surface_player_name(
+                    binding,
+                    known=bool(stored.session.player_address_known),
+                ),
+                "catgirl_name": str(binding.get("catgirl_name") or "当前猫娘"),
+            },
+            "story_intro": {},
+            "scene": None,
+            "suggested_inputs": [],
+        }
+        if end_receipt:
+            payload["end_receipt_id"] = str(end_receipt.get("receipt_id") or "")
+            payload["archive_status"] = str(end_receipt.get("status") or "pending")
+            payload["archive_request_id"] = str(end_receipt.get("archive_request_id") or "")
+        return payload
+
+    latest = stored.session.performance_history[-1] if stored.session.performance_history else stored.session.opening_performance
     cast = NumericV2CastProjection.from_story(
         runtime.engine.story,
         player_name=_surface_player_name(
@@ -389,7 +419,10 @@ async def import_numeric_story(request: Request):
     try:
         config_manager = get_config_manager()
         registry = await _registry(config_manager)
-        compiled = await asyncio.to_thread(registry.compiler.compile, payload)
+        compiled = await asyncio.to_thread(
+            registry.compile_for_import,
+            payload,
+        )
         # 导入与同 story_id 的删除事务共用生命周期锁，避免成功导入被迟到回滚覆盖。
         async with numeric_v2_story_session_guard(
             _numeric_root(config_manager),
@@ -486,6 +519,15 @@ async def start_numeric_session(request: Request):
         return _error("story_id_session_id_and_character_id_required", 400)
     config_manager = get_config_manager()
     replace_existing = payload.get("replace_existing") is True
+    actor_budget_profile = str(
+        payload.get(
+            "actor_budget_profile",
+            NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
+        )
+        or ""
+    )
+    if actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
+        return _error("numeric_actor_budget_profile_invalid", 400)
     try:
         runtime = await _runtime_for_story(config_manager, story_id)
         # 先在统一锁顺序下取得角色与恢复槽位快照；已有进度可直接恢复，不浪费一次开场生成。
@@ -509,7 +551,10 @@ async def start_numeric_session(request: Request):
                     return _error("numeric_active_session_cannot_restart", 409)
 
         # 开场模型调用不占用角色或剧本锁；最终提交前会重新读取并验证全部可变事实。
-        opening = await NumericV2Actor(config_manager).generate_opening(engine=runtime.engine)
+        opening = await NumericV2Actor(config_manager).generate_opening(
+            engine=runtime.engine,
+            actor_budget_profile=actor_budget_profile,
+        )
         async with character_config_mutation_lock, runtime.story_session_guard():
             # Actor 调用期间剧本可能已被删除或同 ID 重装；提交前必须复验原包仍是当前事实。
             current_engine = await asyncio.to_thread(
@@ -568,6 +613,7 @@ async def start_numeric_session(request: Request):
                     session_id=session_id,
                     catgirl_binding=binding,
                     opening_performance=opening,
+                    actor_budget_profile=actor_budget_profile,
                 )
                 # 新 Session 已原子接管恢复槽位，旧 Session 回执不再有任何合法消费者。
                 try:
@@ -588,6 +634,7 @@ async def start_numeric_session(request: Request):
                     session_id=session_id,
                     catgirl_binding=binding,
                     opening_performance=opening,
+                    actor_budget_profile=actor_budget_profile,
                 )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
@@ -816,7 +863,19 @@ async def end_numeric_session(request: Request):
         runtime = await _runtime_for_story(config_manager, story_id)
         # 结束状态与回执必须和当前角色事实一起提交，锁序固定为角色锁→故事锁。
         async with character_config_mutation_lock, runtime.story_session_guard():
-            current = await runtime.restore_session(session_id)
+            story_projection_compatible = True
+            try:
+                current = await runtime.restore_session(session_id)
+            except NumericV2RuntimeError as exc:
+                if str(exc) not in {
+                    "story_package_revision_mismatch",
+                    "story_package_hash_mismatch",
+                }:
+                    raise
+                # 结束只改变生命周期。剧本升级后的旧 Session 允许收尾，
+                # 但不会进入继续演绎或用新剧本投影旧节点。
+                current = await runtime.restore_session_for_lifecycle(session_id)
+                story_projection_compatible = False
             if current is None:
                 return _error("numeric_session_not_found", 404)
             current_binding = _ensure_current_catgirl(
@@ -854,6 +913,7 @@ async def end_numeric_session(request: Request):
                     current,
                     end_receipt=receipt,
                     display_binding=current_binding,
+                    story_projection_compatible=story_projection_compatible,
                 ),
             }
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
@@ -873,6 +933,7 @@ async def end_numeric_session(request: Request):
             stored,
             end_receipt=receipt,
             display_binding=current_binding,
+            story_projection_compatible=story_projection_compatible,
         ),
     }
 

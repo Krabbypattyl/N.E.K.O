@@ -2773,6 +2773,8 @@
         }
     },
     "theater": {
+        "endStateFailed": "현재 공연 상태를 종료하지 못했습니다. 극본 페이지로 돌아가 다시 시도하세요.",
+        "endConnectionFailed": "N.E.K.O 로컬 서비스에 연결할 수 없습니다. 앱이 실행 중인지 확인한 뒤 다시 시도하세요.",
         "title": "소극장",
         "modeLabel": "모드",
         "scriptMode": "대본 모드",
@@ -2797,6 +2799,11 @@
         "collapseStage": "무대 접기",
         "expandStage": "무대 펼치기",
         "inputPlaceholder": "하고 싶은 말을 입력하거나 *...*로 행동을 표현하세요",
+        "actorBudgetLabel": "턴별 컨텍스트",
+        "actorBudgetEconomy": "간결 · 입력 6k · 기록 6턴",
+        "actorBudgetBalanced": "표준 · 입력 10k · 기록 12턴",
+        "actorBudgetQuality": "풍부 · 입력 16k · 기록 20턴",
+        "actorBudgetHint": "본문과 추천 생성이 턴마다 사용하는 컨텍스트를 제한합니다. 수치는 본문 입력 상한과 최대 기록 턴 수입니다. 계속하기는 기존 설정을 유지하고 다시 시작은 현재 선택을 사용합니다.",
         "storySelect": "소극장 이야기 선택",
         "importStory": "대본 가져오기",
         "importStoryAria": "Numeric v2 대본 가져오기",

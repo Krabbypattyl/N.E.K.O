@@ -4,27 +4,15 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 import json
-import re
 from typing import Any, Mapping
 
 from .numeric_v2_performance import mixed_performance_blocks
 
 
-# 推荐输入会被前端原样发送，因此只允许直接台词或即时动作，不接受编辑说明。
-_INDIRECT_SUGGESTION_PREFIX_RE = re.compile(
-    r"^(?:请)?(?:解释|询问|表示|保证|提出|展示|选择|注意到|观察|尝试|请求|说明)(?:自己|对方|她|他)?"
-)
-_INDIRECT_SUGGESTION_QUESTION_RE = re.compile(
-    r"(?:^|[，,；;。])(?:再|然后|接着)?(?:询问|问)(?:她|他|对方|我)?"
-)
-_INDIRECT_SUGGESTION_INTENT_RE = re.compile(
-    r"^(?![“\"])[^。！？!?]{1,24}(?:表示|解释|说明)"
-    r"(?:自己|没有|来意|原因|情况|身份|意图|想法|立场|诚意|[“\"])"
-)
-# 括号动作和模板占位是模型编辑格式，不是玩家点击后可原样发送的自然输入。
-_PARENTHESIZED_SUGGESTION_RE = re.compile(r"^[（(]")
-_PLACEHOLDER_SUGGESTION_RE = re.compile(r"\[[^\[\]]+\]|\{[^{}]+\}|<[^<>]+>")
-_UNKNOWN_NAME_DISCLOSURE_RE = re.compile(r"(?:我叫|叫我|称呼我)")
+def _strip_inline_markdown(value: str) -> str:
+    """可见演绎是纯文本协议，移除模型偶发输出的行内 Markdown 标记。"""  # noqa: DOCSTRING_CJK
+
+    return value.replace("**", "").replace("__", "").replace("`", "")
 
 
 class NumericV2ActorError(RuntimeError):
@@ -62,7 +50,11 @@ def _sentence_units(value: Any) -> list[str]:
 def _normalized_comparison_text(value: Any) -> str:
     """去掉不影响语义比较的空白和标点，保留否定词与正文。"""  # noqa: DOCSTRING_CJK
 
-    return re.sub(r"[^\w\u3400-\u9fff]+", "", str(value or "")).casefold()
+    return "".join(
+        character
+        for character in str(value or "")
+        if character.isalnum() or character == "_"
+    ).casefold()
 
 
 def _text_is_covered(
@@ -108,23 +100,63 @@ def _require_block_types(
     """校验混合正文是否包含当前阶段要求的动作与对白。"""  # noqa: DOCSTRING_CJK
 
     types = {block["type"] for block in blocks}
-    if narration and "narration" not in types:
+    if narration and "action" not in types:
         raise NumericV2ActorOutputError("numeric_v2_actor_narration_required")
     if dialogue and "dialogue" not in types:
         raise NumericV2ActorOutputError("numeric_v2_actor_dialogue_required")
 
 
-def _parse_mixed_performance(value: Any, *, require_narration: bool) -> str:
+def _parse_mixed_performance(
+    value: Any,
+    *,
+    require_narration: bool,
+    dialogue_policy: str = "required",
+) -> str:
     """校验模型的单字段混合正文；Session 只保存校验后的原始顺序。"""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, str) or not value.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_performance_invalid")
-    text = value.strip()
+    text = _strip_inline_markdown(value.strip())
     blocks = mixed_performance_blocks(text)
     if not blocks:
         raise NumericV2ActorOutputError("numeric_v2_actor_performance_invalid")
-    _require_block_types(blocks, narration=require_narration, dialogue=True)
+    if dialogue_policy not in {"required", "optional", "forbidden"}:
+        raise NumericV2ActorOutputError("numeric_v2_actor_dialogue_policy_invalid")
+    _require_block_types(
+        blocks,
+        narration=require_narration,
+        dialogue=dialogue_policy == "required",
+    )
+    if (
+        dialogue_policy == "forbidden"
+        and any(block["type"] == "dialogue" for block in blocks)
+    ):
+        raise NumericV2ActorOutputError("numeric_v2_actor_dialogue_forbidden")
     return text
+
+
+def _parse_transition_performance(
+    value: Any,
+    *,
+    dialogue_policy: str = "required",
+) -> str:
+    """兼容模型在换场分段中偶发返回的旧式 action/dialogue 对象。"""  # noqa: DOCSTRING_CJK
+
+    if isinstance(value, Mapping) and set(value) == {"action", "dialogue"}:
+        action = value.get("action")
+        dialogue = value.get("dialogue")
+        if not isinstance(action, str) or not isinstance(dialogue, str):
+            raise NumericV2ActorOutputError("numeric_v2_actor_performance_invalid")
+        # 这里只做确定性的旧形状归一化，不补写正文，也不增加第二次 Actor 调用。
+        normalized_action = action.strip()
+        if normalized_action.startswith("(") and normalized_action.endswith(")"):
+            normalized_action = "（" + normalized_action[1:-1] + "）"
+        value = normalized_action + dialogue.strip()
+    return _parse_mixed_performance(
+        value,
+        require_narration=False,
+        dialogue_policy=dialogue_policy,
+    )
 
 
 def _parse_scene_narration(value: Any) -> str:
@@ -132,23 +164,20 @@ def _parse_scene_narration(value: Any) -> str:
 
     if not isinstance(value, str) or not value.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_scene_narration_invalid")
-    return value.strip()
+    return _strip_inline_markdown(value.strip())
 
 
-def _goal_texts(target_goals: list[Any] | None) -> list[str]:
-    """结构化目标只取描述参与桥段去重，内部 owner 和 evidence 不能变成剧情正文。"""  # noqa: DOCSTRING_CJK
+def _parse_scene_update(value: Any) -> str:
+    """普通回合的场景更新沿用旁白存储；空字符串等价于省略可选字段。"""  # noqa: DOCSTRING_CJK
 
-    return [
-        str(item.get("text") or "").strip() if isinstance(item, Mapping) else str(item or "").strip()
-        for item in target_goals or []
-        if (str(item.get("text") or "").strip() if isinstance(item, Mapping) else str(item or "").strip())
-    ]
+    if not isinstance(value, str):
+        raise NumericV2ActorOutputError("numeric_v2_actor_scene_narration_invalid")
+    return _strip_inline_markdown(value.strip())
 
 
 def _deduplicate_transition_bridge(
     value: Any,
     target_opening: str,
-    target_goals: list[Any] | None = None,
 ) -> str:
     """移除与 Runtime 目标开场重复的桥接句，保留来源场景的收束过程。"""  # noqa: DOCSTRING_CJK
 
@@ -157,7 +186,6 @@ def _deduplicate_transition_bridge(
     if not opening:
         return bridge
     opening_units = _sentence_units(opening)
-    goal_units = _goal_texts(target_goals)
     kept = [
         unit
         for unit in _sentence_units(bridge)
@@ -167,12 +195,6 @@ def _deduplicate_transition_bridge(
             similarity=0.55,
             common_span=3,
             strong_common_span=5,
-        )
-        and not _text_is_covered(
-            unit,
-            goal_units,
-            similarity=0.55,
-            strong_common_span=3,
         )
     ]
     # 模型只复述目标开场时不制造系统式占位旁白；前端会直接进入确定性目标开场。
@@ -195,37 +217,92 @@ def _normalize_suggestion_quotes(value: str) -> str:
     return "".join(normalized)
 
 
-def _suggestions(
+def _parse_actor_suggestions(
     value: Any,
     *,
-    allow_questions: bool = True,
-    allow_name_disclosure: bool = True,
+    diagnostics: dict[str, int] | None = None,
 ) -> list[str]:
-    """只保留可由玩家点击后直接发送的推荐输入。"""  # noqa: DOCSTRING_CJK
+    """解析 Actor 同次生成的玩家输入；格式异常时只降级推荐，不丢弃合法正文。"""  # noqa: DOCSTRING_CJK
 
+    parse_counts = {
+        "container_invalid": 0,
+        "too_many_items": 0,
+        "empty_item": 0,
+        "too_long_item": 0,
+        "duplicate_item": 0,
+        "placeholder_item": 0,
+        "mixed_shape_invalid": 0,
+        "action_owner_invalid": 0,
+        "accepted_items": 0,
+        "insufficient_valid_items": 0,
+    }
     if not isinstance(value, list):
-        raise NumericV2ActorOutputError("numeric_v2_actor_collections_invalid")
-    suggestions = []
-    for item in value[:4]:
-        item_text = _normalize_suggestion_quotes(str(item or "").strip())
-        is_indirect = (
-            _INDIRECT_SUGGESTION_PREFIX_RE.search(item_text)
-            or _INDIRECT_SUGGESTION_QUESTION_RE.search(item_text)
-            or _INDIRECT_SUGGESTION_INTENT_RE.search(item_text)
-            or _PARENTHESIZED_SUGGESTION_RE.search(item_text)
-            or _PLACEHOLDER_SUGGESTION_RE.search(item_text)
+        parse_counts["container_invalid"] = 1
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(parse_counts)
+        return []
+    if len(value) > 3:
+        # 推荐合同是 2—3 条；超出上限不能静默截断，交给唯一一次轻量补推荐处理。
+        parse_counts["too_many_items"] = 1
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(parse_counts)
+        return []
+    parsed: list[str] = []
+    for item in value:
+        text = _normalize_suggestion_quotes(str(item or "").strip())
+        # 推荐会直接显示并可一键发送，模板占位符不能泄漏给玩家；正文仍由调用方保留。
+        if not text:
+            parse_counts["empty_item"] += 1
+            continue
+        if len(text) > 120:
+            parse_counts["too_long_item"] += 1
+            continue
+        if text in parsed:
+            parse_counts["duplicate_item"] += 1
+            continue
+        if "[" in text or "]" in text:
+            parse_counts["placeholder_item"] += 1
+            continue
+        blocks = mixed_performance_blocks(text)
+        if [block.get("type") for block in blocks] != ["action", "dialogue"]:
+            parse_counts["mixed_shape_invalid"] += 1
+            continue
+        action = str(blocks[0].get("text") or "").strip()
+        dialogue = str(blocks[1].get("text") or "").strip()
+        # suggested_inputs 后续会由程序作为 player_input/input_text 存储，
+        # 中文动作可以自然省略“我”；只拒绝明确把第三方写成动作主体。
+        explicit_nonplayer_prefixes = (
+            "你",
+            "您",
+            "她",
+            "他",
+            "猫娘",
+            "女主",
+            "男主",
+            "环境",
         )
-        if (
-            0 < len(item_text) <= 120
-            and not is_indirect
-            # 结构化开机空白态下，知道现场背景的是男主；问句留给猫娘正文，避免双方职责倒置。
-            and (allow_questions or not any(mark in item_text for mark in ("?", "？")))
-            # 未知阶段 Actor 看不到真实配置昵称，也不能用任意新名字替玩家完成自我介绍。
-            and (allow_name_disclosure or not _UNKNOWN_NAME_DISCLOSURE_RE.search(item_text))
-            and item_text not in suggestions
-        ):
-            suggestions.append(item_text)
-    return suggestions
+        if action.startswith(explicit_nonplayer_prefixes) or not dialogue:
+            parse_counts["action_owner_invalid"] += 1
+            continue
+        parsed.append(text)
+        parse_counts["accepted_items"] += 1
+    # 少于两条时由 Actor 的一次轻量补推荐决定是否重试；这里保留合法正文。
+    if len(parsed) not in {2, 3}:
+        parse_counts["insufficient_valid_items"] = 1
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(parse_counts)
+    return parsed if len(parsed) in {2, 3} else []
+
+
+def _parse_transition_offered(value: Any) -> bool:
+    """校验 Actor 是否在可见正文中声明了具体下一步；不在此处猜测自然语言。"""  # noqa: DOCSTRING_CJK
+
+    if not isinstance(value, bool):
+        raise NumericV2ActorOutputError("numeric_v2_actor_transition_offered_invalid")
+    return value
 
 
 def _parse_output(
@@ -233,16 +310,17 @@ def _parse_output(
     *,
     opening_required: bool = False,
     transition_required: bool = False,
-    suggestion_questions_allowed: bool = True,
-    suggestion_name_disclosure_allowed: bool = True,
-    target_node_id: str = "",
+    deterministic_transition: bool = False,
     target_opening: str = "",
-    target_goals: list[Any] | None = None,
+    dialogue_policy: str = "required",
+    source_dialogue_policy: str = "required",
+    target_dialogue_policy: str = "required",
+    suggestions_only: bool = False,
+    transition_suggestions_only: bool = False,
+    suggestion_diagnostics: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """把单次 Actor 返回解析为唯一合法的开场、普通回合或换场形状。"""  # noqa: DOCSTRING_CJK
 
-    # target_node_id 保留在兼容签名中；可见节点仍由 Runtime 提交阶段校验，解析器不采信模型标签。
-    _ = target_node_id
     if not isinstance(content, str) or not content.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_empty_output")
     try:
@@ -251,23 +329,82 @@ def _parse_output(
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
-    if opening_required:
-        if set(payload) != {"scene_narration", "performance", "suggested_inputs"}:
-            raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+    if transition_suggestions_only:
+        # 转场补推荐把接受路径独立成字段，代码再确定性放到第一位；
+        # 这样模型不能把“先核对/再看看”等暂缓选项误排为默认接受路径。
+        if set(payload) != {"accept_input", "alternative_inputs"}:
+            raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
+        alternatives = payload.get("alternative_inputs")
+        if not isinstance(alternatives, list) or len(alternatives) not in {1, 2}:
+            raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
+        suggestions = _parse_actor_suggestions(
+            [payload.get("accept_input"), *alternatives],
+            diagnostics=suggestion_diagnostics,
+        )
+        return {"suggested_inputs": suggestions}
+    if suggestions_only:
+        # 补推荐调用只允许返回推荐字段，任何正文都不会覆盖前一次合法结果。
+        if set(payload) != {"suggested_inputs"}:
+            raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
         return {
+            "suggested_inputs": _parse_actor_suggestions(
+                payload.get("suggested_inputs"),
+                diagnostics=suggestion_diagnostics,
+            )
+        }
+    if opening_required:
+        expected_fields = {"scene_narration", "performance"}
+        # 推荐或转场字段缺失时交给一次轻量补推荐；已合法的正文不会被丢弃。
+        tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered"}
+        optional_legacy_fields = {
+            frozenset(expected_fields),
+            frozenset({*expected_fields, "suggested_inputs"}),
+            frozenset(tolerated_fields),
+        }
+        if set(payload) not in optional_legacy_fields:
+            raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+        result = {
             "scene_narration": _parse_scene_narration(payload.get("scene_narration")),
             "performance": _parse_mixed_performance(
                 payload.get("performance"),
                 require_narration=False,
-            ),
-            "suggested_inputs": _suggestions(
-                payload.get("suggested_inputs"),
-                allow_questions=suggestion_questions_allowed,
-                allow_name_disclosure=suggestion_name_disclosure_allowed,
+                dialogue_policy=dialogue_policy,
             ),
         }
+        result["suggested_inputs"] = _parse_actor_suggestions(
+            payload.get("suggested_inputs"),
+            diagnostics=suggestion_diagnostics,
+        )
+        result["transition_offered"] = _parse_transition_offered(
+            payload.get("transition_offered", False)
+        )
+        return result
+    if transition_required and deterministic_transition:
+        # v2.1 作者桥段由 Runtime 持有，Actor 只生成两侧角色正文。
+        # 这样模型不再承担三段数组、phase 标签和作者旁白复写，降低格式波动导致的整轮失败。
+        expected_fields = {"source_performance", "target_performance"}
+        tolerated_fields = {*expected_fields, "suggested_inputs"}
+        if set(payload) not in {frozenset(expected_fields), frozenset(tolerated_fields)}:
+            raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
+        result = {
+            "source_performance": _parse_transition_performance(
+                payload.get("source_performance"),
+                dialogue_policy=source_dialogue_policy,
+            ),
+            "target_performance": _parse_transition_performance(
+                payload.get("target_performance"),
+                dialogue_policy=target_dialogue_policy,
+            ),
+        }
+        result["suggested_inputs"] = _parse_actor_suggestions(
+            payload.get("suggested_inputs"),
+            diagnostics=suggestion_diagnostics,
+        )
+        return result
     if transition_required:
-        if set(payload) != {"segments", "suggested_inputs"}:
+        expected_fields = {"segments"}
+        tolerated_fields = {*expected_fields, "suggested_inputs"}
+        if set(payload) not in {frozenset(expected_fields), frozenset(tolerated_fields)}:
             raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
         raw_segments = payload.get("segments")
         if not isinstance(raw_segments, list) or len(raw_segments) != 3:
@@ -285,9 +422,9 @@ def _parse_output(
                     raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
                 segments.append({
                     "phase": expected_phases[index],
-                    "performance": _parse_mixed_performance(
+                    "performance": _parse_transition_performance(
                         raw_segment.get("performance"),
-                        require_narration=False,
+                        dialogue_policy=source_dialogue_policy,
                     ),
                 })
                 continue
@@ -299,11 +436,10 @@ def _parse_output(
                     "scene_narration": _deduplicate_transition_bridge(
                         raw_segment.get("scene_narration"),
                         target_opening,
-                        target_goals,
                     ),
                 })
                 continue
-            # 兼容旧模型偶尔返回 scene_narration，但不采信模型生成的目标开场文本。
+            # 目标段即使附带 scene_narration 也不采信；目标开场只能由 Runtime 提供。
             if set(raw_segment) not in (
                 {"phase", "performance"},
                 {"phase", "scene_narration", "performance"},
@@ -311,33 +447,50 @@ def _parse_output(
                 raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
             segments.append({
                 "phase": expected_phases[index],
-                "performance": _parse_mixed_performance(
+                "performance": _parse_transition_performance(
                     raw_segment.get("performance"),
-                    require_narration=False,
+                    dialogue_policy=target_dialogue_policy,
                 ),
             })
         return {
-            "suggested_inputs": _suggestions(
+            "suggested_inputs": _parse_actor_suggestions(
                 payload.get("suggested_inputs"),
-                allow_questions=suggestion_questions_allowed,
-                allow_name_disclosure=suggestion_name_disclosure_allowed,
+                diagnostics=suggestion_diagnostics,
             ),
             "segments": segments,
         }
-    if set(payload) != {"performance", "suggested_inputs"}:
+    allowed_fields = {"performance"}
+    if "scene_update" in payload:
+        allowed_fields.add("scene_update")
+    tolerated_fields = {*allowed_fields, "suggested_inputs", "transition_offered"}
+    optional_legacy_fields = {
+        frozenset(allowed_fields),
+        frozenset({*allowed_fields, "suggested_inputs"}),
+        frozenset(tolerated_fields),
+    }
+    if set(payload) not in optional_legacy_fields:
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
-    return {
+    result = {
         "performance": _parse_mixed_performance(
             payload.get("performance"),
             # 普通回合允许纯对白；只有对白是必需项，括号微动作不应被格式层强制生成。
             require_narration=False,
+            dialogue_policy=dialogue_policy,
         ),
-        "suggested_inputs": _suggestions(
-            payload.get("suggested_inputs", []),
-            allow_questions=suggestion_questions_allowed,
-            allow_name_disclosure=suggestion_name_disclosure_allowed,
+        "suggested_inputs": _parse_actor_suggestions(
+            payload.get("suggested_inputs"),
+            diagnostics=suggestion_diagnostics,
+        ),
+        "transition_offered": _parse_transition_offered(
+            payload.get("transition_offered", False)
         ),
     }
+    if "scene_update" in payload:
+        # Runtime 继续使用既有 scene_narration 字段保存，前端与旧 Session 无需新增协议分支。
+        scene_update = _parse_scene_update(payload.get("scene_update"))
+        if scene_update:
+            result["scene_narration"] = scene_update
+    return result
 
 
 __all__ = [

@@ -56,6 +56,73 @@ def _snapshot(
 
 
 @pytest.mark.frontend
+def test_theater_capsule_drops_ordinary_reply_preview_on_takeover(
+    mock_page: Page,
+    running_server: str,
+):
+    """小剧场接管胶囊时，不得继续展示此前普通聊天的猫娘回复。"""  # noqa: DOCSTRING_CJK
+
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function("() => !!window.reactChatWindowHost")
+    mock_page.evaluate(
+        """() => {
+            window.isMainUIHiddenByModelManager = () => false;
+            document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+            window.reactChatWindowHost.openWindow();
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isMounted && window.reactChatWindowHost.isMounted()"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.reactChatWindowHost.setChatSurfaceMode('compact');
+            window.reactChatWindowHost.setCompactChatState('default');
+            window.reactChatWindowHost.setMessages([{
+                id: 'ordinary-assistant-before-theater',
+                role: 'assistant',
+                author: 'Neko',
+                blocks: [{ type: 'text', text: '进入小剧场前的旧回复' }],
+                status: 'streaming'
+            }]);
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => {
+            const text = document.querySelector('.compact-chat-capsule-text')?.textContent || '';
+            return text.length >= 2 && '进入小剧场前的旧回复'.startsWith(text);
+        }"""
+    )
+    ordinary_preview = mock_page.locator(".compact-chat-capsule-text").text_content() or ""
+
+    mock_page.evaluate(
+        """() => window.reactChatWindowHost.setViewProps({
+            chatSurfaceMode: 'compact',
+            compactChatState: 'default',
+            composerDisabled: true,
+            theaterPresentation: {
+                active: true,
+                phase: 'loading',
+                history: [],
+                suggestedInputs: []
+            }
+        })"""
+    )
+
+    expect(mock_page.locator(".compact-chat-capsule-button")).to_be_visible()
+    expect(mock_page.locator(".compact-chat-capsule-text")).not_to_contain_text(
+        ordinary_preview
+    )
+    # 接管只改变当前展示职责，普通聊天消息仍留在宿主历史中供退出剧场后恢复。
+    assert mock_page.evaluate(
+        """() => window.reactChatWindowHost.getState().messages.some(
+            (message) => message.id === 'ordinary-assistant-before-theater'
+        )"""
+    ) is True
+
+
+@pytest.mark.frontend
 def test_theater_capsule_reasserts_composer_visibility_on_active_render(
     mock_page: Page,
     running_server: str,
@@ -275,7 +342,7 @@ def test_theater_capsule_restores_committed_turn_after_end_failure(
     assert state["suggestedInputs"] == turn["suggested_inputs"]
     expect(mock_page.locator(".composer-galgame-option")).to_have_count(2)
     expect(mock_page.locator(".compact-theater-history-error")).to_contain_text(
-        "结束演绎失败"
+        "当前演绎状态无法结束"
     )
 
 
@@ -568,7 +635,7 @@ def test_theater_capsule_ignores_pointer_restore_superseded_by_launch(
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.add_init_script(
-        """window.localStorage.setItem(
+        """window.sessionStorage.setItem(
             'neko.theater.numeric.v2.capsule-pointer.v1',
             JSON.stringify({story_id: 'story-a', session_id: 'session-a'})
         );
@@ -603,12 +670,125 @@ def test_theater_capsule_ignores_pointer_restore_superseded_by_launch(
 
     state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
     pointer = mock_page.evaluate(
-        "() => JSON.parse(window.localStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1'))"
+        "() => JSON.parse(window.sessionStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1'))"
     )
     assert state["storyId"] == "story-b"
     assert state["sessionId"] == "session-b"
     assert state["phase"] == "awaiting_player"
     assert pointer == {"story_id": "story-b", "session_id": "session-b"}
+
+
+@pytest.mark.frontend
+def test_theater_capsule_does_not_restore_persisted_pointer_after_app_restart(
+    mock_page: Page,
+    running_server: str,
+):
+    """旧版长期指针不能让完整退出后的新程序自动进入小剧场。"""  # noqa: DOCSTRING_CJK
+
+    session_requests: list[str] = []
+
+    def handler(route: Route) -> None:
+        path = route.request.url.split("?", 1)[0]
+        if "/api/theater-numeric/session/" in path:
+            session_requests.append(path)
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script(
+        """window.localStorage.setItem(
+            'neko.theater.numeric.v2.capsule-pointer.v1',
+            JSON.stringify({story_id: 'old-story', session_id: 'old-session'})
+        );
+        window.localStorage.setItem('neko_tutorial_settings', 'seen');"""
+    )
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoTheaterRuntime"
+    )
+    mock_page.wait_for_timeout(200)
+
+    state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
+    assert state["active"] is False
+    assert state["phase"] == "inactive"
+    assert session_requests == []
+
+
+@pytest.mark.frontend
+def test_desktop_pet_relays_restart_to_the_visible_compact_chat_runtime(
+    mock_page: Page,
+    running_server: str,
+):
+    """桌面本体收到重新开始后，应由独立胶囊窗口唯一播放并显示开场。"""  # noqa: DOCSTRING_CJK
+
+    speak_blocks: list[int] = []
+
+    def fulfill(route: Route, payload: dict) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/session/capsule-browser-session"):
+            fulfill(route, _snapshot(revision=0))
+            return
+        if path.endswith("/api/theater-numeric/session/speak-block"):
+            body = json.loads(request.post_data or "{}")
+            speak_blocks.append(body["block_index"])
+            fulfill(route, {"ok": True, "audio_queued": False})
+            return
+        route.continue_()
+
+    context = mock_page.context
+    context.route("**/api/theater-numeric/**", handler)
+    context.add_init_script(
+        """(() => {
+            const originalUserAgent = window.navigator.userAgent;
+            Object.defineProperty(window.navigator, 'userAgent', {
+                configurable: true,
+                get: () => originalUserAgent + ' Electron'
+            });
+            window.localStorage.setItem('neko_tutorial_settings', 'seen');
+        })();"""
+    )
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    chat_page = context.new_page()
+    try:
+        chat_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+        mock_page.wait_for_function("() => window.nekoTheaterRuntime")
+        chat_page.wait_for_function(
+            "() => window.nekoTheaterRuntime && window.reactChatWindowHost"
+        )
+        chat_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+
+        mock_page.evaluate(
+            """() => window.postMessage({
+                schema: 'neko.theater.interpage.v1',
+                action: 'theater:launch-request',
+                launch_id: 'desktop-restart-relay',
+                launch_action: 'restart',
+                story_id: 'capsule-browser-story',
+                session_id: 'capsule-browser-session',
+                revision: 0
+            }, window.location.origin)"""
+        )
+
+        chat_page.wait_for_function(
+            "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
+            timeout=10000,
+        )
+        history = chat_page.locator(".compact-export-history-anchor")
+        expect(history).to_contain_text("雨落在花店檐角。")
+        expect(history).to_contain_text("你终于回来了。")
+        assert mock_page.evaluate(
+            "() => window.nekoTheaterRuntime.getState().active"
+        ) is False
+        assert speak_blocks == [1]
+    finally:
+        chat_page.close()
 
 
 @pytest.mark.frontend
@@ -913,6 +1093,9 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
         "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
         timeout=10000,
     )
+    assert mock_page.evaluate(
+        "() => window.nekoTheaterRuntime.getState().ordinaryDraftRestore.text"
+    ) == "普通聊天草稿"
     expect(mock_page.locator(".app-shell")).to_have_attribute("data-theater-active", "true")
     expect(mock_page.locator(".compact-export-history-anchor")).to_have_class(
         re.compile(r"\bis-theater-history\b")
@@ -1033,7 +1216,9 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
         }"""
     )
     end_button.click()
-    expect(history.locator(".compact-theater-history-error")).to_contain_text("结束演绎失败")
+    expect(history.locator(".compact-theater-history-error")).to_contain_text(
+        "当前演绎状态无法结束"
+    )
     assert mock_page.evaluate("() => window.nekoTheaterRuntime.getState().active") is True
     expect(mock_page.locator(".app-shell")).to_have_attribute("data-theater-active", "true")
     assert len(mock_page.evaluate("() => window.__theaterSelectorOpenCalls")) == 1
@@ -1049,7 +1234,9 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     mock_page.evaluate("() => { window.__theaterSelectorOpenShouldFail = false; }")
     end_button.click()
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().active === false")
-    expect(mock_page.locator(".app-shell")).to_have_attribute("data-theater-active", "false")
+    # 首页恢复 full 宿主时可能移除临时属性，独立聊天宿主则保留 false；
+    # 两种 DOM 形态都只需保证剧场样式不再处于 true。
+    assert mock_page.locator(".app-shell").get_attribute("data-theater-active") != "true"
     expect(mock_page.locator(".composer-input")).to_have_value("普通聊天草稿")
     expect(mock_page.locator(".composer-attachment-card")).to_have_count(1)
     assert end_messages == [{

@@ -24,7 +24,7 @@ from services.theater.numeric_v2_archive import (
 )
 from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult
 from services.theater.numeric_v2_registry import NumericV2PackageError
-from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, numeric_v2_story
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.llm_client import (
     AIMessage,
@@ -66,6 +66,11 @@ def test_numeric_v2_public_performance_hides_route_identifiers():
         "visible_node_id": "branch_secret",
         "performance": "（收好地图）我们继续走。",
         "suggested_inputs": ["继续前进"],
+        "suggestion_candidates": [{
+            "text": "继续前进",
+            "purpose": "advance",
+            "goal_id": "secret_goal",
+        }],
     })
 
     assert projected == {
@@ -153,6 +158,31 @@ def test_numeric_v2_story_import_holds_story_lifecycle_lock(tmp_path, monkeypatc
 
     assert imported.status_code == 200
     assert import_lock_states == [True]
+
+
+def test_numeric_v2_story_import_requires_v22_upgrade(tmp_path, monkeypatch):
+    """导入只接受 v2.2；旧包不会再通过查询参数或原合同绕过门禁。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    legacy = numeric_v2_story()
+    legacy["meta"].update({"story_id": "legacy_requires_upgrade", "contract_version": "v2.1"})
+    current = numeric_v2_story()
+    current["meta"]["story_id"] = "v22_import_ok"
+
+    with client:
+        rejected = client.post(
+            "/api/theater-numeric/packages/import",
+            json=legacy,
+        )
+        accepted = client.post(
+            "/api/theater-numeric/packages/import",
+            json=current,
+        )
+
+    assert rejected.status_code == 422
+    assert rejected.json()["reason"] == "numeric_v2_upgrade_required"
+    assert accepted.status_code == 200
+    assert accepted.json()["package"]["contract_version"] == "v2.2"
 
 
 def test_numeric_v2_story_list_reuses_compiled_summary_intro():
@@ -293,6 +323,65 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         assert body["participants"]["player_name"] == "你"
 
 
+def test_numeric_v2_router_rejects_unknown_actor_budget_before_opening(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    with client:
+        response = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "invalid_budget",
+                "actor_budget_profile": "unlimited",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["reason"] == "numeric_actor_budget_profile_invalid"
+
+
+def test_numeric_v2_router_passes_budget_profile_to_opening(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    captured: dict[str, str] = {}
+
+    async def opening(_self, *, engine, actor_budget_profile):
+        captured["profile"] = actor_budget_profile
+        return _performance("按精简档生成的开场。", opening=True)
+
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_opening",
+        opening,
+    )
+
+    with client:
+        response = client.post(
+            "/api/theater-numeric/session/start",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "economy_opening",
+                "actor_budget_profile": "economy",
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured == {"profile": "economy"}
+    assert response.json()["session"]["actor_budget_profile"] == "economy"
+
+
+def test_numeric_v2_router_removed_legacy_evidence_migration_endpoint(tmp_path, monkeypatch):
+    """旧证据迁移接口不再存在，旧 Session 不通过 HTTP 迁移回运行时。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        response = client.post(
+            "/api/theater-numeric/session/migrate-evidence",
+            json={"story_id": "numeric_v2_contract", "session_id": "legacy"},
+        )
+    # 路径已不再注册 POST；FastAPI 对未知方法返回 405，等价于接口删除。
+    assert response.status_code == 405
+
+
 def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     with client:
@@ -308,6 +397,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         body = started.json()
         assert started.status_code == 200
         assert body["session"]["schema"] == "neko.script.session.numeric.v2"
+        assert body["session"]["actor_budget_profile"] == "balanced"
         assert body["session"]["opening_performance"]["performance"] == "你回来了。"
         assert "metrics" not in body["session"]
         assert "current_node_id" not in body["session"]
@@ -379,6 +469,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
                 "story_id": "numeric_v2_contract",
                 "session_id": "http_v2_after_restart",
                 "replace_existing": True,
+                "actor_budget_profile": "quality",
             },
         )
         assert restarted.status_code == 200
@@ -386,6 +477,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert restarted.json()["session"]["status"] == "active"
         assert restarted.json()["session"]["revision"] == 0
         assert restarted.json()["session"]["performance_history"] == []
+        assert restarted.json()["session"]["actor_budget_profile"] == "quality"
         assert restarted.json()["session"]["opening_performance"]["performance"] == "这是重新生成的新开场。"
         assert len(list((tmp_path / "theater" / "numeric_v2" / "sessions").glob("*.json"))) == 1
 
@@ -408,7 +500,8 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         )
         result = submitted.json()
         assert submitted.status_code == 200
-        assert result["resolved_turn"] == {"route_status": "waiting_min_turns", "route_changed": False}
+        # 新状态机不再以 min_turns 阻断普通演绎；没有可见转场提议时保持 playing。
+        assert result["resolved_turn"] == {"route_status": "playing", "route_changed": False}
         assert result["session"]["performance_history"][0]["input_text"] == "我先听你说。"
         assert "from_node_id" not in result["session"]["performance_history"][0]
         assert "to_node_id" not in result["session"]["performance_history"][0]
@@ -487,6 +580,60 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
         )
         assert continued.status_code == 200
         assert continued.json()["session"]["revision"] == 2
+
+
+def test_numeric_v2_can_end_session_after_story_package_upgrade(tmp_path, monkeypatch):
+    """剧本更新后旧 Session 不可继续，但仍必须能够原子结束。"""  # noqa: DOCSTRING_CJK
+
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "old_package_exit"},
+        )
+        assert started.status_code == 200
+
+        upgraded_story = numeric_v2_story()
+        upgraded_story["meta"]["revision"] = "router-upgraded-revision"
+        package_path = (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "packages"
+            / "numeric_v2_contract.json"
+        )
+        package_path.write_text(
+            json.dumps(upgraded_story, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        ended = client.post(
+            "/api/theater-numeric/session/end",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "old_package_exit",
+                "base_revision": 0,
+                "base_lifecycle_revision": 0,
+            },
+        )
+
+        assert ended.status_code == 200
+        assert ended.json()["session"]["status"] == "ended"
+        assert ended.json()["scene"] is None
+        assert ended.json()["suggested_inputs"] == []
+        assert ended.json()["end_receipt_id"].startswith("theater_end_")
+
+        resumed = client.post(
+            "/api/theater-numeric/session/resume",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "old_package_exit",
+                "base_revision": 0,
+                "base_lifecycle_revision": 1,
+            },
+        )
+        assert resumed.status_code == 409
+        assert resumed.json()["reason"] == "story_package_revision_mismatch"
 
 
 def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(

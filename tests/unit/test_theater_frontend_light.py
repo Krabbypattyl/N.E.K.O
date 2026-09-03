@@ -149,8 +149,33 @@ def test_capsule_runtime_restores_the_pre_theater_chat_surface():
     launch_render = runtime.index("render();", capture)
     clear = runtime.index("function clear(reason)")
     restore = runtime.index("restoreChatSurfaceMode(chatHost);", clear)
+    final_view = runtime.index("chatHost.setViewProps({", restore)
 
-    assert render < render_capture < force_compact < launch < capture < launch_render < clear < restore
+    assert render < render_capture < force_compact < launch < capture < launch_render < clear < restore < final_view
+
+
+def test_capsule_runtime_pointer_only_survives_current_app_lifecycle():
+    """演绎指针使用会话存储，完整退出程序后不得自动恢复小剧场。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+
+    assert "window.sessionStorage.setItem(POINTER_KEY" in runtime
+    assert "window.sessionStorage.getItem(POINTER_KEY)" in runtime
+    assert "window.sessionStorage.removeItem(POINTER_KEY)" in runtime
+    assert "window.localStorage.setItem(POINTER_KEY" not in runtime
+    assert "window.localStorage.getItem(POINTER_KEY)" not in runtime
+
+
+def test_desktop_pet_runtime_routes_theater_to_the_compact_chat_host():
+    """桌面 Pet 不得在不可见宿主播放正文，启动只能交给紧凑胶囊。"""  # noqa: DOCSTRING_CJK
+
+    runtime = _source("static/app/app-theater-runtime.js")
+
+    assert "function desktopRuntimeRole()" in runtime
+    assert "function relayLaunchToDesktopChat(message)" in runtime
+    assert "runtime_host_kind: 'compact'" in runtime
+    assert "if (role === 'pet')" in runtime
+    assert "if (role && role !== 'compact') return;" in runtime
 
 
 def test_selector_does_not_publish_stale_story_after_archive_load():
@@ -473,8 +498,15 @@ def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     assert "preparedSelector = openSelector()" in runtime
     assert "returnToSelector(receipt, 'user-ended', preparedSelector)" in runtime
     assert "restoreSelectorWindow(selectorTarget)" in runtime
-    assert "state.errorMessage = t('theater.endFailed'" in runtime
+    assert "t('theater.endConnectionFailed'" in runtime
+    assert "t('theater.endStateFailed'" in runtime
     assert "return returnToSelector(state.pendingEnd, 'natural-ending-return')" in runtime
+    # 旧证据迁移接口已删除；结束动作只提交生命周期状态。
+    assert "migrateEvidence" not in runtime
+    assert "migrate-evidence" not in runtime
+    natural_return = runtime.index("return returnToSelector(state.pendingEnd, 'natural-ending-return')")
+    user_return = runtime.index("return returnToSelector(receipt, 'user-ended', preparedSelector)")
+    assert natural_return < user_return
     assert "message.action === 'theater:external-end'" in runtime
     assert "modal-dialog-theater" in geometry
     assert ".modal-overlay.modal-overlay-theater{background:transparent!important" in compact_css
@@ -534,6 +566,8 @@ def test_theater_locales_remain_valid_and_aligned():
             "startAgainConfirmBody",
             "rememberPerformanceTitle",
             "memorySaving",
+            "endConnectionFailed",
+            "endStateFailed",
             "performanceHistory",
             "viewPerformance",
             "performanceArchiveTitle",
@@ -543,6 +577,21 @@ def test_theater_locales_remain_valid_and_aligned():
         ):
             assert theater[key]
     assert all(keys == theater_keys[0] for keys in theater_keys[1:])
+
+
+def test_theater_budget_copy_matches_runtime_limits():
+    """选择页展示的是输入历史窗口，不能再沿用旧数值或写成剧情硬回合数。"""  # noqa: DOCSTRING_CJK
+
+    template = _source("templates/theater.html")
+    zh_cn = json.loads(_source("static/locales/zh-CN.json"))["theater"]
+
+    assert "精简 · 输入 6k · 历史 6 回合" in template
+    assert "标准 · 输入 10k · 历史 12 回合" in template
+    assert "丰富 · 输入 16k · 历史 20 回合" in template
+    assert "本幕最多" not in template
+    assert zh_cn["actorBudgetEconomy"] == "精简 · 输入 6k · 历史 6 回合"
+    assert zh_cn["actorBudgetBalanced"] == "标准 · 输入 10k · 历史 12 回合"
+    assert zh_cn["actorBudgetQuality"] == "丰富 · 输入 16k · 历史 20 回合"
 
 
 def test_theater_popup_entry_opens_story_selector():

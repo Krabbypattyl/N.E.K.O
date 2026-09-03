@@ -25,7 +25,7 @@
     var createId = transport.createId;
     var requestJson = transport.requestJson;
     // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
-    var state = { stories: [], storyId: '', characterId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
+    var state = { stories: [], storyId: '', characterId: '', session: null, actorBudgetProfile: 'balanced', archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
     // 同一剧本在切换猫娘后仍保持相同 story_id，单独世代号用于拦截旧角色的迟到响应。
     var characterEpoch = 0;
     var modalResolve = null;
@@ -70,7 +70,7 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
+        ['theater-import-btn', 'theater-empty-import-btn', 'theater-token-budget', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
@@ -105,6 +105,10 @@
         endButton.hidden = kind !== 'active';
         endButton.disabled = state.busy || kind !== 'active';
         $('theater-delete-btn').disabled = state.busy || !state.storyId;
+        var budgetSelect = $('theater-token-budget');
+        budgetSelect.value = state.actorBudgetProfile;
+        // 档位是 Session 快照的一部分；继续中途变更会让同一轨迹的上下文语义漂移。
+        budgetSelect.disabled = state.busy || kind === 'active';
         startButton.classList.toggle('is-current-primary', kind === 'new' || kind === 'ended');
         $('theater-continue-btn').classList.toggle('is-current-primary', kind === 'active' || kind === 'paused');
         $('theater-session-hint').textContent = kind === 'active'
@@ -300,6 +304,7 @@
         var selectionCharacterEpoch = characterEpoch;
         state.storyId = storyId;
         state.session = null;
+        state.actorBudgetProfile = 'balanced';
         state.archives = [];
         setFeedback('');
         renderStories();
@@ -318,6 +323,7 @@
         if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
         if (result.ok && result.session) {
             state.session = result.session;
+            state.actorBudgetProfile = String(result.session.actor_budget_profile || 'balanced');
             if (result.session.status === 'ended' && result.end_receipt_id) {
                 if (result.archive_status === 'pending' || result.archive_status === 'writing') {
                     state.pendingEnd = {
@@ -467,11 +473,13 @@
                 story_id: state.storyId,
                 session_id: createId('numeric_capsule_session_'),
                 character_id: startCharacterId,
-                replace_existing: replaceExisting === true
+                replace_existing: replaceExisting === true,
+                actor_budget_profile: state.actorBudgetProfile
             }});
             if (startCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'start_failed');
             state.session = result.session;
+            state.actorBudgetProfile = String(result.session.actor_budget_profile || state.actorBudgetProfile);
             renderActions();
             await launchSnapshot(result, replaceExisting ? 'restart' : (result.resumed ? 'continue' : 'start'));
         } catch (_) {
@@ -496,6 +504,7 @@
             if (continueCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'restore_failed');
             state.session = result.session;
+            state.actorBudgetProfile = String(result.session.actor_budget_profile || state.actorBudgetProfile);
             renderActions();
             await launchSnapshot(result, 'continue');
         } catch (_) { setFeedback(t('theater.continueFailed', '继续演出失败，请重试。'), true); }
@@ -518,6 +527,7 @@
         });
         if (!confirmed || targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId) || sessionKind() !== 'active') return;
         setBusy(true); setFeedback('');
+        var endResponseReceived = false;
         try {
             var result = await requestJson(api.end, { method: 'POST', body: {
                 story_id: targetStoryId,
@@ -525,6 +535,7 @@
                 base_revision: targetRevision,
                 base_lifecycle_revision: targetLifecycleRevision
             }});
+            endResponseReceived = true;
             if (targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId)) return;
             if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
             state.session = result.session;
@@ -540,7 +551,13 @@
             setStatus('theater.paused', '已退出');
             await maybePromptMemory();
         } catch (_) {
-            setFeedback(t('theater.endFailed', '结束演绎失败，请检查网络后重试。'), true);
+            // HTTP 已返回时显示业务失败；只有 fetch 没有拿到响应才归为本地服务连接问题。
+            setFeedback(
+                endResponseReceived
+                    ? t('theater.endStateFailed', '当前演绎状态无法结束，请返回剧本页后重试。')
+                    : t('theater.endConnectionFailed', '无法连接 N.E.K.O 本地服务，请确认程序仍在运行后重试。'),
+                true
+            );
         } finally { setBusy(false); }
     }
     // “开始”同时承担首次创建和结束后再次开局；只有后者需要替换确认。
@@ -794,6 +811,9 @@
         $('theater-empty-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-import-input').addEventListener('change', function () { importStory(this.files && this.files[0]); });
         $('theater-start-btn').addEventListener('click', beginSession);
+        $('theater-token-budget').addEventListener('change', function () {
+            state.actorBudgetProfile = this.value;
+        });
         $('theater-continue-btn').addEventListener('click', continueSession);
         $('theater-end-btn').addEventListener('click', endSession);
         $('theater-delete-btn').addEventListener('click', deleteStory);

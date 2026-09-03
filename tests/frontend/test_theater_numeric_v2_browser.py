@@ -105,6 +105,8 @@ def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: P
     expect(mock_page.locator("#theater-detail-player")).to_contain_text("回乡整理旧屋")
     expect(mock_page.locator("#theater-detail-catgirl")).to_contain_text("小葵")
     expect(mock_page.locator("#theater-start-btn")).to_be_enabled()
+    expect(mock_page.locator("#theater-token-budget")).to_be_enabled()
+    expect(mock_page.locator("#theater-token-budget")).to_have_value("balanced")
     expect(mock_page.locator("#theater-start-btn")).to_have_text("开始")
     expect(mock_page.locator("#theater-start-btn")).to_have_attribute("data-i18n", "theater.start")
     expect(mock_page.locator("#theater-continue-btn")).to_be_disabled()
@@ -345,7 +347,7 @@ def test_selector_opens_identity_checked_performance_archive(
 def test_active_story_only_enables_continue(mock_page: Page, running_server: str):
     _install_selector_routes(
         mock_page,
-        session={"session_id": "active-session", "revision": 4, "status": "active"},
+        session={"session_id": "active-session", "revision": 4, "status": "active", "actor_budget_profile": "quality"},
     )
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
 
@@ -357,6 +359,8 @@ def test_active_story_only_enables_continue(mock_page: Page, running_server: str
     expect(mock_page.locator("#theater-end-btn")).to_have_text("结束演绎")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("点击“继续”")
     expect(mock_page.locator("#theater-restart-btn")).to_have_count(0)
+    expect(mock_page.locator("#theater-token-budget")).to_have_value("quality")
+    expect(mock_page.locator("#theater-token-budget")).to_be_disabled()
 
 
 @pytest.mark.frontend
@@ -429,6 +433,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
             "lifecycle_revision": 1,
             "status": "ended",
             "ended_reason": "user_exit",
+            "actor_budget_profile": "economy",
         },
         resume_result={
             "ok": True,
@@ -450,6 +455,8 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
     expect(mock_page.locator("#theater-continue-btn")).to_be_enabled()
     expect(mock_page.locator("#theater-session-badge")).to_have_text("已退出")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("继续原进度")
+    expect(mock_page.locator("#theater-token-budget")).to_have_value("economy")
+    expect(mock_page.locator("#theater-token-budget")).to_be_enabled()
     with mock_page.expect_request("**/api/theater-numeric/session/resume") as request_info:
         mock_page.locator("#theater-continue-btn").click()
     assert json.loads(request_info.value.post_data or "{}") == {
@@ -480,6 +487,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
     expect(mock_page.locator("#theater-start-btn")).to_be_enabled()
     expect(mock_page.locator("#theater-start-btn")).to_have_text("重新开始")
     expect(mock_page.locator("#theater-continue-btn")).to_be_disabled()
+    mock_page.locator("#theater-token-budget").select_option("economy")
     mock_page.locator("#theater-start-btn").click()
 
     expect(mock_page.locator("#theater-modal")).to_be_visible()
@@ -499,6 +507,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
     assert start_payload["story_id"] == STORY["story_id"]
     assert start_payload["character_id"] == CHARACTER_ID
     assert start_payload["replace_existing"] is True
+    assert start_payload["actor_budget_profile"] == "economy"
     assert start_payload["session_id"] != "ended-session"
 
 

@@ -37,7 +37,8 @@ def main() -> int:
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
         compiler = NumericV2Compiler()
-        compiled = compiler.compile(payload)
+        # CLI 与服务端安装入口共用 v2.2 严格门禁，旧包只会得到明确的升级提示。
+        compiled = compiler.compile_v2_2(payload)
         if len(sys.argv) == 3:
             data = NumericV2PackageRegistry(_package_root(), compiler).import_package(compiled.story)
         else:
@@ -52,10 +53,17 @@ def main() -> int:
         print(json.dumps({"success": True, "data": data}, ensure_ascii=False))
         return 0
     except NumericV2CompileError as exc:
+        issue_codes = {issue.code for issue in exc.issues}
+        # 旧包需要作者升级而非修复单个字段；CLI 顶层错误码与服务端门禁保持一致。
+        error_code = (
+            "numeric_v2_upgrade_required"
+            if "numeric_v2_upgrade_required" in issue_codes
+            else "numeric_v2_compile_failed"
+        )
         print(json.dumps({
             "success": False,
             "error": {
-                "code": "numeric_v2_compile_failed",
+                "code": error_code,
                 "details": {"issues": [asdict(item) for item in exc.issues]},
             },
         }, ensure_ascii=False))
