@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json
-from utils.character_memory import list_character_recent_paths
+from utils.character_memory import (
+    evict_character_runtime_caches,
+    retire_character_runtime_caches,
+    revive_character_runtime_caches,
+    list_character_recent_paths,
+)
 from utils.recent_file import (
     acquire_recent_file_locks,
     activate_recent_paths,
@@ -350,7 +355,9 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
             cloud_state["last_successful_export_at"] = exported_at
             config_manager.save_cloudsave_local_state(cloud_state)
         except Exception:
-            _restore_backup_records(backup_records)
+            _restore_backup_records(
+                config_manager, backup_records, evict_sidecar_caches=False
+            )
             raise
 
         detail = build_cloudsave_character_detail(config_manager, character_name)
@@ -515,7 +522,9 @@ def import_cloudsave_character_unit(
                 detail = build_cloudsave_character_detail(config_manager, character_name)
             except BaseException:
                 try:
-                    _restore_backup_records(backup_records)
+                    _restore_backup_records(
+                        config_manager, backup_records, evict_sidecar_caches=False
+                    )
                 finally:
                     for recent_path, messages in pending_snapshot.items():
                         set_recent_pending_unlocked(recent_path, messages)
@@ -536,6 +545,18 @@ def import_cloudsave_character_unit(
             if not retain_recent_locks:
                 release_recent_file_locks(held_locks)
                 recent_transaction["held_locks"] = []
+
+            # The APPLY above rewrote only MANAGED_MEMORY_FILENAMES, and none of
+            # the three sidecars (anti-repeat effects, anti-repeat corpus,
+            # startup-greeting history) are in it -- verified by planting
+            # sentinels and reading them back byte-identical. So their caches
+            # still match disk and must NOT be evicted: eviction raises each
+            # store's sequence fence, which silently discards a snapshot that
+            # was staged and not yet flushed -- the reply just delivered.
+            #
+            # What a download does need is the retirement lifted, so a name
+            # reused after an earlier delete can create its directory again.
+            revive_character_runtime_caches(character_name)
 
             result = {
                 "character_name": character_name,
@@ -690,21 +711,129 @@ def _snapshot_existing_targets(config_manager, backup_root: Path, targets: set[P
     return backup_records
 
 
-def _restore_backup_records(backup_records: list[dict[str, Any]]) -> None:
-    for record in sorted(backup_records, key=lambda item: len(item["target"].parts), reverse=True):
-        target_path = record["target"]
-        if target_path.exists():
-            if target_path.is_dir():
-                shutil.rmtree(target_path, ignore_errors=True)
-            else:
-                target_path.unlink()
-        backup_path = record.get("backup")
-        if backup_path is None or not backup_path.exists():
+def _memory_character_names_from_backup_records(config_manager, backup_records):
+    """Character names whose memory directory a restore is about to replace.
+
+    Only a DELIBERATE restore asks for this -- see the flag on
+    ``_restore_backup_records``. It rmtree+copytree's whole ``memory/<name>/``
+    directories, so it puts the three sidecars back to whatever the backup
+    holds, and a cache left loaded would write the rolled-back content
+    straight back out.
+    """
+    # Resolved on BOTH sides. restore_cloudsave_operation_backup builds its
+    # targets through _resolve_managed_target_path, which resolves, so a
+    # memory_dir carrying a symlink, a "~", or a ".." never matched the raw
+    # parent -- the name list came back empty, nothing was evicted, and the
+    # stale caches wrote over the files the rollback had just restored.
+    memory_root = Path(config_manager.memory_dir).expanduser().resolve(strict=False)
+    restored: list[str] = []
+    removed: list[str] = []
+    for record in backup_records:
+        raw_target = str(record.get("target") or "")
+        # Guarded before resolving: Path("") is ".", which resolves to the
+        # working directory and would contribute its name.
+        if not raw_target or not record.get("is_dir"):
             continue
-        if record.get("is_dir"):
-            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        target = Path(raw_target).expanduser().resolve(strict=False)
+        if target.parent != memory_root or not target.name:
+            continue
+        # Nothing to put back means the restore DELETES this directory --
+        # the operation being rolled back is what created it. Evicting
+        # there would leave the name live, and a write still in flight
+        # would recreate the directory for a character the restored
+        # characters.json no longer contains. Retirement is what refuses
+        # that: a retired name never creates a directory.
+        if record.get("backup") is None:
+            removed.append(target.name)
         else:
-            _facade._apply_runtime_file(backup_path, target_path)
+            restored.append(target.name)
+    return tuple(dict.fromkeys(restored)), tuple(dict.fromkeys(removed))
+
+
+def _restore_backup_records(
+    config_manager,
+    backup_records: list[dict[str, Any]],
+    *,
+    evict_sidecar_caches: bool,
+) -> None:
+    """Put backed-up targets back, evicting sidecar caches only on request.
+
+    This rmtree+copytree's whole ``memory/<name>/`` directories, so unlike
+    the apply -- which writes only MANAGED_MEMORY_FILENAMES -- it does put
+    the three sidecars back to whatever the backup holds. Whether that
+    should drop their caches depends on WHY the restore is running, which
+    is why the flag is required rather than defaulted.
+
+    Rolling back a FAILED export or import: no. The apply never touched
+    the sidecars, so the only difference the restore can make to them is to
+    revert a flush that landed while the operation was in flight. The cache
+    is then strictly fresher than the file written over it, and evicting
+    adopts the older state -- the sequence fence advances, the pending
+    flush early-returns on ``seq <= _written_seq``, and the reply just
+    delivered is lost. Leaving the cache alone lets the next flush put it
+    back.
+
+    Restoring an operation backup on purpose: yes. There the older state
+    is exactly what was asked for, and a cache left loaded would write the
+    rolled-back content straight back out.
+    """
+    # In a finally, because the damage is already done by the time anything
+    # in the loop can fail. Records are processed deepest-first, so a
+    # character directory is removed EARLY and the runtime/state files come
+    # after it; one of those raising left the removal in place and skipped
+    # the retirement entirely. The name then stayed live with no directory,
+    # and the next in-flight write recreated it as an orphan --
+    # ``character_memory_exists`` reporting a character the restored
+    # characters.json no longer contains. That is precisely what the
+    # retirement below exists to prevent, so it must not be the thing a
+    # failure skips.
+    #
+    # Reaching it on the error path is also the safer arm on its own terms:
+    # the disk has changed either way, so a cache left loaded is stale
+    # whether the loop finished or not.
+    # Only the records this call actually REACHED. The loop stops at the
+    # first raise, and a character whose directory was never touched has a
+    # cache that is still correct for what is on disk -- evicting it adopts
+    # an older state, advances the sequence fence past the pending flush,
+    # and loses a reply that was already delivered. Measured: 2 decisions
+    # expected, 1 on disk, with _written_seq bumped by the eviction alone.
+    #
+    # The raising record itself counts as reached: its removal may already
+    # have happened, which is the whole reason this block moved into a
+    # finally.
+    processed: list[dict] = []
+    try:
+        for record in sorted(
+            backup_records,
+            key=lambda item: len(item["target"].parts),
+            reverse=True,
+        ):
+            processed.append(record)
+            target_path = record["target"]
+            if target_path.exists():
+                # Refreshed from disk: the recorded flag is from BACKUP
+                # time, so a directory this operation created carries False
+                # and its character would never reach the lifecycle
+                # handling below.
+                record["is_dir"] = target_path.is_dir()
+                if target_path.is_dir():
+                    shutil.rmtree(target_path, ignore_errors=True)
+                else:
+                    target_path.unlink()
+            backup_path = record.get("backup")
+            if backup_path is None or not backup_path.exists():
+                continue
+            if record.get("is_dir"):
+                shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+            else:
+                _facade._apply_runtime_file(backup_path, target_path)
+    finally:
+        if evict_sidecar_caches:
+            restored, removed = _memory_character_names_from_backup_records(
+                config_manager, processed
+            )
+            evict_character_runtime_caches(*restored)
+            retire_character_runtime_caches(*removed)
 
 
 def _write_operation_backup_metadata(
@@ -823,7 +952,9 @@ def restore_cloudsave_operation_backup(
             }
             current_deleted = snapshot_recent_deletions(list(backup_recent_paths))
             try:
-                _restore_backup_records(backup_records)
+                _restore_backup_records(
+                    config_manager, backup_records, evict_sidecar_caches=True
+                )
                 for path in backup_recent_paths:
                     set_recent_pending_unlocked(path, [])
                 if recent_locks_held:
@@ -890,7 +1021,9 @@ def restore_cloudsave_operation_backup(
         }
         current_deleted = snapshot_recent_deletions(list(recent_paths))
         try:
-            _restore_backup_records(backup_records)
+            _restore_backup_records(
+                config_manager, backup_records, evict_sidecar_caches=True
+            )
             for path in recent_paths:
                 set_recent_pending_unlocked(path, pending_snapshot.get(path, []))
             if recent_locks_held:
@@ -1401,10 +1534,63 @@ def import_local_cloudsave_snapshot(
                 if relative_path not in staged_entries and target_path.exists():
                     delete_file_targets.add(target_path)
 
+        from utils.config_manager.migrations import (
+            _MIGRATION_WORKSPACE_PREFIX,
+        )
+
+        def _is_migration_workspace(path):
+            """The NAME, which is the one thing that cannot be forged.
+
+            A character name never begins with a dot -- a product rule, to be
+            enforced in ``validate_character_name`` as a follow-up -- and the
+            workspace prefix does. So the two namespaces do not overlap and
+            the name settles it.
+
+            Six rounds of findings landed on this exemption while it tried to
+            tell the namespaces apart with evidence instead: the prefix plus
+            a marker file, a held lock, a held lock on a regular file, the
+            ledger, the ledger or a held lock. Every one was the same shape,
+            because every piece of evidence is written AFTER the directory
+            exists and there is always a window in which the directory has
+            none. mkdtemp returns a name, and the name is enough.
+
+            The cost is that an abandoned workspace is not swept by the
+            import either. That is not the import's job: the migration
+            reclaims its own, by age and by ledger, which is where the
+            evidence belongs.
+            """
+            return path.name.startswith(_MIGRATION_WORKSPACE_PREFIX)
+
+
         memory_root = Path(config_manager.memory_dir)
         if memory_root.exists():
             for child in memory_root.iterdir():
-                if child.is_dir() and child.name not in imported_character_names:
+                if not child.is_dir():
+                    continue
+                if _is_migration_workspace(child):
+                    # A startup migration WORKSPACE, not stale runtime
+                    # data. When memory/ is a junction onto another
+                    # volume the migration has to stage inside it, and
+                    # this import can run while that copy is in flight --
+                    # so removing it here deletes a half-copied character
+                    # tree out from under the process writing it.
+                    #
+                    # Exempt because it is IN THE LEDGER. Four narrower
+                    # readings of the on-disk evidence were reported in
+                    # turn -- the prefix, the prefix plus a marker file, a
+                    # held lock, a held lock on a regular file -- and each
+                    # was a tighter guess at a question those shapes
+                    # cannot answer: a character may legally be named
+                    # ".mig-anything" and may hold a ".lock", so the very
+                    # data being swept can reproduce every one of them.
+                    #
+                    # The ledger is written immediately after mkdtemp and
+                    # before the workspace is used, so a workspace whose
+                    # lock is not claimed yet is already recorded; and a
+                    # character's stray marker never will be, however
+                    # firmly something holds it.
+                    continue
+                if child.name not in imported_character_names:
                     delete_dir_targets.add(child)
 
         recent_targets = {
@@ -1494,11 +1680,43 @@ def import_local_cloudsave_snapshot(
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
 
                 for target_path in sorted(delete_dir_targets, key=lambda path: len(path.parts), reverse=True):
+                    # Asked AGAIN, because the answer can change after
+                    # enumeration. A cross-device migration that had returned
+                    # from mkdtemp() but not yet created and locked its marker
+                    # read as inactive when this set was built, and could
+                    # claim the workspace and begin copying during the
+                    # file-apply phase above -- which is long.
+                    #
+                    # This narrows the window rather than closing it: nothing
+                    # can be held across an rmtree. It is the same move the
+                    # migration's own publish steps make, re-checking one
+                    # statement before the irreversible one.
+                    if _is_migration_workspace(target_path):
+                        continue
                     if target_path.exists():
                         shutil.rmtree(target_path)
 
                 for recent_path in recent_state_paths:
                     set_recent_pending_unlocked(recent_path, [])
+                # The apply above wrote managed files and removed the directories
+                # of characters absent from the snapshot. Per-character sidecar
+                # caches only re-read on a MISS, so for a REMOVED name a stale
+                # entry describes a file that is gone and would be flushed back,
+                # recreating the directory. Handle both here, while the fence is
+                # still closed, so nothing can repopulate from the old state.
+                memory_root = Path(config_manager.memory_dir)
+                removed_character_names = [
+                    target_path.name
+                    for target_path in delete_dir_targets
+                    if target_path.parent == memory_root
+                ]
+                # Imported names are LIVE identities, and the apply never touched
+                # their sidecars, so they only need the retirement lifted --
+                # evicting would fence away a staged-but-unflushed snapshot.
+                # Removed names are the opposite case: their directories really
+                # are gone, so they retire.
+                revive_character_runtime_caches(*imported_character_names)
+                retire_character_runtime_caches(*removed_character_names)
                 return {
                     "manifest_fingerprint": computed_fingerprint,
                     "applied_character_count": len(imported_character_names),
@@ -1512,6 +1730,15 @@ def import_local_cloudsave_snapshot(
                         reverse=True,
                     ):
                         target_path = record["target"]
+                        # Rollback has to ask the same question the deletion
+                        # loop does. A workspace recorded after enumeration is
+                        # skipped there but is still in backup_records, so an
+                        # unrelated failure elsewhere would have this restore a
+                        # stale backup over a tree another process is writing
+                        # -- and leave that migration's seed unavailable for
+                        # the session.
+                        if _is_migration_workspace(target_path):
+                            continue
                         if target_path.exists():
                             if target_path.is_dir():
                                 shutil.rmtree(target_path, ignore_errors=True)

@@ -693,7 +693,7 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = I.normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = kind === 'musicPlayer' || kind === 'meme'
+                var clippedRect = kind === 'musicPlayer'
                     ? rect
                     : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;
@@ -957,6 +957,16 @@
             height: Math.round(target.height || I.COMPACT_SURFACE_DEFAULT_HEIGHT)
         });
         I.syncCompactInteractionGeometry();
+    }
+
+    I.republishCompactSurfaceLayoutChange = function republishCompactSurfaceLayoutChange(reason) {
+        if (!I.isCompactHomeMinimizeBallEnabled()) return false;
+        var currentRect = I.getCurrentCompactSurfaceRect();
+        if (!currentRect) return false;
+        I.dispatchCompactSurfaceLayoutChange(Object.assign({}, currentRect, {
+            reason: reason || 'lifecycle-visible'
+        }));
+        return true;
     }
 
     I.stopCompactMinimizeBallTracking = function stopCompactMinimizeBallTracking() {
@@ -1311,6 +1321,11 @@
         return 'You';
     }
 
+    function getConfiguredUserName() {
+        var currentUserName = I.getCurrentUserName();
+        return currentUserName && currentUserName !== 'You' ? currentUserName : '';
+    }
+
     function getDefaultAuthorByRole(role) {
         return role === 'user' ? I.getCurrentUserName() : getCurrentAssistantName();
     }
@@ -1333,6 +1348,7 @@
         return {
             title: title,
             iconSrc: '/static/icons/chat_icon.png',
+            userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
             inputPlaceholder: inputPlaceholder,
             sendButtonLabel: sendButtonLabel,
@@ -1521,6 +1537,7 @@
             : [];
         return Object.assign({}, I.ensureViewProps(), {
             messages: I.state.messages.concat(catMessages),
+            userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,

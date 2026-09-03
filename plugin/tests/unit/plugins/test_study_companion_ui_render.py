@@ -75,7 +75,12 @@ REQUIRED_STATIC_UI_KEYS = [
     "ui.settings.ocr.summary",
     "ui.settings.default_mode.label",
     "ui.settings.ocr_enabled.label",
-    "ui.settings.ocr_languages.label",
+    "ui.settings.recognition_language.label",
+    "ui.settings.recognition_language.ch",
+    "ui.settings.recognition_language.japan",
+    "ui.settings.recognition_language.korean",
+    "ui.settings.recognition_language.en",
+    "ui.settings.recognition_language.help",
     "ui.settings.llm.title",
     "ui.settings.llm.summary",
     "ui.settings.llm_timeout.label",
@@ -572,7 +577,6 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         "is_first_run": True,
         "dependencies": {
             "rapidocr": {"available": True},
-            "tesseract": {"available": True},
             "dxcam": {"available": True},
         },
         "knowledge_summary": {"topic_count": 4, "edge_count": 3},
@@ -1136,7 +1140,7 @@ def test_study_companion_static_dependency_ui_contract() -> None:
     style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
     dependency_js = (STATIC_DIR / "dependency-controller.js").read_text(encoding="utf-8")
 
-    assert "const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'tesseract', 'dxcam']);" in main_js
+    assert "const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'dxcam']);" in main_js
     assert "Object.values(deps).filter" not in main_js
     assert "Object.values(dependencies).filter" not in main_js
     assert "dependencies.ocr_readiness || {}" in main_js
@@ -1145,13 +1149,16 @@ def test_study_companion_static_dependency_ui_contract() -> None:
     assert "ui.diagnosis.knowledge_empty.title" in main_js
     assert "ui.diagnosis.multiple_issues.title" in main_js
 
-    for dependency in ("rapidocr", "tesseract", "dxcam"):
+    for dependency in ("rapidocr", "dxcam"):
         assert f'data-dependency="{dependency}"' in index_html
-    assert 'data-dependency-action="tesseract"' in index_html
+    assert 'data-dependency="tesseract"' not in index_html
+    assert 'data-dependency-action="tesseract"' not in index_html
     assert 'data-dependency-action="rapidocr_models"' in index_html
+    for lang_type in ("ch", "japan", "korean", "en"):
+        assert f'<option value="{lang_type}"' in index_html
     assert "item.can_download_models === true" in dependency_js
     assert "String(item.detail || '').toLowerCase() === 'missing_model_files'" in dependency_js
-    assert "/ui-api/tesseract/install" in dependency_js
+    assert "/ui-api/tesseract/install" not in dependency_js
     assert "/ui-api/rapidocr-models" in dependency_js
     assert "new EventSource" in dependency_js
     assert "while (state.busy && state.kind === kind && state.taskId === taskId)" in dependency_js
@@ -1159,6 +1166,61 @@ def test_study_companion_static_dependency_ui_contract() -> None:
     assert "await refreshStatus({ updateReply: false });" in main_js
     assert "StudyDependencyController?.initialize" in main_js
     assert ".dependency-progress[hidden]" in style_css
+
+
+def test_invalid_rapidocr_language_is_shown_as_a_ready_warning() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    start = main_js.index("function buildDiagnosis(data = {})")
+    end = main_js.index("\nfunction renderDiagnosis", start)
+    script = r"""
+const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'dxcam']);
+const dependencyReady = (item) => item?.installed === true;
+const countFromSummary = (summary, keys) => {
+  for (const key of keys) {
+    const value = Number(summary?.[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
+};
+const t = (key, _fallback) => key;
+const tf = (key, _fallback, _values) => key;
+eval(process.env.BUILD_DIAGNOSIS_SOURCE);
+
+const diagnosis = buildDiagnosis({
+  dependencies: {
+    rapidocr: { installed: true },
+    dxcam: { installed: true },
+    ocr_readiness: {
+      ready: true,
+      diagnostic: 'rapidocr_language_invalid',
+    },
+  },
+  knowledge_summary: { topic_count: 4 },
+});
+console.log(JSON.stringify(diagnosis));
+"""
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "BUILD_DIAGNOSIS_SOURCE": main_js[start:end],
+        },
+        timeout=10,
+    )
+    diagnosis = json.loads(completed.stdout)
+
+    assert diagnosis == {
+        "severity": "warning",
+        "title": "ui.diagnosis.warning.title",
+        "body": "ui.diagnosis.ocr.rapidocr_language_invalid.body",
+    }
 
 
 def test_reviewed_settings_scope_and_dialog_contracts_are_isolated() -> None:

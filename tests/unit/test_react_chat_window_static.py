@@ -296,7 +296,7 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
-def test_avatar_tool_result_name_tracks_the_current_catgirl():
+def test_avatar_tool_result_names_track_the_current_participants():
     geometry_path = (
         Path(__file__).resolve().parents[2]
         / "static"
@@ -318,6 +318,7 @@ def test_avatar_tool_result_name_tracks_the_current_catgirl():
     assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
         "window.lanlan_config && window.lanlan_config.lanlan_name"
     )
+    assert "userName: getConfiguredUserName() || undefined" in build_render_block
     assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
 
 
@@ -827,12 +828,27 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
         ".compact-export-preview-message.is-system .compact-export-preview-bubble {",
         ".compact-export-preview-meta",
     )
+    link_anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor:has(.compact-export-history-content > .message-block-link) {",
+        ".compact-export-history-bubble:has(> .compact-export-history-content > .message-block-link)",
+    )
+    active_inline_size_marker = "--compact-export-history-active-inline-size:"
+    assert active_inline_size_marker in link_anchor_block
+    active_inline_size = link_anchor_block.split(active_inline_size_marker, 1)[1].split(";", 1)[0]
 
     assert "--compact-export-history-width-ratio:" in anchor_block
     assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));" in anchor_block
     assert "--compact-export-history-inline-size: min(" in anchor_block
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
-    assert "width: var(--compact-export-history-inline-size);" in anchor_block
+    assert "--compact-export-history-active-inline-size: var(--compact-export-history-inline-size);" in anchor_block
+    assert "width: var(--compact-export-history-active-inline-size);" in anchor_block
+    assert "min(" in active_inline_size
+    assert (
+        "max(var(--compact-export-history-inline-size), var(--compact-export-link-history-min-inline-size))"
+        in active_inline_size
+    )
+    assert "var(--compact-export-history-max-inline-size)" in active_inline_size
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
     assert "--compact-export-preview-min-height: 360px;" in anchor_block
     assert "--compact-export-preview-max-height: 78vh;" in anchor_block
@@ -1332,23 +1348,6 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "nativeRect: scrollbarRect" in scrollbar_block
 
 
-def test_compact_meme_close_hit_region_is_collected_as_native_extra_island():
-    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
-
-    composite_block = script.split("function collectCompactCompositeGeometryItems(element, kind)", 1)[1].split(
-        "function collectCompactSurfaceGeometryItems()",
-        1,
-    )[0]
-
-    assert 'data-compact-geometry-item="meme"' in app_source
-    assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert 'data-compact-hit-region-id="meme:close"' in app_source
-    assert "kind === 'musicPlayer' || kind === 'meme'" in composite_block
-    assert "id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index)" in composite_block
-    assert "nativeRect: clippedRect" in composite_block
-
-
 def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1840,7 +1839,7 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
     assert "workAreaX - windowX" in manager_source
     assert "workAreaY - windowY" in manager_source
     assert "viewport.compactDesktop" in manager_source
-    assert "getDesktopCompactDialogSize(viewport)" in manager_source
+    assert "getDesktopCompactDialogSize(viewport, preferredHeight)" in manager_source
     assert "neko:desktop-compact-layout-change" in manager_source
     assert "'--avatar-tool-manager-width'" in manager_source
     assert "'--avatar-tool-manager-height'" in manager_source
@@ -1851,9 +1850,9 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
         ".avatar-tool-manager-dialog.is-desktop-compact-layout",
         ".avatar-tool-manager-dialog.is-dragging",
     )
-    assert "width: var(--avatar-tool-manager-width, 380px);" in desktop_compact_block
-    assert "height: var(--avatar-tool-manager-height, 600px);" in desktop_compact_block
-    assert "max-height: var(--avatar-tool-manager-max-height, 600px);" in desktop_compact_block
+    assert "width: var(--avatar-tool-manager-width, 460px);" in desktop_compact_block
+    assert "height: var(--avatar-tool-manager-height, 680px);" in desktop_compact_block
+    assert "max-height: var(--avatar-tool-manager-max-height, 680px);" in desktop_compact_block
     assert "100vw" not in desktop_compact_block
     assert "85vh" not in desktop_compact_block
 
@@ -1932,6 +1931,17 @@ def test_moved_drag_suppresses_trailing_release_click():
 def test_minimized_yarn_drag_reports_forced_release_as_cancel():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
+    dispatch_block = script.split("function dispatchMinimizedYarnDragPhase", 1)[1].split(
+        "function isCompactDragSurfaceTarget",
+        1,
+    )[0]
+    start_block = script.split("function startDrag", 1)[1].split(
+        "function updateDrag",
+        1,
+    )[0]
+    assert "lifecycleSequence: dragState.yarnLifecycleSequence" in dispatch_block
+    assert "yarnLifecycleSequence: getCurrentIdleChatLifecycleSequence()" in start_block
+
     stop_block = script.split("function stopDrag(options)", 1)[1].split(
         "function bindDragging()",
         1,
@@ -1943,6 +1953,17 @@ def test_minimized_yarn_drag_reports_forced_release_as_cancel():
         1,
     )[0]
     assert "suppressClick: true" in touch_cancel_block
+
+
+def test_react_chat_host_exports_compact_lifecycle_restore_api():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    host_block = script.rsplit("Object.assign(window.reactChatWindowHost", 1)[1].split(
+        "delete window.__appReactChatWindowParts",
+        1,
+    )[0]
+
+    assert "republishCompactSurfaceLayoutChange: republishCompactSurfaceLayoutChange" in host_block
+    assert "scheduleCompactMinimizeBallTracking: scheduleCompactMinimizeBallTracking" in host_block
 
 
 def test_compact_minimize_targets_inline_yarn_ball_button_center():
@@ -2807,19 +2828,6 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: none;\n"
         "}"
     )
-    meme_passthrough_rule = (
-        f'{compact_surface_prefix} .compact-meme-overlay,\n'
-        f'{compact_surface_prefix} .compact-meme-overlay img,\n'
-        f'{compact_surface_prefix} .compact-meme-overlay-frame,\n'
-        f'{compact_surface_prefix} .compact-meme-overlay-close-icon {{\n'
-        "    pointer-events: none;\n"
-        "}"
-    )
-    meme_close_interactive_rule = (
-        f'{compact_surface_prefix} .compact-meme-overlay-close {{\n'
-        "    pointer-events: auto;\n"
-        "}"
-    )
     history_interactive_rule = (
         f'{compact_surface_prefix} .compact-export-history-bubble,\n'
         f'{compact_surface_prefix} .compact-export-history-controls,\n'
@@ -2836,15 +2844,11 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     assert compact_music_interactive_rule in styles
     assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
-    assert meme_passthrough_rule in styles
-    assert meme_close_interactive_rule in styles
     assert history_interactive_rule in styles
     assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
     assert styles.index(compact_music_interactive_rule) < styles.index(compact_music_hidden_rule)
     assert styles.index(compact_music_hidden_rule) < styles.index(history_passthrough_rule)
-    assert styles.index(history_passthrough_rule) < styles.index(meme_passthrough_rule)
-    assert styles.index(meme_passthrough_rule) < styles.index(meme_close_interactive_rule)
-    assert styles.index(meme_close_interactive_rule) < styles.index(history_interactive_rule)
+    assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
     assert styles.index(broad_surface_rule) < styles.index(tool_fan_passthrough_rule)
     assert styles.index(tool_fan_passthrough_rule) < styles.index(visible_tool_fan_interactive_rule)
     assert styles.index(visible_tool_fan_interactive_rule) < styles.index(hidden_tool_fan_slots_rule)

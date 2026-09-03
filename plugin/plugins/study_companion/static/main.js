@@ -7,7 +7,7 @@ const LOAD_IMAGE_TIMEOUT_MS = 30000;
 const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
-const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'tesseract', 'dxcam']);
+const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'dxcam']);
 const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
 const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'cross_stage', 'postgraduate', 'custom'];
 const KNOWLEDGE_SUBJECT_OPTIONS = ['math', 'english', 'chinese', 'physics', 'chemistry', 'biology', 'history', 'geography', 'politics', 'computer_science', 'economics'];
@@ -809,6 +809,7 @@ function buildDiagnosis(data = {}) {
   const dependenciesReady = readiness.ready === true || (!Object.keys(readiness).length && hasDependencyStatus && dependencyValues.every(dependencyReady));
   const topicCount = countFromSummary(data.knowledge_summary || {}, ['topic_count', 'topics', 'node_count', 'nodes']);
   const hasKnowledge = topicCount > 0 || (Array.isArray(data.mastery_overview) && data.mastery_overview.length > 0);
+  const ocrIssue = readiness.diagnostic && !['ready', 'ocr_disabled'].includes(readiness.diagnostic) ? t(`ui.diagnosis.ocr.${readiness.diagnostic}.body`, 'The selected OCR path is unavailable.') : '';
   if (errorBody || data.status === 'error' || llmError) {
     return {
       severity: 'error',
@@ -816,6 +817,16 @@ function buildDiagnosis(data = {}) {
       body: errorBody || t('ui.diagnosis.error.body', 'Study companion reported an error.'),
     };
   }
+  if (readiness.diagnostic === 'ocr_disabled') {
+    return hasKnowledge
+      ? { severity: 'ok', title: t('ui.diagnosis.text_ready.title', 'Text study is ready'), body: t('ui.diagnosis.text_ready.body', 'Knowledge topics are loaded. OCR is currently disabled.') }
+      : { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.') };
+  }
+  if (ocrIssue && !hasKnowledge) {
+    const issues = `${ocrIssue} ${t('ui.diagnosis.knowledge_empty.body', 'The knowledge map has no loaded topics yet.')}`;
+    return { severity: 'warning', title: t('ui.diagnosis.multiple_issues.title', 'Study setup needs attention'), body: tf('ui.diagnosis.multiple_issues.body', 'Resolve these items: {issues}', { issues }) };
+  }
+  if (ocrIssue) return { severity: 'warning', title: t(readiness.ready ? 'ui.diagnosis.warning.title' : 'ui.diagnosis.ocr_unavailable.title'), body: ocrIssue };
   if (dependenciesReady && hasKnowledge) {
     return {
       severity: 'ok',
@@ -823,18 +834,6 @@ function buildDiagnosis(data = {}) {
       body: tf('ui.diagnosis.ok.body', '{count} knowledge topics loaded and OCR dependencies are ready.', { count: topicCount }),
     };
   }
-  if (readiness.diagnostic === 'ocr_disabled') {
-    return hasKnowledge
-      ? { severity: 'ok', title: t('ui.diagnosis.text_ready.title', 'Text study is ready'), body: t('ui.diagnosis.text_ready.body', 'Knowledge topics are loaded. OCR is currently disabled.') }
-      : { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.') };
-  }
-  const ocrIssue = readiness.diagnostic && !['ready', 'ocr_disabled'].includes(readiness.diagnostic)
-    ? t(`ui.diagnosis.ocr.${readiness.diagnostic}.body`, 'The selected OCR path is unavailable.') : '';
-  if (ocrIssue && !hasKnowledge) {
-    const issues = `${ocrIssue} ${t('ui.diagnosis.knowledge_empty.body', 'The knowledge map has no loaded topics yet.')}`;
-    return { severity: 'warning', title: t('ui.diagnosis.multiple_issues.title', 'Study setup needs attention'), body: tf('ui.diagnosis.multiple_issues.body', 'Resolve these items: {issues}', { issues }) };
-  }
-  if (ocrIssue) return { severity: 'warning', title: t('ui.diagnosis.ocr_unavailable.title', 'The selected OCR backend is unavailable'), body: ocrIssue };
   if (!hasKnowledge && readiness.ready === true) return { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.diagnosis.knowledge_empty.body', 'OCR is ready, but the knowledge map has no loaded topics yet.') };
   if (hasDependencyStatus || data.status === 'ready') {
     return {
@@ -1724,13 +1723,14 @@ function renderModelRuntime(runtime = {}) {
 function applySettingsConfig(config) {
   const study = config.study || {};
   const ocr = config.ocr_reader || {};
+  const rapidocr = config.rapidocr || {};
   const llm = config.llm || {};
   const communication = config.communication || {};
   const docExport = config.doc_export || {};
   if (settingsDefaultMode) settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
   syncLearningProfileUi();
   if (settingsOcrEnabled) settingsOcrEnabled.checked = ocr.enabled !== false;
-  if (settingsOcrLanguages) settingsOcrLanguages.value = String(ocr.languages || 'chi_sim+jpn+eng');
+  if (settingsOcrLanguages) settingsOcrLanguages.value = rapidocr.lang_type || 'ch';
   if (settingsLlmTimeout) settingsLlmTimeout.value = String(Number.isFinite(Number(llm.llm_call_timeout_seconds)) ? Number(llm.llm_call_timeout_seconds) : 30);
   if (settingsLlmVisionEnabled) settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
   if (settingsCommunicationEnabled) settingsCommunicationEnabled.checked = communication.enabled !== false;
@@ -1764,12 +1764,13 @@ function collectSettingsConfig() {
   const next = cloneConfig(settingsConfig);
   const study = ensureConfigSection(next, 'study');
   const ocr = ensureConfigSection(next, 'ocr_reader');
+  const rapidocr = ensureConfigSection(next, 'rapidocr');
   const llm = ensureConfigSection(next, 'llm');
   const communication = ensureConfigSection(next, 'communication');
   const docExport = ensureConfigSection(next, 'doc_export');
   study.default_mode = settingsDefaultMode ? settingsDefaultMode.value : 'companion';
   ocr.enabled = settingsOcrEnabled ? settingsOcrEnabled.checked : true;
-  ocr.languages = settingsOcrLanguages ? settingsOcrLanguages.value.trim() || 'chi_sim+jpn+eng' : 'chi_sim+jpn+eng';
+  rapidocr.lang_type = settingsOcrLanguages?.value || 'ch';
   llm.llm_call_timeout_seconds = Math.max(1, Math.min(3600, Math.round(Number(settingsLlmTimeout?.value) || 30)));
   llm.llm_vision_enabled = settingsLlmVisionEnabled ? settingsLlmVisionEnabled.checked : false;
   llm.llm_vision_max_image_px = normalizeVisionMaxImagePx(llm.llm_vision_max_image_px);
@@ -1780,31 +1781,30 @@ function collectSettingsConfig() {
   return next;
 }
 
-async function saveSettingsConfig(statusTarget = settingsConfigStatus) {
+async function saveSettingsConfig(target = settingsConfigStatus) {
   if (!settingsConfig) await loadSettingsConfig(true);
   if (!settingsConfig) {
-    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings', statusTarget);
+    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings', target);
     return;
   }
-  const previous = [cloneConfig(settingsConfig), cloneConfig(settingsCommunicationStatus)];
-  const next = collectSettingsConfig();
+  const old = [cloneConfig(settingsConfig), cloneConfig(settingsCommunicationStatus)];
+  const cfg = collectSettingsConfig();
   if (settingsLearningStage) setLearningProfileStage(settingsLearningStage.value);
   syncSettingsSavingControls(true);
-  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...', statusTarget);
+  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...', target);
   try {
-    const payload = await callPlugin('study_update_settings_config', { config: next });
-    settingsConfig = cloneConfig(getConfigRoot(payload) || next);
+    const payload = await callPlugin('study_update_settings_config', { config: cfg });
+    settingsConfig = cloneConfig(getConfigRoot(payload) || cfg);
     settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
-    setSettingsConfigStatus('ui.status.config_saved', 'Saved', statusTarget);
+    setSettingsConfigStatus('ui.status.config_saved', 'Saved', target);
     window.parent.postMessage({type: 'neko-plugin-context-invalidated'}, window.location.origin);
-    if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') {
-      openSurfaceDrawer('note-exporter');
-    }
+    if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') openSurfaceDrawer('note-exporter');
+    await refreshStatus().catch(setStatus);
   } catch (error) {
-    [settingsConfig, settingsCommunicationStatus] = previous;
+    [settingsConfig, settingsCommunicationStatus] = old;
     applySettingsConfig(settingsConfig);
-    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings', statusTarget);
+    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings', target);
   } finally {
     syncSettingsSavingControls();
   }

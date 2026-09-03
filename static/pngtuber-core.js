@@ -24,6 +24,8 @@
     const REMIX_LAYERED_CANVAS_PADDING_MIN = 48;
     const REMIX_LAYERED_CANVAS_PADDING_MAX = 160;
     const PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE = 1024;
+    const PNGTUBER_EDGE_SNAP_MIN_VISIBLE_PX = 200;
+    const PNGTUBER_EDGE_SNAP_DURATION_MS = 260;
     const REMIX_MESH_DEFORM_STRENGTH = 0.28;
     const PNGTUBER_PLUS_VISIBLE_VALUES = new Set([0, 10, 20, 30, 1, 21, 12, 32, 3, 13, 4, 15, 26, 36, 27, 38]);
     // 空闲低频驱动（对齐 live2d-core.js round-2 模式）：呼吸是 0.32Hz 正弦、
@@ -32,6 +34,7 @@
     const PNGTUBER_BREATHING_IDLE_FPS = 20;
     const PNGTUBER_ANIMATION_IDLE_FPS = 30;
     const PNGTUBER_FULL_RATE_HOLD_MS = 900;
+    let pngtuberLoadSequence = 0;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -59,6 +62,16 @@
         return path;
     }
 
+    function assignImageSource(image, src) {
+        if (!image) return;
+        if (/^(?:https?:)?\/\//i.test(String(src || ''))) {
+            image.crossOrigin = 'anonymous';
+        } else {
+            image.removeAttribute?.('crossorigin');
+        }
+        image.src = src;
+    }
+
     function isPNGTuberPlusLayerVisible(showTalk, showBlink, speaking, blinking) {
         const value = (Number(showTalk) || 0)
             + ((Number(showBlink) || 0) * 3)
@@ -80,7 +93,7 @@
             const img = new Image();
             img.onload = () => resolve(img);
             img.onerror = reject;
-            img.src = src;
+            assignImageSource(img, src);
         });
     }
 
@@ -207,6 +220,8 @@
             this._dragSequence = 0;
             this._isDraggingModel = false;
             this.isDragging = false;
+            this._edgeSnapAnimationFrame = null;
+            this._edgeSnapResolve = null;
             this._saveInFlight = null;
             this._lastSavedPositionKey = '';
             this._saveTimer = null;
@@ -222,6 +237,8 @@
             this._lastPngtuberPointerX = null;
             this._lastPngtuberPointerY = null;
             this._renderingPaused = false;
+            this._loadGeneration = 0;
+            this._latestLifecycleLoadToken = 0;
         }
 
         setMouseTrackingEnabled(enabled) {
@@ -326,6 +343,7 @@
             this._dragListenersAttached = false;
             this._dragState = null;
             this._dragSequence += 1;
+            this.cancelEdgeSnapAnimation();
             this._touchZoomState = null;
             this.setModelDraggingState(false);
         }
@@ -373,7 +391,7 @@
                 if (!src || seen.has(src)) return;
                 seen.add(src);
                 const img = new Image();
-                img.src = src;
+                assignImageSource(img, src);
             });
         }
 
@@ -858,7 +876,12 @@
             }
         }
 
-        async setupLayeredAdapter() {
+        async setupLayeredAdapter(options = {}) {
+            const config = options.config || this.config;
+            const isCurrentLoad = typeof options.isCurrentLoad === 'function'
+                ? options.isCurrentLoad
+                : () => true;
+            if (!isCurrentLoad()) return false;
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
@@ -881,23 +904,29 @@
             this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
-            if (!this.isLayeredConfigured()) return false;
+            if (config.adapter !== 'layered_canvas_v1' || !config.layered_metadata) return false;
             try {
-                const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
+                const response = await fetch(config.layered_metadata, { cache: 'no-cache' });
+                if (!isCurrentLoad()) return false;
                 if (!response.ok) throw new Error(`metadata ${response.status}`);
                 const metadata = await response.json();
+                if (!isCurrentLoad()) return false;
                 const layers = Array.isArray(metadata.layers) ? metadata.layers : [];
                 if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
                     throw new Error('metadata is not layered_canvas');
                 }
+                const layeredImages = new Map();
                 await Promise.all(layers.map(async (layer, index) => {
-                    const src = resolveSiblingAsset(this.config.layered_metadata, layer.image);
+                    const src = resolveSiblingAsset(config.layered_metadata, layer.image);
                     if (!src) return;
                     const img = await loadImageElement(src);
-                    this.layeredImages.set(index, img);
+                    if (!isCurrentLoad()) return;
+                    layeredImages.set(index, img);
                     layer._imageIndex = index;
                 }));
-                if (this.layeredImages.size === 0) throw new Error('no layer images loaded');
+                if (!isCurrentLoad()) return false;
+                if (layeredImages.size === 0) throw new Error('no layer images loaded');
+                this.layeredImages = layeredImages;
                 this.layeredMetadata = metadata;
                 this.layeredStateIndex = 0;
                 this.initializeLayeredToggleState(layers);
@@ -942,6 +971,7 @@
                 this.attachLayeredPointerTracking();
                 return true;
             } catch (error) {
+                if (!isCurrentLoad()) return false;
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
@@ -2396,15 +2426,25 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
-        renderLayeredSnapshotCanvas(stateName = this.state || 'idle', timestamp = performance.now()) {
+        renderLayeredSnapshotCanvas(
+            stateName = this.state || 'idle',
+            timestamp = performance.now(),
+            options = {}
+        ) {
             if (!this.isLayeredActive()) return null;
+            const logicalWidth = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
+            const logicalHeight = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            const maxEdge = Math.max(0, Number(options.maxEdge) || 0);
+            const snapshotScale = maxEdge > 0
+                ? Math.min(1, maxEdge / Math.max(logicalWidth, logicalHeight))
+                : 1;
             const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
-            canvas.height = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            canvas.width = Math.max(1, Math.round(logicalWidth * snapshotScale));
+            canvas.height = Math.max(1, Math.round(logicalHeight * snapshotScale));
             const drawn = this.drawLayeredState(stateName, timestamp, {
                 canvas,
-                scaleX: 1,
-                scaleY: 1
+                scaleX: canvas.width / logicalWidth,
+                scaleY: canvas.height / logicalHeight
             });
             return drawn ? canvas : null;
         }
@@ -2504,7 +2544,7 @@
             }
             const nextSrc = src || this.config.drag_image || this.config.idle_image || DEFAULT_PLACEHOLDER;
             if (this.image && nextSrc && this.image.getAttribute('src') !== nextSrc) {
-                this.image.src = nextSrc;
+                assignImageSource(this.image, nextSrc);
             }
             this.applyTransform();
             this.updateLockIconPosition();
@@ -2715,6 +2755,17 @@
             return { x: screenX, y: screenY };
         }
 
+        rememberModelCenterPointerOffset(state, event) {
+            if (!state) return false;
+            const center = this.getModelCenterInWindow();
+            const clientX = Number(event?.clientX);
+            const clientY = Number(event?.clientY);
+            state.modelCenterPointerOffset = center && Number.isFinite(clientX) && Number.isFinite(clientY)
+                ? { x: center.x - clientX, y: center.y - clientY }
+                : { x: 0, y: 0 };
+            return !!center && Number.isFinite(clientX) && Number.isFinite(clientY);
+        }
+
         rememberDragScreenPoint(state, event, { start = false } = {}) {
             if (!state) return null;
             const point = this.captureDragScreenPoint(event);
@@ -2723,20 +2774,16 @@
             state.dragHintLastPointer = point;
             if (!start) return point;
 
-            const center = this.getModelCenterInWindow();
-            const clientX = Number(event?.clientX);
-            const clientY = Number(event?.clientY);
-            state.modelCenterPointerOffset = center && Number.isFinite(clientX) && Number.isFinite(clientY)
-                ? { x: center.x - clientX, y: center.y - clientY }
-                : { x: 0, y: 0 };
+            this.rememberModelCenterPointerOffset(state, event);
             state.dragHintStartPointer = Object.assign({ startedAt: Date.now() }, point);
             return point;
         }
 
         isDragCompletionCurrent(state) {
+            const activeDrag = this._dragState;
             return !!state
                 && state.dragSequence === this._dragSequence
-                && this._dragState === null;
+                && (!activeDrag || activeDrag.dragSequence === null);
         }
 
         async recordDragHintPointerEdgeApproach(state) {
@@ -2817,6 +2864,177 @@
             }
             this.updateLockIconPosition();
             return true;
+        }
+
+        getEdgeSnapTarget({
+            minVisiblePixels = PNGTUBER_EDGE_SNAP_MIN_VISIBLE_PX,
+            horizontalDirection = 0,
+            verticalDirection = 0
+        } = {}) {
+            if (!this.image || typeof this.image.getBoundingClientRect !== 'function') return null;
+            const rect = this.image.getBoundingClientRect();
+            const left = Number(rect?.left);
+            const top = Number(rect?.top);
+            const width = Number(rect?.width);
+            const height = Number(rect?.height);
+            const viewportWidth = Number(window.innerWidth);
+            const viewportHeight = Number(window.innerHeight);
+            if (![left, top, width, height, viewportWidth, viewportHeight].every(Number.isFinite)
+                || width <= 0 || height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) {
+                return null;
+            }
+
+            let contentLeft = left;
+            let contentTop = top;
+            let contentWidth = width;
+            let contentHeight = height;
+            if (this.isLayeredActive()) {
+                const padding = Math.max(0, Number(this.layeredCanvasPadding) || 0);
+                const logicalWidth = Math.max(1, Number(this.layeredCanvasLogicalWidth) || width);
+                const logicalHeight = Math.max(1, Number(this.layeredCanvasLogicalHeight) || height);
+                const paddingX = Math.min(width / 2, (padding / logicalWidth) * width);
+                const paddingY = Math.min(height / 2, (padding / logicalHeight) * height);
+                contentLeft += paddingX;
+                contentTop += paddingY;
+                contentWidth -= paddingX * 2;
+                contentHeight -= paddingY * 2;
+            }
+            const right = contentLeft + contentWidth;
+            const bottom = contentTop + contentHeight;
+            const requestedMin = Math.max(0, Number(minVisiblePixels) || 0);
+            const effectiveMinX = Math.min(requestedMin, contentWidth, viewportWidth);
+            const effectiveMinY = Math.min(requestedMin, contentHeight, viewportHeight);
+            const visibleWidth = Math.max(0, Math.min(viewportWidth, right) - Math.max(0, contentLeft));
+            const visibleHeight = Math.max(0, Math.min(viewportHeight, bottom) - Math.max(0, contentTop));
+            const needsClampH = horizontalDirection !== 0
+                || ((contentLeft < 0 || right > viewportWidth) && visibleWidth < effectiveMinX);
+            const needsClampV = verticalDirection !== 0
+                || ((contentTop < 0 || bottom > viewportHeight) && visibleHeight < effectiveMinY);
+            if (!needsClampH && !needsClampV) return null;
+
+            let moveX = 0;
+            let moveY = 0;
+            if (needsClampH) {
+                if (horizontalDirection > 0 || (!horizontalDirection && right < effectiveMinX)) {
+                    moveX = effectiveMinX - right;
+                } else if (horizontalDirection < 0 || contentLeft > viewportWidth - effectiveMinX) {
+                    moveX = (viewportWidth - effectiveMinX) - contentLeft;
+                }
+            }
+            if (needsClampV) {
+                if (verticalDirection > 0 || (!verticalDirection && bottom < effectiveMinY)) {
+                    moveY = effectiveMinY - bottom;
+                } else if (verticalDirection < 0 || contentTop > viewportHeight - effectiveMinY) {
+                    moveY = (viewportHeight - effectiveMinY) - contentTop;
+                }
+            }
+            if (!moveX && !moveY) return null;
+
+            const placement = this.getActivePlacement();
+            return {
+                offsetX: placement.offsetX + moveX,
+                offsetY: placement.offsetY + moveY
+            };
+        }
+
+        cancelEdgeSnapAnimation() {
+            if (this._edgeSnapAnimationFrame !== null) {
+                cancelAnimationFrame(this._edgeSnapAnimationFrame);
+                this._edgeSnapAnimationFrame = null;
+            }
+            if (this._edgeSnapResolve) {
+                const resolve = this._edgeSnapResolve;
+                this._edgeSnapResolve = null;
+                resolve(false);
+            }
+        }
+
+        beginExternalPositionDrag() {
+            this._dragSequence += 1;
+            this.cancelEdgeSnapAnimation();
+            return this._dragSequence;
+        }
+
+        isExternalPositionDragCurrent(dragSequence) {
+            return dragSequence === this._dragSequence;
+        }
+
+        applyEdgeSnapOffsets(offsetX, offsetY) {
+            this.setActiveOffsets(offsetX, offsetY);
+            this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
+            this.syncGlobalConfig();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+            this.updateLockIconPosition();
+        }
+
+        snapModelIntoScreen({ animate = true, durationMs = PNGTUBER_EDGE_SNAP_DURATION_MS } = {}) {
+            this.cancelEdgeSnapAnimation();
+            let target = this.getEdgeSnapTarget();
+            if (!target) return Promise.resolve(false);
+
+            const placement = this.getActivePlacement();
+            const layoutFields = placement.fields;
+            const startOffsetX = placement.offsetX;
+            const startOffsetY = placement.offsetY;
+            const horizontalDirection = Math.sign(target.offsetX - startOffsetX);
+            const verticalDirection = Math.sign(target.offsetY - startOffsetY);
+            const duration = Math.max(0, Number(durationMs) || 0);
+            if (!animate || duration === 0) {
+                this.applyEdgeSnapOffsets(target.offsetX, target.offsetY);
+                return Promise.resolve(true);
+            }
+
+            const startedAt = performance.now();
+            return new Promise((resolve) => {
+                this._edgeSnapResolve = resolve;
+                const step = (timestamp) => {
+                    const activeLayoutFields = this.getActiveLayoutFields();
+                    if (activeLayoutFields.scale !== layoutFields.scale
+                        || activeLayoutFields.offsetX !== layoutFields.offsetX
+                        || activeLayoutFields.offsetY !== layoutFields.offsetY) {
+                        this._edgeSnapAnimationFrame = null;
+                        this._edgeSnapResolve = null;
+                        this.applyTransform();
+                        if (this.isLayeredActive()) this.drawLayeredState();
+                        this.snapModelIntoScreen({ animate: true, durationMs: duration }).then(resolve);
+                        return;
+                    }
+                    const refreshedTarget = this.getEdgeSnapTarget({ horizontalDirection, verticalDirection });
+                    if (refreshedTarget) {
+                        const reversesHorizontalDirection = horizontalDirection > 0
+                            ? refreshedTarget.offsetX < startOffsetX
+                            : horizontalDirection < 0 && refreshedTarget.offsetX > startOffsetX;
+                        const reversesVerticalDirection = verticalDirection > 0
+                            ? refreshedTarget.offsetY < startOffsetY
+                            : verticalDirection < 0 && refreshedTarget.offsetY > startOffsetY;
+                        target = {
+                            offsetX: reversesHorizontalDirection ? target.offsetX : refreshedTarget.offsetX,
+                            offsetY: reversesVerticalDirection ? target.offsetY : refreshedTarget.offsetY
+                        };
+                    }
+                    const elapsed = Math.max(0, Number(timestamp) - startedAt);
+                    const progress = Math.min(1, elapsed / duration);
+                    const c1 = 1.70158;
+                    const c3 = c1 + 1;
+                    const eased = 1 + c3 * Math.pow(progress - 1, 3) + c1 * Math.pow(progress - 1, 2);
+                    this.applyEdgeSnapOffsets(
+                        startOffsetX + (target.offsetX - startOffsetX) * eased,
+                        startOffsetY + (target.offsetY - startOffsetY) * eased
+                    );
+                    if (progress < 1) {
+                        this._edgeSnapAnimationFrame = requestAnimationFrame(step);
+                        return;
+                    }
+                    this._edgeSnapAnimationFrame = null;
+                    this._edgeSnapResolve = null;
+                    this.applyEdgeSnapOffsets(target.offsetX, target.offsetY);
+                    resolve(true);
+                };
+                this._edgeSnapAnimationFrame = requestAnimationFrame(step);
+            });
         }
 
         async checkAndSwitchDisplayAfterDrag(state) {
@@ -2937,9 +3155,8 @@
             event.preventDefault();
             event.stopPropagation();
             const placement = this.getActivePlacement();
-            this._dragSequence += 1;
             this._dragState = {
-                dragSequence: this._dragSequence,
+                dragSequence: null,
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
@@ -2976,12 +3193,21 @@
             state.lastY = event.clientY;
             state.lastAt = now;
             this.rememberDragScreenPoint(state, event);
+            let startedMoving = false;
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
+                this.cancelEdgeSnapAnimation();
+                this._dragSequence += 1;
+                state.dragSequence = this._dragSequence;
+                this.beginModelManagerPositionEditing();
+                const placement = this.getActivePlacement();
+                state.startOffsetX = placement.offsetX;
+                state.startOffsetY = placement.offsetY;
                 state.moved = true;
+                startedMoving = true;
                 this.setModelDraggingState(true, true);
                 this.showDragImage();
             }
-            if (state.moved) void this.recordDragHintPointerEdgeApproach(state);
+            if (!state.moved) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
             if (this.isLayeredActive()) this.drawLayeredState();
@@ -2990,6 +3216,8 @@
                 this.updateFloatingButtonsPosition();
             }
             this.updateLockIconPosition();
+            if (startedMoving) this.rememberModelCenterPointerOffset(state, event);
+            void this.recordDragHintPointerEdgeApproach(state);
         }
 
         async endDrag(event) {
@@ -3019,7 +3247,11 @@
                     await this.recordDragHintPointerEdgeRelease(state);
                 }
                 if (!this.isDragCompletionCurrent(state)) return;
-                await this.saveCurrentConfig();
+                if (!displaySwitched) {
+                    await this.snapModelIntoScreen({ animate: true });
+                }
+                if (!this.isDragCompletionCurrent(state)) return;
+                await this.saveOrStageCurrentConfig();
             }
         }
 
@@ -3046,16 +3278,32 @@
         handleWheelZoom(event) {
             if (!canInteractWithAvatar()) return;
             if (this.isLocked) return;
-            if (this._dragState) return;
+            if (this._dragState || this._touchZoomState) return;
             event.preventDefault();
             event.stopPropagation();
             const absDelta = Math.abs(event.deltaY);
             const zoomStep = Math.min(absDelta / 1000, 0.08);
             const scaleFactor = 1 + zoomStep;
             const currentScale = this.getActivePlacement().scale;
-            const nextScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
+            const requestedScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
+            const nextScale = clampNumber(requestedScale, SCALE_MIN, SCALE_MAX, currentScale);
+            if (nextScale === currentScale) return;
+
+            this._dragSequence += 1;
+            const zoomSequence = this._dragSequence;
+            this.cancelEdgeSnapAnimation();
+            this.beginModelManagerPositionEditing();
             this.applyScale(nextScale);
-            this.scheduleSaveCurrentConfig();
+            this.snapModelIntoScreen({ animate: true }).then(() => {
+                if (zoomSequence === this._dragSequence) {
+                    if (isModelManagerPage() &&
+                        typeof window.stageModelManagerPNGTuberPlacement === 'function') {
+                        window.stageModelManagerPNGTuberPlacement(this.config);
+                    } else {
+                        this.scheduleSaveCurrentConfig();
+                    }
+                }
+            });
         }
 
         getTouchDistance(touch1, touch2) {
@@ -3079,9 +3327,9 @@
             event.stopPropagation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
             const placement = this.getActivePlacement();
-            this._dragSequence += 1;
             this._dragState = null;
             this._touchZoomState = {
+                dragSequence: null,
                 initialDistance: this.getTouchDistance(event.touches[0], event.touches[1]),
                 initialScale: placement.scale,
                 startCenterX: center.x,
@@ -3095,8 +3343,7 @@
             };
             this.resetLayeredDragVelocity();
             if (this.layeredPointer) this.layeredPointer.active = false;
-            this.setModelDraggingState(true, true);
-            this.showDragImage();
+            this.setModelDraggingState(true, false);
         }
 
         moveTouchZoom(event) {
@@ -3113,7 +3360,34 @@
             state.lastCenterX = center.x;
             state.lastCenterY = center.y;
             state.lastAt = now;
-            state.changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
+            const changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
+            if (changed && !state.changed) {
+                const candidatePlacement = this.getRenderPlacement(this.getActivePlacement());
+                const nextScale = clampNumber(
+                    candidatePlacement.scale * scaleChange,
+                    SCALE_MIN,
+                    SCALE_MAX,
+                    candidatePlacement.scale
+                );
+                const nextOffsetX = Math.max(-5000, Math.min(5000, candidatePlacement.offsetX + dx));
+                const nextOffsetY = Math.max(-5000, Math.min(5000, candidatePlacement.offsetY + dy));
+                if (nextScale === candidatePlacement.scale
+                    && nextOffsetX === candidatePlacement.offsetX
+                    && nextOffsetY === candidatePlacement.offsetY) return;
+
+                this.cancelEdgeSnapAnimation();
+                this._dragSequence += 1;
+                state.dragSequence = this._dragSequence;
+                this.beginModelManagerPositionEditing();
+                const placement = this.getActivePlacement();
+                state.initialScale = placement.scale;
+                state.startOffsetX = placement.offsetX;
+                state.startOffsetY = placement.offsetY;
+                state.changed = true;
+                this.setModelDraggingState(true, true);
+                this.showDragImage();
+            }
+            if (!state.changed) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
             if (this.isLayeredActive()) this.drawLayeredState();
@@ -3132,7 +3406,10 @@
             }
             this.updateLockIconPosition();
             if (state.changed) {
-                await this.saveCurrentConfig();
+                if (!this.isDragCompletionCurrent(state)) return;
+                await this.snapModelIntoScreen({ animate: true });
+                if (!this.isDragCompletionCurrent(state)) return;
+                await this.saveOrStageCurrentConfig();
             }
         }
 
@@ -3284,6 +3561,17 @@
             }
         }
 
+        async saveOrStageCurrentConfig() {
+            if (isModelManagerPage()) {
+                if (typeof window.stageModelManagerPNGTuberPlacement === 'function') {
+                    window.stageModelManagerPNGTuberPlacement(this.config);
+                    return true;
+                }
+                return false;
+            }
+            return this.saveCurrentConfig();
+        }
+
         async saveCurrentConfig() {
             if (isModelManagerPage()) return false;
             if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
@@ -3336,12 +3624,25 @@
             }, delayMs);
         }
 
-        async load(config) {
+        async load(config, options = {}) {
+            const loadToken = Number(options.loadToken) || 0;
+            if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
+            if (loadToken) this._latestLifecycleLoadToken = loadToken;
+            const loadGeneration = ++this._loadGeneration;
+            const isCurrentLoad = () => (
+                loadGeneration === this._loadGeneration
+                && (!loadToken || loadToken === this._latestLifecycleLoadToken)
+            );
             this.detachDragListeners();
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
-            this.config = normalizeConfig(config || {});
-            await this.setupLayeredAdapter();
+            const normalizedConfig = normalizeConfig(config || {});
+            this.config = normalizedConfig;
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
+                detail: { loadToken }
+            }));
+            await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
             this.attachSpeechListeners();
@@ -3470,7 +3771,7 @@
             }
             const nextSrc = this.stateToSrc(this.state);
             if (this.image && this.image.getAttribute('src') !== nextSrc) {
-                this.image.src = nextSrc;
+                assignImageSource(this.image, nextSrc);
             }
             this.applyTransform();
             this.updateLockIconPosition();
@@ -4494,22 +4795,38 @@
     }
 
     async function loadPNGTuberAvatar(config) {
-        await hideOtherAvatarRuntimesForPNGTuber();
-        if (!window.pngtuberManager) {
-            window.pngtuberManager = new PNGTuberManager();
-        }
-        await window.pngtuberManager.load(config || {});
-        if (document.body?.classList.contains('model-manager-page')
-            && window._modelManagerCurrentAvatarType
-            && window._modelManagerCurrentAvatarType !== 'pngtuber') {
-            window.pngtuberManager.hide();
+        const loadToken = ++pngtuberLoadSequence;
+        window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
+            detail: { loadToken }
+        }));
+        try {
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
+            if (!window.pngtuberManager) {
+                window.pngtuberManager = new PNGTuberManager();
+            }
+            const loaded = await window.pngtuberManager.load(config || {}, { loadToken });
+            if (!loaded || loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            if (document.body?.classList.contains('model-manager-page')
+                && window._modelManagerCurrentAvatarType
+                && window._modelManagerCurrentAvatarType !== 'pngtuber') {
+                window.pngtuberManager.hide();
+                return window.pngtuberManager;
+            }
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            window.pngtuberManager.show();
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
+                detail: { loadToken }
+            }));
             return window.pngtuberManager;
+        } finally {
+            window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished', {
+                detail: { loadToken }
+            }));
         }
-        await hideOtherAvatarRuntimesForPNGTuber();
-        window.pngtuberManager.show();
-        await hideOtherAvatarRuntimesForPNGTuber();
-        window.dispatchEvent(new CustomEvent('pngtuber-model-loaded'));
-        return window.pngtuberManager;
     }
 
     function playPNGTuberAnimation(target, options = {}) {

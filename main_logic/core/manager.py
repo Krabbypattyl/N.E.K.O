@@ -116,6 +116,29 @@ class LLMSessionManager(
         # request 读。
         self._pending_screenshot_avatar_position: dict | None = None
         self.current_speech_id = None
+        # Per-speech playback overrides are bounded and released on audio_done,
+        # interruption, or session teardown. Ordinary speech is absent and
+        # therefore keeps the global speaker gain unchanged.
+        self._speech_playback_gains: OrderedDict[str, float] = OrderedDict()
+        # Mini-game speech preload uses an isolated, short-lived worker so its
+        # synthesized chunks never enter the audible response handler. Batches
+        # are serialized per character and explicitly cancelled on teardown.
+        self._game_speech_preload_lock = asyncio.Lock()
+        self._game_speech_preload_pending_batches = 0
+        self._game_speech_preload_cancel_epoch = 0
+        self._game_speech_preload_active_workers: dict[Thread, Queue] = {}
+        # Mini-game audible speech is serialized by the game router through
+        # one completion slot.  The slot is resolved by audio_done and cleared
+        # on timeout, interruption, or teardown, so it cannot grow per request.
+        self._game_speech_completion_waiter: tuple[str, asyncio.Future] | None = None
+        # Delivery result for that same serialized speech.  A fixed single
+        # slot is enough because the game router never permits two audible
+        # game speeches to wait concurrently.  Cleared with the waiter on
+        # completion, cancellation, timeout, pipeline reset, or teardown.
+        self._game_speech_delivery_state: tuple[str, bool] | None = None
+        # Exact SDK playback correlation for the one serialized audible game
+        # speech.  Cleared with audio_done, interruption, or TTS teardown.
+        self._game_speech_correlation: tuple[str, str] | None = None
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
@@ -181,6 +204,7 @@ class LLMSessionManager(
         self.pending_use_tts = None
         self.is_hot_swap_imminent = False
         self.tts_handler_task = None
+        self._tts_handler_response_queue = None
         # 热切换相关变量
         self.background_preparation_task = None
         self.final_swap_task = None
@@ -262,11 +286,15 @@ class LLMSessionManager(
             'user_plugin_enabled': False,
             'openclaw_enabled': False,
             'openclaw_ready': False,
-            'openfang_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
         self.input_mode = 'audio'
+        # Input ownership and response backend are independent. Independent ASR
+        # may keep the audio microphone route alive after the answering session
+        # has been promoted from Realtime to an Offline VLM.
+        self.response_backend = 'realtime'
+        self._multimodal_handoff_lock = asyncio.Lock()
         
         # 初始化时创建audio模式的session（默认）
         self.session = None
@@ -328,6 +356,9 @@ class LLMSessionManager(
         self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
         self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        # Serialize pending-input replay with live input dispatch. The cache
+        # lock cannot span awaits because attachment handoff reacquires it.
+        self._pending_input_flush_active = False
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
@@ -471,6 +502,7 @@ class LLMSessionManager(
 
         self._recent_avatar_interaction_ids = deque(maxlen=AVATAR_INTERACTION_DEDUPE_MAX_ITEMS)
         self._recent_avatar_interaction_id_set = set()
+        self._avatar_interaction_gate_lock = asyncio.Lock()
         self._last_avatar_interaction_at = 0
         self._last_avatar_interaction_speak_at = 0
         self.avatar_interaction_cooldown_ms = 600

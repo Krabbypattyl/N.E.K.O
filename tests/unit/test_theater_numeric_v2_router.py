@@ -2497,12 +2497,16 @@ def test_numeric_memory_projection_builds_one_compact_episode_summary():
     assert "【" not in json.dumps(messages, ensure_ascii=False)
 
 
-def test_sql_history_serialization_preserves_internal_message_metadata():
-    """时间索引必须保留来源元数据，否则虚构事实过滤会在落库后失效。"""  # noqa: DOCSTRING_CJK
+def test_sql_history_serialization_preserves_theater_and_allowed_runtime_metadata():
+    """剧场元数据与运行时白名单字段必须能在同一条时间索引消息中共存。"""  # noqa: DOCSTRING_CJK
 
     history = SQLChatMessageHistory.__new__(SQLChatMessageHistory)
     serialized = json.loads(history._serialize(HumanMessage(
         content="把合同递过去。",
+        additional_kwargs={
+            "anti_repeat_response_id": "response-1",
+            "private_note": "不能进入时间索引",
+        },
         metadata={"source": THEATER_MEMORY_SOURCE, "session_id": "memory_projection"},
     )))
 
@@ -2510,6 +2514,9 @@ def test_sql_history_serialization_preserves_internal_message_metadata():
         "type": "human",
         "data": {
             "content": "把合同递过去。",
+            "additional_kwargs": {
+                "anti_repeat_response_id": "response-1",
+            },
             "metadata": {
                 "source": THEATER_MEMORY_SOURCE,
                 "session_id": "memory_projection",
