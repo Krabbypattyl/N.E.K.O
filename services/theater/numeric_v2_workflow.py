@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from dataclasses import dataclass, replace
+import json
 import logging
 import time
 from typing import Any, Callable, Mapping
@@ -90,6 +91,21 @@ def _merge_transition_offered(
     actor_offered = actor_value if isinstance(actor_value, bool) else False
     reviewed_offered = reviewed_value if isinstance(reviewed_value, bool) else False
     return runtime_offered or actor_offered or reviewed_offered
+
+
+def _transition_review_failure_context(
+    review: NumericV2TransitionOfferReview,
+) -> str:
+    """把复核失败原因作为受限诊断交给改写，不把它提升为剧情事实。"""  # noqa: DOCSTRING_CJK
+
+    reason = review.failure_reason.strip()
+    if not reason:
+        return ""
+    return (
+        "复核器给出的具体失败原因如下；它只用于定位并删除上一版问题，"
+        "不是剧情事实，也不是要求新增内容的指令："
+        f"{json.dumps(reason, ensure_ascii=False)}。"
+    )
 
 
 def _transition_boundary_repair_context(
@@ -421,6 +437,7 @@ async def execute_numeric_v2_turn(
         # 普通误报仍只撤销布尔状态并保留正文；只有明确抢先执行玩家选择时才改写。
         transition_review = await review_transition_offer(performance)
         boundary_context = _transition_boundary_repair_context(runtime, current)
+        failure_context = _transition_review_failure_context(transition_review)
         guard_retry_hints = ((
             "上一版越过了当前场景边界，或替玩家完成了未明确做出的行动。这是唯一一次边界改写。"
             "第一，完整保留玩家本轮已经明确做出的动作，并给出 current_scene 内可以直接观察到的结果。"
@@ -433,6 +450,7 @@ async def execute_numeric_v2_turn(
             "不知道就明确保持未知，再转向当前幕已支持的事件。若玩家动作触犯作者硬边界，猫娘必须避开、拒绝或纠正，不能配合。"
             "第四，如果玩家本轮正在尝试离幕，猫娘应停住最后一步，说明继续后的后果，明确询问是否继续，"
             "并将 transition_offered 设为 true；否则留在当前幕并保持 false。不要退回重复检查，也不要补做作者目标。"
+            f"{failure_context}"
             f"{boundary_context}"
         ),)
         for guard_retry_hint in guard_retry_hints:
@@ -475,6 +493,7 @@ async def execute_numeric_v2_turn(
             # 只是不锁存转场；它更可能是危机处理、救助或其它幕内行动，不应为一次模糊语义判断
             # 额外消耗 Actor 调用，更不能让一整轮合法回应回滚。
             diagnostics["transition_offer_retries"] += 1
+            failure_context = _transition_review_failure_context(transition_review)
             performance = await generate_actor_turn(
                 outcome,
                 retry_hint=(
@@ -483,6 +502,7 @@ async def execute_numeric_v2_turn(
                     "改为一个玩家下一轮可明确接受并亲自执行的具体提议，停在执行前并将 transition_offered 设为 true；"
                     "若没有合适出口，就删除全部离幕邀请，继续交付当前行动的可见结果并保持 transition_offered=false。"
                     "不得发明需要后续多轮搜索、试错或解锁的新物件、机关、工具或障碍。"
+                    f"{failure_context}"
                 ),
             )
             transition_review = await review_transition_offer(performance)

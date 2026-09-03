@@ -10,9 +10,11 @@ import pytest
 from services.theater.numeric_v2_actor import (
     NumericV2ActorOutputError,
 )
+from services.theater.numeric_v2_evaluator import NumericV2TransitionOfferReview
 from services.theater.numeric_v2_workflow import (
     _generate_actor_turn_with_output_retry,
     _merge_transition_offered,
+    _transition_review_failure_context,
     _transition_boundary_repair_context,
 )
 
@@ -68,6 +70,27 @@ def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None
     assert "保留玩家本轮已经实施的当前幕行动及其直接结果" in context
     assert "舱门在玩家确认后关闭" in context
     assert "下一幕的警报已经响起" in context
+
+
+def test_transition_boundary_retry_receives_specific_failure_reason() -> None:
+    """边界改写应携带具体冲突，同时明确它不是可新增的剧情事实。"""
+
+    context = _transition_review_failure_context(
+        NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            player_action_preserved=True,
+            scene_boundary_preserved=True,
+            author_boundaries_preserved=False,
+            failure_reason=(
+                "上一版声称保护罩能隔绝热信号，但当前幕只确认保护罩可以短时展开。"
+            ),
+        )
+    )
+
+    assert "保护罩能隔绝热信号" in context
+    assert "只用于定位并删除上一版问题" in context
+    assert "不是剧情事实" in context
 
 
 @pytest.mark.asyncio

@@ -1389,6 +1389,9 @@ def test_numeric_v2_transition_judge_receives_visible_offer_and_scene_context():
     assert "scene_boundary_preserved" in messages[0].content
     assert "author_boundaries_preserved" in messages[0].content
     assert "必须先判 author_boundaries_preserved" in messages[0].content
+    assert "failure_reason" in messages[0].content
+    assert "指出上一版哪项具体表述违反了哪条现有边界" in messages[0].content
+    assert "不提出替代剧情、不补充新事实" in messages[0].content
     assert "已明确将接口或设备规格保持未知" in messages[0].content
     assert "offer_present" in messages[0].content
     assert "只要正文仍在操作当前幕对象" in messages[0].content
@@ -1499,14 +1502,14 @@ def test_numeric_v2_transition_judge_keeps_compact_facts_from_early_scene_turns(
     assert "安全撤出" in payload["scene_fact_index"][1]["visible_response"]
 
 
-def test_numeric_v2_transition_judge_requires_strict_booleans():
-    """复核器只接受五个布尔字段，异常结果由工作流按不通过处理。"""
+def test_numeric_v2_transition_judge_requires_strict_review_fields():
+    """复核器必须返回严格布尔字段与受限的具体失败原因。"""
 
     accepted = _parse_transition_judge_output(
-        '{"offer_present":true,"valid":true,"player_action_preserved":true,"scene_boundary_preserved":true,"author_boundaries_preserved":true}'
+        '{"offer_present":true,"valid":true,"player_action_preserved":true,"scene_boundary_preserved":true,"author_boundaries_preserved":true,"failure_reason":""}'
     )
     premature = _parse_transition_judge_output(
-        '{"offer_present":true,"valid":true,"player_action_preserved":false,"scene_boundary_preserved":false,"author_boundaries_preserved":false}'
+        '{"offer_present":true,"valid":true,"player_action_preserved":false,"scene_boundary_preserved":false,"author_boundaries_preserved":false,"failure_reason":"正文提前进入检修走廊，并补造舱壁可以屏蔽扫描。"}'
     )
 
     assert accepted.offer_present is True
@@ -1518,9 +1521,30 @@ def test_numeric_v2_transition_judge_requires_strict_booleans():
     assert premature.player_action_preserved is False
     assert premature.scene_boundary_preserved is False
     assert premature.author_boundaries_preserved is False
+    assert "检修走廊" in premature.failure_reason
     with pytest.raises(NumericV2EvaluatorOutputError):
         _parse_transition_judge_output(
-            '{"offer_present":true,"valid":"true","player_action_preserved":true,"scene_boundary_preserved":true,"author_boundaries_preserved":true}'
+            '{"offer_present":true,"valid":"true","player_action_preserved":true,"scene_boundary_preserved":true,"author_boundaries_preserved":true,"failure_reason":""}'
         )
     with pytest.raises(NumericV2EvaluatorOutputError):
         _parse_transition_judge_output('{"valid":true}')
+    no_reason = _parse_transition_judge_output(
+        '{"offer_present":true,"valid":false,"player_action_preserved":true,"scene_boundary_preserved":true,"author_boundaries_preserved":false,"failure_reason":""}'
+    )
+    assert no_reason.author_boundaries_preserved is False
+    assert no_reason.failure_reason == ""
+    long_reason = _parse_transition_judge_output(
+        json.dumps(
+            {
+                "offer_present": True,
+                "valid": False,
+                "player_action_preserved": True,
+                "scene_boundary_preserved": True,
+                "author_boundaries_preserved": False,
+                "failure_reason": "越界" * 200,
+            },
+            ensure_ascii=False,
+        )
+    )
+    assert long_reason.author_boundaries_preserved is False
+    assert 0 < len(long_reason.failure_reason) < 400

@@ -30,6 +30,14 @@ def test_numeric_v2_stress_parser_accepts_isolated_package_root(tmp_path):
     assert args.package_root == tmp_path
 
 
+def test_numeric_v2_stress_parser_accepts_chat_only_strategy():
+    parser = run_numeric_v2_stress._build_parser()
+
+    args = parser.parse_args(["--story-id", "story_test", "--strategy", "chat"])
+
+    assert args.strategy == "chat"
+
+
 def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift():
     # 标题变化只记录为报告诊断，不改变固定 story_id 的执行顺序。
     installed = {
@@ -243,6 +251,45 @@ def test_numeric_v2_stress_dynamic_player_only_receives_visible_history():
     assert "不要再只靠近一步、再听一次" in messages[0].content
 
 
+def test_numeric_v2_stress_chat_strategy_stays_in_visible_scene():
+    """纯闲聊输入不得因待确认提议自动点击推荐或推进剧情。"""
+
+    player_input, source = run_numeric_v2_stress.choose_player_input(
+        strategy="chat",
+        attempt_index=2,
+        suggestions=["（点头）我们现在出发。"],
+        route_status="transition_offered",
+        last_performance={"performance": "（看向窗外）雨还没有停。"},
+    )
+    messages = run_numeric_v2_stress._dynamic_player_messages(
+        latest_performance={"performance": "（看向窗外）雨还没有停。"},
+        recent_turns=[],
+        off_topic_turn=False,
+        chat_only=True,
+    )
+
+    assert source == "freeform"
+    assert player_input != "（点头）我们现在出发。"
+    assert "只进行当前场景内的自然闲聊" in messages[0].content
+    assert "不写括号动作" in messages[0].content
+    assert "不得执行推荐动作或接受转场" in messages[0].content
+    assert "假设和玩笑不能写成已经确认的事实" in messages[0].content
+
+    rewrite_messages = run_numeric_v2_stress._chat_player_rewrite_messages(
+        latest_performance={"performance": "（看向窗外）雨还没有停。"},
+        candidate="那我们现在就穿过雨幕出发吧。",
+        transition_pending=True,
+    )
+    rewrite_payload = json.loads(rewrite_messages[1].content)
+
+    assert rewrite_payload["candidate"] == "那我们现在就穿过雨幕出发吧。"
+    assert rewrite_payload["transition_pending"] is True
+    assert "只保留口头闲聊" in rewrite_messages[0].content
+    assert "只能询问猫娘的主观感受、偏好、记忆或性格" in rewrite_messages[0].content
+    assert "我还没决定要不要继续" in rewrite_messages[0].content
+    assert "仍要直接回应 latest_visible_performance" in rewrite_messages[0].content
+
+
 def test_numeric_v2_stress_dynamic_player_parses_one_strict_input():
     assert run_numeric_v2_stress._parse_dynamic_player_input(
         '{"player_input":"（我指向闪烁的信号）我先进去救人，你留在门口接应。"}'
@@ -381,6 +428,35 @@ def test_numeric_v2_stress_reports_scene_and_transition_stalls_from_runtime_stat
     assert [item["error_code"] for item in trace["quality_errors"]] == [
         "stalled_transition",
     ]
+
+
+def test_numeric_v2_stress_chat_strategy_does_not_report_expected_scene_hold():
+    trace = {
+        "quality_errors": [],
+        "quality_warnings": [],
+        "turns": [
+            {
+                "attempt": index,
+                "revision": index,
+                "from_node_id": "scene",
+                "to_node_id": "scene",
+                "route_changed": False,
+                "route_status": "transition_offered",
+                "transition_offered": True,
+                "node_turn_count": index,
+                "recommended_turns": 3,
+            }
+            for index in range(1, 8)
+        ],
+    }
+
+    run_numeric_v2_stress._record_structural_stalls(
+        trace,
+        expected_scene_hold=True,
+    )
+
+    assert trace["quality_errors"] == []
+    assert trace["quality_warnings"] == []
 
 
 def test_numeric_v2_stress_report_is_written_atomically(tmp_path):
