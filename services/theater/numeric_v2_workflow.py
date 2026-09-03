@@ -317,6 +317,7 @@ async def execute_numeric_v2_turn(
                 metric_changes=(),
                 scene_complete=False,
                 transition_intent="unclear",
+                interaction_intent="mixed_or_unclear",
             )
         finally:
             _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
@@ -351,6 +352,7 @@ async def execute_numeric_v2_turn(
                 "outcome": outcome,
                 "player_input": turn.message,
                 "character_profile": generation_profile,
+                "interaction_intent": evaluation.interaction_intent,
                 "diagnostics": diagnostics,
             }
             return await _generate_actor_turn_with_output_retry(
@@ -414,6 +416,7 @@ async def execute_numeric_v2_turn(
             )
 
     evaluation = await evaluate_turn()
+    diagnostics["interaction_intent"] = evaluation.interaction_intent
     outcome = prepare_turn(evaluation)
     performance = await generate_actor_turn(outcome)
     reviewed_transition_offered = False

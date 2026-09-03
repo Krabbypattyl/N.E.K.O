@@ -1648,3 +1648,24 @@ Runtime 在 `unclear` 时已经保留 `outcome.session.transition_offered=True`�
 | --- | ---: | ---: | ---: | --- | --- |
 | 正常 mixed | 80 | 75 | 78 | 通过 | 回应玩家并按作者主线进入第二幕，但两个节点都超过软节奏，后半段调查步骤偏碎，测试玩家还补入了未显示的水属性魔力 |
 | 纯闲聊 | 77 | 69 | 85 | 通过 | 18 回合没有发送失败或自动换幕，角色情绪回应基本连贯；待确认后持续催促、重复分析尾巴和 10 次补推荐明显拖累闲聊体验 |
+
+### 7.34 自由输入交互意图与纯闲聊抗误推进
+
+#### 实施边界
+
+- 复用每回合已有 Evaluator 请求，增加临时三态 `chat / scene_action / mixed_or_unclear`。`chat` 只表示不要求环境结果的情绪、关系、玩笑和主观交流；具体行动、决定，以及依赖环境、设备、物品、路线、风险或可观察物理状态才能回答的问题属于 `scene_action`；两者同时存在或无法可靠区分时使用 `mixed_or_unclear`。
+- 该标签只进入本轮 Actor Prompt 和匿名压测诊断，不写入 Session 或 Ledger，不传给 Runtime，不改变数值、路线、`scene_complete` 或待确认转场的 `accept / reject / unclear`。正式链路没有增加模型请求。
+- `chat` 回合优先完整回应玩家，不因超过推荐回合而强制制造事件或转场；保留固定六块 Prompt 结构，但 `next_scene` 只显示“本轮纯闲聊，不使用下一幕方向”，避免下一幕导演信息牵引抢跑。已有待确认提议仍由 Runtime 保留，Actor 正文不重述或催促；推荐可以保留至多一条当前幕内回归剧情选项，但不能自动离幕。
+- 纯闲聊连续趋同并耗尽四次正文改写时，最后一稿只有在无数值变化、无场景更新、无新转场且正文较短时才允许降级提交。它只把“重复但安全”置于“整轮发送失败”之前，不放宽事实、所有权或场景边界。
+
+#### 压测发现与处理
+
+- 第一版报告 [`neko-forest-interaction-intent-20260903.json`](/private/tmp/neko-forest-interaction-intent-20260903.json) 正确把 12 个输入都判为 `chat`，但第 6 次尝试仍因 Actor 把闲聊写成新转场提议而触发 `numeric_v2_actor_invalid_transition_offer`；11/12 提交，并产生 5 次 `transition_refresh`。根因是旧 Prompt 同时要求“跑题后马上拉回因果线”和“超推荐回合必须产生新结果”，与后追加的闲聊提示冲突。
+- 把纯闲聊合同提升到动态 System、跳过该回合的超软预算推进提示后，第二版报告 [`neko-forest-interaction-intent-v2-20260903.json`](/private/tmp/neko-forest-interaction-intent-v2-20260903.json) 不再产生新转场或补推荐，但第 11 次尝试在四次相似改写后触发重复保护，仍为 11/12 提交。这一反例促成上述安全短回应最终降级，而不是删除重复保护。
+- 最终 12 回合纯闲聊报告 [`neko-forest-interaction-intent-v3-20260903.json`](/private/tmp/neko-forest-interaction-intent-v3-20260903.json) 为 12/12 提交、0 模型错误、0 自动换幕、0 转场/事实边界改写；12 个输入均为 `chat`，Actor 供应商请求 13 次，仅有 1 次普通推荐格式补全。提交回合墙钟 P50/P95 为 7.30/8.95 秒。人物能持续回应玩笑和感受，但话题长时间围绕害羞、委屈和身体不适，演绎新鲜度仍受玩家输入和角色可用事实限制。
+- 强化推荐说明后的 8 回合抽查报告 [`neko-forest-interaction-intent-v4-20260903.json`](/private/tmp/neko-forest-interaction-intent-v4-20260903.json) 为 8/8 提交、0 错误、0 换幕；正文保持闲聊，按钮多数为继续安慰或当前幕的稳相环/温水互动，仍偶尔给出回到蘑菇村方向的讨论。该按钮不会自动执行或换幕，但后续人工前端测试仍应检查“继续聊”和“回主线”的取舍是否足够清楚。
+- 自由推进报告 [`neko-forest-interaction-intent-freeform-20260903.json`](/private/tmp/neko-forest-interaction-intent-freeform-20260903.json) 为 12/12 提交，在第 10 回合按公开提议和玩家接受进入第二幕；标签分布为 `scene_action=8`、`mixed_or_unclear=3`、`chat=1`。其中“这上面显示的波动正常吗”曾误判为 `chat`，Actor 因而反问玩家读数而没有交付结果。Evaluator 现明确规定依赖外部对象才能回答的问句必须是 `scene_action`；对同一历史和同一输入隔离复判后结果已修正为 `scene_action`，另两条探针分别稳定得到 `chat` 与 `mixed_or_unclear`。
+
+#### 当前结论
+
+交互意图已经能区分“继续谈感受”“观察/操作并要结果”和“边聊边做”，并解决纯闲聊被超软预算强拉主线的主要冲突。它不是输入拦截器：玩家自由输入不会被拒绝、改写或限制；分类失败时使用 `mixed_or_unclear`，Actor 同时回应对白和明确行动。单条正常轨迹仍暴露出测试玩家补造开关、卡扣和读数，以及 Actor 让玩家反向提供环境结果的问题，说明分类只能改善回应优先级，不能替代作者事实边界和演绎质量复盘。

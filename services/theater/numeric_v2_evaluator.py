@@ -36,6 +36,7 @@ NUMERIC_V2_TRANSITION_JUDGE_INPUT_MAX_TOKENS = 4200
 NUMERIC_V2_TRANSITION_FAILURE_REASON_MAX_TOKENS = 80
 logger = logging.getLogger(__name__)
 _METRIC_STRENGTHS = frozenset({"weak", "normal", "strong", "decisive"})
+_INTERACTION_INTENTS = frozenset({"chat", "scene_action", "mixed_or_unclear"})
 
 
 class NumericV2EvaluatorError(RuntimeError):
@@ -58,6 +59,8 @@ class NumericV2EvaluationResult:
     scene_complete: bool
     # 仅在本轮开始前目标已经锁存完成时有效；它是当前输入的一次性意图，不持久化到 Session。
     transition_intent: str = "unclear"
+    # 只指导本轮 Actor 如何回应，不参与 Runtime 状态、数值、路线或换幕。
+    interaction_intent: str = "mixed_or_unclear"
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,8 +450,17 @@ def _build_messages(
     system = (
         "你是 Numeric v2.2 的数值判定器，不续写剧情。只输出 JSON："
         "{\"scene_complete\":布尔值,\"transition_intent\":\"accept|reject|unclear\","
+        "\"interaction_intent\":\"chat|scene_action|mixed_or_unclear\","
         "\"metric_changes\":{\"数值ID\":{\"strength\":\"weak|normal|strong|decisive\",\"criterion_id\":\"规则ID\"}}}。"
         "scene_complete 只是本轮自然节奏信号，不会直接换幕；目标、道具和证据仅是创作素材。"
+        "interaction_intent 不参与数值、路线或换幕，只描述玩家本轮公开输入的主要交互方式："
+        "主要在表达感受、开玩笑、谈关系、询问猫娘主观感受或进行不要求环境结果的场景内闲聊时为 chat；"
+        "玩家实施具体动作、作出决定，或要求观察、调查、操作并获得环境结果时为 scene_action；"
+        "同一输入同时包含实质闲聊和行动，或者无法可靠区分时为 mixed_or_unclear。"
+        "chat 只适用于无需查询外部对象即可回答的主观交流；只要回答依赖环境、设备、物品、路线、风险或可观察物理状态，"
+        "就属于 scene_action，不因使用问句、没有括号动作或语气随意而判为 chat。"
+        "例如‘读数正常吗’、‘门外有什么’、‘这个装置怎么操作’、‘这里安全吗’都必须判为 scene_action；"
+        "若同一句还包含需要认真回应的关系或情绪交流，才判 mixed_or_unclear。"
         "没有 pending_transition 时，transition_intent 必须是 unclear。"
         "有待确认提议时按语义判定，不得只匹配关键词：玩家明确接受或亲自开始实施同方向的下一步是 accept；"
         "玩家说‘好，我去看看’、‘我现在进去确认’、‘走吧，我来处理’这类与提议同方向的具体行动，"
@@ -830,7 +842,12 @@ def _parse_output(
     if (
         not isinstance(payload, dict)
         or not {"scene_complete", "metric_changes"}.issubset(payload)
-        or not set(payload).issubset({"scene_complete", "transition_intent", "metric_changes"})
+        or not set(payload).issubset({
+            "scene_complete",
+            "transition_intent",
+            "interaction_intent",
+            "metric_changes",
+        })
     ):
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_fields_invalid")
     scene_complete = payload["scene_complete"]
@@ -839,6 +856,11 @@ def _parse_output(
     transition_intent = str(payload.get("transition_intent") or "unclear")
     if transition_intent not in {"accept", "reject", "unclear"}:
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_transition_intent_invalid")
+    interaction_intent = str(
+        payload.get("interaction_intent") or "mixed_or_unclear"
+    )
+    if interaction_intent not in _INTERACTION_INTENTS:
+        raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_interaction_intent_invalid")
     raw_changes = payload["metric_changes"]
     if not isinstance(raw_changes, Mapping):
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_changes_invalid")
@@ -899,6 +921,7 @@ def _parse_output(
         metric_changes=changes,
         scene_complete=scene_complete,
         transition_intent=transition_intent,
+        interaction_intent=interaction_intent,
     )
 
 

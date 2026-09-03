@@ -126,6 +126,116 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
     assert "无论 transition_offered 为 true 还是 false" in messages[0].content
 
 
+def test_numeric_v2_actor_uses_ephemeral_interaction_intent_in_pacing():
+    """交互意图只进入本轮节奏提示，不增加 Prompt 块或 Runtime 状态。"""
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = _session(engine)
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("interaction_intent", 0, "你现在是不是有点害怕？"),
+        (),
+        scene_complete=False,
+    )
+
+    chat_messages = _turn_messages(
+        engine,
+        session,
+        outcome,
+        "你现在是不是有点害怕？",
+        "安静克制，习惯用短句回应。",
+        "测试猫娘",
+        "哥哥",
+        interaction_intent="chat",
+    )
+    chat_payload = _payload(chat_messages)
+    action_payload = _payload(_turn_messages(
+        engine,
+        session,
+        outcome,
+        "（推开门）我先看看外面。",
+        "安静克制，习惯用短句回应。",
+        "测试猫娘",
+        "哥哥",
+        interaction_intent="scene_action",
+    ))
+    mixed_payload = _payload(_turn_messages(
+        engine,
+        session,
+        outcome,
+        "你别怕，我现在把门推开。",
+        "安静克制，习惯用短句回应。",
+        "测试猫娘",
+        "哥哥",
+        interaction_intent="mixed_or_unclear",
+    ))
+
+    assert list(chat_payload) == list(action_payload) == list(mixed_payload)
+    assert "纯闲聊回应合同" in chat_messages[0].content
+    assert "transition_offered 必须为 false" in chat_messages[0].content
+    assert "至多一条当前幕内的回归剧情选项" in chat_messages[0].content
+    assert "不得离开当前幕或替玩家决定路线" in chat_messages[0].content
+    assert "本轮主要是当前场景内的闲聊" in chat_payload["pacing"]
+    assert "不能把闲聊当成转场接受" in chat_payload["pacing"]
+    assert "先自然回应一句，再承接" not in chat_payload["pacing"]
+    assert "交付一项最关键的作者方向事实" not in chat_payload["pacing"]
+    assert chat_payload["next_scene"] == "本轮纯闲聊，不使用下一幕方向。"
+    assert action_payload["next_scene"] != chat_payload["next_scene"]
+    assert "直接交付这个行动" in action_payload["pacing"]
+    assert "先回应其中的对白或情绪" in mixed_payload["pacing"]
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_actor_accepts_safe_chat_repeat_on_final_retry(monkeypatch):
+    """纯闲聊耗尽改写次数时宁可保留安全短回应，也不能整轮发送失败。"""
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = replace(
+        _session(engine),
+        revision=1,
+        node_turn_count=1,
+        performance_history=({
+            "revision": 1,
+            "from_node_id": "start",
+            "to_node_id": "start",
+            "input_text": "我想听听你的感受。",
+            "performance": "（轻轻摇头）我只是觉得心里空落落的，好像有什么很重要的东西怎么也想不起来。",
+        },),
+    )
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("chat_repeat", 1, "那你现在是什么感受？"),
+        (),
+        scene_complete=False,
+    )
+    actor = NumericV2Actor(object())
+
+    async def fake_invoke(_messages, **_kwargs):
+        return {
+            "performance": "（轻轻摇头）我只是觉得心里空落落的，好像有什么很重要的东西怎么也想不起来。",
+            "suggested_inputs": [
+                "（坐在一旁）你愿意再说一点吗？",
+                "（轻轻点头）我们也可以安静待一会儿。",
+            ],
+            "transition_offered": False,
+        }
+
+    monkeypatch.setattr(actor, "_invoke", fake_invoke)
+
+    result = await actor.generate_turn(
+        engine=engine,
+        session=session,
+        outcome=outcome,
+        player_input="那你现在是什么感受？",
+        character_profile="安静克制，习惯用短句回应。",
+        retry_hint="这是最后一次重复输出重试。",
+        interaction_intent="chat",
+    )
+
+    assert "心里空落落的" in result["performance"]
+    assert result["transition_offered"] is False
+
+
 def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_boundaries():
     """正式换场也不能跳过目标幕前提或把休息脑补成机体机制。"""  # noqa: DOCSTRING_CJK
 
@@ -1271,6 +1381,53 @@ def test_numeric_v2_evaluator_distinguishes_followup_topic_shift_and_action():
     assert "也必须判为 reject" in system_prompt
     assert "reject 只表示撤下并清除旧提议" in system_prompt
     assert "亲自开始实施同方向的下一步是 accept" in system_prompt
+    assert '"interaction_intent":"chat|scene_action|mixed_or_unclear"' in system_prompt
+    assert "interaction_intent 不参与数值、路线或换幕" in system_prompt
+    assert "只要回答依赖环境、设备、物品、路线、风险或可观察物理状态" in system_prompt
+    assert "‘读数正常吗’" in system_prompt
+
+
+def test_numeric_v2_evaluator_parses_ephemeral_interaction_intent():
+    """交互意图允许旧输出降级，但拒绝未知分类。"""
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = _session(engine)
+    parsed = _parse_evaluator_output(
+        json.dumps({
+            "scene_complete": False,
+            "transition_intent": "unclear",
+            "interaction_intent": "chat",
+            "metric_changes": {},
+        }, ensure_ascii=False),
+        engine,
+        "你现在是不是有点害怕？",
+        session,
+    )
+    compatible = _parse_evaluator_output(
+        json.dumps({
+            "scene_complete": False,
+            "transition_intent": "unclear",
+            "metric_changes": {},
+        }, ensure_ascii=False),
+        engine,
+        "我先看看。",
+        session,
+    )
+
+    assert parsed.interaction_intent == "chat"
+    assert compatible.interaction_intent == "mixed_or_unclear"
+    with pytest.raises(NumericV2EvaluatorOutputError):
+        _parse_evaluator_output(
+            json.dumps({
+                "scene_complete": False,
+                "transition_intent": "unclear",
+                "interaction_intent": "advance_story",
+                "metric_changes": {},
+            }, ensure_ascii=False),
+            engine,
+            "继续。",
+            session,
+        )
 
 
 def test_numeric_v2_actor_marks_unresolved_transition_in_pacing():

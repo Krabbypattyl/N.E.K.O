@@ -2036,6 +2036,7 @@ def _turn_messages(
     player_address_known: bool = True,
     deterministic_transition: bool = False,
     retry_hint: str = "",
+    interaction_intent: str = "mixed_or_unclear",
 ) -> list[Any]:
     cast = NumericV2CastProjection.from_story(
         engine.story,
@@ -2222,6 +2223,14 @@ def _turn_messages(
     )
     # 精确边界放进 System 合同以提高遵循度，Human 六块继续只承载角色、剧情、历史与当前输入，避免重复 Token。
     system_prompt += _hard_boundary_system_instruction(hard_boundaries)
+    if interaction_intent == "chat":
+        # 纯闲聊合同放在 System 末尾，避免下一幕预览和超软预算提示把模型重新拉回推进模式。
+        system_prompt += (
+            "\n纯闲聊回应合同（本轮必须遵守）：完整回应玩家正在谈的情绪、关系、玩笑或主观问题；"
+            "不要主动提出、重述或催促任何离幕行动，不要询问玩家是否继续，"
+            "transition_offered 必须为 false。suggested_inputs 应优先提供继续当前闲聊的自然回应，"
+            "可以保留至多一条当前幕内的回归剧情选项，但不得离开当前幕或替玩家决定路线。"
+        )
     next_scene_preview = _next_scene_preview_for_actor(
         engine,
         cast,
@@ -2240,7 +2249,6 @@ def _turn_messages(
         "某件事已明确不知道时，猫娘说完‘不知道’后不得再用‘好像’、‘感觉’、‘也许’补造一个具体机制；"
         "只能保持未知、提出已知安全的核对方式，或转向 current_scene 已经支持的下一个事件。"
         "已有明确通道或连续流程且没有出现新的作者事实风险时，直接推进到本轮当前幕内结果。"
-        "玩家用玩笑、闲聊或关系回应短暂跑题时，先自然回应一句，再承接 story_so_far 中尚未收住的当前因果线；"
         "跑题本身不表示当前互动已经完成，也不能成为新转场提议的理由。"
         "next_scene 独有而 current_scene 与 story_so_far 尚未发生的目的地、任务、消息或设备不能出现在正文或推荐中，"
         "更不能被反向当成当前转场的因果证据。"
@@ -2252,6 +2260,28 @@ def _turn_messages(
         "输出前最后自检：suggested_inputs 每条都必须同时有玩家动作和玩家对白；"
         "动作可省略‘我’，但不能明写其他人或环境为主体。"
     )
+    if not route_changed and interaction_intent == "chat":
+        pacing_text += (
+            "本轮主要是当前场景内的闲聊：先完整、自然地回应玩家真正谈到的情绪、关系、玩笑或主观问题。"
+            "不能把闲聊当成转场接受、具体行动、环境事实、调查结果或 scene_complete 证据；"
+            "也不能只因超过推荐回合就强行制造新事件、行动结果或转场。"
+            "当前危险或未收束因果可以用一句话保持存在感，但不要跳过闲聊、机械催促或反复要求玩家作决定。"
+        )
+        if session.transition_offered:
+            pacing_text += (
+                "Runtime 已保留上一轮待确认提议；本轮无需重新提出或换一种说法催促，"
+                "除非玩家明确要求重述，否则 Actor 新提议标记应保持 false。"
+            )
+    elif not route_changed and interaction_intent == "scene_action":
+        pacing_text += (
+            "本轮主要是玩家在当前场景中的具体行动、决定或调查：先直接交付这个行动在作者事实范围内的可见结果，"
+            "不要用闲聊、重复风险说明或再次确认来推迟结果；事实不足时明确保持未知。"
+        )
+    elif not route_changed:
+        pacing_text += (
+            "本轮同时包含闲聊与行动，或交互意图尚不明确：先回应其中的对白或情绪，再处理玩家已经明确实施的行动；"
+            "不要丢掉任一部分，也不要把含糊讨论擅自升级为已经执行。"
+        )
     # 叙事重心只作为一条创作方向提示，不转化为目标、证据或 Runtime 门槛。
     narrative_focus = cast.text(scene_narrative_focus(source["story_beat"])).strip()
     if narrative_focus:
@@ -2259,6 +2289,7 @@ def _turn_messages(
     if (
         not route_changed
         and not session.transition_offered
+        and interaction_intent != "chat"
         and int(soft_pacing["current_turn"]) >= int(soft_pacing["recommended_turns"])
     ):
         pacing_text += (
@@ -2277,7 +2308,16 @@ def _turn_messages(
         # 上一轮已有可见提议但本轮还没有正式换幕时，禁止把目标地点或目标结果写成已发生。
         pacing_text += (
             "上一轮正文已经提出具体转场，但本回合尚未完成换幕；只能停留在当前幕回应。"
-            "可以写准备、观察或等待，不得把目标地点写成已经抵达，不得替玩家完成尚未确认的行动。"
+            "不得把目标地点写成已经抵达，不得替玩家完成尚未确认的行动。"
+        )
+        if interaction_intent == "chat":
+            pacing_text += (
+                "本轮正文只回应玩家当前闲聊，不重述旧提议、不换一种说法催促，也不再次询问是否出发；"
+                "旧提议仍由 Runtime 保留，不需要 Actor 在正文续写。"
+            )
+        else:
+            pacing_text += "可以写准备、观察或等待，但不要机械重复上一轮提议。"
+        pacing_text += (
             "推荐输入必须包含一条明确接受并亲自执行上一轮具体提议的路径，且必须放在第一条；"
             "第二条必须是明确拒绝、暂缓或当前幕替代路径；如有第三条，也要是不同的实际行动。"
             "所有路径都要直接承接正文，不要只写泛泛安慰或重复提问。"
@@ -2312,7 +2352,12 @@ def _turn_messages(
         "current_scene": current_scene_summary,
         "story_so_far": _story_so_far_text(recent_context),
         "pacing": pacing_text,
-        "next_scene": _next_scene_summary_text(next_scene_preview),
+        # 纯闲聊无需看到下一幕导演信息；保留固定六块形状，但去掉最容易诱发抢跑的内容锚点。
+        "next_scene": (
+            "本轮纯闲聊，不使用下一幕方向。"
+            if interaction_intent == "chat"
+            else _next_scene_summary_text(next_scene_preview)
+        ),
         "player_input": current_player_input,
     }
     human_prefix = "以下 JSON 是本回合六块演绎上下文：\n"
@@ -2535,6 +2580,7 @@ class NumericV2Actor:
         player_input: str,
         character_profile: str | None = None,
         retry_hint: str = "",
+        interaction_intent: str = "mixed_or_unclear",
     ) -> dict[str, Any]:
         # 工作流可冻结本轮实际使用的人格文本，确保提交前能复验同一生成世代。
         profile = (
@@ -2598,6 +2644,7 @@ class NumericV2Actor:
                 player_address_known,
                 deterministic_transition,
                 retry_hint,
+                interaction_intent,
             ),
             transition_required=route_changed,
             deterministic_transition=deterministic_transition,
@@ -2668,11 +2715,22 @@ class NumericV2Actor:
                 performance,
                 previous_scene_performance,
             )
-        if _repeats_earlier_session_performance(
+        safe_final_chat_repeat = (
+            interaction_intent == "chat"
+            and "最后一次重复输出重试" in retry_hint
+            and not route_changed
+            and not outcome.metric_changes
+            and performance.get("transition_offered") is not True
+            and "scene_update" not in performance
+            and "scene_narration" not in performance
+            and count_tokens(_performance_text(performance)) <= 120
+        )
+        repeats_earlier = _repeats_earlier_session_performance(
             performance,
             session,
             route_changed=route_changed,
-        ):
+        )
+        if repeats_earlier and not safe_final_chat_repeat:
             logger.warning(
                 "Numeric v2 Actor failed: reason=numeric_v2_actor_repeated_session_output session_id=%s revision=%s",
                 session.session_id,
@@ -2711,9 +2769,9 @@ class NumericV2Actor:
                     ),
                 )
             )
-            if stable_confirmation:
+            if stable_confirmation or safe_final_chat_repeat:
                 # 玩家重复同一输入且状态没有任何变化时，简短确认是合理结果；
-                # 依然禁止携带新场景事实或正在交付目标的重复段落。
+                # 纯闲聊最后一次重试也允许安全短回应降级，避免因话题自然趋同让整轮发送失败。
                 logger.debug(
                     "Numeric v2 Actor accepted stable repeated confirmation: session_id=%s revision=%s",
                     session.session_id,

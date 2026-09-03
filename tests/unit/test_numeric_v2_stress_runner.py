@@ -482,6 +482,7 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                 "turns": [{
                     "workflow_diagnostics": {
                         "evaluator_degraded": False,
+                        "interaction_intent": "chat",
                         "actor_generation_attempts": 1,
                         "actor_provider_calls": 2,
                         "actor_suggestion_fill_attempts": 1,
@@ -503,6 +504,7 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                     "code": "timeout",
                     "workflow_diagnostics": {
                         "evaluator_degraded": True,
+                        "interaction_intent": "scene_action",
                         "actor_generation_attempts": 2,
                         "actor_provider_calls": 3,
                         "actor_suggestion_fill_attempts": 2,
@@ -538,6 +540,10 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
         "quality_warning_count": 0,
         "isolation_failure_count": 1,
         "evaluator_degraded_count": 1,
+        "interaction_intent_counts": {
+            "chat": 1,
+            "scene_action": 1,
+        },
         "actor_generation_attempts": 3,
         "actor_provider_calls": 5,
         "actor_suggestion_fill_attempts": 3,

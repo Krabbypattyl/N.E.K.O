@@ -22,7 +22,10 @@ from services.theater.numeric_v2_archive import (
     build_numeric_v2_memory_messages,
     build_numeric_v2_public_archive,
 )
-from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult
+from services.theater.numeric_v2_evaluator import (
+    NumericV2EvaluationResult,
+    NumericV2TransitionOfferReview,
+)
 from services.theater.numeric_v2_registry import NumericV2PackageError
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, numeric_v2_story
 from utils.cloudsave_runtime import MaintenanceModeError
@@ -321,6 +324,79 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         assert started.json()["session"]["lifecycle_revision"] == 0
         assert body["story_intro"]["player_identity"].startswith("你，")
         assert body["participants"]["player_name"] == "你"
+
+
+def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
+    tmp_path,
+    monkeypatch,
+):
+    """交互意图只服务当前 Actor 调用，不能进入 Session 或 Ledger。"""
+
+    captured: dict[str, str] = {}
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="chat",
+        )
+
+    async def turn(*args, **kwargs):
+        captured["interaction_intent"] = str(kwargs.get("interaction_intent"))
+        return {
+            "performance": "（轻轻点头）我也有一点紧张。",
+            "suggested_inputs": ["你最担心什么？", "我们先聊点别的。"],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            player_action_preserved=True,
+            scene_boundary_preserved=True,
+            author_boundaries_preserved=True,
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "interaction_intent"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "interaction_intent",
+                "client_turn_id": "interaction_intent_1",
+                "base_revision": 0,
+                "message": "你现在是不是有点害怕？",
+            },
+        )
+
+    assert started.status_code == 200
+    assert submitted.status_code == 200
+    assert captured["interaction_intent"] == "chat"
+    session_path = (
+        tmp_path
+        / "theater"
+        / "numeric_v2"
+        / "sessions"
+        / "interaction_intent.json"
+    )
+    persisted = json.loads(session_path.read_text(encoding="utf-8"))
+    assert "interaction_intent" not in persisted["session"]
+    assert "interaction_intent" not in persisted["ledger_events"][0]
+    assert persisted["ledger_events"][0]["input_text"] == "你现在是不是有点害怕？"
 
 
 def test_numeric_v2_router_rejects_unknown_actor_budget_before_opening(tmp_path, monkeypatch):
