@@ -1356,8 +1356,9 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
     model_input = json.loads(calls[1]["messages"][1]["content"])
     outline = model_input["story_outline"]
     assert set(outline) == {
-        "author_intent", "characters", "metrics", "key_props", "mainline", "branches", "endings"
+        "author_intent", "background", "characters", "metrics", "key_props", "mainline", "branches", "endings"
     }
+    assert outline["background"] == story["intro"]["background"]
     assert outline["key_props"][0]["id"] == "dated_old_letter"
     assert outline["mainline"][0]["opening_scene"].startswith("雨水沿着花店玻璃")
     assert outline["mainline"][0]["transition_goal"].startswith("在核对当前记录后")
@@ -2086,8 +2087,9 @@ def test_literature_reads_review_first_without_losing_story_or_suggestions():
 
     def reply(messages, **kwargs):
         request = json.loads(messages[1]['content']);calls.append(kwargs)
-        assert list(request) == ['fact_review', 'story_outline']
-        assert request == {'fact_review': facts, 'story_outline': context}
+        assert list(request) == ['fact_review', 'story_outline', 'allowed_target_node_ids']
+        assert request == {'fact_review': facts, 'story_outline': context,
+                           'allowed_target_node_ids': sorted(node['id'] for node in story['nodes'])}
         assert list(request['story_outline']) == list(context)
         assert list(request['story_outline']['author_extension']) == ['z', 'a']
         return json.dumps(_quality_wire_payload(payload), ensure_ascii=False)

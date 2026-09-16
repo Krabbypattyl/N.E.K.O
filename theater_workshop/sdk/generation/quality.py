@@ -54,11 +54,12 @@ fact_review.issues仅含证据复核支持的问题；excluded_issue_ids是已�
 每项使用 0—100 分。每个scores维度内同时填写score、summary、fact_issue_ids、related_issue_ids和issues。低于75分必须有该维度的文学问题、明确关联已列文学/关系问题，或引用确实导致扣分的已有事实问题；summary说明所引用的问题如何影响本维度。不为满足低分依据而重复事实问题，也不抬高分数。所有新发现的文学问题（包括高分维度的minor、major、blocking）都放入对应维度issues，每条点名真实target_node_ids并提供modification_plan。
 沿用作者规定的关系距离、表达边界与收束方式，不强加赞美、升温、额外确认或抽象难度。
 事实缺陷及其同一修法只在事实报告中保留一次：本轮使用fact_issue_ids关联，不重新生成一条问题或人物关系建议。仅当修复已有事实后仍独立存在的文学缺陷，才新增issues。服务端保留事实严重度，不因分数变化而删除问题。
-target_node_ids 填节点 ID；路线的问题在 problem 中点名路线 ID，并把目标节点填写为该路线所属的来源节点，不能填写路线 ID 或其目标节点来代替来源节点。
+target_node_ids 和 repair_targets.node_id 只能从 allowed_target_node_ids 选择；metrics 不是节点，指标 ID、字段名和维度名也不能充当节点。路线的问题在 problem 中点名路线 ID，并把目标节点填写为该路线所属的来源节点，不能填写路线 ID 或其目标节点来代替来源节点。
 
 另外必须给出：
-- metric_advice：只评价当前“数值指标的数量与职责”是否合理，可建议新增、删除或合并指标；不要直接调整具体阈值。若指标实际描述双方信任、好感、亲密、坦诚或疏离，却把 relationship_effect 标成 none，必须指出它无法约束运行时关系距离。
+- metric_advice：recommended_count 必须为 0—4 的整数。只评价当前“数值指标的数量与职责”是否合理，可建议新增、删除或合并指标；不要直接调整具体阈值。若指标实际描述双方信任、好感、亲密、坦诚或疏离，却把 relationship_effect 标成 none，必须指出它无法约束运行时关系距离。
 - relationship_advice：只列尚未被事实或六维问题覆盖的独立关系缺陷，并关联具体节点；没有独立不足时返回[]，不为填写此栏要求关系升温或重复角色表态。
+指标职责或 relationship_effect 的问题只写入 metric_advice.summary，不再复制到 relationship_advice 或节点 issues。relationship_effect 仅支持 positive、negative、none，分别表示数值越高越亲近、越疏远、不影响关系距离；不能发明枚举，也不控制称呼披露或发声权限。这些建议不自动修改配置。
 
 结构建议可以指出需要新增、删除或重连节点与路线。每条建议必须显式填写 repair_scope：只改既有节点文本、已有三方状态描述或既有路线转场文本时写 text；需要改目标/交付结构、acting_contract 的认知或发声权限、character_state 内连续性/边界字段，或新增、删除、拆分、合并、重连节点、路线、条件、数值、回合预算时写 structure。不能把仅修状态描述误判为必须重构。
 
@@ -236,7 +237,6 @@ class NumericV2QualityAssessor(ModelAgent):
             )
             facts_payload = self._parse_response(facts_response, "invalid_fact_review")
             facts = validate_fact_review(context, facts_payload, node_ids, evidence_sources=fact_sources)
-            facts["issues"] = [classify_repair(context, issue) for issue in facts["issues"]]
         except QualityAssessmentError as error:
             error.phase = "facts"
             raise
@@ -245,7 +245,9 @@ class NumericV2QualityAssessor(ModelAgent):
         # 仅有问题时复核一次；失败不继续文学，不保存半份报告，不自动重试。
         if facts["issues"]:
             try:
-                proposed = [{**issue, "repair_targets": review_targets(issue)} for issue in facts["issues"]]
+                # 复核只看原问题和证据；修复资格在复核后计算，不把预设结论送回裁判。
+                proposed = [{**{key: value for key, value in issue.items() if key != "repairable"},
+                             "repair_targets": review_targets(issue)} for issue in facts["issues"]]
                 response = self.call_llm(
                     [{"role": "system", "content": EVIDENCE_REVIEW_PROMPT},
                      {"role": "user", "content": json.dumps({"story_outline": context, "proposed_issues": proposed}, ensure_ascii=False, sort_keys=True)}],
@@ -336,7 +338,8 @@ class NumericV2QualityAssessor(ModelAgent):
                     "role": "user",
                     "content": json.dumps(
                         # 已核对事实先于作者稿呈现，原文和作者节点顺序完整保留，不归一或删减内容。
-                        {"fact_review": facts, "story_outline": context},
+                        {"fact_review": facts, "story_outline": context,
+                         "allowed_target_node_ids": sorted(self._context_node_ids(context))},
                         ensure_ascii=False,
                     ),
                 },
@@ -691,6 +694,7 @@ class NumericV2QualityAssessor(ModelAgent):
                 "id": str(metric_id),
                 "name": str(definition.get("name") or metric_id),
                 "purpose": str(definition.get("description") or ""),
+                "relationship_effect": definition.get("relationship_effect", "none"),
                 "bands": [
                     {
                         "label": str(band.get("label") or ""),
@@ -707,6 +711,8 @@ class NumericV2QualityAssessor(ModelAgent):
         return {
             # 保留作者原意供评分和单节点优化共用；不触发默认评分或自动改稿。
             "author_intent": str(setup.get("brief") or "").strip(),
+            # 正式背景只供核对和引用，不进入节点文本修订目录。
+            "background": str(intro.get("background") or ""),
             "characters": {
                 **{field: intro[field] for field in ("player_name", "catgirl_name") if field in intro},
                 "player_identity": str(intro.get("player_identity") or "").strip(),

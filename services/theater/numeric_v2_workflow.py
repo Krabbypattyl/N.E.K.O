@@ -16,7 +16,7 @@ from .numeric_v2_actor import (
     NumericV2ActorOutputError,
 )
 from .numeric_v2_context import scene_opening_text
-from .numeric_v2_fixed_narration import add_entry, apply_triggers
+from .numeric_v2_fixed_narration import apply_triggers
 from .numeric_v2_history import lookup_history
 from .numeric_v2_evaluator import (
     NumericV2EvaluationResult,
@@ -31,6 +31,7 @@ from .numeric_v2_runtime import (
     TurnRequestV2,
 )
 from .numeric_v2_store import NumericV2StoredSession
+from .numeric_v2_trace import text_trace_scope, trace_event, trace_state
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ def _drop_reported_unsafe_suggestions(
     # 协议允许索引 0—2，但候选可能不足三条；无法定位已报告的问题时只撤下按钮。
     if any(index < 0 or index >= len(suggestions) for index in unsafe_indexes):
         result["suggested_inputs"] = []
+        trace_event("suggestions.filtered", reported_indexes=unsafe_indexes, before=suggestions, after=[])
         return result, len(suggestions)
     valid_indexes = {
         index
@@ -62,6 +64,8 @@ def _drop_reported_unsafe_suggestions(
         for index, item in enumerate(suggestions)
         if index not in valid_indexes
     ]
+    trace_event("suggestions.filtered", reported_indexes=unsafe_indexes,
+                before=suggestions, after=result["suggested_inputs"])
     return result, len(valid_indexes)
 
 
@@ -75,14 +79,19 @@ async def generate_validated_opening(
 ) -> dict[str, Any]:
     """生成公开开场；声明临时开场边界时必须在建 Session 前通过复核。"""  # noqa: DOCSTRING_CJK
 
+    trace_event("opening.context", session_id=session_id, story_id=engine.story_id,
+                package_hash=engine.compiled.package_hash, package_revision=engine.story["meta"]["revision"],
+                actor_budget_profile=actor_budget_profile)
     actor = NumericV2Actor(config_manager)
     opening = await actor.generate_opening(
         engine=engine,
         actor_budget_profile=actor_budget_profile,
     )
+    trace_event("opening.candidate", attempt=1, performance=opening)
     start_node = engine.nodes[str(engine.story["start_node_id"])]
     opening_boundaries = start_node["story_beat"].get("opening_only_boundaries")
     if not opening_boundaries:
+        trace_event("opening.ready", performance=opening)
         return opening
 
     evaluator = NumericV2MetricEvaluator(config_manager)
@@ -102,16 +111,20 @@ async def generate_validated_opening(
                 route_changed=True,
             )
         except NumericV2EvaluatorError as exc:
+            trace_event("review.failed", phase="opening", error_code=str(exc))
             raise NumericV2ActorOutputError(
                 "numeric_v2_opening_review_failed"
             ) from exc
+        trace_event("review.result", phase="opening", attempt=attempt + 1, result=review)
         # 正文与按钮已分别判定；删掉坏按钮不会改变正文事实或制造新的离幕提议。
         opening, _ = _drop_reported_unsafe_suggestions(
             opening, review.unsafe_suggestion_indexes,
         )
         if not review.body_violations and not review.offer_present:
+            trace_event("opening.ready", performance=opening)
             return opening
         if attempt == 0:
+            trace_event("opening.rewrite", review=review)
             opening = await actor.generate_opening(
                 engine=engine,
                 actor_budget_profile=actor_budget_profile,
@@ -122,6 +135,7 @@ async def generate_validated_opening(
                     f"{_actor_rewrite_candidate_context(opening)}"
                 ),
             )
+            trace_event("opening.candidate", attempt=2, performance=opening)
     raise NumericV2ActorOutputError("numeric_v2_opening_fact_boundary")
 
 
@@ -138,24 +152,24 @@ def _output_retry_hint(
         if retry_number == 1:
             return (
                 "这是正式换场重试。请先用全新的简短来源回应承接玩家本轮实际授权的行动，"
-                "再写新的过渡桥段；不要复用上一幕或上一版的来源对白、动作和收尾。"
+                "再写新的过渡桥段；只用各段发声策略允许的表现，不要复用上一幕或上一版的来源正文和收尾。"
             )
         if retry_number == 2:
             return (
-                "这是第二次正式换场重试。请改用不同的来源动作和对白回应玩家本轮行动，"
+                "这是第二次正式换场重试。请在来源发声策略内改用不同的回应承接玩家本轮行动，"
                 "重新组织过渡桥段并引入一个当前事实支持的变化；目标开场只需自然接入，"
                 "不要复述上一版内容。"
             )
         return (
-            "这是最后一次正式换场重试。请用最简短的全新来源动作与对白完成承接，"
+            "这是最后一次正式换场重试。请在来源发声策略内用最简短的全新回应完成承接，"
             "保留必要的过渡因果但完全改写句式和收尾；不要复制任何较早回合的正文。"
         )
 
     if "repeated" in last_error_code:
         if retry_number == 1:
             return (
-                "上一版与较早回合的完整对白或收尾重复。请基于玩家本轮输入引入新的可见事实或行动，"
-                "完全改写动作、对白和收尾，不要只替换形容词。"
+                "上一版与较早回合的完整正文或收尾重复。请基于玩家本轮输入引入新的可见事实或行动，"
+                "在当前发声策略内改写获准的表现和收尾，不要只替换形容词。"
             )
         if retry_number == 2:
             return (
@@ -163,7 +177,7 @@ def _output_retry_hint(
                 "再推进当前叙事重心；不得复用上一版的开头、核心句或结尾。"
             )
         return (
-            "这是最后一次重复输出重试。请输出一段更短但全新的动作与对白，"
+            "这是最后一次重复输出重试。请在当前发声策略内输出一段更短但全新的回应，"
             "至少改变回应角度和可见动作，并避免与历史任何一轮形成近似复述。"
         )
 
@@ -329,8 +343,12 @@ async def _generate_actor_turn_with_output_retry(
                     part for part in (required_retry_hint, output_retry_hint) if part
                 )
             _increment_actor_attempts(diagnostics)
-            return await actor.generate_turn(**retry_kwargs)
+            trace_event("actor.attempt", attempt=attempt + 1, retry_hint=retry_kwargs.get("retry_hint", ""))
+            generated = await actor.generate_turn(**retry_kwargs)
+            trace_event("actor.candidate", attempt=attempt + 1, performance=generated)
+            return generated
         except NumericV2ActorOutputError as exc:
+            trace_event("actor.rejected", attempt=attempt + 1, error_code=str(exc))
             last_error_code = str(exc)
             if attempt == 3:
                 raise
@@ -345,6 +363,33 @@ async def _generate_actor_turn_with_output_retry(
 
 
 async def execute_numeric_v2_turn(
+    *,
+    config_manager: Any,
+    runtime: NumericV2Runtime,
+    current: NumericV2StoredSession,
+    turn: TurnRequestV2,
+    ensure_current_binding: Callable[[Any], Mapping[str, str]],
+    before_commit: Callable[[], Awaitable[None]] | None = None,
+    diagnostics_sink: dict[str, Any] | None = None,
+) -> NumericV2TurnWorkflowResult:
+    """Trace one attempt without changing the workflow, retry policy or public result."""
+    diagnostics = diagnostics_sink if diagnostics_sink is not None else {}
+    with text_trace_scope("turn", state_before=trace_state(current.session), turn=turn):
+        try:
+            result = await _execute_numeric_v2_turn(
+                config_manager=config_manager, runtime=runtime, current=current, turn=turn,
+                ensure_current_binding=ensure_current_binding, before_commit=before_commit,
+                diagnostics_sink=diagnostics,
+            )
+            trace_event("turn.committed", state_after=trace_state(result.stored.session),
+                        performance=result.performance, ledger_event=result.stored.ledger_events[-1],
+                        stored_performance=result.stored.session.performance_history[-1])
+            return result
+        finally:
+            trace_event("turn.diagnostics", diagnostics=diagnostics)
+
+
+async def _execute_numeric_v2_turn(
     *,
     config_manager: Any,
     runtime: NumericV2Runtime,
@@ -416,16 +461,19 @@ async def execute_numeric_v2_turn(
         started_at = time.monotonic()
         diagnostics["evaluator_model_attempts"] += 1
         try:
-            return await evaluator.evaluate(
+            result = await evaluator.evaluate(
                 engine=runtime.engine,
                 session=current.session,
                 message=turn.message,
                 recent_ledger_events=current.ledger_events,
             )
+            trace_event("evaluator.result", result=result)
+            return result
         except NumericV2EvaluatorError as exc:
             # Evaluator 只负责隐藏数值和已有转场态度，不应让一次判定服务抖动阻断玩家的正常演绎。
             # 降级结果不会改变数值，也不会凭空接受转场；下一回合仍可重新判定。
             diagnostics["evaluator_degraded"] = True
+            trace_event("evaluator.degraded", error_code=str(exc))
             logger.warning(
                 "Numeric v2 Evaluator degraded to no-op: reason=%s session_id=%s revision=%s",
                 str(exc),
@@ -446,7 +494,7 @@ async def execute_numeric_v2_turn(
 
         started_at = time.monotonic()
         try:
-            return runtime.prepare_turn(
+            prepared = runtime.prepare_turn(
                 current,
                 turn,
                 evaluation.metric_changes,
@@ -455,6 +503,9 @@ async def execute_numeric_v2_turn(
                 # 同次判定提供结局就绪信号；缺省/降级为 false，不增加一轮确认或模型调用。
                 natural_ending_ready=getattr(evaluation, "natural_ending_ready", False),
             )
+            trace_event("runtime.prepared", evaluation=evaluation, state=trace_state(prepared.session),
+                        route=prepared.route, ledger_event=prepared.ledger_event)
+            return prepared
         finally:
             _add_elapsed_ms(diagnostics, "runtime_prepare_work", started_at)
 
@@ -488,12 +539,6 @@ async def execute_numeric_v2_turn(
                 **generation_kwargs,
                 retry_hint=retry_hint,
             )
-            if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]:
-                generated["segments"][2] = add_entry(
-                    runtime.engine.nodes[outcome.session.current_node_id], generated["segments"][2],
-                    outcome.session.catgirl_binding, outcome.session.player_address_known,
-                    session=current.session,
-                )
             return generated
         finally:
             # Actor 只可能因格式、重复或明确边界问题重试；这里记录累计调用耗时和真实供应商请求数。
@@ -528,7 +573,12 @@ async def execute_numeric_v2_turn(
             changed = outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]
             review_kwargs = dict(
                 engine=runtime.engine,
-                session=current.session if changed else outcome.session,
+                # 普通稿仍审已提交历史；候选已递增的回合号会丢掉首轮开场并误报历史缺失。
+                # 只还原历史水位，保留本轮数值、称呼与邀请状态供出口和边界复核。
+                session=current.session if changed else replace(
+                    outcome.session, revision=current.session.revision,
+                    node_turn_count=current.session.node_turn_count,
+                ),
                 message=turn.message,
                 actor_performance=candidate,
                 scene_complete=evaluation.scene_complete,
@@ -555,6 +605,7 @@ async def execute_numeric_v2_turn(
             review = await evaluator.validate_transition_offer(**review_kwargs)
 
             def record_review(result: NumericV2TransitionOfferReview, mode: str) -> None:
+                trace_event("review.result", mode=mode, phase="transition" if changed else "ordinary", result=result)
                 # 两次判断分别留作诊断，不混入剧情历史，也不把初判理由喂给独立复查。
                 diagnostics["transition_review_results"].append({
                     "review_mode": mode,
@@ -583,6 +634,7 @@ async def execute_numeric_v2_turn(
                 try:
                     reviewed = await evaluator.validate_transition_offer(**review_kwargs, dispute_review=True)
                 except NumericV2EvaluatorError as exc:
+                    trace_event("review.failed", mode="dispute", error_code=str(exc))
                     # 此处必须与快速复核故障分开：已有违规证据不可被普通回合的降级路径清空。
                     diagnostics["dispute_review_degraded"] = True
                     diagnostics["transition_review_results"].append({
@@ -594,6 +646,7 @@ async def execute_numeric_v2_turn(
             final_fixed_review = review
             return review
         except NumericV2EvaluatorError as exc:
+            trace_event("review.failed", mode="fast", error_code=str(exc))
             diagnostics["transition_judge_degraded"] = True
             diagnostics["transition_review_results"].append({
                 "degraded": True,
@@ -627,6 +680,7 @@ async def execute_numeric_v2_turn(
         # 普通回合不额外调用；有证据缺口才查一次完整记录，失败结果也共享，防止改稿反复查找。
         lookup_started_at = time.monotonic()
         history_lookup_result = await lookup_history(config_manager, current.session, evaluation.history_query)
+        trace_event("history.result", query=evaluation.history_query, result=history_lookup_result)
         diagnostics["history_lookup"] = {key: value for key, value in history_lookup_result.items() if key != "evidence"}
         _add_elapsed_ms(diagnostics, "history_lookup_work", lookup_started_at)
     diagnostics["interaction_intent"] = evaluation.interaction_intent
@@ -670,6 +724,7 @@ async def execute_numeric_v2_turn(
                 recovered_outcome = prepare_turn(recovered_evaluation)
                 if recovered_outcome.ledger_event["from_node_id"] != recovered_outcome.ledger_event["to_node_id"]:
                     diagnostics["missed_initiation_recoveries"] += 1
+                    trace_event("transition.recovered", evaluation=recovered_evaluation)
                     evaluation, outcome = recovered_evaluation, recovered_outcome
                     effective_interaction_intent = "scene_action"
                     diagnostics["effective_interaction_intent"] = effective_interaction_intent
@@ -750,6 +805,7 @@ async def execute_numeric_v2_turn(
                 # 主动请求和接受错误邀请共用一次留幕改稿；不根据自然语言理由猜是否取消。
                 # 从原始快照及同一次计分重新prepare，不能从已换幕候选倒扣或再次累计分数。
                 diagnostics["transition_cancellations"] += 1
+                trace_event("transition.cancelled", review=review)
                 diagnostics["semantic_rewrite_attempts"] += 1
                 # 只撤下已被明确判错的邀请；仅询问/犹豫导致的未获准移动仍保留合法原邀请。
                 invalidate_previous_offer = review.pending_invitation_invalid is True
@@ -816,6 +872,9 @@ async def execute_numeric_v2_turn(
             known=outcome.session.player_address_known,
         )
     # 模型调用不占生命周期锁；仅将身份复验、展示刷新和原子提交与角色改名串行。
+    trace_event("turn.finalized", state=trace_state(outcome.session), performance=performance,
+                semantic_review_fallback=diagnostics["semantic_review_fallback"],
+                semantic_review_fallback_phase=diagnostics["semantic_review_fallback_phase"])
     commit_started_at = time.monotonic()
     try:
         async with character_config_mutation_lock:
@@ -862,7 +921,7 @@ async def execute_numeric_v2_turn(
         3,
     )
     diagnostics["completed"] = True
-    # Reviews can quote private player/candidate text. Logs accept only these
+    # Reviews can quote private player/candidate text. Ordinary logs accept only these
     # numeric timings, counters and flags; detailed diagnostics stay with the caller.
     log_diagnostics = {
         key: diagnostics[key]

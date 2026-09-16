@@ -93,7 +93,7 @@ def test_initiation_reaches_actor_and_formal_guard_without_becoming_natural_endi
     data = json.loads(actor[1].content.split('：',1)[1])
     assert data['transition']['player_initiated'] is True
     assert not data['transition'].get('natural_ending')
-    messages = _build_transition_judge_messages(engine,session,actor_performance={'segments':[],'suggested_inputs':[]},player_input=c['message'],transition_outcome=outcome)
+    messages = _build_transition_judge_messages(engine,session,actor_performance={'segments':[],'suggested_inputs':[]},player_input=c['message'],transition_outcome=outcome)[0]
     data = json.loads(messages[1].content.split('：',1)[1])
     assert data['transition_authorization']['transition_intent'] == 'initiate'
     assert '左侧走廊' in json.dumps(data['scene_context'],ensure_ascii=False)
@@ -101,13 +101,18 @@ def test_initiation_reaches_actor_and_formal_guard_without_becoming_natural_endi
 
 
 @pytest.mark.parametrize('quote', ['', None, '作者计划下一幕去阅览室。', '带我去阅览室吧。'])
-def test_fabricated_or_missing_public_quote_cannot_authorize(quote):
+def test_fabricated_or_missing_public_quote_cannot_authorize(quote, caplog):
     """Source verification constrains initiation only; existing accept intent follows Runtime invitation rules, and dispute review must still reject fabricated evidence."""
     from services.theater.numeric_v2_evaluator import _parse_transition_judge_output
     c = initiation_case()
     payload = dict(scene_complete=False, metric_changes={}, transition_intent='initiate', public_destination_quote=quote)
     result = _parse_output(json.dumps(payload), c['engine'], c['message'], c['session'])
     assert result.transition_intent == 'unclear'
+    assert 'public destination quote rejected' in caplog.text
+    assert f"session_id={c['session'].session_id} revision={c['session'].revision}" in caplog.text
+    assert c['message'] not in caplog.text
+    if quote:
+        assert quote not in caplog.text
     review = dict(offer_present=False,valid=False,body_violations=[],unsafe_suggestion_indexes=[],failure_reason='',public_destination_quote=quote)
     result = _parse_transition_judge_output(json.dumps(review),initiation_session=c['session'])
     assert result.body_violations == ('player_action',)

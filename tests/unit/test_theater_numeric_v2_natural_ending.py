@@ -107,7 +107,7 @@ def test_natural_ending_actor_receives_authorization_without_fake_acceptance():
     # 同轮授权要包含最后动作和回应的交付职责，同时保留未知成败与玩家决定边界。
     assert '先在来源回应完成玩家已授权的最后互动' in messages[0].content
     # 自然结束授权不允许把约定的未来执行通过环境旁白补成事实。
-    compact = _turn_messages(engine, session, outcome, '谢谢。', '温和。', '小葵', '你', deterministic_transition=True)
+    compact = _turn_messages(engine, session, outcome, '谢谢。', '温和。', '小葵', '你')
     assert '不能把约定的未来行动写成已经执行' in compact[0].content
     # 来源可静默与目标必须说话可以同时成立，模型须按两个不同字段生成。
     assert 'target_performance 遵守 acting_context.target_dialogue_policy' in compact[0].content

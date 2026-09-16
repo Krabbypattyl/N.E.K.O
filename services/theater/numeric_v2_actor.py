@@ -18,6 +18,7 @@ from config.prompts.prompts_theater import (
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 from .numeric_v2_usage import invoke_with_usage
+from .numeric_v2_trace import trace_event
 from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
 
 from .llm_context import (
@@ -90,15 +91,6 @@ def _output_schema_instruction(phase: str) -> str:
         shape = (
             "顶层字段必须包含 scene_narration:string、performance:string、"
             "suggested_inputs:string[]、transition_offered:boolean。开场通常将 transition_offered 设为 false。"
-        )
-    elif phase == "transition":
-        # 无作者桥段时仍使用三段数组；给出实际 JSON，避免把 phase 值误生成为嵌套键名。
-        shape = (
-            '严格使用此 JSON 形状：{"segments":[{"phase":"source_response","performance":"来源回应"},'
-            '{"phase":"transition_bridge","scene_narration":"换场旁白"},'
-            '{"phase":"target_opening","performance":"目标回应"}],"suggested_inputs":[]}。'
-            "phase 是固定字符串值，不是外层键名；两个 performance 必须是非空正文字符串，进入终局也不例外。"
-            "source_response 可增加 scene_narration:string，呈现本轮在场 NPC 的必要动作或答复，无则省略。"
         )
     elif phase == "transition_compact":
         shape = (
@@ -497,6 +489,14 @@ def _role_prompt_text(
     core_persona = str(acting_context.get("core_persona") or "").strip()
     if core_persona:
         lines.append(f"性格与说话方式：{core_persona}")
+    capability_state = acting_context.get("capability_state")
+    if isinstance(capability_state, Mapping):
+        labels = [str(state.get("label") or "").strip()
+                  for state in capability_state.values() if isinstance(state, Mapping)]
+        labels = [label for label in labels if label]
+        if labels:
+            # 保留本轮结算后的非关系状态，不发送隐藏数值、阈值或内部 metric ID。
+            lines.append("当前非关系状态（不改变关系距离）：" + "；".join(labels))
     acting_contract = acting_context.get("acting_contract")
     if isinstance(acting_contract, Mapping):
         assertable_facts = [
@@ -1624,35 +1624,24 @@ def _system_prompt(
             "开场：scene_narration 建立场景，performance 演猫娘入场。只自然交付 opening_deliverables，"
             "不要罗列后续内容建议，并留下玩家可回应的话头。"
         )
-    elif phase in {"transition", "transition_compact"}:
-        if phase == "transition_compact":
-            phase_structure_rule = (
-                "换场：先播放可选 source_scene_narration，再播放 source_performance，两者都严格位于 player_input 之后、bridge_scene_narration 之前，"
-                "只能回应玩家并收住来源互动；不得出现桥段完成后的时间、地点、到达、醒来结果或 target_scene 独有事实。"
-                # 收束不强制追加微动作；已答过的问题只需承接其意义，避免换词重复。
-                "若玩家确认已经说定的安排或决定，承接该选择对角色的意义，不再复述同一句约定，也不为求新硬加动作。"
-                "bridge_scene_narration 承接来源回应；target_scene_narration 建立目标场景，target_performance 写其后的即时反应。"
-                "target_scene.story_direction 只用于让目标幕从开场朝正确方向启动，不得一次演完整幕或照抄策划描述。"
-                # 用户允许所有转场适配历史；事实合同保持，已发生动作改写为结果状态。
-                "作者桥段与 opening_situation 是时空、必要结果和边界约束，不是必须逐字播放的文字。"
-                "根据 recent_context 与 player_input 改写两段旁白，保留作者必要事实、因果顺序与阶段边界；"
-                "历史已发生的动作只承接结果，不再次演出，不覆盖玩家的实际选择，也不提前完成目标幕互动。"
-                "同地点连续收束不凭空换时空；来源交付互动，桥段只承接结果状态与必要时空变化，目标段给出角色后续反应。"
-                "同一动作只在首次交付处发生，后段不再写它开始或落下；没有新变化时简短保留状态，不强求每段制造事件。"
-                # 去重不能导致目标正文缺失：没有新消息时仍可对既成结果作简短角色回应。
-                "目标段没有新消息时，target_performance 简短承接角色对已成立结果的态度，仍按目标对白策略交付非空正文；"
-                "避免重复不等于省略字段、输出空串，或另造动作和任务填充篇幅。"
-                "suggested_inputs 只承接最终可见的目标 opening_scene 与 target_performance，不再执行来源幕的离开、出发或收束提议。"
-            )
-        else:
-            phase_structure_rule = (
-                "换场依次生成来源回应、必要桥段、目标入场；来源回应仍处于旧幕，不能提前出现桥段之后的"
-                "时间、地点、到达或目标幕独有事实；再连续地进入目标场景，不复写目标 opening_scene，"
-                "也不提前完成目标幕目标。target_scene.story_direction 只用于让目标幕从开场朝正确方向启动。"
-                "source_response 的可选 scene_narration 先呈现本轮在场 NPC 的必要答复，performance 再写猫娘回应；"
-                "NPC 可明确拒绝或说明未知，不把猫娘评价代替他的答复，也不提前进入桥段后的场景。"
-                "suggested_inputs 只承接最终可见的目标 opening_scene 与 target_performance，不再执行来源幕的离开、出发或收束提议。"
-            )
+    elif phase == "transition_compact":
+        phase_structure_rule = (
+            "换场：先播放可选 source_scene_narration，再播放 source_performance，两者都严格位于 player_input 之后、bridge_scene_narration 之前，"
+            "只能回应玩家并收住来源互动；不得出现桥段完成后的时间、地点、到达、醒来结果或 target_scene 独有事实。"
+            # 收束不强制追加微动作；已答过的问题只需承接其意义，避免换词重复。
+            "若玩家确认已经说定的安排或决定，承接该选择对角色的意义，不再复述同一句约定，也不为求新硬加动作。"
+            "bridge_scene_narration 承接来源回应；target_scene_narration 建立目标场景，target_performance 写其后的即时反应。"
+            # 用户允许所有转场适配历史；事实合同保持，已发生动作改写为结果状态。
+            "作者桥段与 opening_situation 是时空、必要结果和边界约束，不是必须逐字播放的文字。"
+            "根据 recent_context 与 player_input 改写两段旁白，保留作者必要事实、因果顺序与阶段边界；"
+            "历史已发生的动作只承接结果，不再次演出，不覆盖玩家的实际选择，也不提前完成目标幕互动。"
+            "同地点连续收束不凭空换时空；来源交付互动，桥段只承接结果状态与必要时空变化，目标段给出角色后续反应。"
+            "同一动作只在首次交付处发生，后段不再写它开始或落下；没有新变化时简短保留状态，不强求每段制造事件。"
+            # 去重不能导致目标正文缺失：没有新消息时仍可对既成结果作简短角色回应。
+            "目标段没有新消息时，target_performance 简短承接角色对已成立结果的态度，仍按目标对白策略交付非空正文；"
+            "避免重复不等于省略字段、输出空串，或另造动作和任务填充篇幅。"
+            "suggested_inputs 只承接最终可见的目标 opening_scene 与 target_performance，不再执行来源幕的离开、出发或收束提议。"
+        )
     else:
         phase_structure_rule = (
             "普通回合先正面回应 player_input，再结合 story_so_far 自然延展；"
@@ -1778,12 +1767,8 @@ def _system_prompt(
         "作者剧情方向是导演信息，不是角色已经知道的事实；其中明确的因果先后不能倒置，"
         "某事件依赖玩家回应、选择或前一事实时，在该前提进入 recent_context 前，正文和推荐都不能先使用后续事件。"
         f"{_SUGGESTION_PLAYER_FACT_RULE}"
-        "target_scene.opening_situation 已明确建立的内容是入幕事实；target_performance 应承接它，不能把已明确归属、状态或边界重新问成未知。"
         "作者只给出抽象状态或待确认事项时，不得自行具体化；重要事物保持已建立的归属、状态和生命周期。"
         "可选内容不是任务清单，能按玩家输入改写、组合、暂缓或舍弃，遗漏不阻止转场。"
-        "next 是玩家接受后的下一幕计划；正式换场前不得提前播放其地点、时段、事件或结果。"
-        "普通回合只认 scene_horizon.transition.intent；不是 accept 就不得跨越互动阶段。"
-        "runtime_unresolved 的候选不得自行选择或混合；status=none 不猜下一幕。"
         "普通换幕须由玩家明确接受邀请或主动要求进入已公开的下一地点、下一阶段；Runtime 明确标记 natural_ending 的结局除外。"
         "提议必须公开、具体、由已发生事实导向并停在下一阶段结果之前。"
         "完成来源幕最后一个普通行动不是转场；结果成立后仍须提出真正跨入下一阶段的行动。"
@@ -1966,6 +1951,7 @@ def _fit_simple_turn_prompt_data(
 def _log_prompt_diagnostics(session: ScriptSessionV2, diagnostics: Mapping[str, Any]) -> None:
     """只记录装箱版本号和 token，不把玩家正文写入日志。"""  # noqa: DOCSTRING_CJK
 
+    trace_event("prompt.packed", stage="actor", diagnostics=diagnostics)
     message = (
         "Numeric v2 Actor prompt packing session_id=%s revision=%s "
         "tokens=%s/%s history_in=%s history_drop=%s"
@@ -1995,7 +1981,6 @@ def _transition_prompt_data(
     source_boundaries: list[Any],
     target_boundaries: list[Any],
     runtime_target_opening: str,
-    target_story_direction: str,
     transition_contract: Mapping[str, Any],
     recent_context: list[dict[str, Any]],
     acting_context: Mapping[str, Any],
@@ -2014,7 +1999,6 @@ def _transition_prompt_data(
         "target_scene": {
             "chapter_title": str(target_chapter_title or ""),
             "opening_situation": str(runtime_target_opening or ""),
-            "story_direction": str(target_story_direction or ""),
             "boundaries": list(target_boundaries),
         },
         "shared_boundaries": list(shared_boundaries),
@@ -2058,6 +2042,16 @@ def _opening_messages(
     opening_beat = dict(opening_beat)
     opening_beat.pop("player_reply_goals", None)
     opening_beat.pop("current_direction", None)
+    dialogue_policy = str(
+        _acting_contract_for_actor(cast, node["story_beat"]).get("dialogue_policy") or "required"
+    )
+    opening_response = (
+        "再由猫娘以可见动作主动回应，不说出对白；"
+        if dialogue_policy == "forbidden"
+        else "再由猫娘以动作、对白或两者自然回应；"
+        if dialogue_policy == "optional"
+        else "再由猫娘主动说出第一句；"
+    )
     data = {
         "opening_phase": True,
         "visible_player_history": [],
@@ -2078,19 +2072,14 @@ def _opening_messages(
             node,
             engine.story["initial_state"]["metrics"],
             character_profile,
-            dialogue_policy=str(
-                _acting_contract_for_actor(cast, node["story_beat"]).get(
-                    "dialogue_policy"
-                )
-                or "required"
-            ),
+            dialogue_policy=dialogue_policy,
         ),
         "instruction": (
-            "这是玩家输入前的公开开场。使用必要的环境或猫娘可见行动建立当下场景，再由猫娘主动说出第一句；"
+            f"这是玩家输入前的公开开场。使用必要的环境或猫娘可见行动建立当下场景，{opening_response}"
             "不得假定玩家已经说话、做出选择或完成无前因的主动行动，不得使用‘你刚才说/做’或同义的隐形前史。"
             "若 opening_scene 同句明确给出可见前因，可以建立玩家受伤、失衡或被外力带动等即时身体结果；"
             "若节点摘要只有玩家台词、决定或无前因主动行为，把它们视为后续可发展的剧情边界，不要在开场代替玩家执行。"
-            "猫娘对白必须由本段旁白能够直接解释，并留下男主可以自然回应的话头；"
+            "猫娘的回应必须由本段旁白能够直接解释，并留下男主可以自然回应的话头；"
             "话头不得反问玩家来替猫娘确认 opening_deliverables 已经要求她肯定确认的状态；不要提前演完本节点。"
             "开场推荐只能使用本次可见开场已经建立的玩家身份、地点、物品、能力和环境事实；"
             "不得把相似但未声明的地点标签、身份判断或状态猜测写成玩家已知事实，也不能要求玩家沿用正文尚未建立的推断。"
@@ -2128,7 +2117,6 @@ def _turn_messages(
     catgirl_name: str,
     player_address: str,
     player_address_known: bool = True,
-    deterministic_transition: bool = False,
     retry_hint: str = "",
     interaction_intent: str = "mixed_or_unclear",
     input_source: str = "freeform",
@@ -2147,11 +2135,7 @@ def _turn_messages(
         catgirl_name=catgirl_name,
         player_address=player_address,
         player_address_known=player_address_known,
-        phase=(
-            "transition_compact"
-            if route_changed and deterministic_transition
-            else ("transition" if route_changed else "turn")
-        ),
+        phase="transition_compact" if route_changed else "turn",
     )
     if retry_hint and route_changed:
         # 重试时明确要求改写当前回应，避免同一输入和同一上下文连续生成相同正文。
@@ -2256,7 +2240,6 @@ def _turn_messages(
             source_boundaries=source_boundaries,
             target_boundaries=target_boundaries,
             runtime_target_opening=target_opening,
-            target_story_direction=str(target_beat.get("scene_direction") or ""),
             transition_contract=transition_contract,
             recent_context=recent_context,
             acting_context=_acting_context(
@@ -2276,6 +2259,10 @@ def _turn_messages(
             data["history_evidence"] = evidence
         final_transition = data.pop("transition")
         if outcome.session.status == "ended":
+            # 普通目标只交付开场，整幕方向留到后续回合；终局没有后续输入，保留收束材料。
+            final_transition["target_scene"]["story_direction"] = str(
+                target_beat.get("scene_direction") or ""
+            )
             # 终局提交即关闭输入，不生成玩家无法发送的后续按钮或待回答话头。
             system_prompt += (
                 "本轮进入终局，交付后不再接收输入；suggested_inputs 必须为空数组，正文自然收住，不留下等待玩家回答的新问题。"
@@ -2399,6 +2386,9 @@ def _turn_messages(
     pure_chat = interaction_intent == "chat" and input_source != "suggestion"
     if pure_chat:
         pacing_text += "本轮主要是当前场景内的闲聊；回合数不要求推进，不能把闲聊当成转场接受。"
+    elif next_scene_preview.get("target_is_ending") and soft_pacing["phase"] in {"closure", "overdue"}:
+        # 结局留幕只处理尚未交付的互动；超出软回合数也不能制造新的结束邀请。
+        pacing_text += "结局尚未获准：先回应玩家，交付本幕尚待成立的结果或真实选择，不为结束追加邀请。"
     else:
         pacing_text += str(soft_pacing["instruction"])
     if input_source == "suggestion":
@@ -2419,6 +2409,7 @@ def _turn_messages(
         and outcome.ledger_event.get("transition_intent") != "reject"
         and not pure_chat
         and next_scene_preview.get("status") == "after_acceptance_only"
+        and not next_scene_preview.get("target_is_ending")
     )
     if natural_closure_ready:
         # 自然收束仍不是 Runtime 换幕条件；这里只要求 Actor 把已经成熟的因果写成玩家可回应的公开提议。
@@ -2790,7 +2781,6 @@ class NumericV2Actor:
             transition_contract.get("bridge_scene_narration") or ""
         ).strip()
         # 所有正式转场统一用紧凑四文本合同，标签由 Runtime 确定，文字按历史适配。
-        deterministic_transition = route_changed
         source_transition_dialogue_policy = transition_source_dialogue_policy(
             session.dialogue_policy
         )
@@ -2809,7 +2799,6 @@ class NumericV2Actor:
                 catgirl_name,
                 player_address,
                 player_address_known,
-                deterministic_transition,
                 retry_hint,
                 interaction_intent,
                 input_source,
@@ -2818,7 +2807,6 @@ class NumericV2Actor:
                 history_lookup,
             ),
             transition_required=route_changed,
-            deterministic_transition=deterministic_transition,
             bridge_required=bool(transition_contract.get("bridge_required", True)),
             max_input_tokens=actor_budget["input_max_tokens"],
             max_output_tokens=(
@@ -2826,13 +2814,12 @@ class NumericV2Actor:
                 if route_changed
                 else NUMERIC_V2_ACTOR_TURN_MAX_OUTPUT_TOKENS
             ),
-            target_opening=target_opening,
             dialogue_policy=outcome.session.dialogue_policy,
             source_dialogue_policy=source_transition_dialogue_policy,
             target_dialogue_policy=outcome.session.dialogue_policy,
         )
         if route_changed:
-            # 先统一为提交合同，再执行所有权、人格和事实检查；两种 Actor 输出形状因此共享同一验证路径。
+            # 先由 Runtime 装配提交合同，再执行所有权、人格和事实检查。
             performance = engine.finalize_transition_performance(
                 outcome,
                 performance,
@@ -3000,11 +2987,9 @@ class NumericV2Actor:
         *,
         opening_required: bool = False,
         transition_required: bool = False,
-        deterministic_transition: bool = False,
         bridge_required: bool = True,
         max_input_tokens: int = 4800,
         max_output_tokens: int = NUMERIC_V2_ACTOR_TURN_MAX_OUTPUT_TOKENS,
-        target_opening: str = "",
         dialogue_policy: str = "required",
         source_dialogue_policy: str = "required",
         target_dialogue_policy: str = "required",
@@ -3047,9 +3032,7 @@ class NumericV2Actor:
                         getattr(response, "content", None),
                         opening_required=opening_required,
                         transition_required=transition_required,
-                        deterministic_transition=deterministic_transition,
                         bridge_required=bridge_required,
-                        target_opening=target_opening,
                         dialogue_policy=dialogue_policy,
                         source_dialogue_policy=source_dialogue_policy,
                         target_dialogue_policy=target_dialogue_policy,
@@ -3057,6 +3040,8 @@ class NumericV2Actor:
                         transition_suggestions_only=transition_suggestions_only,
                         suggestion_diagnostics=suggestion_diagnostics,
                     )
+                    trace_event("actor.parsed", stage="suggestions" if suggestions_only or transition_suggestions_only else "actor",
+                                result=parsed, suggestion_diagnostics=suggestion_diagnostics)
                     if (
                         not suggestions_only
                         and not transition_suggestions_only
@@ -3067,6 +3052,7 @@ class NumericV2Actor:
                                 + int(count)
                             )
         except asyncio.TimeoutError as exc:
+            trace_event("actor.failed", error_code="numeric_v2_actor_timeout")
             logger.warning(
                 "Numeric v2 Actor failed: reason=numeric_v2_actor_timeout elapsed=%.3f",
                 time.monotonic() - started_at,
@@ -3074,9 +3060,11 @@ class NumericV2Actor:
             raise NumericV2ActorError("numeric_v2_actor_timeout") from exc
         except NumericV2ActorError as exc:
             reason = str(exc) if str(exc).startswith("numeric_v2_actor_") else type(exc).__name__
+            trace_event("actor.failed", error_code=reason)
             logger.warning("Numeric v2 Actor failed: reason=%s", reason)
             raise
         except Exception as exc:
+            trace_event("actor.failed", error_code="numeric_v2_actor_model_call_failed", error_type=type(exc).__name__)
             logger.warning("Numeric v2 Actor failed: reason=numeric_v2_actor_model_call_failed error_type=%s", type(exc).__name__)
             raise NumericV2ActorError("numeric_v2_actor_model_call_failed") from exc
         total_seconds = time.monotonic() - started_at

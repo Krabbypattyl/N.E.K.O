@@ -308,7 +308,7 @@ class NumericV2ProjectStore:
             return
         previous_revision = compiled.get("revision")
         try:
-            current = self._compiler.compile(project["story"])
+            current = self._compiler.compile_core(project["story"])
         except (ValueError, RuntimeError):
             current = None
         if current is None or current.package_hash != compiled["package_hash"]:
@@ -337,45 +337,50 @@ class NumericV2ProjectStore:
             raise NumericV2ProjectNotFoundError("project_not_found")
         return self.root / f"{project_id}.json"
 
+    @staticmethod
+    def _new_project() -> dict[str, Any]:
+        project_id = f"project_{uuid.uuid4().hex[:12]}"
+        timestamp = _now()
+        project = {
+            "project_id": project_id,
+            "revision": 1,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "title": "未命名剧本",
+            "stage": "setup",
+            "setup": {
+                "brief": "",
+                "genre": "",
+                "tone": [],
+                "relationship": "",
+                "content_boundaries": [],
+                "length_preset": "standard",
+                "metrics": [],
+            },
+            "editor": {"node_positions": {}},
+            "authoring": {
+                "mainline_node_ids": [],
+                "route_semantics": {},
+                "branch_drafts": {},
+                "relationship_arc": {},
+                "character_state_arc": {},
+                "key_props": [],
+                "quality_assessment": None,
+                "pacing_diagnostics": None,
+            },
+            "story": None,
+            "generation_state": None,
+            "generation_error": None,
+            "_generation_checkpoint": None,
+            "compile_result": None,
+            "neko_validation": None,
+            "install_result": None,
+        }
+        return project
+
     def create(self) -> dict[str, Any]:
         with self.transaction():
-            project_id = f"project_{uuid.uuid4().hex[:12]}"
-            timestamp = _now()
-            project = {
-                "project_id": project_id,
-                "revision": 1,
-                "created_at": timestamp,
-                "updated_at": timestamp,
-                "title": "未命名剧本",
-                "stage": "setup",
-                "setup": {
-                    "brief": "",
-                    "genre": "",
-                    "tone": [],
-                    "relationship": "",
-                    "content_boundaries": [],
-                    "length_preset": "standard",
-                    "metrics": [],
-                },
-                "editor": {"node_positions": {}},
-                "authoring": {
-                    "mainline_node_ids": [],
-                    "route_semantics": {},
-                    "branch_drafts": {},
-                    "relationship_arc": {},
-                    "character_state_arc": {},
-                    "key_props": [],
-                    "quality_assessment": None,
-                    "pacing_diagnostics": None,
-                },
-                "story": None,
-                "generation_state": None,
-                "generation_error": None,
-                "_generation_checkpoint": None,
-                "compile_result": None,
-                "neko_validation": None,
-                "install_result": None,
-            }
+            project = self._new_project()
             self._write(project)
             return self._view(project)
 
@@ -397,10 +402,6 @@ class NumericV2ProjectStore:
             return self._view(self._read_path(self._path(project_id)))
 
     def update(self, project_id: str, *, base_revision: int, changes: Mapping[str, Any]) -> dict[str, Any]:
-        return self._update(project_id, base_revision=base_revision, changes=changes)
-
-    def _update(self, project_id: str, *, base_revision: int, changes: Mapping[str, Any],
-                preserve_imported_story: bool = False) -> dict[str, Any]:
         with self.transaction():
             project = self._read_path(self._path(project_id))
             if project["revision"] != base_revision:
@@ -448,7 +449,7 @@ class NumericV2ProjectStore:
                 if next_story is not None:
                     if "title" in changes:
                         next_story.setdefault("meta", {})["title"] = project["title"]
-                    if "setup" in changes and not preserve_imported_story:
+                    if "setup" in changes:
                         metric_schema, initial_metrics = metrics_to_package(project["setup"]["metrics"])
                         next_story["metric_schema"] = metric_schema
                         next_story.setdefault("initial_state", {})["metrics"] = initial_metrics
@@ -805,40 +806,41 @@ class NumericV2ProjectStore:
             path.unlink()
 
 
-    def import_story(self, story: Mapping[str, Any]) -> dict[str, Any]:
-        project = self.create()
-        setup_metrics = []
-        for metric_id, definition in story.get("metric_schema", {}).items():
-            setup_metrics.append({
-                "id": metric_id,
-                "preset": None,
-                "name": definition.get("name", ""),
-                "description": definition.get("description", ""),
-                "relationship_effect": definition.get("relationship_effect", "none"),
-                "min": definition.get("min", DEFAULT_METRIC_MIN),
-                "max": definition.get("max", DEFAULT_METRIC_MAX),
-                "initial": definition.get("initial", DEFAULT_METRIC_INITIAL),
-                "increase_limit": (definition.get("per_turn_limit") or {}).get("increase", 5),
-                "decrease_limit": (definition.get("per_turn_limit") or {}).get("decrease", 5),
-                "increase_criteria": definition.get("increase_criteria", []),
-                "decrease_criteria": definition.get("decrease_criteria", []),
-                "visibility": "hidden",
-                "bands": definition.get("bands", []),
-            })
-        setup = deepcopy(project["setup"])
-        setup["metrics"] = setup_metrics
-        # 导入的 setup 只是旧包的编辑投影，不是作者要求改写正文；保留编译过的原包及 hash。
-        return self._update(
-            project["project_id"],
-            base_revision=project["revision"],
-            preserve_imported_story=True,
-            changes={
-                "title": story.get("meta", {}).get("title", "未命名剧本"),
-                "stage": "story",
-                "setup": setup,
-                "story": story,
-            },
-        )
+    def import_story(self, story: Mapping[str, Any], *,
+                     compile_result: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        with self.transaction():
+            project = self._new_project()
+            setup_metrics = []
+            for metric_id, definition in story.get("metric_schema", {}).items():
+                setup_metrics.append({
+                    "id": metric_id,
+                    "preset": None,
+                    "name": definition.get("name", ""),
+                    "description": definition.get("description", ""),
+                    "relationship_effect": definition.get("relationship_effect", "none"),
+                    "min": definition.get("min", DEFAULT_METRIC_MIN),
+                    "max": definition.get("max", DEFAULT_METRIC_MAX),
+                    "initial": definition.get("initial", DEFAULT_METRIC_INITIAL),
+                    "increase_limit": (definition.get("per_turn_limit") or {}).get("increase", 5),
+                    "decrease_limit": (definition.get("per_turn_limit") or {}).get("decrease", 5),
+                    "increase_criteria": definition.get("increase_criteria", []),
+                    "decrease_criteria": definition.get("decrease_criteria", []),
+                    "visibility": "hidden",
+                    "bands": definition.get("bands", []),
+                })
+            # The setup is an editor projection; importing must retain the original package.
+            project["setup"]["metrics"] = normalize_metric_drafts(setup_metrics)
+            project["story"] = deepcopy(dict(story))
+            project["title"] = str(story.get("meta", {}).get("title", "未命名剧本") or "").strip()
+            project["stage"] = "story"
+            project["revision"] = 2
+            project["authoring"] = _normalize_authoring(project["authoring"], project["story"])
+            if compile_result is not None:
+                project["compile_result"] = {**deepcopy(dict(compile_result)), "revision": project["revision"]}
+            view = self._view(project)
+            self._write(project)
+            return view
+
 
     def import_project(self, source: Mapping[str, Any]) -> dict[str, Any]:
         with self.transaction():

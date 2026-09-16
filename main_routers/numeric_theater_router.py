@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
 from services.theater.numeric_v2_usage import numeric_v2_usage_scope, with_numeric_v2_usage
+from services.theater.numeric_v2_trace import text_trace_scope, trace_event, trace_state
 from services.theater.numeric_v2 import NumericV2CompileError
 from services.theater.numeric_v2_actor import (
     NumericV2Actor,
@@ -612,8 +613,12 @@ async def delete_numeric_story(story_id: str, request: Request):
 @router.post("/session/start")
 async def start_numeric_session(request: Request):
     # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
-    with numeric_v2_usage_scope() as calls:
+    with numeric_v2_usage_scope() as calls, text_trace_scope("opening"):
         response = await _start_numeric_session(request)
+        if isinstance(response, JSONResponse):
+            trace_event("opening.response", status_code=response.status_code, result=json.loads(response.body))
+        else:
+            trace_event("opening.response", status_code=200, ok=response.get("ok"), resumed=response.get("resumed", False))
     return with_numeric_v2_usage(response, calls)
 
 
@@ -772,6 +777,8 @@ async def _start_numeric_session(request: Request):
                     opening_performance=opening,
                     actor_budget_profile=actor_budget_profile,
                 )
+            trace_event("opening.committed", state=trace_state(stored.session),
+                        performance=stored.session.opening_performance)
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except NumericV2SessionExistsError:

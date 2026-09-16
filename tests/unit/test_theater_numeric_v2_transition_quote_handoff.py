@@ -24,7 +24,7 @@ def test_formal_guard_quote_is_verified_again_at_projection(quote):
     """Even if the caller supplies an incorrect quotation, review input must not label it verified evidence."""
     c=initiation_case();engine=c['engine'];session=c['session']
     outcome=engine.resolve_turn(session,TurnRequestV2('go',0,c['message']),(),transition_intent='initiate')
-    messages=ev._build_transition_judge_messages(engine,session,actor_performance={'segments':[],'suggested_inputs':[]},player_input=c['message'],transition_outcome=outcome,public_destination_quote=quote)
+    messages=ev._build_transition_judge_messages(engine,session,actor_performance={'segments':[],'suggested_inputs':[]},player_input=c['message'],transition_outcome=outcome,public_destination_quote=quote)[0]
     data=json.loads(messages[1].content.split('：',1)[1])
     assert data['transition_authorization'].get('public_destination_quote')==(QUOTE if quote==QUOTE else None)
     assert '它不证明玩家已同意' in messages[0].content

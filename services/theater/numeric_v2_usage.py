@@ -7,6 +7,8 @@ import json
 
 from starlette.responses import JSONResponse
 
+from .numeric_v2_trace import invoke_with_trace
+
 
 # 请求间隔离，子任务共享本请求容器；普通聊天未进入作用域时完全不参与统计。
 _usage_calls: ContextVar[list[dict[str, Any]] | None] = ContextVar("numeric_v2_usage_calls", default=None)
@@ -28,10 +30,10 @@ async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str):
     # Actor/Evaluator 在调用前已按会话档位检查完整 messages；这里仅观察，不二次裁剪或改写证据。
     calls = _usage_calls.get()
     if calls is None:
-        return await client.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET
+        return await invoke_with_trace(client, messages, stage=stage)
     row = {"stage": stage, "input_tokens": None, "output_tokens": None}
     calls.append(row)
-    response = await client.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET
+    response = await invoke_with_trace(client, messages, stage=stage)
     usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
     # 客户端对 Anthropic 也提供 OpenAI 别名；兼容原生字段时输入包含缓存创建和读取。
     prompt = usage.get("prompt_tokens")

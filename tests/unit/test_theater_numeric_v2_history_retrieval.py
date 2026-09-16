@@ -62,7 +62,7 @@ def test_three_consumers_receive_old_fact_without_changing_actor_six_fields():
     actor = _turn_messages(engine, session, outcome, query, "安静克制。", "测试猫娘", "哥哥")
     judge = evaluator._build_transition_judge_messages(
         engine, session, player_input=query,
-        actor_performance={"performance": "本地综合大学。", "suggested_inputs": []})
+        actor_performance={"performance": "本地综合大学。", "suggested_inputs": []})[0]
     for messages in (actor, evaluator._build_messages(engine, session, query), judge):
         assert "本地综合大学" in messages[1].content
         assert "失忆或认知边界" in messages[0].content
@@ -73,11 +73,11 @@ def test_optional_retrieval_fits_guard_budget_without_cutting_candidate(monkeypa
     engine, session = _long_session()
     candidate = {"performance": "我没有把观察日记公开，仍然保密。", "suggested_inputs": []}
     # 先量出同份固定合同的成本，再给少量检索空间；不靠扩大容量让断言通过。
-    baseline = evaluator._build_transition_judge_messages(engine, session, player_input="", actor_performance=candidate)
+    baseline = evaluator._build_transition_judge_messages(engine, session, player_input="", actor_performance=candidate)[0]
     budget = sum(count_tokens(x.content) for x in baseline) + 40
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES["balanced"], "judge_input_max_tokens", budget)
     messages = evaluator._build_transition_judge_messages(
-        engine, session, player_input="观察日记同意公开了吗？", actor_performance=candidate)
+        engine, session, player_input="观察日记同意公开了吗？", actor_performance=candidate)[0]
     assert sum(count_tokens(x.content) for x in messages) <= budget
     assert candidate["performance"] in messages[1].content
     assert "观察日记同意公开了吗？" in messages[1].content
@@ -142,7 +142,7 @@ def test_guard_uses_claim_to_find_original_and_later_changes(facts, claim):
                 "segments": [{"phase": "target_opening", "performance": "我们坐下来休息。"}]}
     session = replace(session, revision=3, performance_history=(*rows, crossing))
     messages = evaluator._build_transition_judge_messages(engine, session,
-        player_input="还记得之前怎么决定的吗？", actor_performance={"performance": claim})
+        player_input="还记得之前怎么决定的吗？", actor_performance={"performance": claim})[0]
     data = json.loads(messages[1].content.split("：", 1)[1])
     evidence = data.get("history_evidence", [])
     assert all(any(row["text"] == fact for row in evidence) for fact in facts)

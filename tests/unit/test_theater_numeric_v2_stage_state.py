@@ -23,7 +23,7 @@ def test_formal_transition_keeps_stage_scope_and_actual_state_for_both_consumers
     candidate = engine.finalize_transition_performance(outcome, _candidate(), target_opening='旧模板。')
     actor = _turn_messages(engine, session, outcome, '按约定办。', '温和。', '测试猫娘', '哥哥')
     review = _build_transition_judge_messages(engine, session, player_input='按约定办。',
-        actor_performance=candidate, route_changed=True, transition_outcome=outcome)
+        actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0]
     for messages in (actor, review):
         assert '放在工作台上' in messages[1].content
         assert '不得损坏样品' in messages[1].content
@@ -67,7 +67,7 @@ def test_player_fact_rule_reaches_all_suggestion_generation_paths():
     for outcome in (None, transition):
         review = _build_transition_judge_messages(engine, session, player_input=message,
             actor_performance={'performance': '请问需要登记哪些信息？', 'suggested_inputs': ['（填写）我叫林风，擅长竹编。']},
-            route_changed=outcome is not None, transition_outcome=outcome)
+            route_changed=outcome is not None, transition_outcome=outcome)[0]
         assert '拒绝或解释中的个人情况也须核对依据' in review[0].content
         assert '玩家已经明确披露的称呼不能再报虚构' in review[0].content
         assert '仅按钮有误只报索引，不给正文添加违规' in review[0].content

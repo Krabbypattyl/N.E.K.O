@@ -229,9 +229,7 @@ class TheaterWorkshop:
         payload = C.NumericV2ImportPayload(story=story)
         with self.operation(exclusive=False), self._store.transaction():
             compiled = self._compiler.compile(payload.story)
-            project = self._store.import_story(compiled.story)
-            return self._store.record_compile(project["project_id"], self._compile_receipt(compiled),
-                                              base_revision=project["revision"])
+            return self._store.import_story(compiled.story, compile_result=self._compile_receipt(compiled))
 
     @_exclusive
     def generate(self, project_id, *, base_revision):
@@ -392,7 +390,7 @@ class TheaterWorkshop:
         if (receipt.get("success") is not True or not receipt.get("package_hash")
                 or receipt.get("revision") != project["revision"]):
             raise WorkshopError("current_compile_required")
-        compiled = self._compiler.compile(project["story"])
+        compiled = self._compiler.compile_core(project["story"])
         if compiled.package_hash != receipt["package_hash"]:
             raise WorkshopError("current_compile_required")
         return compiled

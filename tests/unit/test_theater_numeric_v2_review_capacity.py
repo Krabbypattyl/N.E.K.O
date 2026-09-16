@@ -83,7 +83,7 @@ def test_formal_packing_keeps_more_history_without_changing_ordinary_review(monk
 
     def build(formal):
         return evaluator._build_transition_judge_messages(engine, session, actor_performance=candidate,
-            player_input='好。', transition_outcome=outcome if formal else None)
+            player_input='好。', transition_outcome=outcome if formal else None)[0]
 
     expanded, ordinary = build(True), build(False)
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy'], 'formal_judge_input_max_tokens', 4200)

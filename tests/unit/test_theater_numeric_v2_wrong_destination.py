@@ -249,7 +249,7 @@ def test_cancelled_review_checks_fresh_invitation_without_requiring_acceptance()
     c = initiation_case()
     messages = ev._build_transition_judge_messages(c['engine'], c['session'], player_input='好，去街市吧。',
         actor_performance={'performance': '刚才说错了。我们可以去阅览室，你愿意吗？', 'suggested_inputs': []},
-        cancelled_transition=True)
+        cancelled_transition=True)[0]
     assert '新邀请不要求玩家本轮已经同意' in messages[0].content
     assert '不能执行旧去向或直接执行新安排' in messages[0].content
 

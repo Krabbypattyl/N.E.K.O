@@ -31,7 +31,7 @@ def test_transition_deduplicates_only_complete_projected_target_boundaries():
     original = deepcopy(beat)
     session = engine.create_session(session_id='budget', catgirl_binding={'catgirl_name': '女主'}, opening_performance={'performance': '（点头）准备好了。'})
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '谢谢。'), (), scene_complete=True, natural_ending_ready=True)
-    messages = _build_transition_judge_messages(engine, session, actor_performance={'segments': [], 'suggested_inputs': []}, player_input='谢谢。', transition_outcome=outcome)
+    messages = _build_transition_judge_messages(engine, session, actor_performance={'segments': [], 'suggested_inputs': []}, player_input='谢谢。', transition_outcome=outcome)[0]
     target = json.loads(messages[1].content.split('：', 1)[1])['target_scene']
     boundaries = target['hard_boundaries'] + target['character_state'].get('scene_boundaries', []) + target['acting_contract'].get('forbidden_behaviors', [])
     assert boundaries.count(short) == 1
@@ -86,7 +86,7 @@ def _messages(candidate):
         session,
         actor_performance=candidate,
         player_input="接下来怎么办？",
-    )
+    )[0]
 
 
 # 只保留现行入口与 Prompt 检查使用的两份候选。
@@ -165,7 +165,7 @@ def test_guard_offer_and_button_responsibilities_do_not_overlap():
     assert "正文与推荐组合" not in system
     assert "推荐中至少一条" not in system
     assert "body_violations：只列正文已写出的冲突" in system
-    assert "offer_present：只看正文" in system
+    assert "offer_present：以 next_scene_direction 声明的出口作为阶段边界" in system
     assert "按钮不能创建、补足或否决正文提议" in system
     assert "首次提出正文尚未公开的跨阶段行动" in system
     assert "opening_boundary 与 bridge_boundary 是接受后的入口" in system

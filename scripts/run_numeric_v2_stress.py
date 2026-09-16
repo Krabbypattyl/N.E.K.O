@@ -28,6 +28,7 @@ from services.theater.numeric_v2_budget import (  # noqa: E402
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding  # noqa: E402
 from services.theater.numeric_v2_performance import performance_content_blocks  # noqa: E402
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry  # noqa: E402
+from services.theater.numeric_v2_trace import text_trace_scope, trace_event, trace_state  # noqa: E402
 from services.theater.numeric_v2_runtime import (  # noqa: E402
     NumericV2Runtime,
     TurnRequestV2,
@@ -102,8 +103,8 @@ CHAT_FALLBACK_INPUTS = (
     "先陪我聊一句吧，你怎么看眼前的情况？",
 )
 TRANSITION_ACCEPT_INPUT = "我明确同意按你刚才提出的下一步继续，走吧。"
-# 十回合中固定三次点击推荐，符合 3:7 比例且避免连续点击把轨迹变成纯推荐模式。
-MIXED_RECOMMENDED_OFFSETS = frozenset({0, 3, 6})
+# 每十次尝试安排七次推荐、三次自由；混合模式的待确认转场也遵守该排程。
+MIXED_RECOMMENDED_OFFSETS = frozenset({0, 1, 3, 4, 6, 7, 9})
 DYNAMIC_PLAYER_TIMEOUT_SECONDS = 60
 DYNAMIC_PLAYER_MAX_OUTPUT_TOKENS = 160
 # 完整可见前情超出测试预算时显式停止，不通过截掉旧事实制造一个失忆玩家。
@@ -511,18 +512,22 @@ def choose_player_input(
 
     # 推荐不带推进/探索标签；压测只验证可见输入是否能继续驱动真实流程。
     normalized = [str(item).strip() for item in suggestions if str(item).strip()]
-    if strategy != "chat" and route_status == "transition_offered":
-        # 已有可见转场提议时优先验证接受路径；不再要求目标完成或 min_turns 门槛。
+    use_recommended = strategy == "recommended" or (
+        strategy == "mixed"
+        and attempt_index % 10 in MIXED_RECOMMENDED_OFFSETS
+    )
+    if (
+        strategy != "chat"
+        and route_status == "transition_offered"
+        and (strategy != "mixed" or use_recommended)
+    ):
+        # 已有可见转场提议时优先验证接受路径，但 mixed 保留计划中的自由回合。
         # 缺少接受推荐时使用显式 fallback，并把问题记录为推荐质量错误。
         if normalized:
             # 待确认阶段固定选择第一条可执行推荐，避免压测器轮换到澄清或暂缓选项，
             # 把测试器主动制造的停留误判成 Runtime 或模型的换幕失败。
             return normalized[0], "recommended"
         return TRANSITION_ACCEPT_INPUT, "transition_acceptance_fallback"
-    use_recommended = strategy == "recommended" or (
-        strategy == "mixed"
-        and attempt_index % 10 in MIXED_RECOMMENDED_OFFSETS
-    )
     if use_recommended and normalized:
         # 普通回合固定点击第一槽，避免压测器自行解释推荐意图。
         # 流畅度压测固定点击第一槽，避免轮流选择“暂缓”后把人为拖延误判成主线卡死。
@@ -1102,19 +1107,22 @@ async def _run_story(
     binding = numeric_v2_catgirl_binding(config_manager)
     session_id = f"stress_{run_id}_{index}"
     started_at = time.monotonic()
-    opening = await generate_validated_opening(
-        engine=engine,
-        config_manager=config_manager,
-        session_id=session_id,
-        catgirl_binding=binding,
-        actor_budget_profile=profile,
-    )
-    current = await runtime.start_session(
-        session_id=session_id,
-        catgirl_binding=binding,
-        opening_performance=opening,
-        actor_budget_profile=profile,
-    )
+    with text_trace_scope("opening", session_id=session_id, story_id=story_id):
+        opening = await generate_validated_opening(
+            engine=engine,
+            config_manager=config_manager,
+            session_id=session_id,
+            catgirl_binding=binding,
+            actor_budget_profile=profile,
+        )
+        current = await runtime.start_session(
+            session_id=session_id,
+            catgirl_binding=binding,
+            opening_performance=opening,
+            actor_budget_profile=profile,
+        )
+        trace_event("opening.committed", state=trace_state(current.session),
+                    performance=current.session.opening_performance)
     current, primary_trace = await _run_trace(
         runtime=runtime,
         config_manager=config_manager,
@@ -1199,7 +1207,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("mixed", "recommended", "freeform", "chat"),
         default="mixed",
         help=(
-            "玩家输入策略；mixed 按十回合三次使用推荐输入，其余基于上下文自由输入；"
+            "玩家输入策略；mixed 每十次尝试七次推荐、三次上下文自由输入，待确认转场也遵守该排程；"
             "chat 只做当前场景内的动态闲聊"
         ),
     )

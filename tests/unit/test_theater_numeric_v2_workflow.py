@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+import json
 
 import pytest
 
@@ -358,3 +359,74 @@ async def test_actor_output_retry_preserves_required_boundary_rewrite() -> None:
     assert actor.hints[0] == "必须停在门槛前等待玩家确认。"
     assert "必须停在门槛前等待玩家确认。" in actor.hints[1]
     assert "上一版与较早回合" in actor.hints[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entered", [False, True])
+@pytest.mark.parametrize("prior_turns", [0, 2])
+async def test_ordinary_review_keeps_committed_history_watermark_with_projected_metrics(
+    tmp_path, monkeypatch, entered, prior_turns,
+):
+    """Real Workflow calls must retain opening evidence and coverage through disputes and rewrites."""
+    from services.theater import numeric_v2_evaluator as evaluator
+    from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+    from tests.unit.test_theater_numeric_v2_runtime import _binding
+    from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+    case = initiation_case()
+    engine = case['engine']
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='review_watermark', catgirl_binding=_binding(),
+                                          opening_performance=case['session'].opening_performance)
+    if entered:
+        prepared = runtime.prepare_turn(current, TurnRequestV2('enter', 0, '带路吧。'), (), transition_intent='initiate')
+        current = await runtime.commit_turn(prepared, engine.finalize_transition_performance(
+            prepared, _candidate(), target_opening='阅览室入口。'))
+    for index in range(prior_turns):
+        prepared = runtime.prepare_turn(current, TurnRequestV2(f'old{index}', current.session.revision, '稍等。'), ())
+        current = await runtime.commit_turn(prepared, {'performance': f'我在这里等你，这是第{index}次回应。', 'suggested_inputs': []})
+
+    review_messages = []
+    generations = []
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((MetricChangeV2('trust', 2, '玩家兑现承诺', '我来帮你。'),), False)
+
+    async def generate(self, **kwargs):
+        generations.append(kwargs)
+        return {'performance': '尚未提交的初稿。' if len(generations) == 1 else '修正后的最终回应。', 'suggested_inputs': []}
+
+    async def review(self, **kwargs):
+        snapshot = kwargs['session']
+        # 计分后可用出口仍由本轮候选数值预览；历史必须来自已提交快照。
+        assert snapshot.metrics['trust'] == current.session.metrics['trust'] + 2
+        assert snapshot.revision == current.session.revision
+        assert snapshot.node_turn_count == current.session.node_turn_count
+        messages = evaluator._build_transition_judge_messages(
+            engine, snapshot, actor_performance=kwargs['actor_performance'], player_input=kwargs['message'],
+            check_missed_initiation=kwargs.get('check_missed_initiation', False),
+        )[0]
+        payload = json.loads(messages[1].content.split('：', 1)[1])
+        assert payload['current_visit_history_complete'] is True
+        assert payload['scene_context'][0]['phase'] == ('scene_entry' if entered else 'opening')
+        assert payload['scene_context'][-1]['revision'] == current.session.revision
+        assert '尚未提交的初稿' not in json.dumps(payload['scene_context'], ensure_ascii=False)
+        review_messages.append(payload)
+        return evaluator.NumericV2TransitionOfferReview(False, False,
+            ('author_boundary',) if len(generations) == 1 else (), (), '需要修正初稿。')
+
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await numeric_v2_workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('new', current.session.revision, '我来帮你。'), ensure_current_binding=lambda _: _binding(),
+    )
+    assert len(review_messages) == 3 and len(generations) == 2
+    assert all(row['scene_context'] == review_messages[0]['scene_context'] for row in review_messages)
+    assert result.stored.session.revision == current.session.revision + 1
+    assert result.stored.session.node_turn_count == current.session.node_turn_count + 1
+    assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
+    assert await runtime.restore_session('review_watermark') == result.stored

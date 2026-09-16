@@ -87,7 +87,7 @@ async def test_invalidated_invitation_is_shared_before_rewrite_and_review(tmp_pa
     assert "已确认去向错误并撤下的旧邀请原文：我们去便利店买热饮吧？" in data['pacing']
     assert "当前待确认提议原文" not in data['pacing']
     messages = _build_transition_judge_messages(runtime.engine, outcome.session, player_input="好，走吧。",
-        actor_performance={"performance": "那就走吧。"}, cancelled_transition=True, invalidated_invitation=True)
+        actor_performance={"performance": "那就走吧。"}, cancelled_transition=True, invalidated_invitation=True)[0]
     data = json.loads(messages[1].content.split('：', 1)[1])
     assert "便利店" in json.dumps(data['invalidated_invitation'], ensure_ascii=False)
     assert "不再判断它是否有效" in messages[0].content

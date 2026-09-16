@@ -76,10 +76,9 @@ def test_source_evidence_stays_separate_from_author_template_and_candidate(topic
     """Send complete actual state and author expectations to review without mutating the package or mixing templates into committed history."""
     engine, session, outcome, message, candidate = delivery_case(topic, variant)
     before = deepcopy(engine.story)
-    actor = _turn_messages(engine, session, outcome, message, '谨慎友好。', '小葵', '你',
-                           deterministic_transition=True)
+    actor = _turn_messages(engine, session, outcome, message, '谨慎友好。', '小葵', '你')
     review = _build_transition_judge_messages(engine, session, player_input=message,
-        actor_performance=candidate, transition_outcome=outcome)
+        actor_performance=candidate, transition_outcome=outcome)[0]
     actor_data = json.loads(actor[1].content.split('\n', 1)[1])
     review_data = json.loads(review[1].content.split('：', 1)[1])
     pending, result = DELIVERY_TOPICS[topic][2], DELIVERY_TOPICS[topic][5]
@@ -110,7 +109,7 @@ def test_review_history_coverage_never_claims_missing_or_packed_records_are_comp
         monkeypatch.setattr(evaluator, 'numeric_v2_actor_budget',
             lambda profile: {**original(profile), 'formal_judge_input_max_tokens': 100})
     messages = evaluator._build_transition_judge_messages(engine, session, player_input=message,
-        actor_performance=candidate, transition_outcome=outcome)
+        actor_performance=candidate, transition_outcome=outcome)[0]
     payload = json.loads(messages[1].content.split('：', 1)[1])
     assert payload['current_visit_history_complete'] is (not truncated and not missing)
 

@@ -51,7 +51,7 @@ def test_invalid_evidence_index_does_not_authorize(index):
 
 def test_numbered_evidence_excludes_player_and_candidate():
     case = initiation_case()
-    messages = ev._build_transition_judge_messages(
+    messages, evidence = ev._build_transition_judge_messages(
         case["engine"], case["session"], player_input="带我去新秘密房间。",
         actor_performance={"performance": "新秘密房间已经开放。", "suggested_inputs": []},
         check_missed_initiation=True)
@@ -60,6 +60,54 @@ def test_numbered_evidence_excludes_player_and_candidate():
     assert all(text in case["session"].opening_performance["performance"]
                for text in data["public_destination_evidence"])
     assert "新秘密房间" not in str(data["public_destination_evidence"])
+    assert evidence == tuple(data["public_destination_evidence"])
+
+
+@pytest.mark.asyncio
+async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeypatch):
+    case = initiation_case()
+    build_messages = ev._build_transition_judge_messages
+    sent_evidence = []
+
+    def build_with_another_prefix(*args, **kwargs):
+        messages, evidence = build_messages(*args, **kwargs)
+        # 展示前缀不属于恢复协议，编号仍取自同一次装箱的证据。
+        data = json.loads(messages[1].content.split("：", 1)[1])
+        assert evidence == tuple(data["public_destination_evidence"])
+        messages[1] = type(messages[1])(content="Review data\n" + json.dumps(data, ensure_ascii=False))
+        sent_evidence.extend(evidence)
+        return messages, evidence
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def ainvoke(self, messages):
+            assert messages[1].content.startswith("Review data\n")
+            index = next(index for index, text in enumerate(sent_evidence) if QUOTE in text)
+            payload = dict(offer_present=False, valid=False, body_violations=[],
+                           unsafe_suggestion_indexes=[], missed_initiation=True,
+                           public_destination_index=index)
+            return type('Response', (), {'content': json.dumps(payload)})()
+
+    async def model_config(_manager):
+        return {'model': 'test', 'base_url': 'http://test.invalid'}
+
+    async def client(*_args, **_kwargs):
+        return Client()
+
+    monkeypatch.setattr(ev, '_model_config', model_config)
+    monkeypatch.setattr(ev, 'create_chat_llm_async', client)
+    monkeypatch.setattr(ev, '_build_transition_judge_messages', build_with_another_prefix)
+    review = await ev.NumericV2MetricEvaluator(object()).validate_transition_offer(
+        engine=case['engine'], session=case['session'], message=case['message'],
+        actor_performance={'performance': '我听到了。', 'suggested_inputs': []},
+        check_missed_initiation=True)
+    assert review.missed_initiation
+    assert review.public_destination_quote == next(text for text in sent_evidence if QUOTE in text)
 
 
 @pytest.mark.asyncio

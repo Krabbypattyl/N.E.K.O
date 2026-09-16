@@ -41,7 +41,7 @@ def build_action_language_cases(builder=None):
         "messages": [message.content for message in (builder or evaluator._build_transition_judge_messages)(
             engine, session, player_input=player_input,
             actor_performance={"performance": "（看向登记台）我看清了。", "scene_narration": narration, "suggested_inputs": []},
-        )],
+        )[0]],
     } for name, player_input, narration, safe in rows]
 
 
@@ -56,7 +56,7 @@ def test_action_language_rule_reaches_actor_evaluator_and_guard():
         actor._turn_messages(engine, session, outcome, message, "安静克制。", "测试猫娘", "哥哥"),
         evaluator._build_messages(engine, session, message),
         evaluator._build_transition_judge_messages(engine, session, player_input=message,
-            actor_performance={"performance": "（抬眼）收到。", "suggested_inputs": []}),
+            actor_performance={"performance": "（抬眼）收到。", "suggested_inputs": []})[0],
     ]
     assert all(group[0].content.count(PLAYER_ACTION_LANGUAGE_RULE) == 1 for group in groups)
     # 演员、判定和复核采用同一状态时点，同时保留未来目标幕与已提交历史的区别。
@@ -89,9 +89,9 @@ def test_post_opening_state_rule_reaches_formal_transition_actor_and_guard():
                                   scene_complete=True, natural_ending_ready=True)
     candidate = engine.finalize_transition_performance(outcome, _candidate(), target_opening="旧开场。")
     groups = [
-        actor._turn_messages(engine, session, outcome, "谢谢。", "克制。", "小岚", "你", deterministic_transition=True),
+        actor._turn_messages(engine, session, outcome, "谢谢。", "克制。", "小岚", "你"),
         evaluator._build_transition_judge_messages(engine, session, player_input="谢谢。",
-            actor_performance=candidate, route_changed=True, transition_outcome=outcome),
+            actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0],
     ]
     assert all(group[0].content.count(SCENE_ENTRY_STATE_RULE) == 1 for group in groups)
     # 已完成的连续动作进入下一幕后只承接结果，不能按作者默认未完成状态回退。
@@ -113,7 +113,7 @@ def test_action_language_keeps_late_condition_in_current_input():
         actor._turn_messages(engine, session, outcome, message, "安静克制。", "测试猫娘", "哥哥"),
         evaluator._build_messages(engine, session, message),
         evaluator._build_transition_judge_messages(engine, session, player_input=message,
-            actor_performance={"performance": "（收回笔）那就再看看。", "suggested_inputs": []}),
+            actor_performance={"performance": "（收回笔）那就再看看。", "suggested_inputs": []})[0],
     ]
     assert all(json.loads(group[1].content.split("：", 1)[1])["player_input"] == message for group in groups)
 

@@ -50,7 +50,7 @@ def build_fact_sources(context: Mapping[str, Any]) -> tuple[dict[str, Any], dict
     # 未知字段仍原样保留，支线按已有作者顺序处理，不猜测图的实际游玩顺序或目标是否完成。
     def ordered(value, keys):
         return {key: value[key] for key in (*keys, *value) if key in value}
-    context = ordered(deepcopy(dict(context)), ("author_intent", "characters", "metrics", "key_props", "mainline", "branches", "endings"))
+    context = ordered(deepcopy(dict(context)), ("author_intent", "background", "characters", "metrics", "key_props", "mainline", "branches", "endings"))
     node_keys = ("id", "title", "summary", "narrative_focus", "acting_contract", "must_not_happen",
                  "relationship_state", "opening_scene", "character_state", "goals", "relationship_goal",
                  "transition_goal", "outgoing_routes", "text_repair_fields")

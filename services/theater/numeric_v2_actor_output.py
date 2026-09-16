@@ -175,32 +175,6 @@ def _parse_scene_update(value: Any) -> str:
     return _strip_inline_markdown(value.strip())
 
 
-def _deduplicate_transition_bridge(
-    value: Any,
-    target_opening: str,
-) -> str:
-    """移除与 Runtime 目标开场重复的桥接句，保留来源场景的收束过程。"""  # noqa: DOCSTRING_CJK
-
-    bridge = _parse_scene_narration(value)
-    opening = str(target_opening or "").strip()
-    if not opening:
-        return bridge
-    opening_units = _sentence_units(opening)
-    kept = [
-        unit
-        for unit in _sentence_units(bridge)
-        if not _text_is_covered(
-            unit,
-            opening_units,
-            similarity=0.55,
-            common_span=3,
-            strong_common_span=5,
-        )
-    ]
-    # 模型只复述目标开场时不制造系统式占位旁白；前端会直接进入确定性目标开场。
-    return "".join(kept).strip()
-
-
 def _normalize_suggestion_quotes(value: str) -> str:
     """把成对英文双引号规范成中文引号，避免推荐输入视觉格式漂移。"""  # noqa: DOCSTRING_CJK
 
@@ -310,9 +284,7 @@ def _parse_output(
     *,
     opening_required: bool = False,
     transition_required: bool = False,
-    deterministic_transition: bool = False,
     bridge_required: bool = True,
-    target_opening: str = "",
     dialogue_policy: str = "required",
     source_dialogue_policy: str = "required",
     target_dialogue_policy: str = "required",
@@ -380,7 +352,7 @@ def _parse_output(
             payload.get("transition_offered", False)
         )
         return result
-    if transition_required and deterministic_transition:
+    if transition_required:
         # Runtime 仍确定段位和顺序；旁白按真实历史生成，缺字段不能退回会复演的作者原文。
         expected_fields = {"source_performance", "target_performance",
                            "bridge_scene_narration", "target_scene_narration"}
@@ -411,68 +383,6 @@ def _parse_output(
             diagnostics=suggestion_diagnostics,
         )
         return result
-    if transition_required:
-        expected_fields = {"segments"}
-        tolerated_fields = {*expected_fields, "suggested_inputs"}
-        if set(payload) not in {frozenset(expected_fields), frozenset(tolerated_fields)}:
-            raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
-        raw_segments = payload.get("segments")
-        if not isinstance(raw_segments, list) or len(raw_segments) != 3:
-            raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
-        expected_phases = ("source_response", "transition_bridge", "target_opening")
-        segments = []
-        for index, raw_segment in enumerate(raw_segments):
-            if not isinstance(raw_segment, Mapping):
-                raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
-            # phase 是模型标签，不作为权限依据；固定位置和互斥字段形状共同确定真实段位。
-            if not isinstance(raw_segment.get("phase"), str) or not raw_segment["phase"].strip():
-                raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
-            if index == 0:
-                if set(raw_segment) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"}):
-                    raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
-                segments.append({
-                    "phase": expected_phases[index],
-                    "performance": _parse_transition_performance(
-                        raw_segment.get("performance"),
-                        dialogue_policy=source_dialogue_policy,
-                    ),
-                })
-                if "scene_narration" in raw_segment:
-                    narration = _parse_scene_update(raw_segment["scene_narration"])
-                    if narration:
-                        segments[-1]["scene_narration"] = narration
-                continue
-            if index == 1:
-                if set(raw_segment) != {"phase", "scene_narration"}:
-                    raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
-                segments.append({
-                    "phase": expected_phases[index],
-                    "scene_narration": _deduplicate_transition_bridge(
-                        raw_segment.get("scene_narration"),
-                        target_opening,
-                    ),
-                })
-                continue
-            # 目标段即使附带 scene_narration 也不采信；目标开场只能由 Runtime 提供。
-            if set(raw_segment) not in (
-                {"phase", "performance"},
-                {"phase", "scene_narration", "performance"},
-            ):
-                raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
-            segments.append({
-                "phase": expected_phases[index],
-                "performance": _parse_transition_performance(
-                    raw_segment.get("performance"),
-                    dialogue_policy=target_dialogue_policy,
-                ),
-            })
-        return {
-            "suggested_inputs": _parse_actor_suggestions(
-                payload.get("suggested_inputs"),
-                diagnostics=suggestion_diagnostics,
-            ),
-            "segments": segments,
-        }
     allowed_fields = {"performance"}
     if "scene_update" in payload:
         allowed_fields.add("scene_update")

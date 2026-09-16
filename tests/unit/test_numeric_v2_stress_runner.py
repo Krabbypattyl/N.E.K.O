@@ -72,29 +72,25 @@ def test_numeric_v2_stress_baseline_selection_reports_missing_focus_package():
         run_numeric_v2_stress._resolve_story_selection(args, installed)
 
 
-def test_numeric_v2_stress_mixed_strategy_uses_recommendation_periodically():
+@pytest.mark.parametrize("route_status", ["", "playing", "transition_offered"])
+def test_numeric_v2_stress_mixed_strategy_uses_seven_recommendations_per_ten_attempts(
+    route_status,
+):
     suggestions = ["“沿着主线继续。”", "先检查眼前线索。"]
 
-    assert run_numeric_v2_stress.choose_player_input(
-        strategy="recommended",
-        attempt_index=0,
-        suggestions=suggestions,
-    ) == (suggestions[0], "recommended")
-    assert run_numeric_v2_stress.choose_player_input(
-        strategy="mixed",
-        attempt_index=1,
-        suggestions=suggestions,
-    )[1] == "freeform"
-    assert run_numeric_v2_stress.choose_player_input(
-        strategy="mixed",
-        attempt_index=3,
-        suggestions=suggestions,
-    )[1] == "recommended"
-    assert run_numeric_v2_stress.choose_player_input(
-        strategy="mixed",
-        attempt_index=4,
-        suggestions=suggestions,
-    )[1] == "freeform"
+    for start in range(0, 30, 10):
+        inputs = [
+            run_numeric_v2_stress.choose_player_input(
+                strategy="mixed",
+                attempt_index=attempt_index,
+                suggestions=suggestions,
+                route_status=route_status,
+            )
+            for attempt_index in range(start, start + 10)
+        ]
+
+        assert inputs.count((suggestions[0], "recommended")) == 7
+        assert sum(source == "freeform" for _, source in inputs) == 3
 
 
 def test_numeric_v2_stress_uses_visible_order_without_internal_metadata():
@@ -469,13 +465,43 @@ def test_numeric_v2_stress_accepts_visible_offer_before_soft_pacing_window():
     ) == ("（我点头）好，就按这个安排。", "recommended")
 
 
-def test_numeric_v2_stress_uses_advance_only_after_transition_is_offered():
+def test_numeric_v2_stress_mixed_transition_keeps_scheduled_freeform_turn():
     assert run_numeric_v2_stress.choose_player_input(
         strategy="mixed",
         attempt_index=8,
         suggestions=["先留在这里。", "好，我们去医疗站。"],
         route_status="transition_offered",
+    )[1] == "freeform"
+    assert run_numeric_v2_stress.choose_player_input(
+        strategy="mixed",
+        attempt_index=9,
+        suggestions=["先留在这里。", "好，我们去医疗站。"],
+        route_status="transition_offered",
     ) == ("先留在这里。", "recommended")
+
+
+@pytest.mark.parametrize("route_status", ["", "transition_offered"])
+def test_numeric_v2_stress_mixed_missing_suggestions_preserves_input_source(route_status):
+    assert run_numeric_v2_stress.choose_player_input(
+        strategy="mixed",
+        attempt_index=8,
+        suggestions=[],
+        route_status=route_status,
+    )[1] == "freeform"
+
+    player_input, source = run_numeric_v2_stress.choose_player_input(
+        strategy="mixed",
+        attempt_index=9,
+        suggestions=[],
+        route_status=route_status,
+    )
+    if route_status == "transition_offered":
+        assert (player_input, source) == (
+            run_numeric_v2_stress.TRANSITION_ACCEPT_INPUT,
+            "transition_acceptance_fallback",
+        )
+    else:
+        assert source == "freeform"
 
 
 def test_numeric_v2_stress_pending_transition_uses_first_visible_option():

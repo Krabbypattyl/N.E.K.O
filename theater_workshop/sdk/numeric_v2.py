@@ -274,6 +274,53 @@ def character_state_to_package(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+_GOAL_DELIVERY_OUTPUTS = {
+    "catgirl_dialogue": "performance_dialogue",
+    "catgirl_action": "performance_action",
+    "environment_fact": "scene_update",
+    "player_action": "player_input",
+    "shared_agreement": "shared",
+    "semantic_state": "evaluator",
+}
+
+
+def goals_to_package(node_id: str, ordered_goals: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Project validated author goals; retain legacy metadata without executing it."""
+    projected: list[dict[str, Any]] = []
+    for index, raw in enumerate(ordered_goals):
+        goal = dict(raw)
+        goal_id = f"{node_id}_goal_{index + 1:02d}"
+        source_ids: list[str] = []
+        for source in goal["sources"]:
+            if source == "opening":
+                source_ids.append(f"opening.{node_id}")
+            elif source == "player_input":
+                source_ids.append("runtime.player_input")
+            elif source == "previous_goal":
+                source_ids.append(f"goal.{projected[-1]['id']}")
+        delivery_type = str(goal["delivery_type"])
+        delivery = {
+            "type": delivery_type,
+            "output_field": _GOAL_DELIVERY_OUTPUTS[delivery_type],
+            "source_ids": list(dict.fromkeys(source_ids)),
+            "timing": str(goal.get("timing") or "turn"),
+        }
+        dialogue_policy = str(goal.get("dialogue_policy_after") or "unchanged")
+        if dialogue_policy != "unchanged":
+            delivery["state_effects"] = {"dialogue_policy": dialogue_policy}
+        projected.append({
+            "id": goal_id,
+            "owner": goal["owner"],
+            "description": goal["description"],
+            "evidence": {
+                "mode": goal["evidence_mode"],
+                "anchors": deepcopy(goal["anchors"]),
+            },
+            "delivery": delivery,
+        })
+    return projected
+
+
 class NumericV2Compiler:
     """Unified Numeric v2 contract entry point for the NEKO_Numeric_drama workshop."""
 
@@ -281,13 +328,7 @@ class NumericV2Compiler:
         self.bridge = bridge
 
     def compile(self, story: Mapping[str, Any]) -> Any:
-        candidate = deepcopy(dict(story))
-        metric_schema = candidate.get("metric_schema")
-        if isinstance(metric_schema, dict):
-            for definition in metric_schema.values():
-                if isinstance(definition, dict):
-                    definition["visibility"] = "hidden"
-        compiled = self.bridge.compile(candidate)
+        compiled = self.compile_core(story)
         # N.E.K.O 负责合同硬错误；生成器只追加作者侧静态诊断，软预算和文本可辨识性都不阻断编译。
         author_warnings = tuple(
             NekoV2Warning(
@@ -301,6 +342,16 @@ class NumericV2Compiler:
             compiled,
             warnings=tuple(compiled.warnings) + author_warnings,
         )
+
+    def compile_core(self, story: Mapping[str, Any]) -> Any:
+        """Use the same author projection and strict compiler without advisory analysis."""
+        candidate = deepcopy(dict(story))
+        metric_schema = candidate.get("metric_schema")
+        if isinstance(metric_schema, dict):
+            for definition in metric_schema.values():
+                if isinstance(definition, dict):
+                    definition["visibility"] = "hidden"
+        return self.bridge.compile(candidate)
 
 
 __all__ = [
@@ -316,6 +367,7 @@ __all__ = [
     "NekoV2BridgeError",
     "NumericV2Compiler",
     "acting_contract_to_package",
+    "goals_to_package",
     "allocate_metric_id",
     "metrics_to_package",
     "normalize_metric_drafts",

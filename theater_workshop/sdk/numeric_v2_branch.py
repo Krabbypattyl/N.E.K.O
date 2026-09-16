@@ -11,20 +11,14 @@ import uuid
 
 from .numeric_v2 import (
     _is_actionable_player_exit,
+    _GOAL_DELIVERY_OUTPUTS,
+    goals_to_package,
     acting_contract_to_package,
     character_state_to_package,
     scene_turn_budget,
 )
 
 
-_GOAL_DELIVERY_OUTPUTS = {
-    "catgirl_dialogue": "performance_dialogue",
-    "catgirl_action": "performance_action",
-    "environment_fact": "scene_update",
-    "player_action": "player_input",
-    "shared_agreement": "shared",
-    "semantic_state": "evaluator",
-}
 _GOAL_DELIVERY_OWNERS = {
     "catgirl_dialogue": {"catgirl"},
     "catgirl_action": {"catgirl"},
@@ -2007,39 +2001,7 @@ class NumericV2BranchService:
 
     @staticmethod
     def _project_goals(node_id: str, ordered_goals: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        projected: list[dict[str, Any]] = []
-        for index, raw in enumerate(ordered_goals):
-            goal = dict(raw)
-            goal_id = f"{node_id}_goal_{index + 1:02d}"
-            source_ids: list[str] = []
-            for source in goal["sources"]:
-                if source == "opening":
-                    source_ids.append(f"opening.{node_id}")
-                elif source == "player_input":
-                    source_ids.append("runtime.player_input")
-                elif source == "previous_goal":
-                    source_ids.append(f"goal.{projected[-1]['id']}")
-            delivery_type = str(goal["delivery_type"])
-            delivery = {
-                "type": delivery_type,
-                "output_field": _GOAL_DELIVERY_OUTPUTS[delivery_type],
-                "source_ids": list(dict.fromkeys(source_ids)),
-                "timing": str(goal.get("timing") or "turn"),
-            }
-            dialogue_policy = str(goal.get("dialogue_policy_after") or "unchanged")
-            if dialogue_policy != "unchanged":
-                delivery["state_effects"] = {"dialogue_policy": dialogue_policy}
-            projected.append({
-                "id": goal_id,
-                "owner": goal["owner"],
-                "description": goal["description"],
-                "evidence": {
-                    "mode": goal["evidence_mode"],
-                    "anchors": deepcopy(goal["anchors"]),
-                },
-                "delivery": delivery,
-            })
-        return projected
+        return goals_to_package(node_id, ordered_goals)
 
     @staticmethod
     def _last_goal_fact_id(node: Mapping[str, Any]) -> str:

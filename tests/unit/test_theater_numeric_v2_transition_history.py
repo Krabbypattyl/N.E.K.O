@@ -30,7 +30,7 @@ async def test_compact_transition_preserves_both_generated_narrations_through_co
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '给你毛巾。'), (),
                                   scene_complete=True, natural_ending_ready=True)
     candidate = _candidate()
-    parsed = _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True)
+    parsed = _parse_output(json.dumps(candidate), transition_required=True)
     assembled = engine.finalize_transition_performance(outcome, parsed,
         target_opening='她从楼梯返回控制室。', bridge_scene_narration='她走回控制室。')
     assert assembled['segments'][1]['scene_narration'] == candidate['bridge_scene_narration']
@@ -46,7 +46,7 @@ def test_new_compact_transition_cannot_silently_fall_back_to_author_text(field):
     candidate = _candidate()
     candidate.pop(field)
     with pytest.raises(NumericV2ActorOutputError):
-        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True)
+        _parse_output(json.dumps(candidate), transition_required=True)
 
 
 def test_evaluator_uses_current_narrative_instead_of_transition_title():
@@ -177,7 +177,7 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '谢谢。'), (), scene_complete=True, natural_ending_ready=True)
     candidate = engine.finalize_transition_performance(outcome, _candidate(), target_opening='旧开场。')
     messages = _build_transition_judge_messages(engine, session, player_input='谢谢。',
-        actor_performance=candidate, route_changed=True, transition_outcome=outcome)
+        actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0]
     data = json.loads(messages[1].content.split('：', 1)[1])
     assert data['terminal'] is True
     assert '来源开场不得披露姓名。' not in data['current_scene']['hard_boundaries']
@@ -270,7 +270,7 @@ def test_optional_compact_bridge_does_not_accept_invalid_type(invalid):
     candidate = _candidate()
     candidate['bridge_scene_narration'] = invalid
     with pytest.raises(NumericV2ActorOutputError, match='scene_narration_invalid'):
-        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True,
+        _parse_output(json.dumps(candidate), transition_required=True,
                       bridge_required=False)
 
 
@@ -279,7 +279,7 @@ def test_optional_bridge_does_not_relax_other_transition_text(field):
     candidate = _candidate()
     candidate[field] = ''
     with pytest.raises(NumericV2ActorOutputError):
-        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True,
+        _parse_output(json.dumps(candidate), transition_required=True,
                       bridge_required=False)
 
 
@@ -287,7 +287,7 @@ def test_compact_bridge_stays_required_without_explicit_contract_permission():
     candidate = _candidate()
     candidate['bridge_scene_narration'] = ''
     with pytest.raises(NumericV2ActorOutputError, match='scene_narration_invalid'):
-        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True)
+        _parse_output(json.dumps(candidate), transition_required=True)
 
 
 def test_runtime_optional_bridge_matches_legacy_array_permission():

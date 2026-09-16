@@ -25,7 +25,7 @@ def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
     diagnostic = {}
     evaluated = ev._build_messages(engine, session, player, diagnostics=diagnostic)
     reviewed = ev._build_transition_judge_messages(engine, session, player_input=player,
-        actor_performance={'performance': candidate})
+        actor_performance={'performance': candidate})[0]
     data = json.loads(reviewed[1].content.split('：', 1)[1])
     assert data['actor_performance'] == candidate
     assert data['player_input'] == player
@@ -53,6 +53,31 @@ def test_legacy_profile_names_use_identical_fixed_budget_and_evidence():
     assert all(numeric_v2_actor_budget(name) == numeric_v2_actor_budget('balanced')
                for name in ('economy', 'quality'))
     assert numeric_v2_actor_budget('balanced')['input_max_tokens'] == 10000
+
+
+@pytest.mark.parametrize('turns', [1, 20])
+def test_evaluator_packing_reports_the_history_actually_removed(turns, caplog):
+    engine, session, _, _ = _fixture()
+    history = tuple({'revision': i, 'from_node_id': 'start', 'to_node_id': 'start',
+        'input_text': '我先看看。', 'performance': '（' + '她整理手边的工具。' * 60 + '）'}
+        for i in range(1, turns + 1))
+    session = replace(session, revision=turns, node_turn_count=turns, performance_history=history)
+    diagnostic = {}
+    messages = ev._build_messages(engine, session, '现在呢？', diagnostics=diagnostic)
+    sent = json.loads(messages[1].content.split('：', 1)[1])['scene_context']
+    included = [record['revision'] for record in sent]
+    original = [record['revision'] for record in ev._current_scene_context(session)]
+    removed = original[:len(original) - len(included)]
+    assert bool(removed) is (turns == 20)
+    assert diagnostic['recent_included_revisions'] == included
+    assert diagnostic['recent_dropped_revisions'] == removed
+    assert removed + included == original
+    assert included[-1] == turns
+    with caplog.at_level('DEBUG', logger=ev.__name__):
+        ev._log_prompt_diagnostics(session, diagnostic)
+    record = caplog.records[-1]
+    assert record.levelname == ('INFO' if removed else 'DEBUG')
+    assert f'recent_drop={removed}' in record.getMessage()
 
 
 class UsageClient:

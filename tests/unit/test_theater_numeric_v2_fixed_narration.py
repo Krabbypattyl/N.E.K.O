@@ -16,7 +16,7 @@ from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluatorOutputError,
     _build_transition_judge_messages, _parse_transition_judge_output,
 )
-from services.theater.numeric_v2_fixed_narration import apply_triggers, displayed_ids, validate_delivery
+from services.theater.numeric_v2_fixed_narration import apply_triggers, displayed_ids, review_candidates, validate_delivery
 from services.theater.numeric_v2_performance import performance_content_blocks, performance_dialogue
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from services.theater import numeric_v2_workflow as workflow
@@ -91,7 +91,7 @@ async def test_target_entry_is_mandatory_and_survives_committed_transition(tmp_p
     outcome = runtime.prepare_turn(current, TurnRequestV2('one', 0, '就到这里吧。'), (),
                                    scene_complete=True, natural_ending_ready=True)
     assert outcome.session.current_node_id != current.session.current_node_id
-    parsed = _parse_output(json.dumps(_candidate()), transition_required=True, deterministic_transition=True)
+    parsed = _parse_output(json.dumps(_candidate()), transition_required=True)
     performance = engine.finalize_transition_performance(outcome, parsed, target_opening='修理台亮起。')
     missing = deepcopy(performance)
     missing['segments'][2].pop('fixed_narrations')
@@ -101,6 +101,52 @@ async def test_target_entry_is_mandatory_and_survives_committed_transition(tmp_p
     saved = await runtime.commit_turn(outcome, performance)
     assert await runtime.restore_session(current.session.session_id) == saved
     assert performance['segments'][2]['fixed_narrations'][0]['text'] == REPORT
+
+
+@pytest.mark.asyncio
+async def test_workflow_assembles_target_entry_once_in_runtime(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_runtime as runtime_module
+
+    story = numeric_v2_story()
+    for node in story['nodes'][1:]:
+        node['story_beat']['fixed_narrations'] = [_piece('entry', REPORT, entry=True)]
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(session_id='entry-once', catgirl_binding=_binding(),
+                                          opening_performance=OPENING)
+    entries = []
+    add_entry = runtime_module.add_entry
+
+    def track_entry(node, *args, **kwargs):
+        entries.append(node['id'])
+        return add_entry(node, *args, **kwargs)
+
+    async def evaluate(self, **kwargs):
+        return NumericV2EvaluationResult((), True, natural_ending_ready=True)
+
+    async def invoke(self, messages, **kwargs):
+        assert kwargs['transition_required']
+        return _parse_output(json.dumps(_candidate()), transition_required=True)
+
+    async def review(self, **kwargs):
+        target = kwargs['actor_performance']['segments'][2]
+        assert target['fixed_narrations'][0]['text'] == REPORT
+        return NumericV2TransitionOfferReview(False, False, (), ())
+
+    monkeypatch.setattr(runtime_module, 'add_entry', track_entry)
+    # 若编排层仍持有旧别名，记录它的装配调用以捕获重复生产者。
+    if hasattr(workflow, 'add_entry'):
+        monkeypatch.setattr(workflow, 'add_entry', track_entry)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_invoke', invoke)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('one', 0, '就到这里吧。'), ensure_current_binding=lambda _: _binding())
+    # 提交校验会重建来源开场；目标幕入场只在本次 Runtime finalizer 装配一次。
+    assert entries.count(result.stored.session.current_node_id) == 1
+    assert result.stored.session.revision == len(result.stored.ledger_events) == 1
+    assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session('entry-once') == result.stored
 
 
 def test_name_placeholders_do_not_rewrite_serials_or_nested_values():
@@ -120,7 +166,7 @@ def test_prompt_hides_untriggered_text_and_preserves_delivered_text():
     session = engine.create_session(session_id='prompts', catgirl_binding=_binding(), opening_performance=OPENING)
     opening = '\n'.join(m.content for m in _opening_messages(engine, '温和。', 'Lan', '你', False, max_tokens=10000))
     assert REPORT in opening and LOG not in opening
-    review_messages = _build_transition_judge_messages(engine, session, actor_performance={'performance': ACTION}, player_input='帮我接上。')
+    review_messages = _build_transition_judge_messages(engine, session, actor_performance={'performance': ACTION}, player_input='帮我接上。')[0]
     packed = '\n'.join(m.content for m in review_messages)
     assert 'fixed_narration_candidates' in packed and '铭牌已经放入读取器' in packed
     assert '固定五字段' not in packed
@@ -129,11 +175,68 @@ def test_prompt_hides_untriggered_text_and_preserves_delivered_text():
     engine.story['intro']['catgirl_name'] = '原来的姓名'
     engine.nodes['start']['story_beat']['fixed_narrations'][1]['trigger']['condition'] = '原来的姓名实际拿起铭牌。'
     renamed = replace(session, catgirl_binding={**session.catgirl_binding, 'catgirl_name': '新角色'})
-    messages = _build_transition_judge_messages(engine, renamed, actor_performance={'performance': ACTION}, player_input='帮我接上。')
+    messages = _build_transition_judge_messages(engine, renamed, actor_performance={'performance': ACTION}, player_input='帮我接上。')[0]
     payload = json.loads(messages[1].content.split('：', 1)[1])
     assert payload['fixed_narration_candidates'][0]['condition'] == '新角色实际拿起铭牌。'
     opening = '\n'.join(m.content for m in _opening_messages(engine, '温和。', '新角色', '你', False, max_tokens=10000))
     assert '新角色实际拿起铭牌。' in opening
+
+
+@pytest.mark.parametrize('phase', ['opening', 'turn', 'transition'])
+def test_actor_prompt_is_independent_of_fixed_piece_ids(phase):
+    story = deepcopy(_engine().story)
+    if phase == 'transition':
+        pieces = story['nodes'][0]['story_beat'].pop('fixed_narrations')
+        middle = deepcopy(story['nodes'][0])
+        middle['id'] = 'middle'
+        middle['story_beat']['fixed_narrations'] = pieces
+        for gate in middle['route_gates']:
+            gate['id'] = 'middle_' + gate['id']
+        story['nodes'].append(middle)
+        for gate in story['nodes'][0]['route_gates']:
+            gate['target_node_id'] = 'middle'
+    renamed = deepcopy(story)
+    ids = {'report': 'internal_report_7a9', 'log': 'internal_log_2b8'}
+    for node in renamed['nodes']:
+        for piece in node['story_beat'].get('fixed_narrations', []):
+            piece['id'] = ids[piece['id']]
+            piece['after'] = [ids[key] for key in piece['after']]
+    prompts = []
+    for raw in (story, renamed):
+        engine = NumericV2Engine.from_mapping(raw)
+        if phase == 'opening':
+            messages = _opening_messages(engine, '温和。', 'Lan', '你', True, max_tokens=10000)
+        else:
+            session = engine.create_session(session_id='actor-ids', catgirl_binding=_binding(), opening_performance=OPENING)
+            session = replace(session, transition_offered=phase == 'transition')
+            outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '帮我接上。'), (),
+                                          transition_intent='accept' if phase == 'transition' else 'unclear')
+            assert (outcome.session.current_node_id != session.current_node_id) == (phase == 'transition')
+            messages = _turn_messages(engine, session, outcome, '帮我接上。', '温和。', 'Lan', '你')
+        prompts.append([message.content for message in messages])
+    assert prompts[0] == prompts[1]
+    text = '\n'.join(prompts[1])
+    assert all(key not in text for key in ids.values())
+    assert '铭牌已经放入读取器。' in text
+    assert REPORT in text.replace('\\n', '\n') and LOG not in text.replace('\\n', '\n')
+
+
+def test_fixed_dependencies_still_belong_to_review_and_delivery():
+    story = deepcopy(_engine().story)
+    # Both conditional pieces remain pending; triggering the child alone must not bypass its parent.
+    story['nodes'][0]['story_beat']['fixed_narrations'][0] = _piece('report', REPORT)
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id='fixed-dependencies', catgirl_binding=_binding(), opening_performance=OPENING)
+    assert [row['after'] for row in review_candidates(engine.nodes['start'], session)] == [[], ['report']]
+    messages, _ = _build_transition_judge_messages(engine, session, actor_performance={'performance': ACTION}, player_input='帮我接上。')
+    payload = json.loads(messages[1].content.split('：', 1)[1])
+    assert [row['after'] for row in payload['fixed_narration_candidates']] == [[], ['0']]
+    raw = {'performance': ACTION}
+    assert apply_triggers(engine.nodes['start'], session, raw, _claims(), '帮我接上。', known=True) == raw
+    delivered = apply_triggers(engine.nodes['start'], session, raw,
+        ({'id': 'report', 'evidence': '将铭牌放入读取器'}, *_claims()), '帮我接上。', known=True)
+    assert [piece['id'] for piece in delivered['fixed_narrations']] == ['report', 'log']
+    validate_delivery(engine.story, delivered, session=session)
 
 
 @pytest.mark.asyncio
@@ -251,6 +354,71 @@ def test_review_extension_is_optional_and_does_not_change_other_stories():
     assert result.fixed_narration_triggers == _claims()
     with pytest.raises(NumericV2EvaluatorOutputError):
         _parse_transition_judge_output(json.dumps(raw))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('piece_count', [0, 1, 8])
+@pytest.mark.parametrize('disputed', [False, True])
+@pytest.mark.parametrize('evidence', ['铭牌' * 40, '\x01' * 80], ids=['text', 'json-escaping'])
+async def test_review_output_fits_all_refs_and_restores_literal_ids(monkeypatch, piece_count, disputed, evidence):
+    """Exercise the actual request cap and parser with maximum-length legal IDs."""
+    import hashlib
+    from types import SimpleNamespace
+    import tiktoken
+    from services.theater import numeric_v2_evaluator as evaluator
+
+    encoding = tiktoken.get_encoding('o200k_base')
+    ids = [hashlib.sha512(str(i).encode()).hexdigest() for i in range(piece_count)]
+    story = numeric_v2_story()
+    if ids:
+        story['nodes'][0]['story_beat']['fixed_narrations'] = [
+            _piece(key, '读取完成。') for key in ids]
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id='quote-capacity', catgirl_binding=_binding(), opening_performance=OPENING)
+    # Eight 80-token quotations plus their request references must fit the cap.
+    assert len(encoding.encode(evidence)) == 80
+    payload = {'offer_present': False, 'valid': False, 'body_violations': [],
+               'unsafe_suggestion_indexes': [], 'failure_reason': ''}
+    if ids:
+        payload['fixed_narration_triggers'] = [{'id': str(index), 'evidence': evidence} for index in range(len(ids))]
+    output = encoding.encode(json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
+    calls = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def ainvoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content=encoding.decode(output[:budget]))
+
+    async def config(_):
+        return {'model': 'test', 'base_url': 'http://test.invalid'}
+
+    async def factory(*args, **kwargs):
+        nonlocal budget
+        budget = kwargs['max_completion_tokens']
+        assert kwargs['max_retries'] == 0
+        assert kwargs['timeout'] == (30 if disputed else 8)
+        return Client()
+
+    budget = 0
+    monkeypatch.setattr(evaluator, '_model_config', config)
+    monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    result = await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(
+        engine=engine, session=session, message='（将铭牌放入读取器）' + evidence,
+        actor_performance={'performance': ACTION, 'suggested_inputs': []}, dispute_review=disputed)
+    assert len(calls) == 1
+    assert [item['id'] for item in result.fixed_narration_triggers] == ids
+    assert budget >= len(output)
+    if not ids or disputed:
+        assert budget == (4096 if disputed else 190)
+    else:
+        assert 512 <= budget < 4096
 
 
 @pytest.mark.asyncio

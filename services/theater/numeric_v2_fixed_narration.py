@@ -123,8 +123,8 @@ def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any]
         if item["trigger"]["type"] == "entry":
             lines.append("入幕固定旁白：" + render_text(item["text"], _bindings(binding, known)))
         else:
-            lines.append(f"待触发片段 {item['id']}：{project_condition(item['trigger']['condition'])}；"
-                         f"前置片段：{','.join(item['after']) or '无'}。不得替玩家执行触发动作。")
+            # Actor 不选择片段或结算依赖；只接收实际触发条件，避免内部编号进入可见旁白。
+            lines.append(f"待展示原文的触发条件：{project_condition(item['trigger']['condition'])}。不得替玩家执行触发动作。")
     if any(item["required_before_exit"] for item in rows):
         lines.append("当前尚有离幕前必显片段；回应当前互动，不提前邀请跳到下一幕或结束。")
     return "\n".join(lines)
