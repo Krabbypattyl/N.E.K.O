@@ -14,6 +14,8 @@ from services.theater.numeric_v2_context import history_evidence
 from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluationResult, NumericV2TransitionOfferReview,
     NumericV2EvaluatorOutputError,
+    NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS,
+    NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
     _build_transition_judge_messages, _parse_transition_judge_output,
 )
 from services.theater.numeric_v2_fixed_narration import apply_triggers, displayed_ids, review_candidates, validate_delivery
@@ -402,7 +404,10 @@ async def test_review_output_fits_all_refs_and_restores_literal_ids(monkeypatch,
         nonlocal budget
         budget = kwargs['max_completion_tokens']
         assert kwargs['max_retries'] == 0
-        assert kwargs['timeout'] == (30 if disputed else 8)
+        assert kwargs['timeout'] == (
+            NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS if disputed
+            else NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
+        )
         return Client()
 
     budget = 0

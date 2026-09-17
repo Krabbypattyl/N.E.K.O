@@ -39,7 +39,7 @@ These documents preserve design intent and implementation context. They are grou
 - [运行端框架审查](./neko-theater-framework-review)：TF-01—03已处理，保留优化前证据。
 - [工坊SDK框架审查](./neko-theater-workshop-framework-review)：WS-01—02已处理，保留作者编排与发布边界。
 - [公共数据结构审查](./neko-theater-shared-data-structures-review)：DS-01—02已处理，作者项目、正式包与Session继续分离。
-- [运行端框架二次审查](./neko-theater-framework-review-round2)：FR2-01—09为只读建议（回合义务投影、复核分级、Prompt归属与模块增减），未实施。
+- [运行端框架二次审查](./neko-theater-framework-review-round2)：FR2-01—11；延迟项已按问题2.140实施，FR2-11为演绎效果与回复速度优化方案（建议，未实施）。
 
 SDK调用示例在仓库 `theater_workshop/README.md`；原独立工作台的作者协议在InkAI的 `docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md`，后台IB-01—04修复见同目录 `neko-theater-generator-framework-review.md`。四份结构审查的11项处理统一归入问题2.125。SDK不带网页，InkAI仍保留独立界面，共享创作与评改规则继续同步。
 

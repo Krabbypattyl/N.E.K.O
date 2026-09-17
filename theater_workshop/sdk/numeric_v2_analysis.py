@@ -22,6 +22,11 @@ _COMPARATORS = {
     ">=": lambda left, right: left >= right,
     "<=": lambda left, right: left <= right,
 }
+# 条件以这些主体的自身动作为准时，运行时的唯一证人可能只是演员本轮写下的正文。
+_ACTOR_WITNESS_SUBJECTS = ("猫娘", "女主", "新载体", "机体", "猫耳")
+# 玩家主体与排除从句：条件句里出现它们时不代表条件由猫娘满足。
+_PLAYER_ACTOR_TOKENS = ("玩家", "男主", "你")
+_EXCLUSION_MARKERS = ("不算", "不作为", "不能算", "不表示", "不算作", "并非", "不能代替")
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,61 @@ class NumericV2AnalysisWarning:
     code: str
     path: str
     message: str
+
+
+def _condition_actor(condition: str) -> str:
+    """Return the actor a condition is satisfied by: ``actor`` (catgirl), ``player`` or ``""``.
+
+    Chinese conditions are read clause by clause. The first subject token in a positive clause is
+    the actor; exclusion clauses such as "玩家拿着不算" are skipped, and a clause without a subject
+    inherits the previous actor.
+    """  # noqa: DOCSTRING_CJK
+    # 条件文本本身是中文，示例必须保留原句才能说明判定方式。
+
+    actor = ""
+    for clause in re.split(r"[，。；、,.;!?！？\n]+", condition):
+        text = clause.strip()
+        if not text or any(marker in text for marker in _EXCLUSION_MARKERS):
+            continue
+        positions = [(text.find(token), "player") for token in _PLAYER_ACTOR_TOKENS if token in text]
+        positions.extend((text.find(token), "actor") for token in _ACTOR_WITNESS_SUBJECTS if token in text)
+        if positions:
+            actor = min(positions)[1]
+    return actor
+
+
+def _fixed_narration_witness_warnings(ordered_nodes: list[Mapping[str, Any]]) -> list[NumericV2AnalysisWarning]:
+    """Warn when a condition-triggered fixed narration can only be witnessed by the actor's own prose.
+
+    Runtime evidence for a condition includes the current (uncommitted) candidate text, so a
+    condition whose subject is the catgirl can be satisfied by the actor writing the condition
+    itself and then being cited as proof (issue 2.141).
+    """
+
+    warnings: list[NumericV2AnalysisWarning] = []
+    for node_index, node in enumerate(ordered_nodes):
+        beat = node.get("story_beat") if isinstance(node, Mapping) else None
+        if not isinstance(beat, Mapping):
+            continue
+        for position, item in enumerate(beat.get("fixed_narrations") or []):
+            if not isinstance(item, Mapping):
+                continue
+            trigger = item.get("trigger")
+            if not isinstance(trigger, Mapping) or trigger.get("type") != "condition":
+                continue
+            condition = str(trigger.get("condition") or "")
+            if _condition_actor(condition) != "actor":
+                continue
+            warnings.append(NumericV2AnalysisWarning(
+                code="fixed_narration_condition_actor_witnessed",
+                path=f"nodes[{node_index}].story_beat.fixed_narrations[{position}].trigger.condition",
+                message=(
+                    f"固定旁白 {item.get('id')!r} 的条件由猫娘的自身动作满足。运行时可用证据包含演员本轮写下的正文，"
+                    "因此存在“演员先写下条件成立、再被该句自证触发”的风险；引文核验只证明该句出现在某个来源里，不区分该来源是否为尚未提交的候选。"
+                    "建议改用 entry 触发，或把条件绑定到玩家输入可验证的动作。"
+                ),
+            ))
+    return warnings
 
 
 def _metric_definitions(story: Mapping[str, Any]) -> dict[str, dict[str, int]]:
@@ -384,7 +444,11 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
     }
     start_node_id = str(story.get("start_node_id") or "")
     if not definitions or start_node_id not in nodes_by_id:
-        return tuple(_duplicate_transition_warnings(ordered_nodes))
+        # 没有隐藏数值的故事同样需要固定旁白证人检查：这条诊断不依赖数值可达性。
+        return tuple((
+            *_duplicate_transition_warnings(ordered_nodes),
+            *_fixed_narration_witness_warnings(ordered_nodes),
+        ))
 
     global_bounds = {
         metric_id: (definition["min"], definition["max"])
@@ -625,6 +689,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
         ))
 
     warnings.extend(_duplicate_transition_warnings(ordered_nodes))
+    warnings.extend(_fixed_narration_witness_warnings(ordered_nodes))
     unique: list[NumericV2AnalysisWarning] = []
     seen: set[tuple[str, str, str]] = set()
     for warning in warnings:

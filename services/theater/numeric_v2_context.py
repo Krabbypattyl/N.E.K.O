@@ -316,10 +316,101 @@ def pending_transition_performance(
     return truncate_to_tokens(performance, max_tokens=max_tokens)
 
 
+_TIME_MARKER_PATTERN = re.compile(r"\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*月\s*\d{1,2}\s*[日号]")
+
+
+def _time_markers(text: Any) -> set[str]:
+    """Normalize clock and calendar markers so equal times compare equal across prose variants."""
+
+    return {
+        re.sub(r"\s+", "", match.group(0)).replace("：", ":")
+        for match in _TIME_MARKER_PATTERN.finditer(str(text or ""))
+    }
+
+
+def _beat_source_text(beat: Mapping[str, Any]) -> str:
+    """Collect the text an author already exposes for the node the player is currently in."""
+
+    parts: list[str] = []
+    for key in ("opening_scene", "opening_situation", "summary", "narrative_focus", "catgirl_situation"):
+        value = beat.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    state = beat.get("character_state")
+    if isinstance(state, Mapping):
+        for value in state.values():
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, (list, tuple)):
+                parts.extend(str(item) for item in value if isinstance(item, str))
+    return "\n".join(parts)
+
+
+def _visible_narration_text(performance: Mapping[str, Any]) -> str:
+    """Only narration asserts present facts; dialogue and buttons may legitimately propose an exit."""
+
+    parts: list[str] = []
+    if isinstance(performance.get("scene_narration"), str):
+        parts.append(performance["scene_narration"])
+    segments = performance.get("segments")
+    if isinstance(segments, (list, tuple)):
+        for segment in segments:
+            if isinstance(segment, Mapping) and isinstance(segment.get("scene_narration"), str):
+                parts.append(segment["scene_narration"])
+    return "\n".join(parts)
+
+
+def premature_target_markers(
+    engine: Any,
+    session: Any,
+    outcome: Any,
+    performance: Mapping[str, Any],
+    player_input: str = "",
+) -> tuple[str, ...]:
+    """Return time markers an ordinary turn narrated although only the next scene owns them.
+
+    The bridge text is projected as a not-yet-happened movement range so the actor can propose a
+    concrete exit; it must not be played back as present narration (issue 2.141 B3). Returns an
+    empty tuple for transition turns, unknown exits, or markers the current scene already owns.
+    """  # noqa: DOCSTRING_CJK
+
+    ledger = getattr(outcome, "ledger_event", None) or {}
+    source_id = str(ledger.get("from_node_id") or getattr(session, "current_node_id", "") or "")
+    if not source_id or str(ledger.get("to_node_id") or source_id) != source_id:
+        # 正式转场本来就要交付目标幕开场，不适用本检查。
+        return ()
+    nodes = getattr(engine, "nodes", {}) or {}
+    source = nodes.get(source_id)
+    if not isinstance(source, Mapping) or not source.get("route_gates"):
+        return ()
+    route = engine.preview_route(source_id, getattr(session, "metrics", {}) or {})
+    if not isinstance(route, Mapping):
+        return ()
+    target = nodes.get(str(route.get("target_node_id") or ""))
+    if not isinstance(target, Mapping):
+        return ()
+    contract = route.get("transition_contract")
+    contract = contract if isinstance(contract, Mapping) else {}
+    target_text = "\n".join((
+        scene_opening_text(target.get("story_beat") or {}),
+        str(contract.get("bridge_scene_narration") or ""),
+        str(contract.get("reason") or ""),
+    ))
+    allowed_text = "\n".join((
+        _beat_source_text(source.get("story_beat") or {}),
+        str(player_input or ""),
+        *(str(row.get("text") or "") for row in performance_history_records(session)),
+    ))
+    narrated = _time_markers(_visible_narration_text(performance))
+    owned_by_target = _time_markers(target_text) - _time_markers(allowed_text)
+    return tuple(sorted(narrated & owned_by_target))
+
+
 __all__ = [
     "HISTORY_EVIDENCE_RULE",
     "history_evidence",
     "PLAYER_ACTION_LANGUAGE_RULE",
+    "premature_target_markers",
     "scene_opening_text",
     "current_scene_records",
     "pending_transition_performance",

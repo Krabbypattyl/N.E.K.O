@@ -55,6 +55,19 @@
                         <button type="button" class="theater-secondary theater-danger" id="theater-end-btn" data-i18n="theater.endPerformance" hidden>结束演绎</button>
                         <button type="button" class="theater-secondary theater-danger" id="theater-delete-btn" data-i18n="theater.deleteStory">删除剧本</button>
                     </div>
+                    <div class="theater-option-row">
+                        <label class="theater-option-label" for="theater-dispute-toggle">
+                            <span data-i18n="theater.disputeReview">争议复查</span>
+                            <span class="theater-option-tip" tabindex="0" role="img"
+                                  data-i18n-title="theater.disputeReviewTip"
+                                  data-i18n-aria="theater.disputeReviewTip"
+                                  title="打开后演绎更加贴近剧本，但是会增加回复时长和 token 用量"
+                                  aria-label="打开后演绎更加贴近剧本，但是会增加回复时长和 token 用量">?</span>
+                        </label>
+                        <input type="checkbox" id="theater-dispute-toggle" class="theater-option-switch"
+                               role="switch" disabled
+                               data-i18n-aria="theater.disputeReview" aria-label="争议复查">
+                    </div>
                     <div class="theater-inline-feedback" id="theater-inline-feedback" role="status" aria-live="polite" hidden></div>
                     <article class="theater-intro-card theater-intro-background"><h2 data-i18n="theater.storyIntroKicker">故事前情</h2><p id="theater-detail-background"></p></article>
                     <div class="theater-role-grid">

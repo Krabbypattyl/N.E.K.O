@@ -277,3 +277,26 @@ def _reset_pending_retirements():
     fenced = getattr(character_memory, "_WRITE_FENCED", None)
     if isinstance(fenced, set):
         fenced.clear()
+
+
+@pytest.fixture(autouse=True)
+def _enable_theater_dispute_review(monkeypatch):
+    """Keep the dispute-review chain on for regression tests.
+
+    The product ships the theater "争议复查" switch off by default (it costs one
+    extra thinking call per first dispute), but the review-chain regressions were
+    written against the switch-on behaviour: they assert the second opinion, its
+    shared evidence and its shared rewrite budget. Enabling it here keeps those
+    tests testing what they document, while tests that exercise the switch itself
+    override this patch with their own ``monkeypatch`` and still win.
+    """
+
+    try:
+        import utils.preferences as preferences
+    except Exception:
+        return
+
+    async def _enabled() -> bool:
+        return True
+
+    monkeypatch.setattr(preferences, "aload_theater_dispute_review", _enabled, raising=False)

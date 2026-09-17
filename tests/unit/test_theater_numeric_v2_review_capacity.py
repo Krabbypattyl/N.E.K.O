@@ -46,8 +46,11 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
 
     async def factory(*args, **kwargs):
         assert kwargs['max_retries'] == 0
-        assert kwargs['timeout'] == (30 if disputed else 8)
-        # 正式快检输出余量和争议时限保持原约束。
+        assert kwargs['timeout'] == (
+            evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS if disputed
+            else evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
+        )
+        # 正式快检输出余量和争议输出预算保持原约束。
         assert kwargs['max_completion_tokens'] == (4096 if disputed else 512)
         return Client()
 

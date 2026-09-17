@@ -72,4 +72,8 @@ async def test_formal_output_has_room_without_changing_ordinary_or_dispute(monke
             actor_performance={'performance': '知道了。'}, transition_outcome=outcome if formal else None,
             dispute_review=dispute)
     assert [x['max_completion_tokens'] for x in options] == [190, 512, 4096]
-    assert [x['timeout'] for x in options] == [8, 8, 30]
+    assert [x['timeout'] for x in options] == [
+        ev.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+        ev.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+        ev.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS,
+    ]

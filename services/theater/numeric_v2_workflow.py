@@ -15,7 +15,7 @@ from .numeric_v2_actor import (
     NumericV2Actor,
     NumericV2ActorOutputError,
 )
-from .numeric_v2_context import scene_opening_text
+from .numeric_v2_context import premature_target_markers, scene_opening_text
 from .numeric_v2_fixed_narration import apply_triggers
 from .numeric_v2_history import lookup_history
 from .numeric_v2_evaluator import (
@@ -35,6 +35,11 @@ from .numeric_v2_trace import text_trace_scope, trace_event, trace_state
 
 
 logger = logging.getLogger(__name__)
+
+# 整回合复核时间预算。首次快检始终执行；预算耗尽后不再追加争议复查或改写后复检，
+# 普通回合沿用最近一次判定并按既有末稿兜底处理，正式转场沿用原有的"未完成复核不提交"回滚。
+# 该预算只是等待上限，不改变任何授权、去向或原子提交判定。
+NUMERIC_V2_REVIEW_BUDGET_SECONDS = 25.0
 
 
 def _drop_reported_unsafe_suggestions(
@@ -301,6 +306,19 @@ def _add_elapsed_ms(
     timings[phase] = round(float(timings.get(phase, 0.0)) + elapsed_ms, 3)
 
 
+async def _dispute_review_enabled() -> bool:
+    """争议复查开关：默认关闭；用户显式开启才追加这次独立思考复查。"""  # noqa: DOCSTRING_CJK
+
+    try:
+        from utils.preferences import aload_theater_dispute_review
+
+        value = await aload_theater_dispute_review()
+    except Exception as exc:
+        logger.warning("Numeric v2 dispute-review switch unavailable; keeping it disabled: %s", type(exc).__name__)
+        return False
+    return False if value is None else bool(value)
+
+
 def _increment_actor_attempts(diagnostics: dict[str, Any] | None) -> None:
     """记录 Actor 生成尝试次数；真实供应商请求由 Actor 的调用边界另行统计。"""  # noqa: DOCSTRING_CJK
 
@@ -423,6 +441,10 @@ async def _execute_numeric_v2_turn(
         "actor_base_suggestion_parse_counts": {},
         "transition_judge_calls": 0,
         "transition_judge_degraded": False,
+        # 复核时间预算耗尽后跳过的复检次数；仅作诊断，不代表复核通过。
+        "review_budget_skips": 0,
+        # 普通回合把目标幕开场／桥接时点演成现在时的确定性命中记录（问题2.141 B3）。
+        "target_opening_leak_markers": [],
         # 每回合共享一个复查机会，改写稿不能再次触发；失败时保留快速初判。
         "dispute_review_attempts": 0,
         "dispute_review_degraded": False,
@@ -447,6 +469,10 @@ async def _execute_numeric_v2_turn(
     })
     evaluator = NumericV2MetricEvaluator(config_manager)
     actor = NumericV2Actor(config_manager)
+    # 争议复查是可关闭的可选项：默认关闭（省等待与 token），只有用户显式开启才追加。
+    # 无论开关如何，快检、共享一次改稿、末稿兜底与原子提交都不受影响。
+    dispute_review_enabled = await _dispute_review_enabled()
+    diagnostics["dispute_review_enabled"] = dispute_review_enabled
     # 仅属于本次工作流的原文结果；所有正文重试与复核共享，不写入 Session 或 Ledger。
     history_lookup_result: dict[str, Any] | None = None
     invalidate_previous_offer = False
@@ -559,13 +585,35 @@ async def _execute_numeric_v2_turn(
             )
             _add_elapsed_ms(diagnostics, "actor_work", started_at)
 
+    review_call_count = 0
+    last_review: NumericV2TransitionOfferReview | None = None
+
+    def review_budget_exhausted() -> bool:
+        """本轮已用复核时间是否达到上限；只读诊断累计值，不额外调用模型。"""  # noqa: DOCSTRING_CJK
+
+        return (
+            float(diagnostics["timings_ms"].get("transition_judge_work", 0.0))
+            >= NUMERIC_V2_REVIEW_BUDGET_SECONDS * 1000.0
+        )
+
     async def review_transition_offer(
         candidate: Mapping[str, Any],
     ) -> NumericV2TransitionOfferReview:
         """复核可见提议并累计调用成本；模型故障沿用原有保守撤销语义。"""  # noqa: DOCSTRING_CJK
 
-        nonlocal final_fixed_review
+        nonlocal final_fixed_review, review_call_count, last_review
         final_fixed_review = None
+        if review_call_count and review_budget_exhausted():
+            # 预算耗尽后不再追加复检。正式转场沿用"未完成复核不提交"的回滚；
+            # 普通回合沿用最近一次判定，由既有改写/末稿兜底路径收尾。
+            diagnostics["review_budget_skips"] += 1
+            if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]:
+                trace_event("review.budget_exhausted", phase="transition")
+                raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+            if last_review is not None:
+                trace_event("review.budget_exhausted", phase="ordinary")
+                return last_review
+        review_call_count += 1
         transition_judge_started_at = time.monotonic()
         diagnostics["transition_judge_calls"] += 1
         try:
@@ -602,6 +650,9 @@ async def _execute_numeric_v2_turn(
                     and not diagnostics["missed_initiation_recoveries"]
                     and not diagnostics["transition_cancellations"]):
                 review_kwargs["check_missed_initiation"] = True
+            # 只有首次快检使用完整材料；改写后的复检属于对已指控问题的二次判定，按 L2/L4 收窄输入。
+            if review_call_count > 1:
+                review_kwargs["recheck_only"] = True
             review = await evaluator.validate_transition_offer(**review_kwargs)
 
             def record_review(result: NumericV2TransitionOfferReview, mode: str) -> None:
@@ -626,12 +677,14 @@ async def _execute_numeric_v2_turn(
                 })
 
             record_review(review, "fast")
-            if not diagnostics["dispute_review_attempts"] and (
+            if dispute_review_enabled and not diagnostics["dispute_review_attempts"] and not review_budget_exhausted() and (
                 review.body_violations or (review.offer_present and not review.valid)
             ):
                 diagnostics["dispute_review_attempts"] += 1
                 diagnostics["transition_judge_calls"] += 1
                 try:
+                    # 争议复查必须与快检使用完全相同的请求与证据（既有不变量），
+                    # 因此这里不加 recheck_only；定向收窄只用于改写后的复检。
                     reviewed = await evaluator.validate_transition_offer(**review_kwargs, dispute_review=True)
                 except NumericV2EvaluatorError as exc:
                     trace_event("review.failed", mode="dispute", error_code=str(exc))
@@ -643,7 +696,27 @@ async def _execute_numeric_v2_turn(
                 else:
                     record_review(reviewed, "dispute")
                     review = reviewed
+            if not changed:
+                # 普通回合不得把目标幕开场或桥接独有的时间标记演成现在时（问题2.141 B3）。
+                # 该检查是确定性的，放在模型判定与争议之后：模型判断不能清除它。
+                leaked = premature_target_markers(
+                    runtime.engine, current.session, outcome, candidate, player_input=turn.message)
+                if leaked:
+                    markers = "、".join(leaked)
+                    diagnostics["target_opening_leak_markers"] = sorted({
+                        *diagnostics.get("target_opening_leak_markers", []), *leaked})
+                    note = (
+                        f"来源回合的可见旁白出现了只属于目标幕开场或桥接的时间标记：{markers}。"
+                        "该时点与事件尚未发生；本回合只可提出邀请，不得把它叙述为现在时。"
+                    )
+                    trace_event("review.target_opening_leak", markers=list(leaked))
+                    review = replace(
+                        review,
+                        body_violations=tuple(dict.fromkeys((*review.body_violations, "target_opening_leak"))),
+                        failure_reason=" ".join(part for part in (review.failure_reason.strip(), note) if part),
+                    )
             final_fixed_review = review
+            last_review = review
             return review
         except NumericV2EvaluatorError as exc:
             trace_event("review.failed", mode="fast", error_code=str(exc))
@@ -662,12 +735,13 @@ async def _execute_numeric_v2_turn(
                 # 动态旁白不能再依赖静态作者原文兜底；未完成复核就不提交换场，保留完整事务回滚。
                 raise NumericV2ActorOutputError("numeric_v2_transition_review_failed") from exc
             # 服务或协议故障不是正文违规证据：保留既有降级，但不凭新提议换幕，也不为服务故障改稿。
-            return NumericV2TransitionOfferReview(
+            last_review = NumericV2TransitionOfferReview(
                 offer_present=False,
                 valid=False,
                 body_violations=(),
                 unsafe_suggestion_indexes=(),
             )
+            return last_review
         finally:
             _add_elapsed_ms(
                 diagnostics,

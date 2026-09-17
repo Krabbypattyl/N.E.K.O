@@ -509,6 +509,44 @@ async def list_numeric_memory_stories():
                 "memory_available": available}
 
 
+@router.get("/options")
+async def get_numeric_options():
+    """返回小剧场可选项；未设置时返回默认值（争议复查默认关闭）。"""  # noqa: DOCSTRING_CJK
+
+    from utils.preferences import load_theater_dispute_review
+
+    stored = await asyncio.to_thread(load_theater_dispute_review)
+    return {
+        "ok": True,
+        "dispute_review_enabled": False if stored is None else bool(stored),
+    }
+
+
+@router.post("/options")
+async def set_numeric_options(request: Request):
+    """保存小剧场可选项；只接受已声明的键，未知键忽略。"""  # noqa: DOCSTRING_CJK
+
+    payload = await _json_object(request)
+    validation_error = _validate_local_mutation_request(
+        request, payload=payload, error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+    from utils.preferences import load_theater_dispute_review, save_theater_dispute_review
+
+    if "dispute_review_enabled" in payload:
+        value = payload.get("dispute_review_enabled")
+        if not isinstance(value, bool):
+            return _error("numeric_theater_options_invalid", 400)
+        if not await asyncio.to_thread(save_theater_dispute_review, value):
+            return _error("numeric_theater_options_save_failed", 500)
+    stored = await asyncio.to_thread(load_theater_dispute_review)
+    return {
+        "ok": True,
+        "dispute_review_enabled": False if stored is None else bool(stored),
+    }
+
+
 @router.post("/packages/import")
 async def import_numeric_story(request: Request):
     payload = await _json_object(request)

@@ -127,7 +127,9 @@ async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatc
     assert factories[0]['max_completion_tokens'] == 190
     assert factories[1]['extra_body'] == {'enable_thinking': True}
     assert factories[1]['max_completion_tokens'] == 4096
-    assert factories[1]['timeout'] == 30
+    # 争议时限按复核预算重定后仍须与快检区分，不能与普通时限混用。
+    assert factories[1]['timeout'] == evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS
+    assert factories[1]['timeout'] > factories[0]['timeout']
     assert evidence[0] == evidence[1] == evidence[2]
     # 不支持思考的模型明确失败，不能悄悄重复一次相同的快速请求。
     monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: None)
