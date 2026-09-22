@@ -379,7 +379,12 @@ class _PackingLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         message = record.getMessage()
-        if "prompt packing" in message:
+        # 同一份演绎日志同时保留装箱与 Actor 慢调用定位信息；不接触正文和玩家输入。
+        if (
+            "prompt packing" in message
+            or "Numeric v2 Actor slow call" in message
+            or "Numeric v2 Actor failed" in message
+        ):
             self.rows.append(message)
 
 
@@ -462,9 +467,11 @@ def _record_structural_stalls(
 
         recommended_turns = row.get("recommended_turns")
         node_turn_count = row.get("node_turn_count")
+        # 只在本回合开始前就已完成的场景上检查出口停滞；同轮刚完成应给下一轮收束机会。
         if (
             isinstance(recommended_turns, int)
             and isinstance(node_turn_count, int)
+            and row.get("completion_contract_status_before_turn") == "satisfied"
             and route_status != "transition_offered"
             and not bool(row.get("transition_offered"))
             and node_turn_count >= recommended_turns + 2
@@ -542,6 +549,62 @@ def choose_player_input(
         ), "freeform"
     # 保留无上下文单元测试和故障注入的稳定回退；真实轨迹始终传入最近可见正文。
     return FREEFORM_INPUTS[attempt_index % len(FREEFORM_INPUTS)], "freeform"
+
+
+def _rejected_transition_input_seen(
+    trace: Mapping[str, Any],
+    *,
+    node_id: str,
+    player_input: str,
+) -> bool:
+    """检测同一待确认转场在复核拒绝后是否被压测器再次提交。"""
+
+    candidate = str(player_input or "").strip()
+    if not candidate:
+        return False
+    retryable_rejections = 0
+    for row in trace.get("turns") or ():
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("from_node_id") or "") != str(node_id):
+            continue
+        if str(row.get("to_node_id") or "") != str(node_id):
+            continue
+        if str(row.get("player_input") or "").strip() != candidate:
+            continue
+        diagnostics = row.get("workflow_diagnostics")
+        cancellations = (
+            diagnostics.get("transition_cancellations", 0)
+            if isinstance(diagnostics, Mapping)
+            else 0
+        )
+        # 邀请被撤回后，运行时会清掉当前回合的 offer 标记；保留撤回诊断，
+        # 才能识别本轮确实是一次待确认转场，而不是普通留幕回合。
+        if (
+            not bool(row.get("transition_offered"))
+            and (not isinstance(cancellations, (int, float)) or cancellations <= 0)
+        ):
+            continue
+        results = diagnostics.get("transition_review_results") if isinstance(diagnostics, Mapping) else ()
+        if any(
+            isinstance(result, Mapping)
+            and result.get("acceptance_authorized") is False
+            for result in results or ()
+        ):
+            pending_invitation_invalid = any(
+                isinstance(result, Mapping)
+                and result.get("pending_invitation_invalid") is True
+                for result in results or ()
+            )
+            # 候选转场被撤回时，运行时会保留有效的待确认邀请；允许压测器重试一次，
+            # 让下一轮 Actor 有机会生成正确目标开场。邀请已失效或没有撤回记录时，
+            # 继续提交同一句接受输入只会重复模型调用，应立即停止。
+            if pending_invitation_invalid or not isinstance(cancellations, (int, float)) or cancellations <= 0:
+                return True
+            retryable_rejections += 1
+            if retryable_rejections >= 2:
+                return True
+    return False
 
 
 def _contextual_freeform_input(
@@ -637,21 +700,45 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     evaluator_degraded_count = 0
     interaction_intent_counts: dict[str, int] = {}
     actor_generation_attempts = 0
+    actor_repeated_output_guards: dict[str, int] = {}
+    actor_repeated_output_retry_aborted = 0
     actor_provider_calls = 0
     actor_suggestion_fill_attempts = 0
     actor_suggestion_fill_provider_calls = 0
+    actor_suggestion_refill_after_review_attempts = 0
     actor_suggestion_fill_reasons: dict[str, int] = {}
     actor_base_suggestion_parse_counts: dict[str, int] = {}
+    actor_base_fact_candidate_parse_counts: dict[str, int] = {}
+    review_fact_candidates_proposed = 0
+    fact_candidates_accepted = 0
+    fact_candidates_rejected = 0
     transition_ownership_retries = 0
     transition_scene_boundary_retries = 0
     transition_author_boundary_retries = 0
     transition_offer_retries = 0
     semantic_rewrite_attempts = 0
     phantom_transition_flags_cleared = 0
+    completion_fallback_offer_applied = 0
+    pending_acceptance_suggestions_preserved = 0
+    verified_offer_acceptance_suggestions_inserted = 0
+    author_fallback_invitation_protected = 0
+    narration_offer_flags_cleared = 0
+    explicit_player_movement_flags_cleared = 0
+    player_action_projection_conflicts = 0
+    player_action_projection_safe_degrades = 0
+    current_scene_offer_flags_cleared = 0
     unsafe_suggestions_removed = 0
     route_suggestion_reviews = 0
     transition_judge_calls = 0
     transition_judge_degraded_count = 0
+    dispute_review_skipped_high_confidence_body = 0
+    dispute_review_skipped_unsafe_offer_buttons = 0
+    dispute_review_skipped_contract_offer = 0
+    dispute_review_deferred_offer_repair = 0
+    ordinary_fast_review_results = 0
+    ordinary_fast_review_noop_results = 0
+    ordinary_fast_review_material_results = 0
+    ordinary_fast_review_decision_counts: dict[str, int] = {}
     dynamic_player_provider_calls = 0
     dynamic_player_error_count = 0
 
@@ -660,19 +747,40 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
 
         nonlocal evaluator_degraded_count
         nonlocal actor_generation_attempts
+        nonlocal actor_repeated_output_retry_aborted
         nonlocal actor_provider_calls
         nonlocal actor_suggestion_fill_attempts
         nonlocal actor_suggestion_fill_provider_calls
+        nonlocal actor_suggestion_refill_after_review_attempts
         nonlocal transition_ownership_retries
+        nonlocal review_fact_candidates_proposed
+        nonlocal fact_candidates_accepted
+        nonlocal fact_candidates_rejected
         nonlocal transition_scene_boundary_retries
         nonlocal transition_author_boundary_retries
         nonlocal transition_offer_retries
         nonlocal semantic_rewrite_attempts
         nonlocal phantom_transition_flags_cleared
+        nonlocal completion_fallback_offer_applied
+        nonlocal pending_acceptance_suggestions_preserved
+        nonlocal verified_offer_acceptance_suggestions_inserted
+        nonlocal author_fallback_invitation_protected
+        nonlocal narration_offer_flags_cleared
+        nonlocal explicit_player_movement_flags_cleared
+        nonlocal player_action_projection_conflicts
+        nonlocal player_action_projection_safe_degrades
+        nonlocal current_scene_offer_flags_cleared
         nonlocal unsafe_suggestions_removed
         nonlocal route_suggestion_reviews
         nonlocal transition_judge_calls
         nonlocal transition_judge_degraded_count
+        nonlocal dispute_review_skipped_high_confidence_body
+        nonlocal dispute_review_skipped_unsafe_offer_buttons
+        nonlocal dispute_review_skipped_contract_offer
+        nonlocal dispute_review_deferred_offer_repair
+        nonlocal ordinary_fast_review_results
+        nonlocal ordinary_fast_review_noop_results
+        nonlocal ordinary_fast_review_material_results
         for row in [*(trace.get("turns") or []), *(trace.get("errors") or [])]:
             diagnostics = (
                 row.get("workflow_diagnostics")
@@ -694,6 +802,19 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             actor_generation_attempts += int(
                 diagnostics.get("actor_generation_attempts") or 0
             )
+            repeated_guards = diagnostics.get("actor_repeated_output_guards")
+            if isinstance(repeated_guards, Mapping):
+                for guard, count in repeated_guards.items():
+                    normalized_guard = str(guard).strip()
+                    if not normalized_guard:
+                        continue
+                    actor_repeated_output_guards[normalized_guard] = (
+                        actor_repeated_output_guards.get(normalized_guard, 0)
+                        + int(count or 0)
+                    )
+            actor_repeated_output_retry_aborted += int(
+                diagnostics.get("actor_repeated_output_retry_aborted") or 0
+            )
             actor_provider_calls += int(
                 diagnostics.get("actor_provider_calls") or 0
             )
@@ -702,6 +823,9 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             )
             actor_suggestion_fill_provider_calls += int(
                 diagnostics.get("actor_suggestion_fill_provider_calls") or 0
+            )
+            actor_suggestion_refill_after_review_attempts += int(
+                diagnostics.get("actor_suggestion_refill_after_review_attempts") or 0
             )
             fill_reasons = diagnostics.get("actor_suggestion_fill_reasons")
             if isinstance(fill_reasons, Mapping):
@@ -723,6 +847,25 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
                         actor_base_suggestion_parse_counts.get(normalized_reason, 0)
                         + int(count or 0)
                     )
+            fact_parse_counts = diagnostics.get("actor_base_fact_candidate_parse_counts")
+            if isinstance(fact_parse_counts, Mapping):
+                for reason, count in fact_parse_counts.items():
+                    normalized_reason = str(reason).strip()
+                    if not normalized_reason:
+                        continue
+                    actor_base_fact_candidate_parse_counts[normalized_reason] = (
+                        actor_base_fact_candidate_parse_counts.get(normalized_reason, 0)
+                        + int(count or 0)
+                    )
+            review_fact_candidates_proposed += int(
+                diagnostics.get("review_fact_candidates_proposed") or 0
+            )
+            fact_candidates_accepted += int(
+                diagnostics.get("fact_candidates_accepted") or 0
+            )
+            fact_candidates_rejected += int(
+                diagnostics.get("fact_candidates_rejected") or 0
+            )
             transition_ownership_retries += int(
                 diagnostics.get("transition_ownership_retries") or 0
             )
@@ -741,6 +884,33 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             phantom_transition_flags_cleared += int(
                 diagnostics.get("phantom_transition_flags_cleared") or 0
             )
+            completion_fallback_offer_applied += int(
+                diagnostics.get("completion_fallback_offer_applied") or 0
+            )
+            pending_acceptance_suggestions_preserved += int(
+                diagnostics.get("pending_acceptance_suggestions_preserved") or 0
+            )
+            verified_offer_acceptance_suggestions_inserted += int(
+                diagnostics.get("verified_offer_acceptance_suggestions_inserted") or 0
+            )
+            author_fallback_invitation_protected += int(
+                diagnostics.get("author_fallback_invitation_protected") or 0
+            )
+            narration_offer_flags_cleared += int(
+                diagnostics.get("narration_offer_flags_cleared") or 0
+            )
+            explicit_player_movement_flags_cleared += int(
+                diagnostics.get("explicit_player_movement_flags_cleared") or 0
+            )
+            player_action_projection_conflicts += int(
+                diagnostics.get("player_action_projection_conflicts") or 0
+            )
+            player_action_projection_safe_degrades += int(
+                diagnostics.get("player_action_projection_safe_degrades") or 0
+            )
+            current_scene_offer_flags_cleared += int(
+                diagnostics.get("current_scene_offer_flags_cleared") or 0
+            )
             unsafe_suggestions_removed += int(
                 diagnostics.get("unsafe_suggestions_removed") or 0
             )
@@ -753,6 +923,44 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             transition_judge_degraded_count += int(
                 diagnostics.get("transition_judge_degraded") is True
             )
+            dispute_review_skipped_high_confidence_body += int(
+                diagnostics.get("dispute_review_skipped_high_confidence_body") or 0
+            )
+            dispute_review_skipped_unsafe_offer_buttons += int(
+                diagnostics.get("dispute_review_skipped_unsafe_offer_buttons") or 0
+            )
+            dispute_review_skipped_contract_offer += int(
+                diagnostics.get("dispute_review_skipped_contract_offer") or 0
+            )
+            dispute_review_deferred_offer_repair += int(
+                diagnostics.get("dispute_review_deferred_offer_repair") or 0
+            )
+            if not bool(row.get("route_changed")):
+                for review_result in diagnostics.get("transition_review_results") or ():
+                    if (
+                        not isinstance(review_result, Mapping)
+                        or review_result.get("review_mode") != "fast"
+                    ):
+                        continue
+                    ordinary_fast_review_results += 1
+                    decisions = {
+                        "offer": bool(review_result.get("offer_present")),
+                        "body_violation": bool(review_result.get("body_violations")),
+                        "unsafe_suggestion": bool(review_result.get("unsafe_suggestion_indexes")),
+                        "completion_fact": bool(review_result.get("fact_candidates")),
+                        "fixed_narration": bool(review_result.get("fixed_narration_triggers")),
+                        "missed_initiation": bool(review_result.get("missed_initiation")),
+                    }
+                    material = [name for name, present in decisions.items() if present]
+                    if material:
+                        ordinary_fast_review_material_results += 1
+                        for name in material:
+                            ordinary_fast_review_decision_counts[name] = (
+                                ordinary_fast_review_decision_counts.get(name, 0) + 1
+                            )
+                    else:
+                        # 纯放行只表示该次没有修改状态，不表示这次质量检查没有价值。
+                        ordinary_fast_review_noop_results += 1
 
     for story in stories:
         primary = story.get("primary_trace")
@@ -799,21 +1007,45 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         "evaluator_degraded_count": evaluator_degraded_count,
         "interaction_intent_counts": interaction_intent_counts,
         "actor_generation_attempts": actor_generation_attempts,
+        "actor_repeated_output_guards": actor_repeated_output_guards,
+        "actor_repeated_output_retry_aborted": actor_repeated_output_retry_aborted,
         "actor_provider_calls": actor_provider_calls,
         "actor_suggestion_fill_attempts": actor_suggestion_fill_attempts,
         "actor_suggestion_fill_provider_calls": actor_suggestion_fill_provider_calls,
+        "actor_suggestion_refill_after_review_attempts": actor_suggestion_refill_after_review_attempts,
         "actor_suggestion_fill_reasons": actor_suggestion_fill_reasons,
         "actor_base_suggestion_parse_counts": actor_base_suggestion_parse_counts,
+        "actor_base_fact_candidate_parse_counts": actor_base_fact_candidate_parse_counts,
+        "review_fact_candidates_proposed": review_fact_candidates_proposed,
+        "fact_candidates_accepted": fact_candidates_accepted,
+        "fact_candidates_rejected": fact_candidates_rejected,
         "transition_ownership_retries": transition_ownership_retries,
         "transition_scene_boundary_retries": transition_scene_boundary_retries,
         "transition_author_boundary_retries": transition_author_boundary_retries,
         "transition_offer_retries": transition_offer_retries,
         "semantic_rewrite_attempts": semantic_rewrite_attempts,
         "phantom_transition_flags_cleared": phantom_transition_flags_cleared,
+        "completion_fallback_offer_applied": completion_fallback_offer_applied,
+        "pending_acceptance_suggestions_preserved": pending_acceptance_suggestions_preserved,
+        "verified_offer_acceptance_suggestions_inserted": verified_offer_acceptance_suggestions_inserted,
+        "author_fallback_invitation_protected": author_fallback_invitation_protected,
+        "narration_offer_flags_cleared": narration_offer_flags_cleared,
+        "explicit_player_movement_flags_cleared": explicit_player_movement_flags_cleared,
+        "player_action_projection_conflicts": player_action_projection_conflicts,
+        "player_action_projection_safe_degrades": player_action_projection_safe_degrades,
+        "current_scene_offer_flags_cleared": current_scene_offer_flags_cleared,
         "unsafe_suggestions_removed": unsafe_suggestions_removed,
         "route_suggestion_reviews": route_suggestion_reviews,
         "transition_judge_calls": transition_judge_calls,
         "transition_judge_degraded_count": transition_judge_degraded_count,
+        "dispute_review_skipped_high_confidence_body": dispute_review_skipped_high_confidence_body,
+        "dispute_review_skipped_unsafe_offer_buttons": dispute_review_skipped_unsafe_offer_buttons,
+        "dispute_review_skipped_contract_offer": dispute_review_skipped_contract_offer,
+        "dispute_review_deferred_offer_repair": dispute_review_deferred_offer_repair,
+        "ordinary_fast_review_results": ordinary_fast_review_results,
+        "ordinary_fast_review_noop_results": ordinary_fast_review_noop_results,
+        "ordinary_fast_review_material_results": ordinary_fast_review_material_results,
+        "ordinary_fast_review_decision_counts": ordinary_fast_review_decision_counts,
         "dynamic_player_provider_calls": dynamic_player_provider_calls,
         "dynamic_player_error_count": dynamic_player_error_count,
     }
@@ -875,6 +1107,19 @@ async def _run_trace(
             if engine is not None and isinstance(getattr(engine, "nodes", None), Mapping)
             else None
         )
+        completion_contract_status_before_turn = "unknown"
+        completion_checker = getattr(engine, "completion_contract_satisfied", None)
+        if callable(completion_checker):
+            # 停滞判定必须使用 Actor 生成前的已提交状态。本回合复核刚写入最后
+            # 一条完成事实时，已生成的正文无法反向补出口，不能据此误报卡幕。
+            completion_before_turn = completion_checker(current.session)
+            completion_contract_status_before_turn = (
+                "undeclared"
+                if completion_before_turn is None
+                else "satisfied"
+                if completion_before_turn
+                else "pending"
+            )
         route_status = (
             str(current.ledger_events[-1].get("route_status") or "")
             if getattr(current, "ledger_events", ())
@@ -943,6 +1188,25 @@ async def _run_trace(
                 "error_code": "missing_transition_advance_suggestion",
                 "suggestions": deepcopy(suggestions),
             })
+        if (
+            input_source == "recommended"
+            and route_status == "transition_offered"
+            and _rejected_transition_input_seen(
+                trace,
+                node_id=current.session.current_node_id,
+                player_input=player_input,
+            )
+        ):
+            # 同一接受输入已经被转场复核拒绝；继续点击只会重复调用模型，掩盖作者合同错误。
+            trace["quality_errors"].append({
+                "attempt": attempt_index + 1,
+                "base_revision": current.session.revision,
+                "node_id": current.session.current_node_id,
+                "error_code": "repeated_rejected_transition_input",
+                "player_input": player_input,
+            })
+            trace["stop_reason"] = "repeated_rejected_transition_input"
+            break
         turn = TurnRequestV2.from_mapping({
             # revision 进入 ID 后，同一临时分叉可分批续跑；每批 attempt_index 从零开始也不会撞车。
             "client_turn_id": (
@@ -1027,6 +1291,7 @@ async def _run_trace(
             "metric_changes": deepcopy(event.get("metric_changes") or []),
             "metrics": dict(current.session.metrics),
             "transition_offered": bool(getattr(current.session, "transition_offered", False)),
+            "completion_contract_status_before_turn": completion_contract_status_before_turn,
             "node_turn_count": current.session.node_turn_count,
             "recommended_turns": (
                 int(committed_node.get("recommended_turns"))
@@ -1225,6 +1490,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="从指定剧本包目录读取样本；用于临时生成包的隔离压测，不改变默认安装目录",
     )
+    parser.add_argument(
+        "--trace-dir",
+        type=Path,
+        help="演绎文案 JSONL 日志目录；不传时沿用 NEKO_THEATER_TRACE_DIR，仍未设置则写入本次压测临时目录",
+    )
     parser.add_argument("--output", type=Path, help="报告 JSON 路径；默认写入新建临时目录")
     return parser
 
@@ -1332,6 +1602,15 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
     report_path = args.output.resolve() if args.output else run_root / "report.json"
     storage_root = run_root / "isolated_theater"
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    previous_trace_dir = os.environ.get("NEKO_THEATER_TRACE_DIR")
+    trace_dir_argument = getattr(args, "trace_dir", None)
+    if trace_dir_argument is not None:
+        # 命令行参数优先于继承环境，只影响本次压测进程并在结束时恢复。
+        os.environ["NEKO_THEATER_TRACE_DIR"] = str(trace_dir_argument.expanduser().resolve())
+    elif not previous_trace_dir:
+        # 压测默认必须可回溯；普通 HTTP/桌面运行仍由环境变量决定是否写详细日志。
+        os.environ["NEKO_THEATER_TRACE_DIR"] = str((run_root / "text_traces").resolve())
+    effective_trace_dir = os.environ.get("NEKO_THEATER_TRACE_DIR", "").strip()
     packing_handler = _PackingLogHandler()
     packing_loggers = [
         logging.getLogger("services.theater.numeric_v2_actor"),
@@ -1386,6 +1665,10 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
         for logger, level in zip(packing_loggers, previous_levels, strict=True):
             logger.removeHandler(packing_handler)
             logger.setLevel(level)
+        if previous_trace_dir is None:
+            os.environ.pop("NEKO_THEATER_TRACE_DIR", None)
+        else:
+            os.environ["NEKO_THEATER_TRACE_DIR"] = previous_trace_dir
 
     summary = summarize_stories(stories)
     report = {
@@ -1402,6 +1685,10 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
         "fork_turns": args.fork_turns,
         "catgirl": numeric_v2_catgirl_binding(config_manager)["catgirl_name"],
         "package_root": str(package_root),
+        "text_trace": {
+            "enabled": bool(effective_trace_dir),
+            "directory": effective_trace_dir or None,
+        },
         "summary": summary,
         "stories": stories,
         "elapsed_seconds": round(time.monotonic() - started_at, 3),

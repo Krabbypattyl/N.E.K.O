@@ -21,7 +21,8 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 def _session():
     engine = _engine()
     session = engine.create_session(session_id='lookup', catgirl_binding=_binding(), opening_performance=_opening())
-    return replace(session, revision=2, node_turn_count=2, performance_history=(
+    story_state = {**session.story_state, 'revision': 2}
+    return replace(session, revision=2, story_state=story_state, node_turn_count=2, performance_history=(
         {'revision': 1, 'from_node_id': 'start', 'to_node_id': 'start',
          'input_text': '我同意展示日记。', 'performance': '日记暂时交给管理员。',
          'suggested_inputs': ['我把从未取得的怀表放进保险箱。']},

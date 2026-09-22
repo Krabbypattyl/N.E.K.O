@@ -61,6 +61,23 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
     if intent == 'accept':
         current = await _commit_invitation(runtime, current, '（收好工具）咱们去街市看看，好吗？')
     actor_nodes = []; review_modes = []; evaluation_calls = []
+    # 复现真实压测：交付合同先占用一次改写后，去向复核仍必须有权取消错误换幕。
+    pre_review_rewrite = (
+        intent == 'accept' and dispute == 'timeout'
+        and ordinary_result == 'pass' and invalid_invitation
+    )
+    module_options = dict(await workflow.aload_theater_module_options())
+    if pre_review_rewrite:
+        module_options['review_delivery'] = True
+    contract_checks = 0
+
+    def missing_contract_names(*args, **kwargs):
+        nonlocal contract_checks
+        contract_checks += 1
+        return ('通行文书',) if pre_review_rewrite and contract_checks == 1 else ()
+
+    async def load_module_options():
+        return module_options
 
     async def evaluate(self, **kwargs):
         evaluation_calls.append(kwargs)
@@ -104,6 +121,8 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(workflow, 'missing_contract_names', missing_contract_names)
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', load_module_options)
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
                   turn=TurnRequestV2('go', current.session.revision, c['message']), ensure_current_binding=lambda _: _binding())
     if ordinary_result == 'technical' and dispute != 'allow':
@@ -121,10 +140,13 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
         assert actor_nodes == ['ending_leave']
     else:
         assert result.stored.session.current_node_id == 'start'
-        assert actor_nodes == ['ending_leave', 'start']
+        assert actor_nodes == (
+            ['ending_leave', 'ending_leave', 'start']
+            if pre_review_rewrite else ['ending_leave', 'start']
+        )
         assert result.stored.ledger_events[-1]['transition_intent'] == 'unclear'
         assert result.diagnostics['transition_cancellations'] == 1
-        assert result.diagnostics['semantic_rewrite_attempts'] == 1
+        assert result.diagnostics['semantic_rewrite_attempts'] == (2 if pre_review_rewrite else 1)
         assert result.diagnostics['semantic_review_fallback'] is (ordinary_result in {'body', 'bad_offer'})
         assert '错误转场待审候选' not in str(result.stored)
         assert len(review_modes) == 3
@@ -139,6 +161,8 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
                 assert pending['revision'] == result.stored.session.revision
         elif intent == 'accept':
             assert result.stored.session.transition_offered, '不能撤下尚未接受的合法邀请'
+        elif ordinary_result == 'bad_offer':
+            assert not result.stored.session.transition_offered, '复核无效的新去向不能锁存为待确认邀请'
     assert 'initiation_authorized' not in result.stored.session.to_dict()
     assert 'acceptance_authorized' not in result.stored.session.to_dict()
     assert await NumericV2Runtime(engine, tmp_path).restore_session('wrong_destination') == result.stored
@@ -226,9 +250,9 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
-            calls.append(messages)
-            return SimpleNamespace(content=json.dumps(dict(offer_present=False, valid=False, body_violations=[],
-                unsafe_suggestion_indexes=[], acceptance_authorized=False, failure_reason='街市不是阅览室。')))
+                calls.append(messages)
+                return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False, body_violations=[],
+                    unsafe_suggestion_indexes=[], acceptance_authorized=False, failure_reason='街市不是阅览室。')))
 
     async def config(_): return dict(model='test', base_url='http://test.invalid')
     async def factory(*args, **kwargs): return Client()

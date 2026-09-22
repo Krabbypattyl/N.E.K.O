@@ -38,7 +38,7 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
 
         async def ainvoke(self, messages):
             calls.append(messages)
-            return SimpleNamespace(content=json.dumps(dict(offer_present=False, valid=False,
+            return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False,
                 body_violations=[], unsafe_suggestion_indexes=[], failure_reason='')))
 
     async def config(_):

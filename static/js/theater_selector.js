@@ -18,7 +18,6 @@
         memoryArchive: '/api/theater-numeric/memory/archive',
         pinMemoryArchive: '/api/theater-numeric/memory/archive/pin',
         forgetMemory: '/api/theater-numeric/memory/forget',
-        options: '/api/theater-numeric/options'
     };
     // 选择页只消费共享传输协议；跨窗口目标和业务状态仍由本页独立管理。
     var transport = window.nekoTheaterTransport;
@@ -874,44 +873,6 @@
             else if (!event.shiftKey && index === buttons.length - 1) { event.preventDefault(); buttons[0].focus(); }
         });
     }
-    // 争议复查是可选项：关闭只跳过"首次争议的独立思考复查"，快检、共享一次改稿与原子提交不变。
-    function applyDisputeReviewOption(enabled) {
-        var toggle = $('theater-dispute-toggle');
-        if (!toggle) return;
-        toggle.checked = enabled === true;
-        toggle.disabled = false;
-    }
-
-    function loadOptions() {
-        var toggle = $('theater-dispute-toggle');
-        if (!toggle) return Promise.resolve();
-        toggle.disabled = true;
-        return requestJson(api.options).then(function (data) {
-            // 读取失败或字段缺失时回到默认（关闭），不把开关显示成已开启。
-            applyDisputeReviewOption(!data || data._status !== 200 ? false : data.dispute_review_enabled);
-        }).catch(function () {
-            applyDisputeReviewOption(false);
-        });
-    }
-
-    function saveDisputeReviewOption(enabled) {
-        var toggle = $('theater-dispute-toggle');
-        if (toggle) toggle.disabled = true;
-        return requestJson(api.options, { method: 'POST', body: { dispute_review_enabled: enabled } })
-            .then(function (data) {
-                if (!data || data._status !== 200 || typeof data.dispute_review_enabled !== 'boolean') {
-                    throw new Error('theater_options_rejected');
-                }
-                applyDisputeReviewOption(data.dispute_review_enabled);
-                setFeedback(t('theater.disputeReviewSaved', '设置已保存。'), false);
-            })
-            .catch(function () {
-                // 保存失败时回到服务端当前值，避免界面显示与运行时行为不一致。
-                setFeedback(t('theater.disputeReviewSaveFailed', '设置保存失败，请重试。'), true);
-                return loadOptions();
-            });
-    }
-
     document.addEventListener('DOMContentLoaded', function () {
         if (typeof BroadcastChannel !== 'undefined') {
             try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
@@ -926,8 +887,10 @@
         $('theater-end-btn').addEventListener('click', endSession);
         $('theater-delete-btn').addEventListener('click', deleteStory);
         $('theater-forget-memory-btn').addEventListener('click', forgetStoryMemory);
-        $('theater-dispute-toggle').addEventListener('change', function () { saveDisputeReviewOption(this.checked); });
-        loadOptions();
+        var settingsButton = $('theater-settings-btn');
+        if (settingsButton) settingsButton.addEventListener('click', function () {
+            window.location.href = '/theater/settings';
+        });
         loadStories().catch(function () { setStatus('theater.failed', '出错了'); setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true); });
         postMessage({ action: 'theater:selector-ready' });
     });

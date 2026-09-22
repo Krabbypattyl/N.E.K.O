@@ -527,11 +527,29 @@ class NumericV2BranchService:
             "transition_contract": self._transition_contract(
                 first_transition,
                 source_ids=[self._last_goal_fact_id(source)],
+                # 来源幕带有 completion_contract 时，编译器要求每条普通出口都提供
+                # 可直接展示的邀请和对应接受输入；支线也必须沿用同一换场合同。
+                fallback_offer=(
+                    str(first_transition["fallback_offer"]).strip()
+                ),
+                accept_input=(
+                    str(first_transition["accept_input"]).strip()
+                ),
             ),
         })
         for index, scene in enumerate(scenes):
             target_id = scene_ids[index + 1] if index + 1 < len(scene_ids) else endpoint_node_id
             projected_goals = self._project_goals(scene_ids[index], scene["ordered_goals"])
+            # 支线模型没有单独输出 completion_facts。最后一个原子目标只能在前序目标
+            # 已经交付后成立，因此用它生成一项稳定完成事实，避免支线幕永远停在 playing。
+            completion_fact_key = f"scene:{scene_ids[index]}:branch_complete"
+            story.setdefault("fact_contract", {}).setdefault("facts", {})[
+                completion_fact_key
+            ] = {
+                "value_type": "bool",
+                "visibility": "public",
+                "description": str(scene["ordered_goals"][-1]["description"]).strip(),
+            }
             # 分支的 expected_turns 同样只保留在作者诊断中，Runtime 推荐值固定为 3。
             min_turns, recommended_turns = scene_turn_budget(scene["ordered_goals"])
             scene_context = self._character_scene_context(
@@ -550,6 +568,14 @@ class NumericV2BranchService:
             self._append_key_prop_changes(active_key_props, changes, node_id=scene_ids[index])
             self._append_key_prop_changes(persisted_key_props, changes, node_id=scene_ids[index])
             outgoing_transition = deepcopy(dict(transitions[index + 1]))
+            endpoint_node = _nodes(story).get(str(target_id))
+            target_is_terminal = bool(
+                isinstance(endpoint_node, Mapping)
+                and (
+                    endpoint_node.get("type") == "ending"
+                    or endpoint_node.get("terminal") is True
+                )
+            )
             outgoing_transition["must_preserve"] = list(dict.fromkeys([
                 *outgoing_transition["must_preserve"],
                 *self._key_prop_facts(active_key_props),
@@ -560,6 +586,9 @@ class NumericV2BranchService:
                 "chapter": scene["title"],
                 "min_turns": min_turns,
                 "recommended_turns": recommended_turns,
+                "completion_contract": {
+                    "all": [{"key": completion_fact_key, "equals": True}],
+                },
                 "story_beat": {
                     **({"fixed_narrations": deepcopy(scene["fixed_narrations"])}
                        if "fixed_narrations" in scene else {}),
@@ -586,6 +615,21 @@ class NumericV2BranchService:
                     "transition_contract": self._transition_contract(
                         outgoing_transition,
                         source_ids=[f"goal.{projected_goals[-1]['id']}"],
+                        trigger_fact_ids=["branch_complete"],
+                        fallback_offer=(
+                            None
+                            if target_is_terminal
+                            else (
+                                str(outgoing_transition["fallback_offer"]).strip()
+                            )
+                        ),
+                        accept_input=(
+                            None
+                            if target_is_terminal
+                            else (
+                                str(outgoing_transition["accept_input"]).strip()
+                            )
+                        ),
                     ),
                 }],
             })
@@ -1650,6 +1694,33 @@ class NumericV2BranchService:
                 raise NumericV2BranchError("branch_transition_chain_invalid")
             for field in ("reason", "bridge_scene_narration", "tone"):
                 transition[field] = self._required_text(transition.get(field), f"transitions[{index}].{field}")
+            ordinary_exit = index < len(normalized_scenes) or plan.get("endpoint_mode") == "mainline"
+            if ordinary_exit:
+                for field in ("fallback_offer", "accept_input"):
+                    value = transition.get(field)
+                    if not isinstance(value, str) or not value.strip():
+                        raise NumericV2BranchError(
+                            "branch_transition_accept_input_required"
+                            if field == "accept_input"
+                            else "branch_transition_fallback_offer_required",
+                            {"path": f"transitions[{index}].{field}"},
+                        )
+                    transition[field] = value.strip()
+                if transition["accept_input"] == "我接受这个安排，继续进入下一阶段。":
+                    raise NumericV2BranchError(
+                        "branch_transition_accept_input_generic",
+                        {"path": f"transitions[{index}].accept_input"},
+                    )
+            else:
+                if str(transition.get("fallback_offer") or "").strip() or str(
+                    transition.get("accept_input") or ""
+                ).strip():
+                    raise NumericV2BranchError(
+                        "branch_terminal_transition_input_forbidden",
+                        {"path": f"transitions[{index}]"},
+                    )
+                transition.pop("fallback_offer", None)
+                transition.pop("accept_input", None)
             transition["must_preserve"] = self._text_list(transition.get("must_preserve"), "must_preserve")
             if index < len(normalized_scenes):
                 transition["must_preserve"] = list(dict.fromkeys([
@@ -1896,9 +1967,12 @@ class NumericV2BranchService:
         transition: Mapping[str, Any],
         *,
         source_ids: list[str],
+        trigger_fact_ids: list[str] | None = None,
+        fallback_offer: str | None = None,
+        accept_input: str | None = None,
     ) -> dict[str, Any]:
         bridge = str(transition["bridge_scene_narration"])
-        return {
+        contract = {
             "reason": transition["reason"],
             "bridge_scene_narration": bridge,
             "source_ids": list(dict.fromkeys(source_ids)),
@@ -1906,6 +1980,17 @@ class NumericV2BranchService:
             "must_preserve": deepcopy(transition["must_preserve"]),
             "tone": transition["tone"],
         }
+        if trigger_fact_ids is not None:
+            # 支线幕的完成合同由构建器生成；路线必须绑定同一幕的事实，不能只靠文字原因猜测是否可离幕。
+            contract["trigger_fact_ids"] = list(dict.fromkeys(
+                str(item).strip() for item in trigger_fact_ids if str(item).strip()
+            ))
+        # 普通幕出口的邀请由作者侧合同负责，不能等 Runtime 临时拼接；终点为结局
+        # 的路线不传这两个字段，继续遵守“进入结局即结束”的合同。
+        if fallback_offer is not None or accept_input is not None:
+            contract["fallback_offer"] = str(fallback_offer or "").strip()
+            contract["accept_input"] = str(accept_input or "").strip()
+        return contract
 
     @classmethod
     def _validate_ordered_goals(cls, value: Any, *, path: str) -> list[dict[str, Any]]:

@@ -81,7 +81,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     # 结局的变化必须有来源，余韵只呈现已成立状态，不另起一次验证或和解互动。
     "结局先核对最后一幕已交付的结果，再写她现在如何看待这件事，以及仍保留的边界；"
     "ending.summary 承接变化的原因，ending.opening_scene 与 ending_stage 只呈现结束时已成立的可见状态。"
-    "可用同一物件的保留状态或对同一件事的不同态度呼应前文，不再次检查、整理、签署、挂起或重做此前动作；"
+    "可用同一物件的保留状态或对同一件事的不同态度呼应前文，不重复执行此前已经完成的动作；"
     "不为了制造变化强行和解、彻底改观或升温，不把新承诺、新任务或未知结果当作结局变化。"
     # 终局实跑把专业记忆损失扩成关系重置，并向已关闭输入的玩家追问；限定损失对象与收句职责。
     "损失、遗忘或能力减退写清具体范围，不自动扩成忘记同行者、丧失生活能力或重置已建立关系。"
@@ -94,7 +94,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "同一物品只由来源或目标的一处首次交付，其他字段保留交付后状态，不同时写未领取、已手持和已经归还。"
     # 多个既有字段描述同一时点；收束不自动授权玩家收拾、离开或执行新的配合。
     "写完后将结局摘要、开场及三个主体状态放在同一时点核对：物件位置、操作是否完成、角色站位须一致；"
-    "已封存不能同时待归档，已结束不能同时等待新操作。结束不等于散场，不默认男主收拾物品、离开或补签手续。"
+    "同一对象不能同时处于互斥状态，已结束的过程不能同时等待新操作。结束不等于散场，不默认男主执行作者未写明的附加动作。"
     "男主状态只承接上游已明确的事实，信息不足就保留原有位置与状态，不以‘准备离开’替代结局。"
     "must_not_happen、scene_boundaries、forbidden_behaviors 每条限制写明主体、对象及受限行为或必要前提，"
     "不写省略主体的孤立动词；只限制口头表达时，不扩大为禁止行动反馈，也不约束其他角色。"
@@ -110,33 +110,35 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "必要的工具、角色协作或玩家决定必须明确；条件满足后交付本幕结果与直接反应，即可自然收束，"
     "不追加检验、机制或任务来拖延，也不替玩家接受换幕。"
     # 实测中调查扩写拖住出口，配角条件留空又被禁止补充；作者须提供能演出的有限因果。
-    "检修、调查或救援应写清本幕有限的处理对象、可观察的完成结果与下一阶段去向；"
+    "任何任务都应写清本幕有限的处理对象、可观察的完成结果与下一阶段去向；"
     "线索出现不等于必须在本幕追查到底，不把下一幕的调查拆成当前出口前的新任务。"
     # 实跑发现“一回合一个目标”把已具备因果拆成反复过门；目标条数不应成为演出限速器。
     "不按目标条数限制每回合能发生几件事；同一操作的直接结果与女主自主回应可以连贯呈现，"
     "在新的玩家决定或尚不明确的结果前停下，不把观察、确认、进入、再进入拆成多轮。"
     "开场给出当前即可感知的核心线索及其观察方式，不只写空泛景色让演员另造屏障或试炼。"
     "承担身份或取物核对的凭证须在开场明确用途、已有的核对依据与有效状态；"
-    "不要只写一张委托书，让演员自行改成别的任务、杜撰失效原因或要求新证明。"
-    "与本幕选择无关的未解信息可以明确保留未知；例如照片年份待考不妨碍完成构图选择，"
+    "不要只写用途不明的凭证，让演员自行改成别的任务、杜撰失效原因或要求新证明。"
+    "与本幕选择无关的背景细节可以明确保留未知；这不妨碍完成当前已经定义的选择，"
     "不以必须查清所有背景为出口条件，也不为了延长调查新增证据。"
     # 仅给“寻找支援”等目的会使普通演员补造任务；出口须有来源已知的具体去向与同行者。
     "普通出口写清下一步去哪里、去做什么、谁同行及配角留在哪里；目的与已知路径相连，"
-    "不只写‘寻找支援／进一步调查’后把实际入口藏在目标开场里，也不以含糊标识诱导另造终端或第二次救援。"
+    "不只写抽象的后续目标再把实际入口藏在目标开场里，也不以含糊标识诱导另造设施或重复任务。"
     "目标入口在来源可被说明，不等于目标结果已经发生；具体解锁、抵达或操作仍按所属阶段演出。"
     # 来源邀请含两个地点、实际却只通往其中一个时，会诱发接受后候选换幕错配。
-    "逐条对照来源 exit_plan.proposal/player_decision、导出后的 transition_contract.reason、"
+    "逐条对照来源 exit_plan.trigger_fact_ids/trigger_fact、proposal/player_decision、导出后的 transition_contract.reason、"
     "目标 entry_bridge 与 opening_scene：这四处必须兑现同一去向、时段和开始的活动。"
     "单个出口不能写‘去A或去B’却只通往C，也不能只用‘继续逛逛’掩盖实际要进入的具体地点。"
     "有多个候选分支时，来源先邀请各入口都能兑现的共同行动；不同后续体验在目标幕再公开，"
     "不能让隐藏数值把已答应的目的地换成别处。没有共同入口时，调整本次获准的剧情安排，不能虚构路线承诺。"
-    "沿途经过某处须有已公开的路径依据，不能在换幕后临时编造捷径、店铺关门或玩家改主意来圆场。"
-    # 镇内带路曾被误当成回住处的换幕授权；作者须区分本幕活动和真正出口。
-    "本幕内的参观、店铺移动与普通出口分别写清目的；接受本幕带路不等于接受另一个地点或时段的出口。"
+    "沿途经过某处须有已公开的路径依据，不能在换幕后临时编造新路径、外部阻碍或玩家改主意来圆场。"
+    # 幕内带路曾被误当成跨阶段授权；作者须区分当前活动和真正出口。
+    "本幕内的局部行动、场内移动与普通出口分别写清目的；接受本幕带路不等于接受另一个地点或时段的出口。"
     "summary 与 narrative_focus 给出本幕核心互动及其直接回应，再连接真正出口；"
-    "可选的游览或日常活动不串成必做清单，角色已安定或问题已解决后不另加家务来推迟下一阶段。"
+    "可选活动不串成必做清单，角色已安定或问题已解决后不另加琐事来推迟下一阶段。"
     # 转场前提在作者侧收敛成可演出的因果，不让运行时逐项补齐可选素材才能离幕。
     "每个普通出口用现有 exit_plan 写清三件事：trigger_fact 只列离开真正必要的具体结果；"
+    "trigger_fact_ids 必须逐项引用本幕 completion_facts 中已经成立且真正决定离幕的 id，"
+    "Runtime 的 completion_contract 只由这些 id 组成；不要用‘接受安慰’等中间事实提前打开依赖后续回应的出口。"
     "proposal 说明下一去向、理由及通路可用条件，并安排在来源幕自然公开；"
     "player_decision 保留接受邀请或主动要求前往的实际选择。"
     "必要结果成立且玩家明确要求继续该去向后即可转场，不再要求逐项演完可选对白、展示全部设定或重复确认；"
@@ -155,14 +157,14 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "未来袭击、发现或未知结果由目标幕交付，不要求角色预知它才能提出下一步。"
     "设备预热、旅程或长时间等候若尚未完成，先交代所需时间与等候安排，玩家同意后再由桥段承接时间经过；"
     "目标开场不能在没有时间经过或已知加速原因时把未完成状态改成完成。"
-    # 雷雨夜要求睡前预告次日讨论内容造成留幕；等候的授权与下一幕的新话题分开。
+    # 跨时段等候的授权与下一幕才提出的新话题分开。
     "若转场本身是休息或等候到下一时段，目标开场仅由女主提出新话题，出口可聚焦当前地点等到何时；"
     "不额外要求玩家预先同意尚未提出的话题内容或决定，下一幕仍保留玩家对此的实际选择。"
     # 仅补出口说明仍可能在入睡后失去提议机会；核心就是陪伴等候时，把可回应请求放在开场。
     "若本幕核心选择就是是否陪伴、留下或等候，可在开场公开角色的具体请求、位置与持续时段；"
     "不要依赖演员在互动已结束后再补一句出口。玩家接受后，来源回应先交付角色的自主反馈，再承接已授权的等候。"
     "这不免除独立前提：需要先取得物品或完成操作的出口仍先实际交付，不能靠开场请求跳过。"
-    # 复测中“今天先回去，文化节再见”只被回应前半句；邀请应聚焦真正需要接受的下一次互动。
+    # 复合邀约容易只响应前半句；邀请应聚焦真正需要接受的下一次互动。
     "下一幕是约定的未来互动时，来源幕先用可见日程、角色说明或既有约定交代具体时段与地点，"
     "proposal 聚焦下一次互动本身，不把可选的收拾、散场或回家串成另一项需要确认的任务；"
     # 运行联调中未来约定被改成现在商量，导致下一阶段提前演完却仍困在来源幕。
@@ -179,7 +181,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "配角被直接询问时仍可简短回答、拒绝或说明未知，不为减少戏份而禁止合理回应，"
     "也不要要求玩家自行编造配角才能推进。"
     "保护玩家行动权不等于禁止配角说话或行动；配角的自主回应与玩家尚未实施的操作、护送、承诺分开，"
-    "不把一个呼喊预写成整项救援完成，也不以空白状态和笼统禁令堵住所有直接反馈。"
+    "不把单一信号预写成整项任务完成，也不以空白状态和笼统禁令堵住所有直接反馈。"
     # 约定与执行有不同的完成范围，来源幕和结局必须一致，避免运行时追加未来任务。
     "本幕要交付达成约定还是实际执行，必须在 narrative、summary 与结局方向中写清并保持一致："
     "若结果是双方商定方案，写明双方同意及角色回应即可收束，不把未来执行列为本幕缺项；"
@@ -198,7 +200,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "结局没有新的互动阶段，桥段、开场和状态只承接最后一幕的结果与余韵。"
     # 所有转场允许按真实历史适配文字，作者必须把不可变事实与可变过程分清。
     "运行时会依据实际游玩历史改写桥段与开场措辞；写清必须保留的时间、地点、必要结果和阶段边界，"
-    "不要预定玩家未选择的行动，也不要用固定返回、签署或告别动作来代表收束。"
+    "不要预定玩家未选择的行动，也不要用固定的附加动作来代表收束。"
     "来源幕已经交付的动作在桥段与目标开场只承接结果状态；没有真实阻碍时，普通出口直接邀请下一阶段，"
     # 分幕先服务完整互动，减少本可连贯完成却被普通换幕打断的任务；不绑定某个剧本或道具。
     "同一地点且前提已具备的同一件事，其商量、实施与直接回应通常放在同一幕，允许玩家分轮或合并行动；"
@@ -368,11 +370,23 @@ _MAINLINE_OUTPUT_CONTRACT = """{
       "opening_scene": "本幕唯一直接展示的完整开场场景",
       "entry_bridge": "第一章为空字符串；后续章节为承接上幕事实的确定性换场旁白",
       "transition_goal": "本幕如何逐步收束并靠近下一幕或结局",
+      "completion_facts": [
+        {
+          "id": "本幕内唯一的稳定英文标识",
+          "description": "已经成立时可从玩家输入或本轮可见演出直接核对的具体结果",
+          "value_type": "bool | int | string",
+          "target_value": true,
+          "visibility": "public | story"
+        }
+      ],
       "exit_plan": {
         "trigger_fact": "本幕已经成立、使下一步合理的事实",
+        "trigger_fact_ids": ["completion_facts 中真正决定离幕的 id"],
         "proposal_owner": "catgirl | environment",
         "proposal": "由女主提出或由环境促成的具体下一步",
         "player_decision": "普通换幕保留可执行选择；最后一幕自然收束且没有未决选择时为空字符串",
+        "fallback_offer": "非最后一幕填写一条可直接展示的角色邀请文案；最后一幕填写空字符串",
+        "accept_input": "非最后一幕填写一条明确接受同一邀请的玩家输入；最后一幕填写空字符串",
         "preserve_facts": ["换场后仍必须成立的非道具剧情事实"],
         "carry_props": ["需带入下一幕的 key_props.id"]
       },
@@ -440,7 +454,7 @@ core_idea 是剧情创作依据，cast_names 只确定双主角姓名和角色�
 7. 不生成数值、阈值、Numeric v2 节点、route gate、Session、Ledger 或 Story Package 字段。
 8. world.background 是直接展示给玩家的“前情提要”，必须使用小说或电视剧开场前情的自然叙述，交代时代地点、两人开场前已经成立的处境与故事触发点，并自然停在第一章即将开始的位置。凡是在这段可见正文中指代玩家，一律使用第二人称“你”，不得出现“玩家”“男主”等作者侧角色槽位称谓，也不要用第三人称“他”指代玩家。不得出现“世界规则”“核心悬念”“核心矛盾”等策划标签，不得罗列规则或解释创作方法。
 9. 第一章必须从玩家尚未进行任何输入的状态开始。world.background、player_role.identity 和 relationship 只能写第一章开始前已经成立的事实，不能提前写入第一章才会交付或由男主决定的结果。opening_scene 可以写环境、女主的可见行动和她主动发起的交流，但不得替玩家说出台词、作出选择、完成关键行动，或把尚未展示的玩家行为写成已经发生的事实。narrative 是作者侧梗概，可以概述本幕预计发生的双角色互动，但必须保留玩家实际决定和表达的空间。
-10. 每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、exit_plan 和 1—6 项 ordered_goals。opening_scene 是进入本幕后唯一直接展示的完整开场，不得藏入 narrative；第一章 entry_bridge 写空字符串，后续章节必须写一段只承接上幕已完成事实、再建立本幕时空的确定性换场旁白。opening_scene 和 entry_bridge 都不能新增男主的主动行为、心理决定或台词，只能展示环境变化、上幕已确定的客观结果，以及女主当前可见的行动或交流；需要男主实施的内容必须留在 player 目标中等待玩家输入。entry_bridge 不得把 narrative、ordered_goals 或 exit_plan 中的预期内容写成已经完成，只写玩家接受或主动发起已公开转场后必然发生的时空移动与客观环境变化。换场不得复制 opening_scene。narrative_focus 只写一句当前最值得继续发展的因果或互动方向，不得写成任务清单、完成度、固定台词或强制玩家行动。expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计，只填 3—120 的整数；以 length.scene_expected_turns_target 为短篇节奏软目标，超过该目标只有在新增事实不可合并时才允许。它只是诊断依据，不是 Runtime 硬门槛。transition_goal 只说明本幕如何逐步收束并靠近下一幕，不能写成伏笔总结或“完成目标后进入下一幕”。非结局出口的 exit_plan 必须用本幕成立的 trigger_fact 解释为什么现在要进行 proposal，并把可执行的跨阶段选择保留在 player_decision，不得用旁观充数。最后一幕通向结局时，trigger_fact 写已解决的问题和必要角色反应，proposal 写自然收束方向；没有尚待玩家决定的事情时 player_decision 写空字符串，不为结束新增邀请、劳动或下次活动。若结局仍依赖玩家尚未作出的实际选择，必须先在本幕交付选择，不能靠自然结束替玩家决定。不得指定台词原文。
+10. 每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、completion_facts、exit_plan 和 1—6 项 ordered_goals。opening_scene 是进入本幕后唯一直接展示的完整开场，不得藏入 narrative；第一章 entry_bridge 写空字符串，后续章节必须写一段只承接上幕已完成事实、再建立本幕时空的确定性换场旁白。opening_scene 和 entry_bridge 都不能新增男主的主动行为、心理决定或台词，只能展示环境变化、上幕已确定的客观结果，以及女主当前可见的行动或交流；需要男主实施的内容必须留在 player 目标中等待玩家输入。entry_bridge 不得把 narrative、ordered_goals 或 exit_plan 中的预期内容写成已经完成，只写玩家接受或主动发起已公开转场后必然发生的时空移动与客观环境变化。换场不得复制 opening_scene。narrative_focus 只写一句当前最值得继续发展的因果或互动方向，不得写成任务清单、完成度、固定台词或强制玩家行动。expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计，只填 3—120 的整数；以 length.scene_expected_turns_target 为短篇节奏软目标，超过该目标只有在新增事实不可合并时才允许。它只是诊断依据，不是 Runtime 硬门槛。transition_goal 只说明本幕如何逐步收束并靠近下一幕，不能写成伏笔总结或“完成目标后进入下一幕”。completion_facts 必须列出 1—8 项让本幕核心因果已经成立的最小可观察结果；id 在本幕内唯一且使用稳定英文标识，description 写清主体、对象和已经成立的结果，不能只写“目标完成”“关系提升”。bool 的 target_value 通常为 true；计数可用 int，明确状态可用 string，类型必须匹配。能让玩家看见的结果用 public，仅供剧情控制且不应直接公开的状态用 story。不得把下一幕已发生、玩家已接受换幕、proposal 已执行或纯风格要求写成完成事实。非结局出口的 exit_plan 必须用这些结果已经成立后的 trigger_fact 解释为什么现在要进行 proposal，并把可执行的跨阶段选择保留在 player_decision，不得用旁观充数。最后一幕通向结局时，trigger_fact 写已解决的问题和必要角色反应，proposal 写自然收束方向；没有尚待玩家决定的事情时 player_decision 写空字符串，不为结束新增邀请、劳动或下次活动。若结局仍依赖玩家尚未作出的实际选择，必须先在本幕交付选择，不能靠自然结束替玩家决定。除 fallback_offer 与 accept_input 外不得指定台词原文。非最后一幕的 fallback_offer 必须是一条可直接展示的完整角色文案，明确 proposal 的具体下一阶段并把决定留给玩家；accept_input 必须以玩家视角明确接受同一具体安排，不能只表示理解、追问、暂缓或替换成另一个去向。最后一幕两项都填空字符串，不为自然结束新增邀请。
 11. ordered_goals 必须按真实可完成顺序排列，每项只表达一个原子交付，并显式填写 owner、delivery_type、evidence_mode、anchors、sources、timing 与 dialogue_policy_after。timing 只能是 opening 或 turn，每幕最多一个 opening 目标，且 opening 只允许 catgirl 或 environment 交付；player 与 shared 目标必须使用 turn，player 目标还必须在 sources 中包含 player_input，shared 目标可以承接 player_input 或 previous_goal。其余目标都必须在普通回合逐步交付，换场当回合不得打包执行目标幕目标。owner 只能是 catgirl、player、shared、environment；delivery_type 只能是 catgirl_dialogue、catgirl_action、environment_fact、player_action、shared_agreement、semantic_state，且职责必须匹配。catgirl_dialogue、catgirl_action、environment_fact、player_action 和 shared_agreement 默认使用 semantic 且 anchors 写空数组：delivery_type 记录作者预期的表现位置，description 供作者检查与修订参考，不是运行时完成判定。只有 core_idea 明确要求某段不可改写文本必须逐字出现时，才使用 exact 并给出 1—4 个最终可见短锚点；在这种 exact 情况下，catgirl_action 的锚点必须是可直接放入括号动作块的可见动作短语，不得写成猫娘说出口的命令、行动说明或结果宣告。semantic_state 仍使用 semantic 且 anchors 必须为空。sources 是 1—3 项数组，每项只能是 opening、player_input、previous_goal；第一项目标不能引用 previous_goal。dialogue_policy_after 只能是 required、optional、forbidden 或 unchanged；仅在作者规划确有睡眠、昏迷、禁言或恢复发声时记录预期变化；该字段不切换实际发声策略，发声权限仍以节点 acting_contract 和 Session 为准。男主表态与女主承接属于两个顺序交付，必须拆成 player 目标和后续 catgirl 目标，不能写成一个 shared_agreement 复合目标。exact anchors 属于最终可见文本，指代玩家时必须使用第二人称“你”，不得写作者侧“男主”或“玩家”，保持作者证据与叙事人称一致。不要把完整策划句当字面锚点，也不要用“确立基调”“加深关系”等抽象主题充当目标。
 12. 若目标涉及期限、时长、金额、价格、赔偿、编号、日期或具体条款，可核对的实际值必须直接写进 description；除非 core_idea 明确要求固定文本逐字出现，否则仍使用 semantic 且 anchors 写空数组。既定事实没有实际值时只能安排协商、报价或共同填写，不能让演绎模型临时编造。可以把男主作为女主行动对象，但不得通过 catgirl 目标强迫男主完成行动；需要玩家决定时使用 owner=player 或 shared，并在 sources 中包含 player_input。
 13. 关系变化必须由共同经历、信息确认、边界协商或实际选择逐步支撑。若亲密关系是主要剧情弧，主线章节数量优先取 length 范围的上半区，并至少拆出“维持初始距离—出现有限软化—建立主动信任—确认亲密关系”这些可观察阶段；相邻章节只能推进一小级，不得从警惕或疏离直接跳到粘人、暧昧、占有、依赖、伴侣式称呼或彼此倾心。温柔、甜美、傲娇等是表达风格，不代表关系已经建立。每章 narrative 与 catgirl_situation 必须延续上一章已经成立的关系事实，并遵守同章 stage_ceiling：guarded 不得出现依赖、拥抱、牵手或亲密结论；cooperative 不得出现暧昧、爱意、恋人式行为或确认彼此心意；trusted 可以表达主动信任和关心，但不得直接宣布恋爱、相爱或“关系达到亲密”。不能只用抽象的“关系升温”代替铺垫。
@@ -449,7 +463,7 @@ core_idea 是剧情创作依据，cast_names 只确定双主角姓名和角色�
 16. 必须生成 character_state_arc 作为逐幕角色状态线，并与 relationship_arc、mainline_chapters 一一对应。每幕分别以输入的女主姓名、玩家姓名和“环境”开头（旧无姓名稿用“女主”“男主”）写三方在开场演完、等待玩家回应时已经成立的状态；发热、受伤、昏迷、失声、持有物、所在地点和记忆状态必须写明主体，不得用“体温升高”“伤势恶化”等省略主体的句子。catgirl_state 只描述女主自身，player_state 只描述男主自身。continuity_from_previous 只列出从上一幕确实延续到本幕的事实，第一幕为空数组，后续幕和结局至少一项；临时伤情、药效、昏迷和设备状态若不再延续，不得写入下一幕。scene_boundaries 会原样进入 must_not_happen，只列出已有事实支持的至多 4 条负向边界，没有额外限制时写空数组，用来阻止患者与照护者互换、伤情转移、职责倒置或能力越权；正向状态只写在三个 state 字段中。
 17. character_state_arc 每幕必须给出 acting_contract，并只使用 N.E.K.O 已支持的值：cognition_state 为 fresh_boot、limited 或 normal；memory_state 为 empty、partial 或 available；self_reference_mode 为 system_neutral 或 persona_allowed；persona_scope 为 style_only 或 full；dialogue_policy 为 required、optional 或 forbidden。普通连续剧情使用 normal + available + persona_allowed + full；只有本幕进入前已经明确发生首次启动、真正重启或记忆切断，才能使用 fresh_boot/limited。fresh_boot 必须同时使用 empty、system_neutral、style_only，并给出至少一条 assertable_self_facts；后续幕不得因为普通换场再次 fresh_boot。allowed_behaviors 与 forbidden_behaviors 各最多四条，只约束猫娘当前认知和行为权限。
 18. exact 只用于 core_idea 明确要求逐字固定、不可改写的文本，不得仅因目标包含关键对白、编号、日期、条款、物品状态或可见动作就自动选择 exact。允许自然改写的对白、动作、环境变化、玩家行动，以及接触、检查、安抚、理解、合作或关系变化，一律使用与 owner 匹配的 delivery_type + semantic，anchors 写空数组，不得为了命中字面动作让同一桥段反复表演。
-19. key_props 只登记丢失、换主、损坏或用途被改写会破坏剧情的道具；没有这类道具时写空数组。每个道具用唯一 id 区分，states 只在首次出现或状态变化时记录章节、持有人和当时状态。它是作者的生命周期规划，包含本章互动后才会发生的变化，不是本章入幕事实。开场已经持有的道具及状态须写入 character_state_arc 对应主体；本章待签署、取得或交还的结果不能提前写入该状态或 catgirl_situation。exit_plan.carry_props 只能引用这些 id；不要把道具说明复制到 preserve_facts。
+19. key_props 只登记丢失、换主、损坏或用途被改写会破坏剧情的道具；没有这类道具时写空数组。每个道具用唯一 id 区分，states 只在首次出现或状态变化时记录章节、持有人和当时状态。它是作者的生命周期规划，包含本章互动后才会发生的变化，不是本章入幕事实。开场已经持有的道具及状态须写入 character_state_arc 对应主体；本章待执行、取得或交还的结果不能提前写入该状态或 catgirl_situation。exit_plan.carry_props 只能引用这些 id；不要把道具说明复制到 preserve_facts。
 20. 照片、录音、信件、报告或其他信息载体若承担剧情证据，narrative 与 ordered_goals 必须写明其中实际可见或可听的内容、相关主体和动作；不得只写“揭示了照顾”“出现线索”“证明关系”等抽象结论，把证据内容留给演绎模型猜测。
 
 # Output
@@ -476,8 +490,8 @@ _MAINLINE_CONTINUATION_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric
 7. 若修正 world.background，这是直接展示给玩家的正文；凡指代玩家必须统一使用“你”，不得返回包含“玩家”“男主”或以“他”指代玩家的作者侧称谓。
 8. 修正 mainline_chapters、narrative、narrative_focus 或 catgirl_situation 时，必须保持相邻章节的关系变化只推进一小级，并遵守对应 relationship_arc stage_ceiling：guarded 不得出现依赖、拥抱、牵手或亲密结论；cooperative 不得出现暧昧、爱意、恋人式行为或确认彼此心意；trusted 不得直接宣布恋爱、相爱或“关系达到亲密”。
 9. 修正 relationship_arc 时必须保持 stages 与主线章节一一对应，opening_relationship 与 relationship 完全一致；stage_ceiling 和 address_state 只能使用附带 output_contract 中的枚举值，相邻 stage_ceiling 最多变化一级。只有进入当前章时已经发生失忆、人格重置等明确事件，才可填写 reset_reason 并向下跨级重置；此时称呼和已知事实也必须同步清空或重新介绍。第一章不得声称称呼来自上游。
-10. 若请求路径以 progress_opportunity 结尾，替换字符串必须由输入的女主姓名或“环境”作为明确主体（旧无姓名稿用“女主”），不能预写男主的承诺、选择或回应。若请求路径是整个 mainline_chapters[n]，必须返回包含 title、narrative、narrative_focus、expected_turns、opening_scene、entry_bridge、transition_goal、exit_plan、ordered_goals、catgirl_situation 的完整章节对象；若问题指出短篇预计超过 8 回合，必须合并可合并事件并把 expected_turns 压回 8 回合以内，同时保留普通换幕所需的具体 player_decision；最终自然收束且没有未决选择时不要求补写决定。若请求返回 key_props，只登记影响剧情的关键道具；id 不得重复，states 只记录首次出现或状态变化。
-11. 修正 character_state_arc 时必须保持 stages 与主线章节一一对应，并明确女主、男主和环境三个状态主体。普通换场不得重置记忆；只有剧情已明确发生首次启动、真正重启或记忆切断时才能返回 fresh_boot/limited。fresh_boot 必须同时使用 empty、system_neutral、style_only，并给出至少一条 assertable_self_facts。后续幕和结局的 continuity_from_previous 不能为空。key_props.states 是生命周期规划；本章互动后才发生的换主、签署或损坏，不能提前写成入幕角色状态或 catgirl_situation。
+10. 若请求路径以 progress_opportunity 结尾，替换字符串必须由输入的女主姓名或“环境”作为明确主体（旧无姓名稿用“女主”），不能预写男主的承诺、选择或回应。若请求路径是整个 mainline_chapters[n]，必须返回包含 title、narrative、narrative_focus、expected_turns、opening_scene、entry_bridge、transition_goal、completion_facts、exit_plan、ordered_goals、catgirl_situation 的完整章节对象；exit_plan 必须包含 fallback_offer 与 accept_input，非最后一幕分别为可直接展示的完整邀请和玩家明确接受同一安排的输入，最后一幕两项都为空字符串；completion_facts 只列本幕核心结果，不含换幕接受或下一幕结果。若问题指出短篇预计超过 8 回合，必须合并可合并事件并把 expected_turns 压回 8 回合以内，同时保留普通换幕所需的具体 player_decision；最终自然收束且没有未决选择时不要求补写决定。若请求返回 key_props，只登记影响剧情的关键道具；id 不得重复，states 只记录首次出现或状态变化。
+11. 修正 character_state_arc 时必须保持 stages 与主线章节一一对应，并明确女主、男主和环境三个状态主体。普通换场不得重置记忆；只有剧情已明确发生首次启动、真正重启或记忆切断时才能返回 fresh_boot/limited。fresh_boot 必须同时使用 empty、system_neutral、style_only，并给出至少一条 assertable_self_facts。后续幕和结局的 continuity_from_previous 不能为空。key_props.states 是生命周期规划；本章互动后才发生的换主、操作或损坏，不能提前写成入幕角色状态或 catgirl_situation。
 12. 只输出 JSON object，不要 Markdown、解释或代码围栏。
 
 # Output
@@ -844,7 +858,7 @@ _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点
 2. condition_selection.mode 为 fixed 时使用唯一候选并省略 condition_key；为 recommend 时只能从 condition_candidates 返回一个原样 key。
 3. 不输出 metric ID、数值、阈值、比较符、priority、route、正式节点 ID、Choice、推荐输入、Session 或 Ledger。
 4. 每幕必须给出唯一 opening_scene、narrative_focus、expected_turns 和 1—4 项 ordered_goals。narrative_focus 只用一句非任务化的话说明本幕最值得继续发展的因果。expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计，只填 3—120 的整数；以 author_intent.scene_expected_turns_target 为软目标，超过 8 回合只有在事件不可合并时才允许。它只是作者诊断依据，不是 Runtime 硬门槛。目标使用与主线相同的 v2.2 typed goal 合同；opening 目标只允许 catgirl 或 environment，玩家与共同目标必须使用 turn，玩家目标还必须引用 player_input，共同目标可以承接 player_input 或 previous_goal。通向结局且没有未决选择时可自然收束，不为结局补写离幕行动；若本幕需要玩家确认或实施离幕，最后应保留一个 owner=player 的具体、可提交行动目标，不能写“无”“无需决定”“仅作观察者”，也不能伪装成女主或环境职责。
-5. transitions 必须严格按 source -> scene:0 -> ... -> endpoint 排列，并为每次移动提供 reason、bridge_scene_narration、must_preserve 和 tone。bridge_scene_narration 提供进入下一节点所需的时空、必要结果与边界，Runtime 按实际历史适配措辞；原样旁白使用显式 fixed_narrations。
+5. transitions 必须严格按 source -> scene:0 -> ... -> endpoint 排列，并为每次移动提供 reason、bridge_scene_narration、must_preserve 和 tone。每条通往普通 scene 或主线节点的路线还必须提供 fallback_offer 与 accept_input：前者是明确写出下一去向的角色邀请，后者是玩家视角、明确接受同一具体安排的一句话；不得使用“我接受这个安排，继续进入下一阶段”等泛化句。只有通往 ending 的最后路线将两项省略。bridge_scene_narration 提供进入下一节点所需的时空、必要结果与边界，Runtime 按实际历史适配措辞；原样旁白使用显式 fixed_narrations。
 6. 每个 continuity_items key 必须恰好返回一次，mode 只能是 carried，并放入一个 scene:n 或 transition:n。不得返回 intentionally_replaced。
 7. 不推翻上游既定事实、内容边界或固定终点。
 8. 支线沿用 global.intro 中的明确姓名及角色归属，不另取名；仅没有明确姓名的旧工坊稿沿用“女主”“男主”。不把当前设备的新名字混入既有作者项目。
@@ -916,6 +930,8 @@ _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点
       "to": "scene:n | endpoint",
       "reason": "移动原因",
       "bridge_scene_narration": "进入下一节点所需的时空与必要结果；Runtime 按实际历史适配措辞",
+      "fallback_offer": "普通路线的具体角色邀请；通往 ending 的最后路线省略",
+      "accept_input": "玩家明确接受同一具体安排的一句话；通往 ending 的最后路线省略",
       "must_preserve": ["移动时必须保持的事实"],
       "tone": "过渡语气"
     }
@@ -1341,6 +1357,69 @@ def _validate_idea_outline(
                 })
         text(chapter.get("opening_scene"), f"{path}.opening_scene")
         text(chapter.get("transition_goal"), f"{path}.transition_goal")
+        completion_facts = array(chapter.get("completion_facts"), f"{path}.completion_facts")
+        if not completion_facts:
+            issues.append({
+                "code": "completion_facts_required",
+                "path": f"{path}.completion_facts",
+                "message": "每幕至少需要一项可核验的核心完成事实。",
+            })
+        if len(completion_facts) > 8:
+            issues.append({
+                "code": "completion_facts_limit_exceeded",
+                "path": f"{path}.completion_facts",
+                "message": "每幕最多声明八项核心完成事实。",
+            })
+        completion_ids: set[str] = set()
+        for fact_index, raw_fact in enumerate(completion_facts):
+            fact_path = f"{path}.completion_facts[{fact_index}]"
+            fact = obj(raw_fact, fact_path)
+            if set(fact) != {"id", "description", "value_type", "target_value", "visibility"}:
+                issues.append({
+                    "code": "completion_fact_shape_invalid",
+                    "path": fact_path,
+                    "message": "完成事实必须且只能包含 id、description、value_type、target_value 和 visibility。",
+                })
+            fact_id = text(fact.get("id"), f"{fact_path}.id")
+            if fact_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", fact_id):
+                issues.append({
+                    "code": "completion_fact_id_invalid",
+                    "path": f"{fact_path}.id",
+                    "message": "完成事实 id 必须是稳定的英文标识。",
+                })
+            if fact_id in completion_ids:
+                issues.append({
+                    "code": "completion_fact_id_duplicate",
+                    "path": f"{fact_path}.id",
+                    "message": "同一幕的完成事实 id 不能重复。",
+                })
+            if fact_id:
+                completion_ids.add(fact_id)
+            text(fact.get("description"), f"{fact_path}.description")
+            value_type = fact.get("value_type")
+            target_value = fact.get("target_value")
+            if value_type not in {"bool", "int", "string"}:
+                issues.append({
+                    "code": "completion_fact_value_type_invalid",
+                    "path": f"{fact_path}.value_type",
+                    "message": "完成事实类型必须是 bool、int 或 string。",
+                })
+            elif not (
+                (value_type == "bool" and type(target_value) is bool)
+                or (value_type == "int" and isinstance(target_value, int) and not isinstance(target_value, bool))
+                or (value_type == "string" and isinstance(target_value, str) and bool(target_value.strip()))
+            ):
+                issues.append({
+                    "code": "completion_fact_target_type_mismatch",
+                    "path": f"{fact_path}.target_value",
+                    "message": "target_value 必须匹配完成事实声明的类型。",
+                })
+            if fact.get("visibility") not in {"public", "story"}:
+                issues.append({
+                    "code": "completion_fact_visibility_invalid",
+                    "path": f"{fact_path}.visibility",
+                    "message": "完成事实可见性必须是 public 或 story。",
+                })
         expected_turns = chapter.get("expected_turns")
         if expected_turns is not None and (
             not isinstance(expected_turns, int)
@@ -1365,6 +1444,36 @@ def _validate_idea_outline(
                 "message": f"短篇每幕预计展开应控制在 {scene_expected_turns_target} 回合内，请合并可合并事件并保留一个可执行离幕动作。",
             })
         exit_plan = obj(chapter.get("exit_plan"), f"{path}.exit_plan")
+        trigger_fact_ids = exit_plan.get("trigger_fact_ids")
+        if not isinstance(trigger_fact_ids, list) or any(
+            not isinstance(item, str) or not item.strip() for item in trigger_fact_ids
+        ):
+            issues.append({
+                "code": "transition_trigger_fact_ids_invalid",
+                "path": f"{path}.exit_plan.trigger_fact_ids",
+                "message": "离幕触发事实必须用非空英文 id 数组明确引用 completion_facts。",
+            })
+            trigger_fact_ids = []
+        trigger_fact_ids = [str(item).strip() for item in trigger_fact_ids]
+        if not trigger_fact_ids:
+            issues.append({
+                "code": "transition_trigger_fact_ids_required",
+                "path": f"{path}.exit_plan.trigger_fact_ids",
+                "message": "每个可互动章节必须明确列出真正决定离幕的完成事实。",
+            })
+        if len(set(trigger_fact_ids)) != len(trigger_fact_ids):
+            issues.append({
+                "code": "transition_trigger_fact_ids_duplicate",
+                "path": f"{path}.exit_plan.trigger_fact_ids",
+                "message": "离幕触发事实 id 不能重复。",
+            })
+        for trigger_index, trigger_id in enumerate(trigger_fact_ids):
+            if trigger_id not in completion_ids:
+                issues.append({
+                    "code": "transition_trigger_fact_unknown",
+                    "path": f"{path}.exit_plan.trigger_fact_ids[{trigger_index}]",
+                    "message": f"离幕触发事实 {trigger_id} 未在本幕 completion_facts 中声明。",
+                })
         text(exit_plan.get("trigger_fact"), f"{path}.exit_plan.trigger_fact")
         proposal_owner = str(exit_plan.get("proposal_owner") or "")
         if proposal_owner not in {"catgirl", "environment"}:
@@ -1380,6 +1489,44 @@ def _validate_idea_outline(
                 "code": "transition_player_decision_invalid",
                 "path": f"{path}.exit_plan.player_decision",
                 "message": "玩家决定必须是字符串；无需决定时使用空字符串。",
+            })
+        fallback_offer = exit_plan.get("fallback_offer")
+        if not isinstance(fallback_offer, str):
+            issues.append({
+                "code": "transition_fallback_offer_invalid",
+                "path": f"{path}.exit_plan.fallback_offer",
+                "message": "确定性兜底邀请必须是字符串；最后一幕使用空字符串。",
+            })
+        elif index < len(chapters) - 1 and not fallback_offer.strip():
+            issues.append({
+                "code": "transition_fallback_offer_required",
+                "path": f"{path}.exit_plan.fallback_offer",
+                "message": "非最后一幕必须填写可直接展示的确定性兜底邀请。",
+            })
+        elif index == len(chapters) - 1 and fallback_offer.strip():
+            issues.append({
+                "code": "terminal_transition_fallback_offer_forbidden",
+                "path": f"{path}.exit_plan.fallback_offer",
+                "message": "最后一幕自然收束，不得新增兜底邀请。",
+            })
+        accept_input = exit_plan.get("accept_input")
+        if not isinstance(accept_input, str):
+            issues.append({
+                "code": "transition_accept_input_invalid",
+                "path": f"{path}.exit_plan.accept_input",
+                "message": "作者接受输入必须是字符串；最后一幕使用空字符串。",
+            })
+        elif index < len(chapters) - 1 and not accept_input.strip():
+            issues.append({
+                "code": "transition_accept_input_required",
+                "path": f"{path}.exit_plan.accept_input",
+                "message": "非最后一幕必须填写明确接受当前邀请的玩家输入。",
+            })
+        elif index == len(chapters) - 1 and accept_input.strip():
+            issues.append({
+                "code": "terminal_transition_accept_input_forbidden",
+                "path": f"{path}.exit_plan.accept_input",
+                "message": "最后一幕自然收束，不得新增接受输入。",
             })
         text_array(exit_plan.get("preserve_facts"), f"{path}.exit_plan.preserve_facts", allow_empty=True)
         if isinstance(player_decision, str) and player_decision.strip() and not _is_actionable_player_exit(player_decision):
@@ -2140,11 +2287,30 @@ class NumericV2Generator(ModelAgent):
         boundaries = [str(item).strip() for item in setup.get("content_boundaries") or [] if str(item).strip()]
 
         nodes: list[dict[str, Any]] = []
+        fact_definitions: dict[str, dict[str, str]] = {}
         for index, chapter in enumerate(chapters):
             relationship_stage = relationship_stages[index]
             character_state_stage = character_state_stages[index]
             node_id = f"mainline_{index + 1:02d}"
             goals = self._project_chapter_goals(node_id, chapter)
+            completion_by_id: dict[str, dict[str, Any]] = {}
+            for completion_fact in chapter["completion_facts"]:
+                fact_key = f"scene:{node_id}:{completion_fact['id']}"
+                fact_definitions[fact_key] = {
+                    "value_type": completion_fact["value_type"],
+                    "visibility": completion_fact["visibility"],
+                    "description": completion_fact["description"].strip(),
+                }
+                completion_by_id[completion_fact["id"]] = {
+                    "key": fact_key,
+                    "equals": completion_fact["target_value"],
+                }
+            # 只有作者明确标为离幕触发的事实才会进入 Runtime 完成合同；
+            # 其它事实仍保留在 fact_contract 中，供演绎和复核引用，但不会提前打开出口。
+            completion_requirements = [
+                completion_by_id[fact_id]
+                for fact_id in chapter["exit_plan"]["trigger_fact_ids"]
+            ]
             # expected_turns 只供作者侧节奏诊断，不能改变 Runtime 的三回合推荐值。
             min_turns, recommended_turns = scene_turn_budget(_chapter_ordered_goals(chapter))
             routes: list[dict[str, Any]] = []
@@ -2168,8 +2334,11 @@ class NumericV2Generator(ModelAgent):
                     target_node_id=f"mainline_{index + 2:02d}",
                     priority=100,
                     reason=self._transition_reason(exit_plan, catgirl_name=catgirl_name),
+                    fallback_offer=str(exit_plan["fallback_offer"]).strip(),
+                    accept_input=str(exit_plan["accept_input"]).strip(),
                     bridge_scene_narration=str(target["entry_bridge"]).strip(),
                     source_ids=[f"goal.{goals[-1]['id']}"],
+                    trigger_fact_ids=list(exit_plan["trigger_fact_ids"]),
                     must_preserve=list(dict.fromkeys([
                         *exit_plan["preserve_facts"],
                         *carried_prop_facts,
@@ -2183,8 +2352,11 @@ class NumericV2Generator(ModelAgent):
                     target_node_id="ending_normal",
                     priority=100,
                     reason=self._transition_reason(exit_plan, catgirl_name=catgirl_name),
+                    fallback_offer=str(exit_plan["fallback_offer"]).strip(),
+                    accept_input=str(exit_plan["accept_input"]).strip(),
                     bridge_scene_narration=str(ending["entry_bridge"]).strip(),
                     source_ids=[f"goal.{goals[-1]['id']}"],
+                    trigger_fact_ids=list(exit_plan["trigger_fact_ids"]),
                     must_preserve=list(dict.fromkeys([
                         *exit_plan["preserve_facts"],
                         *carried_prop_facts,
@@ -2200,6 +2372,7 @@ class NumericV2Generator(ModelAgent):
                 # 不会把自然语言目标转换成 Runtime 回合预算。
                 "min_turns": min_turns,
                 "recommended_turns": recommended_turns,
+                "completion_contract": {"all": completion_requirements},
                 "story_beat": {
                     **({"fixed_narrations": deepcopy(chapter["fixed_narrations"])}
                        if "fixed_narrations" in chapter else {}),
@@ -2313,6 +2486,7 @@ class NumericV2Generator(ModelAgent):
                 "role_overlay": self._relationship_role_overlay(relationship_stages[0], player_name=player_name),
             },
             "metric_schema": metric_schema,
+            "fact_contract": {"facts": fact_definitions},
             "initial_state": {
                 "metrics": initial_metrics,
                 "player_address_known": relationship_stages[0]["address_state"] == "known_before_story",
@@ -2535,24 +2709,34 @@ class NumericV2Generator(ModelAgent):
         target_node_id: str,
         priority: int,
         reason: str,
+        fallback_offer: str,
+        accept_input: str,
         bridge_scene_narration: str,
         source_ids: list[str],
+        trigger_fact_ids: list[str],
         must_preserve: list[str],
         tone: str,
     ) -> dict[str, Any]:
+        transition_contract = {
+            "reason": reason,
+            "bridge_scene_narration": bridge_scene_narration,
+            "source_ids": source_ids,
+            "trigger_fact_ids": [str(item).strip() for item in trigger_fact_ids if str(item).strip()],
+            "must_deliver": [bridge_scene_narration],
+            "must_preserve": [item.strip() for item in must_preserve if item.strip()],
+            "tone": tone,
+        }
+        if fallback_offer:
+            # 普通幕保留作者可直接展示的邀请；结局路线不写空字段。
+            transition_contract["fallback_offer"] = fallback_offer
+            # 接受输入与同一作者邀请成对发布，运行端无需再次请求模型解释。
+            transition_contract["accept_input"] = accept_input
         return {
             "id": route_id,
             "target_node_id": target_node_id,
             "priority": priority,
             "conditions": {"all": []},
-            "transition_contract": {
-                "reason": reason,
-                "bridge_scene_narration": bridge_scene_narration,
-                "source_ids": source_ids,
-                "must_deliver": [bridge_scene_narration],
-                "must_preserve": [item.strip() for item in must_preserve if item.strip()],
-                "tone": tone,
-            },
+            "transition_contract": transition_contract,
         }
 
     @staticmethod

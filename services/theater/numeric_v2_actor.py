@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 from config.prompts.prompts_theater import (
     NUMERIC_V2_ACTOR_JSON_INSTRUCTION,
@@ -29,6 +30,10 @@ from .numeric_v2_budget import (
     NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
     numeric_v2_actor_budget,
 )
+from .numeric_v2_action_projection import (
+    normalize_player_action_projection,
+    project_player_action_result,
+)
 from .numeric_v2_cast import NumericV2CastProjection
 from .numeric_v2_context import (
     PLAYER_ACTION_LANGUAGE_RULE,
@@ -38,6 +43,9 @@ from .numeric_v2_context import (
     history_lookup_note,
     current_scene_records,
     pending_transition_performance,
+    project_contract_boundaries,
+    project_scene_facts,
+    scene_facts_prompt_text,
     scene_narrative_focus,
     scene_narrative_summary,
     scene_opening_text,
@@ -118,11 +126,63 @@ def _output_schema_instruction(phase: str) -> str:
         shape = (
             "顶层必须包含 performance:string、suggested_inputs:string[]、transition_offered:boolean；仅当本轮产生新的可见环境、"
             "时间、地点、实体或关键物品状态时，才额外输出 scene_update:string，否则必须省略该字段。"
+            "如果输入提供结构化幕完成事实，顶层必须包含 fact_candidates:object[]；没有本轮新确认事实时必须填空数组。"
+            "输入未提供结构化幕完成事实时，省略 fact_candidates。"
             "scene_update 只能记录当前幕已经发生的变化；无论 transition_offered 为 true 还是 false，都不得在其中写成玩家已接受、"
             "双方已离开或抵达、收束动作已执行，也不得提前跨越正式换幕后的时间或地点。"
         )
     return NUMERIC_V2_ACTOR_JSON_INSTRUCTION + shape
 logger = logging.getLogger(__name__)
+
+
+def _completion_fact_prompt_context(
+    engine: NumericV2Engine,
+    node: Mapping[str, Any],
+    outcome: TurnOutcomeV2,
+) -> dict[str, Any] | None:
+    """投影当前幕完成事实、目标值与已提交值，不把缺失事实猜成 false。"""  # noqa: DOCSTRING_CJK
+
+    contract = node.get("completion_contract")
+    if not isinstance(contract, Mapping):
+        return None
+    facts = outcome.session.story_state.get("facts")
+    if not isinstance(facts, Mapping):
+        facts = {}
+    requirements: list[dict[str, Any]] = []
+    all_satisfied = True
+    for requirement in contract.get("all") or []:
+        if not isinstance(requirement, Mapping):
+            continue
+        key = str(requirement.get("key") or "")
+        definition = engine.fact_contract.get(key)
+        if not isinstance(definition, Mapping):
+            continue
+        fact = facts.get(key)
+        satisfied = (
+            isinstance(fact, Mapping)
+            and fact.get("value") == requirement.get("equals")
+        )
+        row = {
+            "key": key,
+            "equals": requirement.get("equals"),
+            "value_type": definition.get("value_type"),
+            "visibility": definition.get("visibility"),
+            "description": definition.get("description"),
+            "committed": key in facts,
+            "satisfied": satisfied,
+        }
+        if isinstance(fact, Mapping) and "value" in fact:
+            row["committed_value"] = fact["value"]
+        requirements.append(row)
+        all_satisfied = all_satisfied and satisfied
+    return (
+        {
+            "status": "satisfied" if all_satisfied else "pending",
+            "all": requirements,
+        }
+        if requirements
+        else None
+    )
 
 _RELATIONSHIP_STAGES = ("stranger", "guarded", "cooperative", "trusted", "intimate")
 _RELATIONSHIP_STAGE_LABELS = {
@@ -955,6 +1015,27 @@ def _is_high_confidence_repeated_performance(
     )
 
 
+def _is_short_stable_dialogue(performance: Mapping[str, Any]) -> bool:
+    """识别没有场景变化的短确认对白，避免把“明天见”一类收尾误判成机械复读。"""
+
+    blocks = performance_content_blocks(performance)
+    if not blocks or any(block.get("type") != "dialogue" for block in blocks):
+        return False
+    dialogue = "".join(
+        "".join(str(block.get("text") or "").split())
+        for block in blocks
+    )
+    return bool(dialogue) and len(dialogue) <= 16
+
+
+def _timeline_visit_id(record: Mapping[str, Any]) -> str:
+    """读取 Runtime 写入的场景访问 ID；旧历史没有投影时返回空字符串。"""
+
+    projection = record.get("timeline_projection")
+    scope = projection.get("scene_scope") if isinstance(projection, Mapping) else None
+    return str(scope.get("visit_id") or "") if isinstance(scope, Mapping) else ""
+
+
 def _repeats_earlier_session_performance(
     performance: Mapping[str, Any],
     session: ScriptSessionV2,
@@ -968,7 +1049,25 @@ def _repeats_earlier_session_performance(
     current_variants = _performance_variants(performance)
     if route_changed and current_variants:
         current_variants = current_variants[:1]
-    earlier = [session.opening_performance, *session.performance_history[:-1]]
+    current_visit_id = (
+        f"{session.current_node_id}:r"
+        f"{max(int(session.revision) - int(session.node_turn_count), 0)}"
+    )
+    earlier: list[Mapping[str, Any]] = []
+    # 开场只属于第一场景访问；进入新场景后，不能拿开场的告别或口头禅判定当前回合复读。
+    if current_visit_id.endswith(":r0"):
+        earlier.append(session.opening_performance)
+    for record in session.performance_history[:-1]:
+        visit_id = _timeline_visit_id(record)
+        if visit_id:
+            if visit_id == current_visit_id:
+                earlier.append(record)
+            continue
+        # 旧 Session 没有时间线投影时，只保留同一节点的历史，避免跨幕误杀。
+        from_node_id = str(record.get("from_node_id") or "")
+        to_node_id = str(record.get("to_node_id") or "")
+        if session.current_node_id in {from_node_id, to_node_id}:
+            earlier.append(record)
     return any(
         _is_high_confidence_repeated_performance(current, previous)
         for current in current_variants
@@ -1444,34 +1543,34 @@ def _suggestion_hard_boundaries(
     """压缩补推荐必须遵守的作者硬边界，不发送正向剧情清单。"""  # noqa: DOCSTRING_CJK
 
     projected = cast.value(beat)
-    character_state = projected.get("character_state")
-    acting_contract = _acting_contract_for_actor(cast, beat)
-    # 场景边界与禁演约束比共享安全底线更贴近本轮，优先保留在固定上限内。
-    candidates = [
-        *(
-            projected.get("opening_only_boundaries") or []
+    # Actor、Evaluator 与窄复核共用同一顺序和去重规则；关系上限仍是本轮推荐专属的动态边界。
+    boundaries = list(project_contract_boundaries(
+        projected,
+        include_opening_only=include_opening_only,
+        max_items=16,
+        max_tokens=140,
+    ))
+    relationship_text = truncate_to_tokens(str(relationship_boundary).strip(), 140).strip()
+    if relationship_text:
+        opening_count = (
+            len(project_contract_boundaries(
+                {"opening_only_boundaries": projected.get("opening_only_boundaries")},
+                include_opening_only=True,
+                max_items=None,
+                max_tokens=140,
+            ))
             if include_opening_only
-            else []
-        ),
-        relationship_boundary,
-        *(
-            character_state.get("scene_boundaries") or []
-            if isinstance(character_state, Mapping)
-            else []
-        ),
-        *(acting_contract.get("forbidden_behaviors") or []),
-        *(projected.get("must_not_happen") or []),
-    ]
-    boundaries: list[str] = []
-    seen: set[str] = set()
-    for item in candidates:
-        text = truncate_to_tokens(str(item).strip(), 140)
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        boundaries.append(text)
-        if len(boundaries) >= 16:
-            break
+            else 0
+        )
+        # 关系边界在作者开场临时边界之后插入，保持原有优先级和提示词顺序。
+        boundaries.insert(min(opening_count, len(boundaries)), relationship_text)
+        deduped: list[str] = []
+        for item in boundaries:
+            if item and item not in deduped:
+                deduped.append(item)
+            if len(deduped) >= 16:
+                break
+        boundaries = deduped
     return boundaries
 
 
@@ -1499,6 +1598,8 @@ _SUGGESTION_PLAYER_FACT_RULE = (
     "当下选择、偏好与未来意愿可以提出；已经具备什么、以前做过什么须有公开依据。"
     "被要求介绍自己或填写资料时，未知内容交给玩家自行输入；推荐可询问用途、保留称呼或暂缓填写，"
     "不能用假名、示例号码或占位符填空。"
+    "推荐只能承接当前可见正文已经交付的结果；正文明确为无记录、未知或尚未确认时，"
+    "可以让玩家继续询问或作出取舍，但不能把读数、去向、成功或其他后续结果预写成玩家已经知道的事实。"
 )
 
 
@@ -1656,7 +1757,9 @@ def _system_prompt(
             "你负责生成本次 Runtime 已授权的正式转场：猫娘写入 performance，在场 NPC 的必要答复写入来源旁白。"
             f"{_output_schema_instruction(phase)}{phase_structure_rule}"
             f"{_ACTOR_RESPONSE_RULE}"
-            "recent_context 是已发生事实，player_input 是本轮玩家原话。"
+            "recent_context 是已发生事实，story_context.runtime_scene_facts 是 Runtime 已提交的场景进入/离开事件，player_input 是本轮玩家原话。"
+            "player_action_projection 是 Runtime 根据本轮原话与已确认结果生成的保守投影；confirmed_actions 只可承接，future_references 仍是未来。"
+            "投影没有列出的动作不能补写；投影中的 evidence_quote 是证据原文，不是额外剧情或目的地授权。"
             f"{PLAYER_ACTION_LANGUAGE_RULE}{SCENE_ENTRY_STATE_RULE}"
             "玩家对可执行动作的直接表态已授权动作完成；只考虑、准备、尝试不证明完成。"
             "source_performance 回应玩家的具体选择或动作带来的直接结果；不要把同一操作交给猫娘再做一遍。"
@@ -1708,8 +1811,10 @@ def _system_prompt(
             f"{NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION}"
             f"{phase_structure_rule}"
             f"{_ACTOR_RESPONSE_RULE}"
-            "role 约束人格、认知和关系；current_scene 区分开场事实与导演方向；story_so_far 是已提交历史；"
+            "role 约束人格、认知和关系；current_scene 区分开场事实与导演方向；story_so_far 是已提交历史；其中 Runtime 场景事件只证明已提交的进入/离开，不复制当前位置权威；"
             "next_scene 仅供提出未来行动，不授权提前演出。必须承认此前说过的话、已做动作与实体状态；"
+            "player_action_projection 是 Runtime 对本轮玩家动作结果的保守投影；confirmed_actions 表示可以直接承接，future_references 明确仍未发生。"
+            "它不推断目的地、成功结果或隐含意图；投影没有列出的玩家动作不能由正文补出。"
             "承认自己先前说错并更正安排不等于否认说过，不能为了维持旧回应继续兑现错误邀请。"
             "导演方向不是任务清单，未发生内容不能当作角色知识、环境事实或完成结果；作者给出的因果先后不能倒置。"
             "先完整回应 player_input。未来意愿、假设和尝试不等于完成结果；"
@@ -1854,14 +1959,14 @@ def _fit_simple_turn_prompt_data(
     *,
     system_prompt: str,
     human_prefix: str,
-    data: dict[str, str],
+    data: dict[str, Any],
     history_rows: list[Mapping[str, Any]],
     max_tokens: int,
     history_preselected: bool = False,
     evidence_text: str = "",
     fact_index: Callable[[], str] | None = None,
     diagnostics: dict[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """只从较早完整回合开始压缩六块 Prompt，绝不截断当前输入或当前回合。"""  # noqa: DOCSTRING_CJK
 
     fitted = dict(data)
@@ -2015,7 +2120,7 @@ def _transition_prompt_data(
     return {
         "story_context": dict(story_context),
         "player_address": str(player_address or "你"),
-        "recent_context": list(recent_context),
+            "recent_context": list(recent_context),
         "acting_context": dict(acting_context),
         "player_input": str(player_input or ""),
         "transition": transition,
@@ -2122,6 +2227,7 @@ def _turn_messages(
     input_source: str = "freeform",
     recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
     history_lookup: Mapping[str, Any] | None = None,
+    player_action_projection: Mapping[str, Any] | None = None,
 ) -> list[Any]:
     cast = NumericV2CastProjection.from_story(
         engine.story,
@@ -2141,6 +2247,16 @@ def _turn_messages(
         # 重试时明确要求改写当前回应，避免同一输入和同一上下文连续生成相同正文。
         system_prompt += f"\n本轮是输出重试：{retry_hint}"
     current_player_input = str(player_input or "")
+    projected_player_action = normalize_player_action_projection(
+        player_action_projection
+        if player_action_projection is not None
+        else project_player_action_result(current_player_input)
+    )
+    system_prompt += (
+        "\n本轮 Runtime 玩家动作结果投影（仅为约束，不是新增剧情）："
+        + json.dumps(projected_player_action, ensure_ascii=False, separators=(",", ":"))
+        + "。confirmed_actions 只能承接，future_references 仍未发生；投影未列出的玩家动作不能补写。"
+    )
     binding = {"catgirl_name": catgirl_name, "player_address": player_address}
     for label, node in [("当前幕", source)] + ([("目标幕", target)] if route_changed else []):
         fixed_note = actor_note(node, session, binding, player_address_known, project_condition=cast.text)
@@ -2166,6 +2282,7 @@ def _turn_messages(
             else (source["story_beat"],)
         ),
     )
+    story_context["runtime_scene_facts"] = project_scene_facts(session)
     actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
     # 原文只来自已提交历史；路线理由仅作检索线索，不会被拼成已发生事实。
     preview_route = engine.preview_route(session.current_node_id, session.metrics)
@@ -2342,6 +2459,28 @@ def _turn_messages(
         )
     else:
         current_scene_summary = current_scene_opening
+    completion_fact_context = _completion_fact_prompt_context(
+        engine,
+        source,
+        outcome,
+    )
+    if completion_fact_context is not None:
+        # 完成合同属于作者控制数据，不塞进已发生历史；Actor 只能为自己本轮真正演出的结果提候选。
+        current_scene_summary += (
+            "\n结构化幕完成事实（目标值不是已发生事实，committed=true 才表示已入账）："
+            + json.dumps(completion_fact_context, ensure_ascii=False, separators=(",", ":"))
+        )
+        system_prompt += (
+            "\n结构化事实候选合同（仅在输入提供幕完成事实时适用）："
+            "fact_candidates 只能记录本轮最终 performance 或 scene_update 已经明确演出的新结果，"
+            "不得为了满足完成条件而补造正文、提前写入计划或重复提交 committed=true 的事实。"
+            "每项必须且只能包含 key、value、evidence_quote，准确形状为"
+            "{\"key\":\"合同中的键\",\"value\":合同目标值,\"evidence_quote\":\"本轮最终正文中的逐字引文\"}。"
+            "key 和 value 必须匹配输入合同；evidence_quote 必须逐字出现在本轮最终可见正文中。"
+            "即使本轮没有新确认事实，也必须返回 fact_candidates:[]，不得省略字段。"
+            "如果已提交事实加上本轮候选会满足全部 all 条件，在交付直接结果后依据 next_scene 提出具体未来行动；"
+            "仍缺事实时不得提前提议，也不得把候选本身当成已获准换幕。"
+        )
     relationship_control = role_context.get("relationship_control")
     relationship_boundary = (
         str(relationship_control.get("response_contract") or "").strip()
@@ -2411,7 +2550,30 @@ def _turn_messages(
         and next_scene_preview.get("status") == "after_acceptance_only"
         and not next_scene_preview.get("target_is_ending")
     )
-    if natural_closure_ready:
+    completion_closure_ready = (
+        isinstance(completion_fact_context, Mapping)
+        and completion_fact_context.get("status") == "satisfied"
+        and not route_changed
+        and not session.transition_offered
+        and outcome.ledger_event.get("transition_intent") != "reject"
+        and not pure_chat
+        and next_scene_preview.get("status") == "after_acceptance_only"
+        and not next_scene_preview.get("target_is_ending")
+    )
+    if completion_closure_ready:
+        # 完成状态来自已通过 Runtime 裁定的事实，不再让 Actor 从散文或 scene_complete 猜测。
+        # 这里只要求公开未来邀请；真正换幕仍需玩家下一轮明确接受并由 Runtime 选路。
+        system_prompt += (
+            "\n本轮确定性完成收束合同：当前幕 completion_contract 已在 Actor 生成前全部满足。"
+            "不要重复演出、重新检查或质疑这些已提交结果；先回应玩家当前输入，再依据 next_scene "
+            "公开一个具体的未来跨阶段行动并等待玩家决定，设置 transition_offered=true。"
+            "只提出邀请，不得写成玩家已接受、双方已出发或下一阶段已经发生。"
+        )
+        pacing_text += (
+            "当前幕结构化完成条件已全部满足；本轮不再补当前幕任务。"
+            "回应玩家后立即提出 next_scene 支持的具体未来行动，停在玩家可以接受、拒绝或暂缓的位置。"
+        )
+    elif natural_closure_ready:
         # 自然收束仍不是 Runtime 换幕条件；这里只要求 Actor 把已经成熟的因果写成玩家可回应的公开提议。
         # 放在与纯闲聊同级的本轮合同中，避免长角色背景重新制造已经解决的情绪阻碍。
         system_prompt += (
@@ -2437,6 +2599,14 @@ def _turn_messages(
         pacing_text += (
             "对照本幕方向与已提交历史：核心冲突尚未清楚时先交付关键事实；"
             "已清楚时让连续行动落到结果或自然出口。推荐从已有结果后的取舍开始，不新增中间条件。"
+        )
+        # 收束阶段最容易把“检查完成但没有新记录”演成重复检查；把结果交付和公开出口绑定，
+        # 只规定交付顺序，不替模型判断具体道具、地点或剧情事实。
+        pacing_text += (
+            "交付顺序合同（仅在本轮关键探查确已完成、结果明确为无记录或未知，且 next_scene 已有公开出口时适用）："
+            "先在正文交付无记录或未知的边界，再由猫娘提出作者方向允许的具体公开出口；"
+            "不要要求玩家重复检查同一对象，不要把读数、去向或出口结果写成已经发生，"
+            "推荐只能承接该出口或留在本幕的真实选择。"
         )
     if session.transition_offered:
         # 上一轮已有可见提议但本轮还没有正式换幕时，禁止把目标地点或目标结果写成已发生。
@@ -2480,13 +2650,21 @@ def _turn_messages(
                 "不为更正补造人物行程或新的阻碍；推荐承接本轮已澄清的安排，不推荐继续执行已指出错误的旧去向。"
             )
     # 六块数据按固定顺序写入，玩家输入始终位于最后，减少历史内容覆盖当前要求。
-    data: dict[str, str] = {
+    runtime_scene_facts = scene_facts_prompt_text(session)
+    scene_history = _story_so_far_text(recent_context)
+    prompt_evidence_parts = [runtime_scene_facts] if runtime_scene_facts else []
+    if evidence:
+        prompt_evidence_parts.append(
+            "history_evidence（已提交原文）："
+            + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+        )
+    data: dict[str, Any] = {
         "role": _role_prompt_text(
             catgirl_name=catgirl_name,
             acting_context=role_context,
         ),
         "current_scene": current_scene_summary,
-        "story_so_far": _story_so_far_text(recent_context),
+        "story_so_far": scene_history,
         "pacing": pacing_text,
         # 纯闲聊无需看到下一幕导演信息；保留固定六块形状，但去掉最容易诱发抢跑的内容锚点。
         "next_scene": (
@@ -2507,7 +2685,7 @@ def _turn_messages(
         history_preselected=bool(
             history_selection_diagnostics["history_preselection_dropped_revisions"]
         ),
-        evidence_text=("history_evidence（已提交原文）：" + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")) if evidence else ""),
+        evidence_text="\n\n".join(prompt_evidence_parts),
         fact_index=lambda: _current_scene_fact_index_text(session),
         diagnostics=packing_diagnostics,
     )
@@ -2553,6 +2731,8 @@ class NumericV2Actor:
             "invalid_or_missing": 0,
         }
         self.base_suggestion_parse_counts: dict[str, int] = {}
+        # 只记结构化字段遵循率，不保存候选正文，也不因字段缺失触发供应商重试。
+        self.base_fact_candidate_parse_counts: dict[str, int] = {}
 
     def _character_profile(self) -> str:
         """只读取服务端当前猫娘的人格摘要，不接受客户端角色名。"""  # noqa: DOCSTRING_CJK
@@ -2577,6 +2757,7 @@ class NumericV2Actor:
     async def _ensure_suggestions(
         self,
         *,
+        allow_fill: bool = True,
         performance: Mapping[str, Any],
         player_input: str,
         catgirl_name: str,
@@ -2604,6 +2785,12 @@ class NumericV2Actor:
                 + repeated_input_count
             )
         if len(suggestions) in {2, 3}:
+            return suggestions
+        if not allow_fill:
+            # 补推荐模块关闭：不为此再发一次调用，按演员实际返回展示。
+            # 该键按需出现，未关闭时不污染既有原因统计。
+            self.suggestion_fill_reason_counts["disabled"] = (
+                self.suggestion_fill_reason_counts.get("disabled", 0) + 1)
             return suggestions
         transition_offered = performance.get("transition_offered") is True
         self.suggestion_fill_attempt_count += 1
@@ -2653,6 +2840,7 @@ class NumericV2Actor:
         engine: NumericV2Engine,
         actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
         retry_hint: str = "",
+        allow_suggestion_fill: bool = True,
     ) -> dict[str, Any]:
         actor_budget = numeric_v2_actor_budget(actor_budget_profile)
         profile = self._character_profile()
@@ -2701,6 +2889,7 @@ class NumericV2Actor:
         performance = dict(performance)
         # 主调用已经产出合法推荐时直接提交；只有缺失或格式异常才补一次按钮，避免开场固定增加供应商请求。
         performance["suggested_inputs"] = await self._ensure_suggestions(
+            allow_fill=allow_suggestion_fill,
             performance=performance,
             player_input="",
             catgirl_name=catgirl_name,
@@ -2734,6 +2923,7 @@ class NumericV2Actor:
         input_source: str = "freeform",
         recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
         history_lookup: Mapping[str, Any] | None = None,
+        allow_suggestion_fill: bool = True,
     ) -> dict[str, Any]:
         # 工作流可冻结本轮实际使用的人格文本，确保提交前能复验同一生成世代。
         profile = (
@@ -2805,6 +2995,7 @@ class NumericV2Actor:
                 # Ledger 只用于确定原提议记录，不将隐藏状态整体发送给 Actor。
                 recent_ledger_events,
                 history_lookup,
+                outcome.ledger_event.get("player_action_projection"),
             ),
             transition_required=route_changed,
             bridge_required=bool(transition_contract.get("bridge_required", True)),
@@ -2817,6 +3008,10 @@ class NumericV2Actor:
             dialogue_policy=outcome.session.dialogue_policy,
             source_dialogue_policy=source_transition_dialogue_policy,
             target_dialogue_policy=outcome.session.dialogue_policy,
+            fact_candidates_expected=(
+                not route_changed
+                and isinstance(source.get("completion_contract"), Mapping)
+            ),
         )
         if route_changed:
             # 先由 Runtime 装配提交合同，再执行所有权、人格和事实检查。
@@ -2893,18 +3088,53 @@ class NumericV2Actor:
                 ),
             )
         )
+
+        def reject_repeated_output(guard: str) -> None:
+            """记录重复保护来源，并把标签带回 Workflow 的重试预算。"""  # noqa: DOCSTRING_CJK
+
+            trace_event(
+                "actor.repeated_output_detected",
+                guard=guard,
+                route_changed=route_changed,
+                player_input_repeated=_player_input_repeats_recent_context(
+                    player_input,
+                    _history(
+                        session,
+                        max_tokens=actor_budget["history_max_tokens"],
+                        max_turns=actor_budget["history_max_turns"],
+                    ),
+                ),
+                has_scene_narration=bool(
+                    str(performance.get("scene_narration") or "").strip()
+                ),
+                transition_offered=performance.get("transition_offered") is True,
+                metric_change_count=len(outcome.metric_changes),
+                fact_candidate_count=len(performance.get("fact_candidates") or []),
+            )
+            error = NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+            # 仅供 Workflow 识别真实重复保护来源；不进入公开异常文本或剧情历史。
+            error.repetition_guard = guard
+            raise error
+
         repeats_earlier = _repeats_earlier_session_performance(
             performance,
             session,
             route_changed=route_changed,
         )
-        if repeats_earlier and not safe_final_chat_repeat:
+        stable_short_dialogue = (
+            not route_changed
+            and not outcome.metric_changes
+            and performance.get("transition_offered") is not True
+            and not performance.get("fact_candidates")
+            and _is_short_stable_dialogue(performance)
+        )
+        if repeats_earlier and not safe_final_chat_repeat and not stable_short_dialogue:
             logger.warning(
                 "Numeric v2 Actor failed: reason=numeric_v2_actor_repeated_session_output session_id=%s revision=%s",
                 session.session_id,
                 session.revision,
             )
-            raise NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+            reject_repeated_output("earlier_session")
         if (
             previous_visible_performance
             and route_changed
@@ -2918,7 +3148,7 @@ class NumericV2Actor:
                 session.session_id,
                 session.revision,
             )
-            raise NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+            reject_repeated_output("transition_source")
         if (
             previous_visible_performance
             and _is_repeated_performance(performance, previous_visible_performance)
@@ -2937,7 +3167,7 @@ class NumericV2Actor:
                     ),
                 )
             )
-            if stable_confirmation or safe_final_chat_repeat:
+            if stable_confirmation or safe_final_chat_repeat or stable_short_dialogue:
                 # 玩家重复同一输入且状态没有任何变化时，简短确认是合理结果；
                 # 纯闲聊最后一次重试也允许安全短回应降级，避免因话题自然趋同让整轮发送失败。
                 logger.debug(
@@ -2951,7 +3181,7 @@ class NumericV2Actor:
                     session.session_id,
                     session.revision,
                 )
-                raise NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+                reject_repeated_output("previous_performance")
         # 正文通过全部确定性校验后，再确保同一次 Actor 调用返回的推荐满足数量合同；
         # 开场、已提转场和正式换幕都保留合法推荐，仅在推荐异常时轻量补全一次。
         performance = dict(performance)
@@ -2960,6 +3190,7 @@ class NumericV2Actor:
             performance["suggested_inputs"] = []
             return performance
         performance["suggested_inputs"] = await self._ensure_suggestions(
+            allow_fill=allow_suggestion_fill,
             performance=performance,
             player_input=player_input,
             catgirl_name=catgirl_name,
@@ -2981,6 +3212,65 @@ class NumericV2Actor:
         )
         return performance
 
+    async def refill_suggestions_after_review(
+        self,
+        *,
+        engine: NumericV2Engine,
+        session: ScriptSessionV2,
+        outcome: TurnOutcomeV2,
+        performance: Mapping[str, Any],
+        player_input: str,
+        allow_fill: bool = True,
+    ) -> dict[str, Any]:
+        """复核删除不安全推荐后，按同一幕边界补齐剩余推荐。"""  # noqa: DOCSTRING_CJK
+
+        result = dict(performance)
+        if session.status == "ended":
+            result["suggested_inputs"] = []
+            return result
+        route_changed = (
+            outcome.ledger_event["from_node_id"]
+            != outcome.ledger_event["to_node_id"]
+        )
+        source = engine.nodes[str(outcome.ledger_event["from_node_id"])]
+        target = engine.nodes[str(outcome.ledger_event["to_node_id"])]
+        catgirl_name = str(session.catgirl_binding.get("catgirl_name") or self._current_catgirl_name())
+        configured_address = str(
+            session.catgirl_binding.get("player_address")
+            or _load_player_address(self.config_manager)
+        ).strip()
+        player_address = _project_player_address(
+            configured_address,
+            known=session.player_address_known,
+        )
+        cast = NumericV2CastProjection.from_story(
+            engine.story,
+            player_name=player_address,
+            catgirl_name=catgirl_name,
+        )
+        actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
+        beat = target["story_beat"] if route_changed else source["story_beat"]
+        relationship_boundary = str(
+            _relationship_control(engine, target if route_changed else source, session.metrics).get(
+                "response_contract"
+            )
+            or ""
+        )
+        result["suggested_inputs"] = await self._ensure_suggestions(
+            allow_fill=allow_fill,
+            performance=result,
+            player_input=player_input,
+            catgirl_name=catgirl_name,
+            max_input_tokens=actor_budget["input_max_tokens"],
+            scene_changed=route_changed,
+            hard_boundaries=_suggestion_hard_boundaries(
+                cast,
+                beat,
+                relationship_boundary=relationship_boundary,
+            ),
+        )
+        return result
+
     async def _invoke(
         self,
         messages: list[Any],
@@ -2995,6 +3285,7 @@ class NumericV2Actor:
         target_dialogue_policy: str = "required",
         suggestions_only: bool = False,
         transition_suggestions_only: bool = False,
+        fact_candidates_expected: bool = False,
     ) -> dict[str, Any]:
         set_call_type("theater_numeric_v2_actor")
         request_messages = _ensure_actor_messages_fit(
@@ -3005,10 +3296,16 @@ class NumericV2Actor:
         config_finished_at = started_at
         client_finished_at = started_at
         request_finished_at = started_at
+        model_name = ""
+        provider_host = ""
+        request_stage = "suggestions" if suggestions_only or transition_suggestions_only else "actor"
         try:
             # 总时限覆盖配置读取、客户端构造、网络请求、输出解析和客户端关闭。
             async with asyncio.timeout(NUMERIC_V2_ACTOR_TIMEOUT_SECONDS):
                 config = await _model_config(self.config_manager)
+                model_name = str(config.get("model") or "")
+                # 只保留主机名，日志不写入完整 URL，避免把查询参数或凭据带入演绎日志。
+                provider_host = urlsplit(str(config.get("base_url") or "")).netloc
                 config_finished_at = time.monotonic()
                 client = await create_chat_llm_async(
                     str(config["model"]),
@@ -3025,9 +3322,10 @@ class NumericV2Actor:
                     self.provider_call_count += 1
                     # 每次补写/补推荐分别记账；仅观察供应商返回，不改变调用和重试策略。
                     response = await invoke_with_usage(client, request_messages,
-                        stage="suggestions" if suggestions_only or transition_suggestions_only else "actor")  # noqa: LLM_INPUT_BUDGET
+                        stage=request_stage)  # noqa: LLM_INPUT_BUDGET
                     request_finished_at = time.monotonic()
                     suggestion_diagnostics: dict[str, int] = {}
+                    fact_candidate_diagnostics: dict[str, int] = {}
                     parsed = _parse_output(
                         getattr(response, "content", None),
                         opening_required=opening_required,
@@ -3039,9 +3337,12 @@ class NumericV2Actor:
                         suggestions_only=suggestions_only,
                         transition_suggestions_only=transition_suggestions_only,
                         suggestion_diagnostics=suggestion_diagnostics,
+                        fact_candidates_expected=fact_candidates_expected,
+                        fact_candidate_diagnostics=fact_candidate_diagnostics,
                     )
-                    trace_event("actor.parsed", stage="suggestions" if suggestions_only or transition_suggestions_only else "actor",
-                                result=parsed, suggestion_diagnostics=suggestion_diagnostics)
+                    trace_event("actor.parsed", stage=request_stage,
+                                result=parsed, suggestion_diagnostics=suggestion_diagnostics,
+                                fact_candidate_diagnostics=fact_candidate_diagnostics)
                     if (
                         not suggestions_only
                         and not transition_suggestions_only
@@ -3051,10 +3352,25 @@ class NumericV2Actor:
                                 self.base_suggestion_parse_counts.get(reason, 0)
                                 + int(count)
                             )
+                        for reason, count in fact_candidate_diagnostics.items():
+                            self.base_fact_candidate_parse_counts[reason] = (
+                                self.base_fact_candidate_parse_counts.get(reason, 0)
+                                + int(count)
+                            )
         except asyncio.TimeoutError as exc:
-            trace_event("actor.failed", error_code="numeric_v2_actor_timeout")
+            trace_event(
+                "actor.failed",
+                error_code="numeric_v2_actor_timeout",
+                stage=request_stage,
+                model=model_name,
+                provider_host=provider_host,
+            )
             logger.warning(
-                "Numeric v2 Actor failed: reason=numeric_v2_actor_timeout elapsed=%.3f",
+                "Numeric v2 Actor failed: reason=numeric_v2_actor_timeout stage=%s model=%s provider_host=%s max_output_tokens=%d elapsed=%.3f",
+                request_stage,
+                model_name,
+                provider_host,
+                max_output_tokens,
                 time.monotonic() - started_at,
             )
             raise NumericV2ActorError("numeric_v2_actor_timeout") from exc
@@ -3069,9 +3385,13 @@ class NumericV2Actor:
             raise NumericV2ActorError("numeric_v2_actor_model_call_failed") from exc
         total_seconds = time.monotonic() - started_at
         if total_seconds >= NUMERIC_V2_ACTOR_SLOW_CALL_SECONDS:
-            # 只记录阶段耗时，不记录剧本、玩家输入或模型输出。
+            # 只记录请求定位信息和阶段耗时，不记录剧本、玩家输入或模型输出。
             logger.warning(
-                "Numeric v2 Actor slow call: total=%.3f config=%.3f client=%.3f request=%.3f finalize=%.3f",
+                "Numeric v2 Actor slow call: stage=%s model=%s provider_host=%s max_output_tokens=%d total=%.3f config=%.3f client=%.3f request=%.3f finalize=%.3f",
+                request_stage,
+                model_name,
+                provider_host,
+                max_output_tokens,
                 total_seconds,
                 config_finished_at - started_at,
                 client_finished_at - config_finished_at,

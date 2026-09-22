@@ -29,6 +29,31 @@ from theater_workshop.sdk.numeric_v2 import NumericV2Compiler, scene_turn_budget
 from .numeric_v2_fixture import numeric_v2_setup
 
 
+def test_numeric_v2_workshop_prompts_do_not_embed_stress_story_terms():
+    """工坊生成、优化与评分合同只描述通用语义，不固化当前压测剧本。"""  # noqa: DOCSTRING_CJK
+
+    prompts = (
+        _MAINLINE_PROMPT,
+        _MAINLINE_CONTINUATION_PROMPT,
+        _NODE_ENHANCEMENT_PROMPT,
+        _BRANCH_ENDING_PROMPT,
+        _BRANCH_PATH_PROMPT,
+        _NODE_OPTIMIZATION_PROMPT,
+        _ASSESSMENT_PROMPT,
+        FACT_REVIEW_PROMPT,
+    )
+    forbidden = (
+        "零号日志", "00-Aoi", "医疗站", "地下信标室", "屏蔽走廊",
+        "巡逻机", "横梁", "照片年份", "第二次救援",
+        "委托书", "店铺关门", "店铺移动", "家务", "文化节", "雷雨夜",
+        "回住处", "补签手续",
+    )
+
+    for prompt in prompts:
+        for fragment in forbidden:
+            assert fragment not in prompt
+
+
 @pytest.mark.parametrize("prompt", [
     _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
     _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT,
@@ -52,8 +77,8 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     assert "谁同行及配角留在哪里" in prompt
     assert "这四处必须兑现同一去向、时段和开始的活动" in prompt
     assert "单个出口不能写‘去A或去B’却只通往C" in prompt
-    assert "不能在换幕后临时编造捷径" in prompt
-    assert "不以含糊标识诱导另造终端或第二次救援" in prompt
+    assert "不能在换幕后临时编造新路径" in prompt
+    assert "不以含糊标识诱导另造设施或重复任务" in prompt
     # 出口三要素沿用既有作者字段；生成与改稿都不能追加可选素材作为离幕前提。
     assert "trigger_fact 只列离开真正必要的具体结果" in prompt
     assert "并安排在来源幕自然公开" in prompt
@@ -80,7 +105,7 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     assert "ending.summary 承接变化的原因" in prompt
     assert "不为了制造变化强行和解、彻底改观或升温" in prompt
     # 结局开场、摘要和状态线必须同一时点，不能通过状态字段偷偷新增玩家行动。
-    assert "结束不等于散场，不默认男主收拾物品、离开或补签手续" in prompt
+    assert "结束不等于散场，不默认男主执行作者未写明的附加动作" in prompt
     # 完善与评分建议也不得重新为已关闭输入的结局分配普通回合任务。
     assert "结局目标只声明开场已经交付的环境事实" in prompt
     # 用户明确状态时点为开场结束，七个作者入口不能重新写成开场前或整幕完成后。
@@ -229,11 +254,27 @@ def _idea_outline(chapter_count: int = 4) -> dict:
                 "opening_scene": "雨水沿着花店玻璃缓缓滑落，写有日期的旧信摊在桌面上。",
                 "entry_bridge": "" if index == 0 else "雨声渐缓，花店阁楼的灯在下一次整点时亮起。",
                 "transition_goal": "在核对当前记录后，自然引出下一份可交叉验证的证据。",
+                "completion_facts": [{
+                    "id": "letter_date_verified",
+                    "description": "当前旧信的日期已经完成核对。",
+                    "value_type": "bool",
+                    "target_value": True,
+                    "visibility": "public",
+                }],
                 "exit_plan": {
                     "trigger_fact": "当前旧信的日期已经完成核对。",
+                    "trigger_fact_ids": ["letter_date_verified"],
                     "proposal_owner": "catgirl",
                     "proposal": "继续核对下一份收信记录。",
                     "player_decision": "是否现在继续核对。",
+                    "fallback_offer": (
+                        "下一份收信记录已经准备好了。要现在和我一起继续核对吗？"
+                        if index < chapter_count - 1 else ""
+                    ),
+                    "accept_input": (
+                        "（把下一份记录移到桌前）好，我们继续核对。"
+                        if index < chapter_count - 1 else ""
+                    ),
                     "preserve_facts": ["当年离开时间仍存在待解矛盾"],
                     "carry_props": ["dated_old_letter"],
                 },
@@ -273,6 +314,56 @@ def test_numeric_v2_generator_normalizes_profile_part_punctuation():
         "进入原因。",
         "介入能力。",
     ) == "男主，身份说明。进入原因。介入能力。"
+
+
+def test_numeric_v2_generator_rejects_exit_trigger_fact_not_declared_in_completion_facts():
+    candidate = _idea_outline()
+    candidate["mainline_chapters"][0]["exit_plan"]["trigger_fact_ids"] = [
+        "missing_fact"
+    ]
+
+    issues = _validate_idea_outline(
+        candidate,
+        minimum=3,
+        maximum=6,
+        scene_expected_turns_target=8,
+    )
+
+    assert any(
+        issue["code"] == "transition_trigger_fact_unknown"
+        for issue in issues
+    )
+
+
+def test_numeric_v2_project_uses_only_exit_trigger_facts_for_completion_contract():
+    generator = NumericV2Generator()
+    outline = _idea_outline()
+    outline["mainline_chapters"][0]["completion_facts"].append({
+        "id": "optional_context_confirmed",
+        "description": "一条可选背景已经被提及。",
+        "value_type": "bool",
+        "target_value": True,
+        "visibility": "public",
+    })
+    outline["mainline_chapters"][0]["exit_plan"]["trigger_fact_ids"] = [
+        "letter_date_verified"
+    ]
+
+    story = generator._project_story(
+        title="清河晚风",
+        original_idea="旧信",
+        setup=numeric_v2_setup(),
+        outline=outline,
+        tone=["克制"],
+    )
+
+    first_node = story["nodes"][0]
+    assert first_node["completion_contract"] == {
+        "all": [{"key": "scene:mainline_01:letter_date_verified", "equals": True}]
+    }
+    assert first_node["route_gates"][0]["transition_contract"]["trigger_fact_ids"] == [
+        "letter_date_verified"
+    ]
 
 
 def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_ending_only():
@@ -362,6 +453,14 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert story["nodes"][0]["story_beat"]["transition_goal"] == (
         "在核对当前记录后，自然引出下一份可交叉验证的证据。"
     )
+    assert story["fact_contract"]["facts"]["scene:mainline_01:letter_date_verified"] == {
+        "value_type": "bool",
+        "visibility": "public",
+        "description": "当前旧信的日期已经完成核对。",
+    }
+    assert story["nodes"][0]["completion_contract"] == {
+        "all": [{"key": "scene:mainline_01:letter_date_verified", "equals": True}]
+    }
     assert story["nodes"][0]["route_gates"][0]["transition_contract"]["reason"] == (
         "触发事实：当前旧信的日期已经完成核对；"
         "女主提出：继续核对下一份收信记录；"
@@ -396,12 +495,14 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "该句会直接作为换幕起始画面" not in prompt
     assert "不得替玩家说出台词、作出选择、完成关键行动" in prompt
     assert "opening_scene 和 entry_bridge 都不能新增男主的主动行为" in prompt
-    assert "每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、exit_plan" in prompt
+    assert "每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、completion_facts、exit_plan" in prompt
     assert "narrative_focus 只写一句当前最值得继续发展的因果或互动方向" in prompt
     assert "expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计" in prompt
     assert "不得把 narrative、ordered_goals 或 exit_plan 中的预期内容写成已经完成" in prompt
     assert "没有这类道具时写空数组" in prompt
     assert "exit_plan.carry_props 只能引用这些 id" in prompt
+    assert "fallback_offer 必须是一条可直接展示的完整角色文案" in prompt
+    assert "trigger_fact_ids 必须逐项引用本幕 completion_facts" in prompt
     assert "每项只表达一个原子交付" in prompt
     assert "catgirl_action 的锚点必须是可直接放入括号动作块" in prompt
     assert "catgirl_dialogue、catgirl_action、environment_fact、player_action 和 shared_agreement 默认使用 semantic" in prompt
@@ -436,11 +537,16 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "每一幕只能推进一小级" in _BRANCH_PATH_PROMPT
     assert "不得仅因进入支线就从警惕或疏离跳到粘人" in _BRANCH_PATH_PROMPT
     assert "不得把 source 或 scene 的预期目标写成已经完成" in _BRANCH_PATH_PROMPT
+    assert "不得使用“我接受这个安排，继续进入下一阶段”等泛化句" in _BRANCH_PATH_PROMPT
+    assert '"fallback_offer": "普通路线的具体角色邀请' in _BRANCH_PATH_PROMPT
+    assert '"accept_input": "玩家明确接受同一具体安排的一句话' in _BRANCH_PATH_PROMPT
     assert "不得只给抽象结论" in _BRANCH_PATH_PROMPT
     assert "expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计" in _BRANCH_PATH_PROMPT
     # 作者已确认先事实后文学：时序核对移入事实阶段，文学阶段消费其报告。
     assert "按路线的实际 source/target" in FACT_REVIEW_PROMPT
     assert "fact_review 是完整事实报告" in _ASSESSMENT_PROMPT
+    assert "completion_facts 与 exit_plan.trigger_fact_ids 必须覆盖同一组真正决定离幕的结果" in _ASSESSMENT_PROMPT
+    assert "结局节点已经交付后不得" in _ASSESSMENT_PROMPT
     assert "路线可辨识性" in _ASSESSMENT_PROMPT
     assert "不能只靠隐藏数值暗中分流" in _ASSESSMENT_PROMPT
     assert "relationship_effect 标成 none" in _ASSESSMENT_PROMPT
@@ -1180,10 +1286,18 @@ def test_numeric_v2_generated_mainline_compiles_without_route_metric_conditions(
         "雨声渐缓，花店阁楼的灯在下一次整点时亮起。"
     ]
     assert _idea_outline()["mainline_chapters"][1]["narrative"] not in first_transition[0]
+    assert story["nodes"][0]["route_gates"][0]["transition_contract"]["fallback_offer"] == (
+        "下一份收信记录已经准备好了。要现在和我一起继续核对吗？"
+    )
+    assert story["nodes"][0]["route_gates"][0]["transition_contract"]["accept_input"] == (
+        "（把下一份记录移到桌前）好，我们继续核对。"
+    )
     ending_transition = story["nodes"][-2]["route_gates"][0]["transition_contract"]["must_deliver"]
     assert ending_transition == [
         "最后一封旧信核验完毕，窗外持续多日的雨声终于停下。"
     ]
+    assert "fallback_offer" not in story["nodes"][-2]["route_gates"][0]["transition_contract"]
+    assert "accept_input" not in story["nodes"][-2]["route_gates"][0]["transition_contract"]
 
 
 def test_numeric_v2_generator_keeps_original_idea_and_returns_only_derived_setup_fields():

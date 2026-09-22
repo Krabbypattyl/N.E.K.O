@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 import string
 from typing import Any, Mapping
 
@@ -38,6 +39,11 @@ _GOAL_EVIDENCE_MODES = frozenset({"semantic", "exact"})
 _NUMERIC_CONTRACT_VERSIONS = frozenset({"v2.2"})
 _GOAL_DELIVERY_TIMINGS = frozenset({"opening", "turn"})
 _DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
+_FACT_CONTRACT_VALUE_TYPES = frozenset({"bool", "int", "string"})
+_FACT_CONTRACT_VISIBILITIES = frozenset({"public", "story"})
+_FACT_CONTRACT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+_FACT_CONTRACT_MAX_KEYS = 64
+_COMPLETION_CONTRACT_MAX_FACTS = 16
 # v2.2 只允许有限交付类型，避免 Runtime 再从目标描述中猜“谁在什么位置完成了什么”。
 _GOAL_DELIVERY_OUTPUTS = {
     "catgirl_dialogue": "performance_dialogue",
@@ -275,9 +281,24 @@ class NumericV2Compiler:
         collector.obj(story.get("characters"), "characters")
         self._validate_binding(collector, story.get("catgirl_binding"))
         metric_ranges = self._validate_metrics(collector, story.get("metric_schema"), story.get("initial_state"))
+        if "fact_contract" in story:
+            self._validate_fact_contract(collector, story.get("fact_contract"))
+        raw_fact_contract = story.get("fact_contract")
+        fact_definitions = (
+            raw_fact_contract.get("facts")
+            if isinstance(raw_fact_contract, Mapping)
+            and isinstance(raw_fact_contract.get("facts"), Mapping)
+            else {}
+        )
         intro = story.get("intro")
         cast_names = intro if isinstance(intro, Mapping) else {}
-        nodes, route_targets = self._validate_nodes(collector, story.get("nodes"), metric_ranges, cast_names=cast_names)
+        nodes, route_targets = self._validate_nodes(
+            collector,
+            story.get("nodes"),
+            metric_ranges,
+            cast_names=cast_names,
+            fact_definitions=fact_definitions,
+        )
         ending_ids = self._validate_endings(collector, story.get("endings"))
         self._validate_graph(
             collector,
@@ -474,6 +495,46 @@ class NumericV2Compiler:
                         "初始状态数值必须与 metric_schema 的 initial 一致。",
                     )
         return metric_ranges
+
+    @staticmethod
+    def _validate_fact_contract(c: _Collector, value: Any) -> None:
+        """校验作者显式声明的事实白名单；没有声明时运行端不会接受模型事实候选。"""
+
+        contract = c.obj(value, "fact_contract")
+        if set(contract).difference({"facts"}):
+            c.add(
+                "unexpected_fact_contract_field",
+                "fact_contract",
+                "事实合同只允许 facts 字段。",
+            )
+        facts = c.obj(contract.get("facts"), "fact_contract.facts")
+        if len(facts) > _FACT_CONTRACT_MAX_KEYS:
+            c.add(
+                "fact_contract_limit_exceeded",
+                "fact_contract.facts",
+                f"事实合同最多声明 {_FACT_CONTRACT_MAX_KEYS} 个键。",
+            )
+        for key, raw in facts.items():
+            path = f"fact_contract.facts.{key}"
+            if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):
+                c.add("invalid_fact_contract_key", path, "事实键必须是安全且稳定的 ID。")
+            definition = c.obj(raw, path)
+            if set(definition).difference({"value_type", "visibility", "description"}):
+                c.add("unexpected_fact_contract_definition_field", path, "事实定义只允许 value_type、visibility 和 description。")
+            if definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES:
+                c.add(
+                    "invalid_fact_contract_value_type",
+                    f"{path}.value_type",
+                    f"事实值类型必须是 {', '.join(sorted(_FACT_CONTRACT_VALUE_TYPES))} 之一。",
+                )
+            if definition.get("visibility") not in _FACT_CONTRACT_VISIBILITIES:
+                c.add(
+                    "invalid_fact_contract_visibility",
+                    f"{path}.visibility",
+                    f"事实可见性必须是 {', '.join(sorted(_FACT_CONTRACT_VISIBILITIES))} 之一。",
+                )
+            if "description" in definition:
+                c.require_text(definition.get("description"), f"{path}.description")
 
     @staticmethod
     def _validate_bands(c: _Collector, value: Any, path: str, minimum: int | None, maximum: int | None) -> None:
@@ -863,6 +924,7 @@ class NumericV2Compiler:
     def _validate_nodes(
         c: _Collector, value: Any, metric_ranges: Mapping[str, tuple[int | None, int | None]],
         *, cast_names: Mapping[str, Any] | None = None,
+        fact_definitions: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
         nodes: dict[str, dict[str, Any]] = {}
         route_targets: dict[str, list[str]] = {}
@@ -903,6 +965,21 @@ class NumericV2Compiler:
             NumericV2Compiler._validate_story_beat(
                 c, node.get("story_beat"), f"{path}.story_beat", cast_names=cast_names,
             )
+            terminal = node.get("type") == "ending" or node.get("terminal") is True
+            if "completion_contract" in node:
+                if terminal:
+                    c.add(
+                        "terminal_completion_contract_forbidden",
+                        f"{path}.completion_contract",
+                        "结局节点不需要幕完成条件。",
+                    )
+                else:
+                    NumericV2Compiler._validate_completion_contract(
+                        c,
+                        node.get("completion_contract"),
+                        f"{path}.completion_contract",
+                        fact_definitions=fact_definitions or {},
+                    )
             if node.get("type") == "ending" or node.get("terminal") is True:
                 beat = node.get("story_beat")
                 pieces = beat.get("fixed_narrations") if isinstance(beat, Mapping) else None
@@ -961,7 +1038,6 @@ class NumericV2Compiler:
                 NumericV2Compiler._validate_transition(c, route.get("transition_contract"), f"{route_path}.transition_contract")
             if node_id:
                 route_targets[node_id] = targets
-            terminal = node.get("type") == "ending" or node.get("terminal") is True
             if terminal:
                 if node.get("type") == "start":
                     c.add(
@@ -975,6 +1051,73 @@ class NumericV2Compiler:
             elif not routes:
                 c.add("node_route_required", f"{path}.route_gates", "幕节点不能作为路线终点，至少需要一条通往后续幕或结局的路线。")
         return nodes, route_targets
+
+    @staticmethod
+    def _validate_completion_contract(
+        c: _Collector,
+        value: Any,
+        path: str,
+        *,
+        fact_definitions: Mapping[str, Any],
+    ) -> None:
+        """校验幕完成条件只引用已声明且类型一致的事实。"""  # noqa: DOCSTRING_CJK
+
+        contract = c.obj(value, path)
+        if set(contract) != {"all"}:
+            c.add(
+                "invalid_completion_contract_shape",
+                path,
+                "幕完成条件必须且只能包含 all。",
+            )
+        requirements = c.array(contract.get("all"), f"{path}.all")
+        if not requirements:
+            c.add("completion_fact_required", f"{path}.all", "幕完成条件至少需要一项事实。")
+        if len(requirements) > _COMPLETION_CONTRACT_MAX_FACTS:
+            c.add(
+                "completion_fact_limit_exceeded",
+                f"{path}.all",
+                f"每幕最多声明 {_COMPLETION_CONTRACT_MAX_FACTS} 项完成事实。",
+            )
+        seen_keys: set[str] = set()
+        for index, raw in enumerate(requirements):
+            requirement_path = f"{path}.all[{index}]"
+            requirement = c.obj(raw, requirement_path)
+            if set(requirement) != {"key", "equals"}:
+                c.add(
+                    "invalid_completion_fact_shape",
+                    requirement_path,
+                    "完成事实必须且只能包含 key 和 equals。",
+                )
+            key = requirement.get("key")
+            if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):
+                c.add("invalid_completion_fact_key", f"{requirement_path}.key", "完成事实必须引用稳定的事实键。")
+                continue
+            if key in seen_keys:
+                c.add("duplicate_completion_fact_key", f"{requirement_path}.key", "同一幕不能重复声明完成事实。")
+            seen_keys.add(key)
+            definition = fact_definitions.get(key)
+            if not isinstance(definition, Mapping):
+                c.add("unknown_completion_fact_key", f"{requirement_path}.key", "完成事实必须先在 fact_contract.facts 中声明。")
+                continue
+            if not _text(definition.get("description")):
+                c.add(
+                    "completion_fact_description_required",
+                    f"fact_contract.facts.{key}.description",
+                    "被幕完成条件引用的事实必须提供作者语义描述。",
+                )
+            expected_type = definition.get("value_type")
+            expected_value = requirement.get("equals")
+            type_matches = (
+                (expected_type == "bool" and type(expected_value) is bool)
+                or (expected_type == "int" and _is_int(expected_value))
+                or (expected_type == "string" and _text(expected_value))
+            )
+            if not type_matches:
+                c.add(
+                    "completion_fact_value_type_mismatch",
+                    f"{requirement_path}.equals",
+                    "完成事实的 equals 必须匹配事实合同声明的值类型。",
+                )
 
     @staticmethod
     def _validate_conditions(
@@ -1051,6 +1194,40 @@ class NumericV2Compiler:
     def _validate_transition(c: _Collector, value: Any, path: str) -> None:
         contract = c.obj(value, path)
         c.require_text(contract.get("reason"), f"{path}.reason")
+        if "fallback_offer" in contract:
+            fallback_offer = c.require_text(
+                contract.get("fallback_offer"),
+                f"{path}.fallback_offer",
+            )
+            if fallback_offer and "\n" in fallback_offer:
+                c.add(
+                    "transition_fallback_offer_multiline",
+                    f"{path}.fallback_offer",
+                    "确定性兜底邀请必须是一段可直接展示的单条演绎文案。",
+                )
+            if fallback_offer and count_tokens(fallback_offer) > 160:
+                c.add(
+                    "transition_fallback_offer_too_long",
+                    f"{path}.fallback_offer",
+                    "确定性兜底邀请最多允许 160 token。",
+                )
+        if "accept_input" in contract:
+            accept_input = c.require_text(
+                contract.get("accept_input"),
+                f"{path}.accept_input",
+            )
+            if accept_input and "\n" in accept_input:
+                c.add(
+                    "transition_accept_input_multiline",
+                    f"{path}.accept_input",
+                    "作者接受输入必须是一条可直接提交的单段玩家输入。",
+                )
+            if accept_input and count_tokens(accept_input) > 80:
+                c.add(
+                    "transition_accept_input_too_long",
+                    f"{path}.accept_input",
+                    "作者接受输入最多允许 80 token。",
+                )
         c.require_text_list(
             contract.get("must_deliver"),
             f"{path}.must_deliver",
@@ -1118,6 +1295,30 @@ class NumericV2Compiler:
         }
         for ending_id in sorted(ending_ids.difference(reached_endings)):
             c.add("unreachable_ending", f"endings.{ending_id}", "结局从开场不可达。")
+
+        # 带完成合同的普通幕必须提供作者写定的可见邀请。它只在模型漏写出口时兜底，
+        # 因此通向结局的路线不要求该字段，也不能靠 Runtime 临时拼接角色台词。
+        for source_id, node in nodes.items():
+            if "completion_contract" not in node:
+                continue
+            for route_index, raw_route in enumerate(node.get("route_gates") or []):
+                if not isinstance(raw_route, Mapping):
+                    continue
+                target = nodes.get(str(raw_route.get("target_node_id") or ""))
+                if not isinstance(target, Mapping):
+                    continue
+                if target.get("type") == "ending" or target.get("terminal") is True:
+                    continue
+                contract = raw_route.get("transition_contract")
+                contract = contract if isinstance(contract, Mapping) else {}
+                c.require_text(
+                    contract.get("fallback_offer"),
+                    f"nodes.{source_id}.route_gates[{route_index}].transition_contract.fallback_offer",
+                )
+                c.require_text(
+                    contract.get("accept_input"),
+                    f"nodes.{source_id}.route_gates[{route_index}].transition_contract.accept_input",
+                )
 
         # 从所有结局反向遍历，保证每条可达支线都能收束到结局，而不是停在幕节点或循环中。
         reverse_routes: dict[str, set[str]] = {node_id: set() for node_id in nodes}

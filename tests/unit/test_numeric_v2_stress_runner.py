@@ -38,6 +38,15 @@ def test_numeric_v2_stress_parser_accepts_chat_only_strategy():
     assert args.strategy == "chat"
 
 
+def test_numeric_v2_stress_parser_accepts_text_trace_directory(tmp_path):
+    # 压测必须能显式声明演绎文案日志目录，避免依赖不可见的继承环境。
+    parser = run_numeric_v2_stress._build_parser()
+
+    args = parser.parse_args(["--story-id", "story_test", "--trace-dir", str(tmp_path)])
+
+    assert args.trace_dir == tmp_path
+
+
 def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift():
     # 标题变化只记录为报告诊断，不改变固定 story_id 的执行顺序。
     installed = {
@@ -534,6 +543,80 @@ def test_numeric_v2_stress_marks_missing_closing_advance_as_fallback():
     )
 
 
+def test_numeric_v2_stress_stops_repeating_a_rejected_transition_input():
+    trace = {
+        "turns": [{
+            "attempt": 10,
+            "from_node_id": "mainline_02",
+            "to_node_id": "mainline_02",
+            "player_input": "其实，我这次考砸了……",
+            "route_changed": False,
+            "transition_offered": True,
+            "workflow_diagnostics": {
+                "transition_review_results": [{
+                    "acceptance_authorized": False,
+                    "pending_invitation_invalid": False,
+                }],
+            },
+        }],
+    }
+
+    assert run_numeric_v2_stress._rejected_transition_input_seen(
+        trace,
+        node_id="mainline_02",
+        player_input="其实，我这次考砸了……",
+    ) is True
+    assert run_numeric_v2_stress._rejected_transition_input_seen(
+        trace,
+        node_id="mainline_02",
+        player_input="（把笔放下）我先休息一下。",
+    ) is False
+
+
+def test_numeric_v2_stress_allows_one_retry_after_cancelled_offer():
+    """转场候选被撤销但待确认邀请仍保留时，允许压测器重试一次。"""  # noqa: DOCSTRING_CJK
+
+    row = {
+        "attempt": 20,
+        "from_node_id": "node_branch_01",
+        "to_node_id": "node_branch_01",
+        "player_input": "好，我周六下午来负责现场引导。",
+        # 运行时撤销邀请后会清掉当前 offer 标记，但诊断仍保留撤回证据。
+        "transition_offered": False,
+        "workflow_diagnostics": {
+            "transition_cancellations": 1,
+            "transition_review_results": [{
+                "acceptance_authorized": False,
+                "pending_invitation_invalid": False,
+            }],
+        },
+    }
+
+    assert run_numeric_v2_stress._rejected_transition_input_seen(
+        {"turns": [row]},
+        node_id="node_branch_01",
+        player_input="好，我周六下午来负责现场引导。",
+    ) is False
+    assert run_numeric_v2_stress._rejected_transition_input_seen(
+        {"turns": [row, dict(row, attempt=21)]},
+        node_id="node_branch_01",
+        player_input="好，我周六下午来负责现场引导。",
+    ) is True
+    invalid_row = dict(row)
+    invalid_row["workflow_diagnostics"] = {
+        "transition_cancellations": 1,
+        "transition_review_results": [{
+            "acceptance_authorized": False,
+            "pending_invitation_invalid": True,
+        }],
+    }
+    assert run_numeric_v2_stress._rejected_transition_input_seen(
+        {"turns": [invalid_row]},
+        node_id="node_branch_01",
+        player_input="好，我周六下午来负责现场引导。",
+    ) is True
+
+
 def test_numeric_v2_stress_accepts_two_or_three_suggestions_only():
     for count in (2, 3):
         trace = {"quality_errors": []}
@@ -572,6 +655,7 @@ def test_numeric_v2_stress_reports_scene_and_transition_stalls_from_runtime_stat
                 "to_node_id": "scene",
                 "route_changed": False,
                 "route_status": "scene_incomplete",
+                "completion_contract_status_before_turn": "satisfied",
                 "node_turn_count": index,
                 "recommended_turns": 3,
             }
@@ -599,6 +683,50 @@ def test_numeric_v2_stress_reports_scene_and_transition_stalls_from_runtime_stat
     ]
     assert [item["error_code"] for item in trace["quality_errors"]] == [
         "stalled_transition",
+    ]
+
+
+def test_numeric_v2_stress_does_not_report_scene_stall_on_same_turn_completion():
+    """完成事实在本回合结束后才满足时，应给下一回合公开出口的机会。"""  # noqa: DOCSTRING_CJK
+
+    just_completed = {
+        "quality_errors": [],
+        "quality_warnings": [],
+        "turns": [{
+            "attempt": 5,
+            "revision": 5,
+            "from_node_id": "scene",
+            "to_node_id": "scene",
+            "route_changed": False,
+            "route_status": "scene_incomplete",
+            "transition_offered": False,
+            "completion_contract_status_before_turn": "pending",
+            "node_turn_count": 5,
+            "recommended_turns": 3,
+            "workflow_diagnostics": {"completion_contract_status": "satisfied"},
+        }],
+    }
+
+    run_numeric_v2_stress._record_structural_stalls(just_completed)
+
+    assert just_completed["quality_warnings"] == []
+
+    still_missing_exit = {
+        "quality_errors": [],
+        "quality_warnings": [],
+        "turns": [{
+            **just_completed["turns"][0],
+            "attempt": 6,
+            "revision": 6,
+            "completion_contract_status_before_turn": "satisfied",
+            "node_turn_count": 6,
+        }],
+    }
+
+    run_numeric_v2_stress._record_structural_stalls(still_missing_exit)
+
+    assert [item["error_code"] for item in still_missing_exit["quality_warnings"]] == [
+        "stalled_scene",
     ]
 
 
@@ -652,6 +780,7 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
             "primary_trace": {
                 "committed_turns": 3,
                 "turns": [{
+                    "route_changed": False,
                     "workflow_diagnostics": {
                         "evaluator_degraded": False,
                         "interaction_intent": "chat",
@@ -665,6 +794,12 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                         "actor_base_suggestion_parse_counts": {
                             "mixed_shape_invalid": 2,
                         },
+                        "actor_base_fact_candidate_parse_counts": {
+                            "expected": 1,
+                            "accepted_items": 1,
+                        },
+                        "review_fact_candidates_proposed": 2,
+                        "fact_candidates_accepted": 2,
                         "transition_judge_calls": 2,
                         "transition_judge_degraded": False,
                         "transition_ownership_retries": 1,
@@ -672,8 +807,39 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                         "transition_offer_retries": 1,
                         "semantic_rewrite_attempts": 1,
                         "phantom_transition_flags_cleared": 1,
+                            "completion_fallback_offer_applied": 1,
+                            "pending_acceptance_suggestions_preserved": 1,
+                            "verified_offer_acceptance_suggestions_inserted": 1,
+                            "author_fallback_invitation_protected": 1,
+                        "narration_offer_flags_cleared": 1,
+                        "explicit_player_movement_flags_cleared": 1,
+                        "current_scene_offer_flags_cleared": 1,
                         "unsafe_suggestions_removed": 1,
                         "route_suggestion_reviews": 1,
+                        "transition_review_results": [
+                            {
+                                "review_mode": "fast",
+                                "offer_present": False,
+                                "body_violations": [],
+                                "unsafe_suggestion_indexes": [],
+                                "fact_candidates": [],
+                                "fixed_narration_triggers": [],
+                                "missed_initiation": False,
+                            },
+                            {
+                                "review_mode": "fast",
+                                "offer_present": False,
+                                "body_violations": [],
+                                "unsafe_suggestion_indexes": [1],
+                                "fact_candidates": [{"key": "scene:start:done"}],
+                                "fixed_narration_triggers": [],
+                                "missed_initiation": False,
+                            },
+                            {
+                                "review_mode": "dispute",
+                                "offer_present": True,
+                            },
+                        ],
                     },
                 }],
                 "errors": [{
@@ -691,11 +857,24 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                         "actor_base_suggestion_parse_counts": {
                             "accepted_items": 3,
                         },
+                        "actor_base_fact_candidate_parse_counts": {
+                            "expected": 2,
+                            "missing": 2,
+                        },
+                        "review_fact_candidates_proposed": 1,
+                        "fact_candidates_rejected": 1,
                         "transition_judge_calls": 1,
                         "transition_judge_degraded": True,
                         "transition_author_boundary_retries": 1,
                         "semantic_rewrite_attempts": 1,
                         "phantom_transition_flags_cleared": 2,
+                            "completion_fallback_offer_applied": 2,
+                            "pending_acceptance_suggestions_preserved": 2,
+                            "verified_offer_acceptance_suggestions_inserted": 2,
+                            "author_fallback_invitation_protected": 2,
+                        "narration_offer_flags_cleared": 2,
+                        "explicit_player_movement_flags_cleared": 2,
+                        "current_scene_offer_flags_cleared": 2,
                         "unsafe_suggestions_removed": 2,
                         "route_suggestion_reviews": 2,
                     },
@@ -724,9 +903,12 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
             "scene_action": 1,
         },
         "actor_generation_attempts": 3,
+        "actor_repeated_output_guards": {},
+        "actor_repeated_output_retry_aborted": 0,
         "actor_provider_calls": 5,
-        "actor_suggestion_fill_attempts": 3,
-        "actor_suggestion_fill_provider_calls": 3,
+            "actor_suggestion_fill_attempts": 3,
+            "actor_suggestion_fill_provider_calls": 3,
+            "actor_suggestion_refill_after_review_attempts": 0,
         "actor_suggestion_fill_reasons": {
             "invalid_or_missing": 3,
         },
@@ -734,17 +916,45 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
             "mixed_shape_invalid": 2,
             "accepted_items": 3,
         },
+        "actor_base_fact_candidate_parse_counts": {
+            "expected": 3,
+            "accepted_items": 1,
+            "missing": 2,
+        },
+        "review_fact_candidates_proposed": 3,
+        "fact_candidates_accepted": 2,
+        "fact_candidates_rejected": 1,
         "transition_ownership_retries": 1,
         "transition_scene_boundary_retries": 0,
         "transition_author_boundary_retries": 3,
         "transition_offer_retries": 1,
         "semantic_rewrite_attempts": 2,
         "phantom_transition_flags_cleared": 3,
+            "completion_fallback_offer_applied": 3,
+            "pending_acceptance_suggestions_preserved": 3,
+            "verified_offer_acceptance_suggestions_inserted": 3,
+            "author_fallback_invitation_protected": 3,
+        "narration_offer_flags_cleared": 3,
+        "explicit_player_movement_flags_cleared": 3,
+        "player_action_projection_conflicts": 0,
+        "player_action_projection_safe_degrades": 0,
+        "current_scene_offer_flags_cleared": 3,
         "unsafe_suggestions_removed": 3,
         "route_suggestion_reviews": 3,
         "transition_judge_calls": 3,
-        "transition_judge_degraded_count": 1,
-        "dynamic_player_provider_calls": 0,
+            "transition_judge_degraded_count": 1,
+            "dispute_review_skipped_high_confidence_body": 0,
+            "dispute_review_skipped_unsafe_offer_buttons": 0,
+            "dispute_review_skipped_contract_offer": 0,
+            "dispute_review_deferred_offer_repair": 0,
+            "ordinary_fast_review_results": 2,
+            "ordinary_fast_review_noop_results": 1,
+            "ordinary_fast_review_material_results": 1,
+            "ordinary_fast_review_decision_counts": {
+                "unsafe_suggestion": 1,
+                "completion_fact": 1,
+            },
+            "dynamic_player_provider_calls": 0,
         "dynamic_player_error_count": 0,
     }
 

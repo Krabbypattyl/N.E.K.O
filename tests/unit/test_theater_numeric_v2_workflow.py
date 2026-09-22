@@ -19,12 +19,32 @@ from services.theater.numeric_v2_workflow import (
     _actor_rewrite_candidate_context,
     _drop_reported_unsafe_suggestions,
     _generate_actor_turn_with_output_retry,
+    _terminal_new_question_markers,
     _transition_review_failure_context,
     _transition_boundary_repair_context,
     generate_validated_opening,
 )
 from services.theater.numeric_v2_runtime import NumericV2Engine
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+
+def test_terminal_new_question_is_rejected_but_ordinary_scene_question_is_allowed() -> None:
+    story = numeric_v2_story()
+    engine = NumericV2Engine.from_mapping(story)
+    outcome = SimpleNamespace(ledger_event={"to_node_id": "ending_leave"})
+
+    assert _terminal_new_question_markers(
+        engine=engine,
+        outcome=outcome,
+        performance={"performance": "你这次是路过，还是特意回来？"},
+    ) == ("terminal_new_question",)
+
+    ordinary = SimpleNamespace(ledger_event={"to_node_id": "scene"})
+    assert _terminal_new_question_markers(
+        engine=engine,
+        outcome=ordinary,
+        performance={"performance": "你要不要先坐下？"},
+    ) == ()
 
 
 @pytest.mark.asyncio
@@ -328,6 +348,86 @@ async def test_actor_output_retry_changes_hint_for_each_attempt() -> None:
     assert len(set(actor.hints[1:])) == 3
     assert "第二次重复输出重试" in actor.hints[2]
     assert "最后一次重复输出重试" in actor.hints[3]
+
+
+@pytest.mark.asyncio
+async def test_tagged_repeated_output_stops_after_one_retry_and_records_guard() -> None:
+    """真实重复保护只再采样一次，并把命中来源写入本轮诊断。"""  # noqa: DOCSTRING_CJK
+
+    class RetryActor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_turn(self, **kwargs):
+            self.calls += 1
+            error = NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+            error.repetition_guard = "previous_performance"
+            raise error
+
+    actor = RetryActor()
+    diagnostics = {}
+    outcome = SimpleNamespace(
+        ledger_event={"from_node_id": "start", "to_node_id": "start"},
+    )
+
+    with pytest.raises(NumericV2ActorOutputError):
+        await _generate_actor_turn_with_output_retry(
+            actor,
+            diagnostics=diagnostics,
+            outcome=outcome,
+            session=SimpleNamespace(session_id="tagged-retry", revision=2),
+        )
+
+    assert actor.calls == 2
+    assert diagnostics["actor_repeated_output_guards"] == {
+        "previous_performance": 2,
+    }
+    assert diagnostics["actor_repeated_output_retry_aborted"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repetition_guard", ["earlier_session", "transition_source"])
+async def test_accepted_transition_allows_one_source_repeat_retry_when_output_retry_is_disabled(
+    repetition_guard: str,
+) -> None:
+    """正式接受换场的来源复用命中不应因通用重试关闭而卡死。"""  # noqa: DOCSTRING_CJK
+
+    class RetryActor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_turn(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                error = NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+                error.repetition_guard = repetition_guard
+                raise error
+            return {"performance": "（重新抬眼）那就走吧。"}
+
+    actor = RetryActor()
+    diagnostics = {}
+    outcome = SimpleNamespace(
+        ledger_event={
+            "from_node_id": "mainline_01",
+            "to_node_id": "branch_01",
+            "transition_intent": "accept",
+        },
+    )
+
+    result = await _generate_actor_turn_with_output_retry(
+        actor,
+        diagnostics=diagnostics,
+        outcome=outcome,
+        allow_output_retry=False,
+        allow_transition_repeat_retry=True,
+        session=SimpleNamespace(session_id="accepted-transition-retry", revision=2),
+    )
+
+    assert result["performance"] == "（重新抬眼）那就走吧。"
+    assert actor.calls == 2
+    assert diagnostics["actor_generation_attempts"] == 2
+    assert diagnostics["actor_repeated_output_guards"] == {repetition_guard: 1}
+    assert diagnostics.get("actor_repeated_output_retry_aborted", 0) == 0
 
 
 @pytest.mark.asyncio

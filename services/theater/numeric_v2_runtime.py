@@ -28,20 +28,56 @@ from .numeric_v2_budget import (
     NUMERIC_V2_ACTOR_BUDGET_PROFILES,
     NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
 )
+from .numeric_v2_action_projection import (
+    normalize_player_action_projection,
+    project_player_action_result,
+)
 from .numeric_v2_store import (
     NumericV2SessionStore,
     NumericV2StoredSession,
 )
 
 
-SESSION_SCHEMA = "neko.script.session.numeric.v2"
+SESSION_SCHEMA = "neko.script.session.numeric.v3"
 LEDGER_EVENT_SCHEMA = "neko.script.ledger_event.numeric.v2"
 PERFORMANCE_RECORD_SCHEMA = "neko.script.performance_record.numeric.v2"
+FACT_PROJECTION_SCHEMA = "neko.script.fact_projection.numeric.v1"
+TIMELINE_PROJECTION_SCHEMA = "neko.script.timeline_projection.numeric.v1"
+STORY_STATE_SCHEMA = "neko.script.story_state.numeric.v1"
 NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS = 140
 NUMERIC_V2_INPUT_SOURCES = frozenset({"freeform", "suggestion"})
 # 当前 Session 只保存正文、数值和转场状态；旧证据链 Session 不再可恢复。
 _DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_STORY_FACT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+_STORY_FACT_VISIBILITIES = frozenset({"public", "story"})
+_STORY_STATE_MAX_FACTS = 256
+_STORY_STATE_MAX_FACT_OPS = 32
+_STORY_STATE_MAX_VALUE_CHARS = 240
+_FACT_CONTRACT_VALUE_TYPES = frozenset({"bool", "int", "string"})
+_FACT_CONTRACT_VISIBILITIES = frozenset({"public", "story"})
+_FACT_CANDIDATE_EVIDENCE_SOURCES = frozenset({"player_input", "actor_performance", "runtime_fact"})
+_FACT_CANDIDATE_MAX_ITEMS = 16
+_FACT_CANDIDATE_MAX_EVIDENCE = 4
+# 完成事实只能引用已经发生的结果；这组词只拦明确的未来态，不把“准备工作已经完成”
+# 之类包含同形名词的完成表述误判为计划。
+_UNCONFIRMED_FACT_EVIDENCE_RE = re.compile(
+    r"即将|将要|尚未|还没|"
+    r"(?:准备|考虑|计划)(?:去|做|开始|进入|执行|进行|前往|离开|启动|按下|发力)|"
+    r"打算"
+)
+# 到达类合同需要证明角色已经跨过目标边界；只写朝目标移动仍是过程态。根据合同描述
+# 限定作用域，避免把“撤离已经开始”这类本来就记录启动状态的事实一并拒绝。
+_COMPLETED_LOCATION_FACT_RE = re.compile(
+    r"(?:已经|已).{0,48}(?:进入|抵达|到达|安置|撤离)"
+)
+_IN_PROGRESS_LOCATION_EVIDENCE_RE = re.compile(
+    r"(?:向|往).{0,48}(?:移动|前进|赶去|走去|跑去|撤离)"
+)
+_COMPLETED_LOCATION_EVIDENCE_RE = re.compile(
+    r"(?:已经|已|全部).{0,48}(?:进入|抵达|到达|安置)|"
+    r"(?:进入|抵达|到达).{0,16}(?:安全|完成)"
+)
 _COMPARATORS = {
     "==": lambda left, right: left == right,
     "!=": lambda left, right: left != right,
@@ -74,6 +110,482 @@ def _integer(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise NumericV2RuntimeError(f"{field}_invalid")
     return value
+
+
+def _story_scalar(value: Any, field: str) -> bool | int | str:
+    """限制事实值为可稳定序列化、可回放的简单标量。"""  # noqa: DOCSTRING_CJK
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value and len(value) <= _STORY_STATE_MAX_VALUE_CHARS:
+        return value
+    raise NumericV2RuntimeError(f"{field}_invalid")
+
+
+def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
+    """提取已由编译器校验的事实合同；缺失合同表示不开放模型事实写入。"""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or set(value) != {"facts"}:
+        raise NumericV2RuntimeError("story_fact_contract_invalid")
+    facts = value.get("facts")
+    if not isinstance(facts, Mapping):
+        raise NumericV2RuntimeError("story_fact_contract_invalid")
+    result: dict[str, dict[str, str]] = {}
+    for key, definition in facts.items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(definition, Mapping)
+            or not {"value_type", "visibility"}.issubset(definition)
+            or set(definition).difference({"value_type", "visibility", "description"})
+            or definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES
+            or definition.get("visibility") not in _FACT_CONTRACT_VISIBILITIES
+            or (
+                "description" in definition
+                and (
+                    not isinstance(definition.get("description"), str)
+                    or not str(definition.get("description") or "").strip()
+                )
+            )
+        ):
+            raise NumericV2RuntimeError("story_fact_contract_invalid")
+        result[key] = {
+            "value_type": str(definition["value_type"]),
+            "visibility": str(definition["visibility"]),
+            **(
+                {"description": str(definition["description"])}
+                if "description" in definition
+                else {}
+            ),
+        }
+    return result
+
+
+def _story_fact_value_matches(value: bool | int | str, value_type: str) -> bool:
+    """按合同检查事实值类型，整数不接受布尔值的 Python 子类关系。"""
+
+    if value_type == "bool":
+        return type(value) is bool
+    if value_type == "int":
+        return type(value) is int
+    if value_type == "string":
+        return type(value) is str
+    return False
+
+
+def validate_fact_candidates(
+    candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *,
+    fact_contract: Mapping[str, Any] | None,
+    evidence_sources: Mapping[str, str],
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """只把带完整四元组和逐字证据的确定候选转换成事实操作与审计记录。"""
+
+    contract = _story_fact_contract(fact_contract)
+    if not contract:
+        raise NumericV2RuntimeError("story_fact_candidate_contract_missing")
+    if not isinstance(candidates, (list, tuple)) or len(candidates) > _FACT_CANDIDATE_MAX_ITEMS:
+        raise NumericV2RuntimeError("story_fact_candidates_invalid")
+    if not isinstance(evidence_sources, Mapping):
+        raise NumericV2RuntimeError("story_fact_candidate_evidence_invalid")
+    operations: list[dict[str, Any]] = []
+    audit: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    expected_fields = {
+        "op", "key", "value", "visibility", "confidence",
+        "subject", "action", "object", "result", "evidence",
+    }
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping) or set(candidate) != expected_fields:
+            raise NumericV2RuntimeError("story_fact_candidate_shape_invalid")
+        if candidate.get("op") != "set" or candidate.get("confidence") != "confirmed":
+            raise NumericV2RuntimeError("story_fact_candidate_not_confirmed")
+        key = candidate.get("key")
+        if not isinstance(key, str) or key in seen_keys or key not in contract:
+            raise NumericV2RuntimeError("story_fact_candidate_key_not_allowed")
+        definition = contract[key]
+        value = _story_scalar(candidate.get("value"), "story_state_fact_value")
+        if candidate.get("visibility") != definition["visibility"]:
+            raise NumericV2RuntimeError("story_fact_candidate_visibility_not_allowed")
+        if not _story_fact_value_matches(value, definition["value_type"]):
+            raise NumericV2RuntimeError("story_fact_candidate_value_type_not_allowed")
+        tuple_fields: dict[str, str] = {}
+        for field in ("subject", "action", "object", "result"):
+            text = candidate.get(field)
+            if not isinstance(text, str) or not text.strip() or len(text.strip()) > 160:
+                raise NumericV2RuntimeError("story_fact_candidate_tuple_invalid")
+            tuple_fields[field] = text.strip()
+        evidence = candidate.get("evidence")
+        if (
+            not isinstance(evidence, list)
+            or not 1 <= len(evidence) <= _FACT_CANDIDATE_MAX_EVIDENCE
+        ):
+            raise NumericV2RuntimeError("story_fact_candidate_evidence_invalid")
+        normalized_evidence: list[dict[str, str]] = []
+        for row in evidence:
+            if not isinstance(row, Mapping) or set(row) != {"source", "quote"}:
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_invalid")
+            source = row.get("source")
+            quote = row.get("quote")
+            source_text = evidence_sources.get(source) if isinstance(source, str) else None
+            if (
+                source not in _FACT_CANDIDATE_EVIDENCE_SOURCES
+                or not isinstance(source_text, str)
+                or not isinstance(quote, str)
+                or not quote.strip()
+                or quote not in source_text
+            ):
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_unverifiable")
+            if _UNCONFIRMED_FACT_EVIDENCE_RE.search(quote):
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
+            description = str(definition.get("description") or "")
+            if (
+                _COMPLETED_LOCATION_FACT_RE.search(description)
+                and _IN_PROGRESS_LOCATION_EVIDENCE_RE.search(quote)
+                and not _COMPLETED_LOCATION_EVIDENCE_RE.search(quote)
+            ):
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
+            normalized_evidence.append({"source": source, "quote": quote})
+        seen_keys.add(key)
+        operations.append({
+            "op": "set",
+            "key": key,
+            "value": value,
+            "visibility": definition["visibility"],
+        })
+        audit.append({"key": key, **tuple_fields, "evidence": normalized_evidence})
+    return tuple(operations), tuple(audit)
+
+
+def _normalize_actor_fact_candidates(
+    candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *,
+    fact_contract: Mapping[str, Mapping[str, Any]],
+    allowed_keys: set[str],
+) -> tuple[dict[str, Any], ...]:
+    """把 Actor 的三字段候选补成统一审计形状；权限与语义只取作者合同。"""  # noqa: DOCSTRING_CJK
+
+    if not isinstance(candidates, (list, tuple)) or len(candidates) > _FACT_CANDIDATE_MAX_ITEMS:
+        raise NumericV2RuntimeError("actor_fact_candidates_invalid")
+    normalized: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping) or set(candidate) != {"key", "value", "evidence_quote"}:
+            raise NumericV2RuntimeError("actor_fact_candidate_shape_invalid")
+        key = candidate.get("key")
+        if not isinstance(key, str) or key not in allowed_keys:
+            raise NumericV2RuntimeError("actor_fact_candidate_key_not_allowed")
+        definition = fact_contract.get(key)
+        if not isinstance(definition, Mapping):
+            raise NumericV2RuntimeError("actor_fact_candidate_key_not_allowed")
+        description = definition.get("description")
+        quote = candidate.get("evidence_quote")
+        if not isinstance(description, str) or not description.strip():
+            raise NumericV2RuntimeError("actor_fact_candidate_description_missing")
+        if not isinstance(quote, str) or not quote.strip():
+            raise NumericV2RuntimeError("actor_fact_candidate_evidence_invalid")
+        normalized.append({
+            "op": "set",
+            "key": key,
+            "value": candidate.get("value"),
+            "visibility": definition.get("visibility"),
+            "confidence": "confirmed",
+            # 这四项是内部审计标签，不让 Actor 重复生成可由合同确定的元数据。
+            "subject": "本轮最终演绎",
+            "action": "确认",
+            "object": key,
+            "result": description.strip(),
+            "evidence": [{"source": "actor_performance", "quote": quote.strip()}],
+        })
+    return tuple(normalized)
+
+
+def _validate_story_state(value: Any) -> dict[str, Any]:
+    """校验故事状态投影，确保它只包含确定性事件事实。"""  # noqa: DOCSTRING_CJK
+
+    if not isinstance(value, Mapping) or set(value) != {"schema", "revision", "facts"}:
+        raise NumericV2RuntimeError("story_state_schema_invalid")
+    if value.get("schema") != STORY_STATE_SCHEMA:
+        raise NumericV2RuntimeError("story_state_schema_invalid")
+    revision = _integer(value.get("revision"), "story_state_revision")
+    if revision < 0:
+        raise NumericV2RuntimeError("story_state_revision_invalid")
+    facts = value.get("facts")
+    if not isinstance(facts, Mapping) or len(facts) > _STORY_STATE_MAX_FACTS:
+        raise NumericV2RuntimeError("story_state_facts_invalid")
+    normalized_facts: dict[str, dict[str, Any]] = {}
+    expected_fact_keys = {
+        "value",
+        "visibility",
+        "source_revision",
+        "client_turn_id",
+        "updated_revision",
+    }
+    for raw_key, raw_fact in facts.items():
+        key = raw_key if isinstance(raw_key, str) else ""
+        if not _STORY_FACT_KEY_RE.fullmatch(key) or not isinstance(raw_fact, Mapping):
+            raise NumericV2RuntimeError("story_state_fact_invalid")
+        if set(raw_fact) != expected_fact_keys:
+            raise NumericV2RuntimeError("story_state_fact_invalid")
+        visibility = raw_fact.get("visibility")
+        if visibility not in _STORY_FACT_VISIBILITIES:
+            raise NumericV2RuntimeError("story_state_fact_visibility_invalid")
+        source_revision = _integer(raw_fact.get("source_revision"), "story_state_fact_source_revision")
+        updated_revision = _integer(raw_fact.get("updated_revision"), "story_state_fact_updated_revision")
+        if (
+            source_revision < 0
+            or updated_revision < 0
+            or source_revision > revision
+            or updated_revision > revision
+        ):
+            raise NumericV2RuntimeError("story_state_fact_revision_invalid")
+        normalized_facts[key] = {
+            "value": _story_scalar(raw_fact.get("value"), "story_state_fact_value"),
+            "visibility": visibility,
+            "source_revision": source_revision,
+            "client_turn_id": _stable_id(raw_fact.get("client_turn_id"), "story_state_fact_client_turn_id"),
+            "updated_revision": updated_revision,
+        }
+    return {
+        "schema": STORY_STATE_SCHEMA,
+        "revision": revision,
+        "facts": normalized_facts,
+    }
+
+
+def apply_fact_ops(
+    current: Mapping[str, Any],
+    *,
+    revision: int,
+    client_turn_id: str,
+    ops: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    allowed_keys: set[str] | frozenset[str] | None = None,
+    fact_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """在副本上原子应用事实操作，唯一允许写入故事事实账本。"""  # noqa: DOCSTRING_CJK
+
+    current_state = _validate_story_state(current)
+    if _integer(revision, "story_state_revision") != current_state["revision"] + 1:
+        raise NumericV2RuntimeError("story_state_revision_mismatch")
+    turn_id = _stable_id(client_turn_id, "client_turn_id")
+    if not isinstance(ops, (list, tuple)) or len(ops) > _STORY_STATE_MAX_FACT_OPS:
+        raise NumericV2RuntimeError("story_state_fact_ops_invalid")
+    if ops and allowed_keys is None and fact_contract is None:
+        raise NumericV2RuntimeError("story_state_fact_allowlist_missing")
+    contract = _story_fact_contract(fact_contract)
+    permitted = set(allowed_keys) if allowed_keys is not None else set(contract)
+    if allowed_keys is None and fact_contract is None:
+        permitted = None
+    if permitted is not None and any(
+        not isinstance(key, str) or not _STORY_FACT_KEY_RE.fullmatch(key)
+        for key in permitted
+    ):
+        raise NumericV2RuntimeError("story_state_fact_key_invalid")
+    facts = deepcopy(current_state["facts"])
+    seen_keys: set[str] = set()
+    for raw_op in ops:
+        if not isinstance(raw_op, Mapping):
+            raise NumericV2RuntimeError("story_state_fact_op_invalid")
+        operation = raw_op.get("op")
+        key = raw_op.get("key")
+        if operation not in {"set", "delete"} or not isinstance(key, str) or not _STORY_FACT_KEY_RE.fullmatch(key):
+            raise NumericV2RuntimeError("story_state_fact_op_invalid")
+        if key in seen_keys:
+            raise NumericV2RuntimeError("story_state_fact_duplicate_op")
+        seen_keys.add(key)
+        if permitted is not None and key not in permitted:
+            raise NumericV2RuntimeError("story_state_fact_key_not_allowed")
+        definition = contract.get(key)
+        if fact_contract is not None and definition is None:
+            raise NumericV2RuntimeError("story_state_fact_key_not_allowed")
+        if operation == "delete":
+            if set(raw_op) != {"op", "key"}:
+                raise NumericV2RuntimeError("story_state_fact_op_invalid")
+            facts.pop(key, None)
+            continue
+        if set(raw_op) != {"op", "key", "value", "visibility"}:
+            raise NumericV2RuntimeError("story_state_fact_op_invalid")
+        visibility = raw_op.get("visibility")
+        if visibility not in _STORY_FACT_VISIBILITIES:
+            raise NumericV2RuntimeError("story_state_fact_visibility_invalid")
+        value = _story_scalar(raw_op.get("value"), "story_state_fact_value")
+        if definition is not None:
+            if visibility != definition["visibility"]:
+                raise NumericV2RuntimeError("story_state_fact_visibility_not_allowed")
+            if not _story_fact_value_matches(value, definition["value_type"]):
+                raise NumericV2RuntimeError("story_state_fact_value_type_not_allowed")
+        facts[key] = {
+            "value": value,
+            "visibility": visibility,
+            "source_revision": revision,
+            "client_turn_id": turn_id,
+            "updated_revision": revision,
+        }
+        if len(facts) > _STORY_STATE_MAX_FACTS:
+            raise NumericV2RuntimeError("story_state_facts_invalid")
+    # 字典序持久化，保证同一批操作的回放和存档 diff 稳定。
+    return _validate_story_state({
+        "schema": STORY_STATE_SCHEMA,
+        "revision": revision,
+        "facts": {key: facts[key] for key in sorted(facts)},
+    })
+
+
+def _initial_story_state(start_node_id: str) -> dict[str, Any]:
+    """记录开场已进入事件；当前位置仍由 Session.current_node_id 负责。"""  # noqa: DOCSTRING_CJK
+
+    return _validate_story_state({
+        "schema": STORY_STATE_SCHEMA,
+        "revision": 0,
+        "facts": {
+            f"event:scene.entered:{start_node_id}:r0": {
+                "value": True,
+                "visibility": "public",
+                "source_revision": 0,
+                "client_turn_id": "opening",
+                "updated_revision": 0,
+            },
+        },
+    })
+
+
+def _advance_story_state(
+    current: Mapping[str, Any],
+    *,
+    from_node_id: str,
+    to_node_id: str,
+    revision: int,
+    client_turn_id: str,
+    fact_operations: tuple[Mapping[str, Any], ...] = (),
+    fact_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """按正式回合原子推进场景事件和已核验事实，不复制 Session 的位置和数值字段。"""  # noqa: DOCSTRING_CJK
+
+    operations: list[dict[str, Any]] = []
+    allowed_keys: set[str] = set()
+    if from_node_id != to_node_id:
+        for kind, node_id in (("left", from_node_id), ("entered", to_node_id)):
+            key = f"event:scene.{kind}:{node_id}:r{revision}"
+            operations.append({
+                "op": "set",
+                "key": key,
+                "value": True,
+                "visibility": "public",
+            })
+            allowed_keys.add(key)
+    operations.extend(deepcopy(dict(operation)) for operation in fact_operations)
+    contract_facts = dict((fact_contract or {}).get("facts") or {})
+    # 场景进入/离开事实由 Runtime 自己声明，和剧本开放的模型事实共用一次原子提交。
+    for key in allowed_keys:
+        contract_facts.setdefault(key, {"value_type": "bool", "visibility": "public"})
+    # 候选事实也必须落在同一份已声明合同内；允许集合同时覆盖内部事件和剧本白名单。
+    allowed_keys.update(contract_facts)
+    return apply_fact_ops(
+        current,
+        revision=revision,
+        client_turn_id=client_turn_id,
+        ops=operations,
+        allowed_keys=allowed_keys,
+        fact_contract={"facts": contract_facts},
+    )
+
+
+def _fact_projection(
+    event: Mapping[str, Any],
+    performance: Mapping[str, Any],
+) -> dict[str, Any]:
+    """保存本轮可由 Runtime 直接证明的事实证据，不把自然语言猜测冒充语义事实。"""  # noqa: DOCSTRING_CJK
+
+    visible_parts: list[dict[str, str]] = []
+    segments = performance.get("segments")
+    if isinstance(segments, list):
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                continue
+            text = "\n".join(
+                str(segment.get(key) or "").strip()
+                for key in ("performance", "scene_narration")
+                if str(segment.get(key) or "").strip()
+            )
+            if text:
+                visible_parts.append({"phase": str(segment.get("phase") or "unknown"), "text": text})
+    else:
+        text = "\n".join(
+            str(performance.get(key) or "").strip()
+            for key in ("performance", "scene_narration")
+            if str(performance.get(key) or "").strip()
+        )
+        if text:
+            visible_parts.append({"phase": "ordinary", "text": text})
+    return {
+        "schema": FACT_PROJECTION_SCHEMA,
+        "revision": int(event.get("result_revision", 0)),
+        "subject_evidence": {
+            "player_input": str(event.get("input_text") or ""),
+            "actor_visible_parts": visible_parts,
+        },
+        "deterministic_events": [
+            *[
+                {
+                    "kind": "metric_change",
+                    "metric_id": str(change.get("metric_id") or ""),
+                    "before": change.get("before"),
+                    "after": change.get("after"),
+                }
+                for change in event.get("metric_changes") or []
+                if isinstance(change, Mapping)
+            ],
+            *([{
+                "kind": "node_transition",
+                "from_node_id": str(event.get("from_node_id") or ""),
+                "to_node_id": str(event.get("to_node_id") or ""),
+            }] if str(event.get("from_node_id") or "") != str(event.get("to_node_id") or "") else []),
+        ],
+        "semantic_status": "evidence_only",
+    }
+
+
+def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
+    """记录可由 Runtime 证明的场景访问顺序，不从演绎文案推断自然日期。"""
+
+    revision = int(event.get("result_revision", 0) or 0)
+    from_node_id = str(event.get("from_node_id") or "")
+    to_node_id = str(event.get("to_node_id") or from_node_id)
+    node_turn_count = int(event.get("node_turn_count", 0) or 0)
+    started_revision = max(revision - node_turn_count, 0)
+    events: list[dict[str, Any]] = []
+    if from_node_id != to_node_id:
+        events.extend((
+            {
+                "kind": "scene_left",
+                "node_id": from_node_id,
+                "revision": revision,
+            },
+            {
+                "kind": "scene_entered",
+                "node_id": to_node_id,
+                "revision": revision,
+            },
+        ))
+    else:
+        events.append({
+            "kind": "scene_turn",
+            "node_id": to_node_id,
+            "revision": revision,
+        })
+    return {
+        "schema": TIMELINE_PROJECTION_SCHEMA,
+        "revision": revision,
+        "scene_scope": {
+            "node_id": to_node_id,
+            "visit_id": f"{to_node_id}:r{started_revision}",
+            "started_revision": started_revision,
+        },
+        "events": events,
+        "semantic_status": "deterministic",
+    }
 
 
 def _player_address_disclosed(message: str, configured_address: str) -> bool:
@@ -219,6 +731,8 @@ class ScriptSessionV2:
     processed_client_turn_ids: tuple[str, ...]
     opening_performance: dict[str, Any]
     performance_history: tuple[dict[str, Any], ...]
+    # 故事状态只保存可由 Runtime 证明的事件事实；当前位置仍以 current_node_id 为唯一权威。
+    story_state: dict[str, Any]
     # 预算档位属于 Session 快照；继续演绎必须沿用原档位，重新开始才允许重选。
     actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE
     # 演绎 revision 只表示正式回合；结束与继续使用独立版本，避免延迟请求互相覆盖。
@@ -248,6 +762,7 @@ class ScriptSessionV2:
             "processed_client_turn_ids": list(self.processed_client_turn_ids),
             "opening_performance": deepcopy(self.opening_performance),
             "performance_history": deepcopy(list(self.performance_history)),
+            "story_state": deepcopy(self.story_state),
             "actor_budget_profile": self.actor_budget_profile,
             "lifecycle_revision": self.lifecycle_revision,
             "player_address_known": self.player_address_known,
@@ -285,6 +800,10 @@ class ScriptSessionV2:
         )
         if actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
             raise NumericV2RuntimeError("numeric_actor_budget_profile_invalid")
+        session_revision = _integer(value.get("revision"), "revision")
+        story_state = _validate_story_state(value.get("story_state"))
+        if story_state["revision"] != session_revision:
+            raise NumericV2RuntimeError("story_state_revision_mismatch")
         return cls(
             session_id=_stable_id(value.get("session_id"), "session_id"),
             story_package_id=_stable_id(value.get("story_package_id"), "story_package_id"),
@@ -294,11 +813,12 @@ class ScriptSessionV2:
             current_node_id=_stable_id(value.get("current_node_id"), "current_node_id"),
             metrics={str(key): _integer(item, "session_metric") for key, item in dict(value.get("metrics") or {}).items()},
             node_turn_count=_integer(value.get("node_turn_count"), "node_turn_count"),
-            revision=_integer(value.get("revision"), "revision"),
+            revision=session_revision,
             status=str(value.get("status") or ""),
             processed_client_turn_ids=tuple(str(item) for item in value.get("processed_client_turn_ids") or []),
             opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
             performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
+            story_state=story_state,
             actor_budget_profile=actor_budget_profile,
             lifecycle_revision=_integer(value.get("lifecycle_revision", 0), "lifecycle_revision"),
             player_address_known=raw_player_address_known,
@@ -334,6 +854,7 @@ class NumericV2Engine:
         self.story = compiled.story
         self.nodes = {str(node["id"]): node for node in self.story["nodes"]}
         self.metric_schema = self.story["metric_schema"]
+        self.fact_contract = _story_fact_contract(self.story.get("fact_contract"))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "NumericV2Engine":
@@ -349,6 +870,119 @@ class NumericV2Engine:
     @property
     def story_id(self) -> str:
         return self.compiled.story_id
+
+    def apply_story_fact_ops(
+        self,
+        current: Mapping[str, Any],
+        *,
+        revision: int,
+        client_turn_id: str,
+        ops: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    ) -> dict[str, Any]:
+        """按当前剧本的事实合同应用候选；未声明白名单时所有模型候选都会被拒绝。"""
+
+        return apply_fact_ops(
+            current,
+            revision=revision,
+            client_turn_id=client_turn_id,
+            ops=ops,
+            fact_contract={"facts": self.fact_contract},
+        )
+
+    def apply_story_fact_candidates(
+        self,
+        current: Mapping[str, Any],
+        *,
+        revision: int,
+        client_turn_id: str,
+        candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+        evidence_sources: Mapping[str, str],
+    ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+        """先验证候选四元组和逐字证据，再一次性写入并返回审计记录。"""
+
+        operations, audit = validate_fact_candidates(
+            candidates,
+            fact_contract={"facts": self.fact_contract},
+            evidence_sources=evidence_sources,
+        )
+        state = self.apply_story_fact_ops(
+            current,
+            revision=revision,
+            client_turn_id=client_turn_id,
+            ops=operations,
+        )
+        return state, audit
+
+    def finalize_actor_fact_candidates(
+        self,
+        base_session: ScriptSessionV2,
+        outcome: TurnOutcomeV2,
+        *,
+        candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+        evidence_sources: Mapping[str, str],
+    ) -> tuple[TurnOutcomeV2, tuple[dict[str, Any], ...]]:
+        """把最终 Actor 候选与 Evaluator 事实合并后按同一 revision 原子重建。"""  # noqa: DOCSTRING_CJK
+
+        self.validate_session(base_session)
+        event = outcome.ledger_event
+        if (
+            event.get("base_revision") != base_session.revision
+            or event.get("result_revision") != base_session.revision + 1
+            or event.get("client_turn_id") not in outcome.session.processed_client_turn_ids
+        ):
+            raise NumericV2RuntimeError("actor_fact_outcome_mismatch")
+        node = self.nodes.get(base_session.current_node_id)
+        completion_contract = node.get("completion_contract") if isinstance(node, Mapping) else None
+        allowed_keys = {
+            str(requirement.get("key") or "")
+            for requirement in (
+                completion_contract.get("all")
+                if isinstance(completion_contract, Mapping)
+                else ()
+            )
+            if isinstance(requirement, Mapping)
+        }
+        normalized_candidates = _normalize_actor_fact_candidates(
+            candidates,
+            fact_contract=self.fact_contract,
+            allowed_keys=allowed_keys,
+        )
+        actor_operations, audit = validate_fact_candidates(
+            normalized_candidates,
+            fact_contract={"facts": self.fact_contract},
+            evidence_sources=evidence_sources,
+        )
+        existing_operations = tuple(event.get("fact_operations") or ())
+        existing_keys = {
+            str(operation.get("key") or "")
+            for operation in existing_operations
+            if isinstance(operation, Mapping)
+        }
+        actor_keys = {str(operation["key"]) for operation in actor_operations}
+        if existing_keys.intersection(actor_keys):
+            raise NumericV2RuntimeError("actor_fact_candidate_duplicate_key")
+        combined_operations = (*existing_operations, *actor_operations)
+        story_state = _advance_story_state(
+            base_session.story_state,
+            from_node_id=str(event["from_node_id"]),
+            to_node_id=str(event["to_node_id"]),
+            revision=int(event["result_revision"]),
+            client_turn_id=str(event["client_turn_id"]),
+            fact_operations=combined_operations,
+            fact_contract={"facts": self.fact_contract},
+        )
+        ledger_event = dict(event)
+        ledger_event["fact_operations"] = deepcopy(
+            [dict(operation) for operation in combined_operations]
+        )
+        return (
+            replace(
+                outcome,
+                session=replace(outcome.session, story_state=story_state),
+                ledger_event=ledger_event,
+            ),
+            audit,
+        )
 
     @staticmethod
     def _node_dialogue_policy(node: Mapping[str, Any], fallback: str) -> str:
@@ -392,6 +1026,7 @@ class NumericV2Engine:
             processed_client_turn_ids=(),
             opening_performance=generated_opening,
             performance_history=(),
+            story_state=_initial_story_state(str(self.story["start_node_id"])),
             actor_budget_profile=actor_budget_profile,
             player_address_known=bool(self.story["initial_state"]["player_address_known"]),
             dialogue_policy=self._node_dialogue_policy(
@@ -412,6 +1047,9 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("story_package_hash_mismatch")
         if session.current_node_id not in self.nodes:
             raise NumericV2RuntimeError("session_current_node_missing")
+        story_state = _validate_story_state(session.story_state)
+        if story_state["revision"] != session.revision:
+            raise NumericV2RuntimeError("story_state_revision_mismatch")
         if session.status not in {"active", "ended"}:
             raise NumericV2RuntimeError("session_status_invalid")
         if session.actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
@@ -441,6 +1079,7 @@ class NumericV2Engine:
         scene_complete: bool = False,
         transition_intent: str = "unclear",
         natural_ending_ready: bool = False,
+        fact_operations: tuple[Mapping[str, Any], ...] = (),
     ) -> TurnOutcomeV2:
         """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
 
@@ -532,12 +1171,22 @@ class NumericV2Engine:
             )
 
         revision = session.revision + 1
+        story_state = _advance_story_state(
+            session.story_state,
+            from_node_id=session.current_node_id,
+            to_node_id=target_node_id,
+            revision=revision,
+            client_turn_id=request.client_turn_id,
+            fact_operations=fact_operations,
+            fact_contract={"facts": self.fact_contract},
+        )
         next_session = replace(
             session,
             current_node_id=target_node_id,
             metrics=after,
             node_turn_count=next_turn_count,
             revision=revision,
+            story_state=story_state,
             status=next_status,
             processed_client_turn_ids=(*session.processed_client_turn_ids, request.client_turn_id),
             player_address_known=player_address_known,
@@ -584,7 +1233,19 @@ class NumericV2Engine:
             # 版本 2 表示称呼状态由“完整昵称 + 明确披露句式”确定，旧事件按已提交事实兼容重放。
             "player_address_disclosure_version": 2,
         }
+        # 这份投影只由当前输入与 Runtime 已确认的路线/事实结果生成；不接受
+        # Actor、客户端或作者目标反向写入玩家已经完成的动作。
+        event["player_action_projection"] = project_player_action_result(
+            request.message,
+            revision=revision,
+            transition_intent=effective_transition_intent,
+            route_changed=route is not None,
+            fact_operations=fact_operations,
+        )
         event["transition_intent"] = effective_transition_intent
+        if fact_operations:
+            # 事实候选已经在提交前通过合同校验；Ledger 保存规范化操作以支持确定性重放。
+            event["fact_operations"] = deepcopy([dict(operation) for operation in fact_operations])
         # 只记录新信号的阳性值；旧 Ledger 缺省为 false，分叉重放不会替旧历史提前结束。
         if natural_ending_ready is True:
             event["natural_ending_ready"] = True
@@ -611,7 +1272,12 @@ class NumericV2Engine:
         }
         # 只有 Workflow 的明确复核结论能撤下旧邀请，Actor 不能注入历史边界。
         finalized_performance.pop("transition_offer_invalidated", None)
+        # 区分“本轮重新公开有效邀请”和“仅沿用旧邀请”；回复绑定不能只看最终布尔状态。
+        finalized_performance.pop("transition_offer_presented", None)
         ledger_event = {**outcome.ledger_event, "transition_offered": transition_offered}
+        if new_offer:
+            finalized_performance["transition_offer_presented"] = True
+            ledger_event["transition_offer_presented"] = True
         if invalidate_previous_offer:
             finalized_performance["transition_offer_invalidated"] = True
             ledger_event["transition_offer_invalidated"] = True
@@ -749,6 +1415,22 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("node_not_found")
         route, _status = self._select_route(node, metrics)
         return route
+
+    def completion_contract_satisfied(self, session: ScriptSessionV2) -> bool | None:
+        """只读判断当前幕的作者完成条件；未声明时返回 None。"""  # noqa: DOCSTRING_CJK
+
+        self.validate_session(session)
+        node = self.nodes[session.current_node_id]
+        contract = node.get("completion_contract")
+        if not isinstance(contract, Mapping):
+            return None
+        story_state = _validate_story_state(session.story_state)
+        facts = story_state["facts"]
+        return all(
+            isinstance(facts.get(str(requirement["key"])), Mapping)
+            and facts[str(requirement["key"])]["value"] == requirement["equals"]
+            for requirement in contract["all"]
+        )
 
     @staticmethod
     def _conditions_match(conditions: Mapping[str, Any], metrics: Mapping[str, int]) -> bool:
@@ -892,6 +1574,11 @@ class NumericV2Runtime:
                 scene_complete=bool(source_event.get("scene_complete")),
                 transition_intent=str(source_event.get("transition_intent") or "unclear"),
                 natural_ending_ready=source_event.get("natural_ending_ready") is True,
+                fact_operations=tuple(
+                    dict(operation)
+                    for operation in source_event.get("fact_operations") or []
+                    if isinstance(operation, Mapping)
+                ),
             )
             source_performance = deepcopy(
                 dict(source.session.performance_history[index])
@@ -899,6 +1586,8 @@ class NumericV2Runtime:
             replayed_event = deepcopy(outcome.ledger_event)
             if source_event.get("transition_offer_invalidated") is True:
                 replayed_event["transition_offer_invalidated"] = True
+            if source_event.get("transition_offer_presented") is True:
+                replayed_event["transition_offer_presented"] = True
             replayed_session_after_turn = outcome.session
             if "transition_offered" in source_event:
                 # 分叉重放沿用原回合已经提交的提议状态；不能把 Actor 结果重新猜一遍。
@@ -956,6 +1645,7 @@ class NumericV2Runtime:
         scene_complete: bool = False,
         transition_intent: str = "unclear",
         natural_ending_ready: bool = False,
+        fact_operations: tuple[Mapping[str, Any], ...] = (),
     ) -> TurnOutcomeV2:
         return self.engine.resolve_turn(
             current.session,
@@ -964,6 +1654,7 @@ class NumericV2Runtime:
             scene_complete=scene_complete,
             transition_intent=transition_intent,
             natural_ending_ready=natural_ending_ready,
+            fact_operations=fact_operations,
         )
 
     async def commit_turn(
@@ -1062,11 +1753,24 @@ class NumericV2Runtime:
                 else (2 if "content" in performance or route_changed else 1)
             ),
         }
+        record["player_action_projection"] = normalize_player_action_projection(
+            outcome.ledger_event.get("player_action_projection")
+        )
+        fact_projection = _fact_projection(outcome.ledger_event, record)
+        record["fact_projection"] = fact_projection
+        timeline_projection = _timeline_projection(outcome.ledger_event)
+        record["timeline_projection"] = timeline_projection
+        ledger_event = {
+            **outcome.ledger_event,
+            "player_action_projection": deepcopy(record["player_action_projection"]),
+            "fact_projection": deepcopy(fact_projection),
+            "timeline_projection": deepcopy(timeline_projection),
+        }
         session = replace(
             outcome.session,
             performance_history=(*outcome.session.performance_history, record),
         )
-        return await self.store.commit(session, outcome.ledger_event)
+        return await self.store.commit(session, ledger_event)
 
     async def end_session(
         self,
@@ -1106,6 +1810,8 @@ class NumericV2Runtime:
 
 
 __all__ = [
+    "apply_fact_ops",
+    "validate_fact_candidates",
     "LEDGER_EVENT_SCHEMA",
     "MetricChangeV2",
     "NumericV2DuplicateTurnError",
@@ -1115,6 +1821,7 @@ __all__ = [
     "NumericV2RuntimeError",
     "PERFORMANCE_RECORD_SCHEMA",
     "SESSION_SCHEMA",
+    "STORY_STATE_SCHEMA",
     "ScriptSessionV2",
     "TurnOutcomeV2",
     "TurnRequestV2",

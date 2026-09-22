@@ -1,6 +1,6 @@
 # N.E.K.O 小剧场胶囊演绎迁移方案
 
-状态：历史迁移记录（当前实现合同以 `neko-theater-architecture.md` 的 Numeric v2.2 为准）
+状态：历史迁移记录（当前实现合同和模块职责以 `neko-theater-architecture.md` 的 Numeric v2.2 与第2节为准；本文不再维护独立模块清单）
 
 本文描述小剧场从“独立页面内选剧、输入和回放”迁移到“N.E.K.O 本体胶囊输入框演绎”的目标方案。它是迁移期间的专项实施记录，不是第三份长期小剧场合同；实施完成并通过验收后，应把仍然有效的规则合并回[小剧场架构开发文档](./neko-theater-architecture.md)，把真实演绎问题写入[小剧场实测问题描述以及解决方案](./neko-theater-issues-and-solutions.md)，再归档或删除本文。
 

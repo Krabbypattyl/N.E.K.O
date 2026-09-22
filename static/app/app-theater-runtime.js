@@ -34,6 +34,7 @@
     var pendingLaunch = null;
     var endConfirmationPending = false;
     var committedSnapshot = null;
+    var proactiveChatSnapshot = null;
 
     function t(key, fallback) {
         if (typeof window.t === 'function') {
@@ -143,6 +144,24 @@
         var audio = window.appAudioPlayback;
         if (audio && typeof audio.clearAudioQueueWithoutDecoderReset === 'function') {
             audio.clearAudioQueueWithoutDecoderReset();
+        }
+    }
+    function lockProactiveChatForTheater() {
+        var appState = window.appState;
+        if (!appState || proactiveChatSnapshot !== null) return;
+        proactiveChatSnapshot = { enabled: appState.proactiveChatEnabled === true };
+        appState.proactiveChatEnabled = false;
+        if (typeof window.stopProactiveChatSchedule === 'function') window.stopProactiveChatSchedule();
+    }
+    function restoreProactiveChatAfterTheater() {
+        if (proactiveChatSnapshot === null) return;
+        var snapshot = proactiveChatSnapshot;
+        proactiveChatSnapshot = null;
+        var appState = window.appState;
+        if (!appState) return;
+        appState.proactiveChatEnabled = snapshot.enabled;
+        if (snapshot.enabled && typeof window.resetProactiveChatBackoff === 'function') {
+            window.resetProactiveChatBackoff();
         }
     }
     async function stopOrdinaryVoiceInput() {
@@ -619,8 +638,11 @@
             delete launchReplyTargets[message.launch_id];
             return false;
         }
+        // 普通主动搭话只在小剧场运行期间暂停，退出时恢复进入前的用户状态。
+        lockProactiveChatForTheater();
         // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
         if (!await stopOrdinaryVoiceInput() || launchToken !== launchEpoch) {
+            restoreProactiveChatAfterTheater();
             delete launchReplyTargets[message.launch_id];
             return false;
         }
@@ -816,6 +838,7 @@
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.currentBlock = null; state.history = []; state.suggestedInputs = [];
         state.playerName = ''; state.catgirlName = '';
+        restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
         committedSnapshot = null;
         rememberPointer();

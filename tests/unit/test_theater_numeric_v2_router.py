@@ -1693,14 +1693,15 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
 
     assert actor_calls == 2
     # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
-    assert review_calls == 3
+    assert review_calls == (2 if remaining_violation is None else 3)
     assert unsafe_body_only_reviews == 0
     assert submitted.status_code == 200
     if remaining_violation:
         assert session_path.read_bytes() != before_bytes
         saved = json.loads(session_path.read_text(encoding="utf-8"))["session"]["performance_history"][-1]
         assert saved["performance"] == submitted.json()["performance"]["performance"]
-        assert saved["transition_offered"] is (remaining_violation == "invalid_offer")
+        # 末稿正文仍按兜底提交，但复核无效的新邀请不能进入可接受状态。
+        assert saved["transition_offered"] is False
     else:
         assert submitted.status_code == 200
         assert submitted.json()["performance"]["performance"] == safe_performance
@@ -1973,10 +1974,12 @@ def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
 
     assert submitted.status_code == 200
     assert actor_calls == (1 if offer_valid else 2)
-    assert review_calls == (1 if offer_valid else 3)
+    assert review_calls == (1 if offer_valid else 2)
     assert submitted.json()["performance"]["transition_offered"] is offer_valid
     assert submitted.json()["suggested_inputs"] == (
-        ["（退后一步）先不下去。"] if offer_valid else ["先说说现在的情况。"]
+        ["（点头确认）好，就按这个安排。", "（退后一步）先不下去。"]
+        if offer_valid
+        else ["先说说现在的情况。"]
     )
 
 
@@ -2317,8 +2320,9 @@ def test_numeric_v2_router_passes_budget_profile_to_opening(tmp_path, monkeypatc
     client = _client(tmp_path, monkeypatch)
     captured: dict[str, str] = {}
 
-    async def opening(_self, *, engine, actor_budget_profile):
+    async def opening(_self, *, engine, actor_budget_profile, allow_suggestion_fill=True):
         captured["profile"] = actor_budget_profile
+        # 补推荐模块开关随开场调用下发；本用例只核对档位透传，因此不记入 captured。
         return _performance("按精简档生成的开场。", opening=True)
 
     monkeypatch.setattr(
@@ -2369,7 +2373,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         )
         body = started.json()
         assert started.status_code == 200
-        assert body["session"]["schema"] == "neko.script.session.numeric.v2"
+        assert body["session"]["schema"] == "neko.script.session.numeric.v3"
         assert body["session"]["actor_budget_profile"] == "balanced"
         assert body["session"]["opening_performance"]["performance"] == "你回来了。"
         assert "metrics" not in body["session"]

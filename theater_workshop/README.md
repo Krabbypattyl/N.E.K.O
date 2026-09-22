@@ -4,6 +4,8 @@
 
 实现状态：公开SDK与本体宿主已经可用，真实模型生成、安装与演绎已有局部证据；各平台冻结发行物仍待验证。完整测试与质量边界见文末迁移说明。共享创作与评改规则按用户要求继续同步InkAI，但SDK运行时不依赖它。
 
+模块职责以[小剧场架构第2节](../docs/design/neko-theater-architecture.md#2-模块与权限)为准：`host.py`负责本体适配和写入保护，`sdk/workshop.py`负责作者工作流，`sdk/contracts.py`负责输入合同，`sdk/generation/`负责生成与评改，`sdk/numeric_v2*.py`负责作者字段投影、静态分析、支线和项目存储，`sdk/packages.py`负责不可变发布候选。工坊只产出作者项目和 Story Package，不读取玩家 Session，也不参与运行时选路。
+
 SDK 不启动网页或 HTTP 服务，不读取相邻 InkAI 仓库，不修改正常聊天模型。导入模块不打开项目、不取得写者锁、不调用模型。
 
 ## 宿主接入

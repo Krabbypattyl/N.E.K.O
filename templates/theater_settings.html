@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小剧场设置 - Project N.E.K.O.</title>
+  <link rel="stylesheet" href="/static/css/theater_settings.css?v={{ static_asset_version }}">
+  <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+  <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
+  <script src="/static/js/theater_settings.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+  <main class="theater-settings-shell">
+    <header class="theater-settings-bar">
+      <div><span class="theater-settings-kicker">N.E.K.O · 小剧场</span><h1>演绎设置</h1></div>
+      <button class="theater-settings-back" type="button" id="theater-settings-back">返回剧本库</button>
+    </header>
+    <section class="theater-settings-card" aria-labelledby="theater-settings-title">
+      <div class="theater-settings-intro"><h2 id="theater-settings-title">演绎流程开关</h2><p>按需开启检查步骤。关闭后会减少等待和模型调用，但对应的保护检查也会跳过。</p></div>
+      <div id="theater-settings-list" class="theater-settings-list" aria-live="polite"></div>
+      <p id="theater-settings-feedback" class="theater-settings-feedback" role="status"></p>
+    </section>
+  </main>
+</body>
+</html>

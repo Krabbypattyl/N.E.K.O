@@ -28,7 +28,9 @@ def _long_session():
                     {"phase": "target_opening", "scene_narration": "花店后面的小路通往档案馆。"}]}
     later = tuple({"revision": i, "from_node_id": "start", "to_node_id": "start",
                    "input_text": f"聊聊第{i}盆花。", "performance": "叶子刚刚擦干。"} for i in range(3, 16))
-    return engine, replace(_session(engine), revision=15, node_turn_count=13,
+    session = _session(engine)
+    story_state = {**session.story_state, "revision": 15}
+    return engine, replace(session, revision=15, story_state=story_state, node_turn_count=13,
                            performance_history=(old, crossing, *later))
 
 

@@ -56,11 +56,16 @@ def test_numbered_evidence_excludes_player_and_candidate():
         actor_performance={"performance": "新秘密房间已经开放。", "suggested_inputs": []},
         check_missed_initiation=True)
     data = json.loads(messages[1].content.split("：", 1)[1])
-    assert data["public_destination_evidence"]
+    recovery_check = data["missed_initiation_check"]
+    assert recovery_check["player_request"] == "带我去新秘密房间。"
+    assert recovery_check["required_exit"]["chapter"] == case["target"]
+    assert recovery_check["public_destination_evidence"]
     assert all(text in case["session"].opening_performance["performance"]
-               for text in data["public_destination_evidence"])
-    assert "新秘密房间" not in str(data["public_destination_evidence"])
-    assert evidence == tuple(data["public_destination_evidence"])
+               for text in recovery_check["public_destination_evidence"])
+    assert "新秘密房间" not in str(recovery_check["public_destination_evidence"])
+    assert evidence == tuple(recovery_check["public_destination_evidence"])
+    assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
+    assert "保留原六字段并增加 missed_initiation 与 public_destination_index" in messages[0].content
 
 
 @pytest.mark.asyncio
@@ -73,7 +78,7 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
         messages, evidence = build_messages(*args, **kwargs)
         # 展示前缀不属于恢复协议，编号仍取自同一次装箱的证据。
         data = json.loads(messages[1].content.split("：", 1)[1])
-        assert evidence == tuple(data["public_destination_evidence"])
+        assert evidence == tuple(data["missed_initiation_check"]["public_destination_evidence"])
         messages[1] = type(messages[1])(content="Review data\n" + json.dumps(data, ensure_ascii=False))
         sent_evidence.extend(evidence)
         return messages, evidence
@@ -88,7 +93,7 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
         async def ainvoke(self, messages):
             assert messages[1].content.startswith("Review data\n")
             index = next(index for index, text in enumerate(sent_evidence) if QUOTE in text)
-            payload = dict(offer_present=False, valid=False, body_violations=[],
+            payload = dict(offer_present=False, offer_quote="", valid=False, body_violations=[],
                            unsafe_suggestion_indexes=[], missed_initiation=True,
                            public_destination_index=index)
             return type('Response', (), {'content': json.dumps(payload)})()

@@ -196,6 +196,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     *_MODEL_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/theater_selector.css",
     _PROJECT_ROOT / "static/js/theater_selector.js",
+    _PROJECT_ROOT / "static/css/theater_settings.css",
+    _PROJECT_ROOT / "static/js/theater_settings.js",
     _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/vrm/motion/player.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
@@ -304,6 +306,16 @@ async def get_theater(request: Request):
     """渲染唯一的 Numeric v2 剧本选择页。"""  # noqa: DOCSTRING_CJK
     templates = get_templates()
     return templates.TemplateResponse("templates/theater.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/theater/settings", response_class=HTMLResponse)
+async def get_theater_settings(request: Request):
+    """渲染小剧场独立设置页。"""  # noqa: DOCSTRING_CJK
+    templates = get_templates()
+    return templates.TemplateResponse("templates/theater_settings.html", {
         "request": request,
         **_static_assets_ctx(),
     })

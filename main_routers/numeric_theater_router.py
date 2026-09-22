@@ -319,6 +319,7 @@ _INTERNAL_PERFORMANCE_FIELDS = frozenset({
     "to_node_id",
     "visible_node_id",
     "suggestion_candidates",
+    "player_action_projection",
 })
 
 
@@ -511,20 +512,23 @@ async def list_numeric_memory_stories():
 
 @router.get("/options")
 async def get_numeric_options():
-    """返回小剧场可选项；未设置时返回默认值（争议复查默认关闭）。"""  # noqa: DOCSTRING_CJK
+    """返回小剧场可选模块开关；未设置的模块使用默认值（除回复外全部关闭）。"""  # noqa: DOCSTRING_CJK
 
-    from utils.preferences import load_theater_dispute_review
+    from services.theater.numeric_v2_options import aload_theater_module_options, disabled_effects
 
-    stored = await asyncio.to_thread(load_theater_dispute_review)
+    modules = await aload_theater_module_options()
     return {
         "ok": True,
-        "dispute_review_enabled": False if stored is None else bool(stored),
+        "modules": modules,
+        "disabled_effects": disabled_effects(),
+        # 兼容既有前端键：争议复查即 dispute 模块。
+        "dispute_review_enabled": bool(modules.get("dispute")),
     }
 
 
 @router.post("/options")
 async def set_numeric_options(request: Request):
-    """保存小剧场可选项；只接受已声明的键，未知键忽略。"""  # noqa: DOCSTRING_CJK
+    """保存小剧场可选模块开关；只接受已声明的模块键与布尔值，未知键拒绝。"""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(
@@ -532,18 +536,35 @@ async def set_numeric_options(request: Request):
     )
     if validation_error is not None:
         return validation_error
-    from utils.preferences import load_theater_dispute_review, save_theater_dispute_review
+    from services.theater.numeric_v2_options import (
+        aload_theater_module_options,
+        asave_theater_module_options,
+        disabled_effects,
+        option_keys,
+    )
 
-    if "dispute_review_enabled" in payload:
-        value = payload.get("dispute_review_enabled")
-        if not isinstance(value, bool):
+    changes: dict[str, bool] = {}
+    if "modules" in payload:
+        values = payload.get("modules")
+        if not isinstance(values, Mapping):
             return _error("numeric_theater_options_invalid", 400)
-        if not await asyncio.to_thread(save_theater_dispute_review, value):
-            return _error("numeric_theater_options_save_failed", 500)
-    stored = await asyncio.to_thread(load_theater_dispute_review)
+        for key, value in values.items():
+            if key not in option_keys() or not isinstance(value, bool):
+                return _error("numeric_theater_options_invalid", 400)
+            changes[str(key)] = value
+    if "dispute_review_enabled" in payload:
+        legacy = payload.get("dispute_review_enabled")
+        if not isinstance(legacy, bool):
+            return _error("numeric_theater_options_invalid", 400)
+        changes["dispute"] = legacy
+    if changes and not await asave_theater_module_options(changes):
+        return _error("numeric_theater_options_save_failed", 500)
+    modules = await aload_theater_module_options()
     return {
         "ok": True,
-        "dispute_review_enabled": False if stored is None else bool(stored),
+        "modules": modules,
+        "disabled_effects": disabled_effects(),
+        "dispute_review_enabled": bool(modules.get("dispute")),
     }
 
 

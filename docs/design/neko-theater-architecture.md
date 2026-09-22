@@ -1,6 +1,6 @@
 # N.E.K.O 小剧场架构开发文档
 
-状态：Numeric v2.2；小剧场运行链、固定旁白、演绎文案日志和无界面工坊 SDK 已接入。框架审查修复及后续迭代见问题2.125—2.138；2.139的更强争议模型与专用参数已按用户要求回退，只保留验证结论。2.140按实测收窄复核链等待：争议复查时限由30秒改为15秒，新增整回合复核时间预算25秒，判定消息改为在时限外先构造，改写后复检只发定向材料。当前仍使用本体配置的模型与8秒快检。实现不等于全部剧本、路线和模型通过体验验收；第13节维护当前证据与限制。
+状态：Numeric v2.2；小剧场运行链、固定旁白、演绎文案日志和无界面工坊 SDK 已接入。框架审查修复及后续迭代见问题2.125—2.143；更强争议模型与专用参数只保留验证结论，未接入默认链路。当前除 Actor 外的模型步骤均由 `numeric_v2_options.py` 控制，默认只有 `evaluator` 开启，`review`、`dispute`、`review_delivery`、`review_contract`、`suggestion_fill`、`history_lookup`、`actor_retry` 默认关闭；压测可以显式全开，但不改变默认偏好。2.140的争议复查时限15秒、整回合复核预算25秒和定向复检仍是现行规则。当前仍使用本体配置的模型与8秒快检。实现不等于全部剧本、路线和模型通过体验验收；第13节维护当前证据与限制。
 
 ## 文档入口与维护分工
 
@@ -100,34 +100,88 @@ Numeric v2 的产品定位是：
 
 ## 2. 模块与权限
 
-| 模块 | 职责 |
+下面的清单以当前生产导入关系为准。表内模块是 Numeric v2 主链路、剧本工坊和压测入口；仓库中仍存在但不在这条导入链上的旧 Story v3 / 自由模式模块，不属于当前实现合同，见第11节。模块说明写“读取”时表示只读投影，写入剧情状态只能经过 Runtime 和 Store 的原子提交。
+
+### 2.1 运行端模块（`services/theater/`）
+
+| 模块 | 职责与边界 |
 | --- | --- |
-| `theater_workshop/host.py`、`theater_workshop/sdk/` | 独立作者能力与本体宿主；通过正式包交接，不参与演绎回合 |
-| `services/theater/numeric_v2.py` | Story Package 合同、静态图、条件与可达性编译 |
-| `numeric_v2_registry.py` | 剧本包导入、列举、加载与删除 |
-| `numeric_v2_cast.py` | 将作者候选身份投影为当前玩家称呼和当前猫娘名 |
-| `numeric_v2_identity.py` | 角色卡不可变 ID 与当前猫娘绑定 |
-| `numeric_v2_evaluator.py` | 前置数值/意图判定与后置公开输出复核；不保存目标证据、不选路线 |
-| `numeric_v2_runtime.py` | 候选状态、限幅、路线、结局、转场提议和 Ledger 事件；不提供旧 Session 迁移 |
-| `numeric_v2_actor.py` | Performance 上下文投影、Prompt 预算，以及正文与推荐的同次编排 |
-| `numeric_v2_actor_output.py` | Performance 输出解析、混合正文校验、换场去重和共享玩家输入文本保护 |
-| `numeric_v2_fixed_narration.py` | 固定原文、触发候选、引文/依赖核验、一次性交付与离幕前必显检查；不替模型证明自然语言条件 |
-| `numeric_v2_budget.py` | 固定输入、历史和连续性预算；旧档位名只作同预算兼容别名 |
-| `numeric_v2_context.py` | 共享历史、作者开场与事实投影；从 Session 提取可检索原文 |
-| `numeric_v2_history.py` | 按需模型查找 Session 原文编号，核验后还原并共享证据，不生成事实摘要 |
-| `numeric_v2_usage.py` | 请求级模型用量与缺报标记，不写入剧情历史 |
-| `numeric_v2_trace.py` | 默认关闭的演绎文案JSONL日志，关联请求、候选、复核、改稿与实际提交；不参与选路或计分 |
-| `numeric_v2_workflow.py` | 编排前置判定、Runtime 候选、Actor、条件式主复核与受限恢复、身份复验和原子提交；记录分段耗时 |
-| `numeric_v2_store.py` | Session、Ledger、表现历史和槽位索引的原子持久化；不迁移旧证据链 |
-| `numeric_v2_archive.py` | 结束回执、单集记忆胶囊和完整公开演绎冷档案 |
-| `numeric_v2_maintenance.py` | 冷启动审计、隔离区和可恢复删除事务 |
-| `main_routers/numeric_theater_router.py` | `/api/theater-numeric` 的请求校验、错误映射、TTS 与归档 HTTP 入口 |
-| `app/memory_server/routes.py`、`memory/recent.py`、`memory/timeindex.py` | 剧场胶囊 upsert、有界周目记忆、时间索引覆盖和 Prompt 渲染隔离 |
-| `utils/llm_client/messages.py` | 内部消息来源元数据的序列化、识别与供应商协议剥离 |
-| `static/js/theater_selector.js` | `/theater` 的剧本选择、导入、删除、开始和继续交接 |
-| `static/js/theater_transport.js` | 选择页与本体共用的消息协议、请求 ID 和本地 JSON/CSRF 请求边界 |
-| `static/app/app-theater-runtime.js` | N.E.K.O 本体中的 Session 恢复、输入提交、内容块播放和结束流程 |
-| `services/theater/tts_bridge.py` | 已提交猫娘对白的共享 TTS 播放桥 |
+| `numeric_v2.py` | 唯一正式 Story Package 编译器：校验 v2.2 合同、规范化字节、静态图和可达性；不生成演绎、不持有 Session。 |
+| `numeric_v2_registry.py` | 已安装包的导入、列举、读取、版本/hash 校验和删除；不修改作者项目。 |
+| `numeric_v2_identity.py` | 读取当前猫娘角色卡与不可变 `character_id`，建立剧本 Session 的角色绑定；不负责姓名文案。 |
+| `numeric_v2_cast.py` | 将作者稿双主角名称投影为当前玩家昵称、当前猫娘名和未披露时的“你”；不改变作者包。 |
+| `numeric_v2_evaluator.py` | 前置判定数值变化、意图、路线/转场语义，以及后置公开输出复核；只能选择作者已声明的枚举，不选路线、不写 Session。 |
+| `numeric_v2_actor.py` | 组装表现上下文、预算和通用 Prompt，调用 Actor 生成场景旁白、动作、对白、转场三段和推荐；不直接提交状态。 |
+| `numeric_v2_actor_output.py` | 解析 Actor JSON、校验正文/推荐/三段输出、保护玩家行动归属并去除重复转场；不调用模型。 |
+| `numeric_v2_context.py` | 生成 Actor/Evaluator/Guard 共用的历史、场景、作者合同和事实投影；不把自然语言摘要写成事实。 |
+| `numeric_v2_budget.py` | 维护各阶段输入预算、历史裁剪和连续性预算；旧 profile 名仅作同预算别名。 |
+| `numeric_v2_history.py` | 在证据不足时让模型选择已提交 Session 原文编号，再由代码核验并还原；不生成新的事实摘要。 |
+| `numeric_v2_fixed_narration.py` | 校验作者固定原文、触发候选、依赖顺序、逐字交付和离幕前必显；不让模型改写固定文本或自行证明触发条件。 |
+| `numeric_v2_performance.py` | 把新旧演出形状转换为有序内容块（旁白、动作、对白、固定旁白），提供历史/恢复读取和块数上限；不负责 TTS。 |
+| `numeric_v2_runtime.py` | 确定性状态引擎：限幅数值、事实候选裁定、路线、结局、邀请、Ledger 事件和版本冲突；不解释自然语言、不迁移旧 Session。 |
+| `numeric_v2_workflow.py` | 应用级回合编排：Evaluator → Runtime 候选 → Actor → 条件复核/改稿 → 身份与 revision 复验 → Store 原子提交；记录分阶段诊断。 |
+| `numeric_v2_store.py` | 原子保存/读取 Session、Ledger、演出历史、恢复槽位和索引；拒绝重复回合与 stale revision，不保存模型执行中的半状态。 |
+| `numeric_v2_storage_transaction.py` | 把最终磁盘变更放进宿主写栅栏，协调云存档可写状态和同步文件操作；不包住模型等待。 |
+| `numeric_v2_archive.py` | 生成结束回执、公开单集记忆胶囊和完整演绎冷档案；不把隐藏数值或内部判定写入普通记忆。 |
+| `numeric_v2_maintenance.py` | 启动存储审计、删除事务恢复、隔离目录清理和可恢复剧本删除；不参与普通回合选路。 |
+| `numeric_v2_options.py` | 声明 8 个可选模块开关、默认值、存储键和关闭后的体验代价；运行端、HTTP 和设置页都以此为唯一清单。 |
+| `numeric_v2_usage.py` | 在请求作用域内观测模型输入/输出用量；不写剧情历史、不重复计费，缺失供应商用量保持未知。 |
+| `numeric_v2_trace.py` | 由 `NEKO_THEATER_TRACE_DIR` 显式开启的演绎文案 JSONL 诊断；记录模型请求、候选、复核、耗时和提交关联，不参与选路、计分或 TTS。 |
+| `paths.py` | 根据当前 `ConfigManager` 存储策略解析小剧场根目录；不硬编码开发机路径。 |
+| `tts_bridge.py` | 把已提交的猫娘对白交给 N.E.K.O 现有 TTS 播放管线；TTS 失败只降级为文字，不回滚剧情。 |
+
+### 2.2 HTTP、页面与本体表现模块
+
+| 模块 | 职责与边界 |
+| --- | --- |
+| `main_routers/numeric_theater_router.py` | `/api/theater-numeric` 的请求校验、Session 生命周期、开关读写、错误映射、内容块朗读和记忆归档入口；不重新实现 Runtime 规则。 |
+| `main_routers/pages_router.py` | 提供 `/theater` 选剧页、`/theater/settings` 设置页，并登记剧场静态资源；不持有演绎状态。 |
+| `templates/theater.html` | 选剧、前情、角色身份、开始/继续/结束、导入/删除和记忆档案的页面骨架。 |
+| `templates/theater_settings.html` | 独立的模块开关设置页；只显示后端声明的开关和关闭影响。 |
+| `static/js/theater_selector.js` | 选剧页状态与交互：加载剧本、开始/继续交接、导入删除、结束回执和记忆询问。 |
+| `static/js/theater_settings.js` | 读取和保存 8 个开关，展示中文说明和保存反馈；不直接调用模型。 |
+| `static/js/theater_transport.js` | 选择页与本体共用的消息 schema、请求 ID、本地 JSON/CSRF 请求和跨窗口交接。 |
+| `static/app/app-theater-runtime.js` | N.E.K.O 本体内的 Session 指针、真实输入框接管/恢复、历史投影、内容块播放、结束和重启恢复。 |
+| `static/css/theater_selector.css`、`static/css/theater_settings.css` | 选剧页与设置页的视觉和响应式样式，不定义剧情或状态。 |
+| `app/memory_server/routes.py`、`memory/recent.py`、`memory/timeindex.py` | 接收已确认的剧场单集归档、维护有界周目记忆和时间索引，并隔离普通 Prompt；不读取隐藏 Session 状态。 |
+| `utils/llm_client/messages.py` | 底层消息来源元数据和供应商协议的序列化/识别；不决定剧场业务语义。 |
+
+### 2.3 剧本工坊 SDK 模块（`theater_workshop/`）
+
+| 模块 | 职责与边界 |
+| --- | --- |
+| `host.py` | 本体宿主适配：模型、姓名、项目根、写栅栏、编译/复验/安装网关；不启动网页、不参与演绎回合。 |
+| `sdk/contracts.py` | 与 HTTP 无关的作者输入 DTO、revision、节点/支线/结局和发布请求合同；只做结构输入。 |
+| `sdk/model.py` | 注入式同步模型调用、用量捕获和模型错误边界；不携带供应商密钥或默认模型。 |
+| `sdk/json_response.py` | 保留字符串的有限 JSON 解析/语法修复；失败时报告，不静默改写作者内容。 |
+| `sdk/packages.py` | 编译/发布/安装网关协议和不可变发布候选；不直接绕过 N.E.K.O 注册表。 |
+| `sdk/workshop.py` | 作者项目业务编排：创建、编辑、生成、评分、修订、编译、复验和发布；最终写入走宿主事务。 |
+| `sdk/numeric_v2.py` | 作者字段投影、metric 预设、节点/角色合同转换和正式编译调用；不持有玩家 Session。 |
+| `sdk/numeric_v2_project_store.py` | 作者项目 revision、检查点、失败候选、报告失效和原子持久化；不保存演绎历史。 |
+| `sdk/numeric_v2_analysis.py` | 静态分析数值与路线：可达性、优先级遮蔽、节奏估算和 unknown 诊断；不调用模型。 |
+| `sdk/numeric_v2_branch.py` | 先固定终点再生成过程的支线合同、候选检查和显式应用；不自动推进玩家路线。 |
+| `sdk/generation/numeric_v2.py` | 主线、显式续写、节点完善和支线生成 Prompt 与确定性投影；不自动评分、修订或安装。 |
+| `sdk/generation/runtime_rules.py` | 评分、事实、证据和修订共用的通用运行语义与创作规则；不得加入某个剧本的专名条件。 |
+| `sdk/generation/facts.py` | 独立事实检查 Prompt、事实来源和引用校验；只报告事实问题，不写文学补丁。 |
+| `sdk/generation/evidence.py` | 证据完整性、保护字段和执行边界校验；不因关键词自动删除问题。 |
+| `sdk/generation/quality.py` | 用户显式触发的多维文学评分与单节点优化方案；评分本身不改稿。 |
+| `sdk/generation/repair.py` | 按已复核的字段范围分类和应用文字修订；不从自然语言方案猜字段权限。 |
+| `sdk/generation/plan_review.py` | 修订前复核修改字段、保留要求和方案冲突；不生成补丁、不扩展执行权限。 |
+| `sdk/release_smoke.py` | 对已安装宿主做显式模型夹具的发行冒烟检查；不属于生产演绎链。 |
+
+`theater_workshop/__init__.py`、`sdk/__init__.py` 和 `sdk/generation/__init__.py` 只提供包入口与公开导出，不创建宿主、不取得写锁、不调用模型；`services/theater/__init__.py` 也只是命名空间入口。
+
+### 2.4 压测与固定评测入口
+
+| 模块 | 职责与边界 |
+| --- | --- |
+| `scripts/run_numeric_v2_stress.py` | 隔离 Session/报告/日志的真实模型多轮压测；支持 70% 推荐/30% 自由、全开模块和到结局验证，不写用户正式存档。 |
+| `scripts/evaluate_numeric_v2_review.py` | 用跨剧本冻结正反例统计普通复核误杀、漏放、命中率和耗时；不修改剧本或 Session。 |
+| `scripts/evaluate_numeric_v2_completion_facts.py` | 用冻结正反例统计完成事实“模型提议”和“Runtime 接纳”的差异；不代替整剧体验验收。 |
+| `scripts/validate_numeric_v2_story.py` | 对单个 Story Package 执行当前 Numeric v2.2 编译/校验入口，报告字段、路线和可达性问题；不安装、不改包。 |
+| `scripts/check_theater_workshop_release.py` | 在发行冒烟环境中调用工坊宿主，覆盖生成失败续写、编译、复验、导出、安装和重开；不属于线上回合。 |
+
+当前主链路没有独立 Planner、Director、自动文学评分或动态剧情规划层；工坊评分/修订属于作者流程，不会在演绎回合中自动运行。
 
 权限边界不可跨越：
 
@@ -140,7 +194,7 @@ Numeric v2 的产品定位是：
 
 运行时没有独立 Planner、Director、自动文学评分或动态剧情规划层。现有 Evaluator、Actor、Guard 均调用大模型；首次争议复查与按需原文查找也可能增加调用，不能误写成只有固定三次请求。作者侧评分与节点优化属于生成器独立流程。
 
-### 2.1 公共数据的职责与交接
+### 2.5 公共数据的职责与交接
 
 | 数据 | 所有者与作用 | 不应混入的内容 |
 | --- | --- | --- |
@@ -172,7 +226,7 @@ Story Package 是作者事实源，不包含玩家 Session、Ledger、模型演�
 
 ### 3.1 角色与身份
 
-新工坊生成时使用当前猫娘名和用户昵称，并在 `intro.player_name`、`intro.catgirl_name` 成对保存完整姓名；身份以对应完整姓名和中文逗号开头，角色状态以对应姓名明确主体。旧包没有这两个字段时保留身份首段及原状态前缀合同，不改写旧包和 hash。运行时仍必须统一投影：
+新工坊生成时使用当前猫娘名和用户昵称，并在 `intro.player_name`、`intro.catgirl_name` 成对保存完整姓名；身份以对应完整姓名和中文逗号开头，角色状态以对应姓名明确主体。当前编译和运行不接受缺少这两个字段的旧包；需要先在剧本工坊补齐字段、重新编译并安装新包，不能在 Runtime 里保留旧包姓名兼容分支。运行时仍必须统一投影：
 
 - 男主由用户扮演；`player_address_known=false` 时 Actor 只能看到“你”，直到用户作出包含完整配置昵称的明确自我介绍或称呼请求，并由成功回合原子确认；仅提及该昵称不算披露；
 - `player_address_known=true` 时显示和演绎才使用当前用户昵称（现行来源为 `主人.昵称`，缺失时回退 `主人.档案名`，最后“你”）；
@@ -548,7 +602,7 @@ memory server 对当前猫娘使用 settle lock 串行 recent 与时间索引更
 - 演绎未处于 `awaiting_player` 时，同一输入锁同时约束胶囊入口、已展开文本框和所有提交方式，忙碌期间不清空草稿；输入法失焦恢复写回当前剧场草稿，不污染普通聊天草稿；
 - `/theater` 选择页显示背景介绍、玩家身份和猫娘身份，不显示节点标题、场景卡或隐藏状态；
 - 选择页不提供上下文档位选择；创建、继续与重新开始均使用同一固定预算；
-- 选择页提供"争议复查"开关（`GET/POST /api/theater-numeric/options`，存在全局偏好的`theaterDisputeReviewEnabled`，**未设置视为关闭**），并在该文案旁给出说明气泡"打开后演绎更加贴近剧本，但是会增加回复时长和token用量"。默认只做一次快速复核；开启后额外追加"首次争议的独立思考复查"。无论开关如何，快检、共享一次改稿、末稿兜底、授权与去向核对、原子提交都不变，所以它是等待与用量的取舍开关，不是审核开关；保存失败时回读服务端当前值，避免界面显示与运行时行为不一致；
+- 选择页提供"可选模块"开关组（`GET/POST /api/theater-numeric/options`，逐项存于全局偏好，未设置即默认值），每项旁有说明气泡"关闭后这一步不再执行，回复更快、更省 token；开启则恢复该检查"。**除"回复"（Actor 生成）外的每个模型步骤都可关闭**：`evaluator`（数值增减／路线／转场意图，**默认开启**，数值结算必须保留）、`review`（快速复核：玩家授权、去向公开、动作归属、作者边界；默认关闭）、`dispute`（首次争议的独立思考复查；默认关闭）、`review_delivery`（作者声明必须保留的关键道具是否已交付，纯程序、零调用；默认关闭）、`review_contract`（作者禁令是否被本轮可见演绎违反，只核对世界事实类禁令、一次窄判定；默认关闭）、`suggestion_fill`（推荐条数不符时的补调用；默认关闭）、`history_lookup`（按需查找 Session 原文；默认关闭）、`actor_retry`（输出不合格重试，关闭时只尝试一次；默认关闭）。关闭项的实测代价：`review` 关闭后没有任何授权／去向／主体核对，条件型固定旁白不再触发，`transition_offered` 直接采信演员输出；`evaluator` 关闭后数值冻结，靠数值条件的出口永不满足，剧情停在当前幕（仍按"玩家接受最近一次已公开提议"的确定性规则放行选路）；`actor_retry` 关闭后不合格输出直接原子回滚由玩家重发；`suggestion_fill` 关闭后推荐条数经常不足（质量错误，不阻断提交）。`review_contract` 与 `review_delivery` 只在 `review` 关闭时生效，命中一次即与交付缺失共用同一次改稿额度，失败或超时只记诊断、不阻断提交。实测：保留判定时每回合下限约6.4秒（判定约1.9秒＋演员约4.5秒），把开关全关只能降到P50约4.1秒且数值冻结、无法收束，因此"2秒"需要合并调用或更换模型/端点，不能靠开关达到。界面保存失败时回读服务端当前值，避免显示与运行时不一致；
 - 玩家点击开始或继续即确认当前选择，迟到的后台记忆列表不再用旧 URL 偏好切换剧本。响应按角色、剧本 ID 与选择代次复验，启动消息使用请求时捕获的剧本 ID；
 - 候选启动和刷新指针恢复在异步准备期间，也接收对应 Session 的结束和剧本删除事件，并使该启动失效、移除失效刷新指针；尚未接管界面时不依赖 `active` 判断，不新增模型或网络复核；
 - N.E.K.O 本体历史区按服务端已提交顺序播放玩家原话、场景旁白和猫娘演绎内容，不把剧场历史混入普通聊天消息；
@@ -805,7 +859,7 @@ Guard 固定初始保留最近12条完整记录与更早回合索引，旧档位
 
 有待判定固定旁白时，模型只接收本次请求的短编号及待触发前置编号，返回后拒绝未知/重复编号并还原作者ID，再执行原引文与依赖复验。输出容量计入短编号/JSON包络、每条最多80 Token引文及3倍JSON转义余量，再保留基础复核字段额度；最多八条、作者ID最长128字符的现行包合同仍有效。争议复查取既有4096与所需容量的较大值，不累加思考额度。无候选时沿用原额度，输入上限、时限和调用次数不变，短编号不写Session或正式包。容量及真实模型边界见问题2.126、2.128。
 
-Workflow 分别记录 Evaluator、Runtime、Actor、Guard、提交的累计工作耗时与整回合墙钟；Actor 尝试数与真正供应商请求数分开，成功失败均保留诊断。`dispute_review_attempts / dispute_review_degraded` 记录争议复查尝试与失败，`transition_review_results.review_mode` 区分快速和争议判断，`transition_judge_calls` 包含两者尝试；`review_budget_skips` 记录因整回合复核预算被跳过的复检次数，只作诊断，不代表复核通过；`target_opening_leak_markers` 记录普通回合把目标幕开场或桥接独有**时点**演成现在时的确定性命中（问题2.141）；`semantic_rewrite_attempts` 统计共享语义改稿次数，违规类别计数不能相加冒充调用次数；已删除恢复路径的专属计数同步删除。演绎流畅度评叙事衔接、重复、等待和发送中断，不评生成速度；P50/P95 只属于技术耗时。
+Workflow 分别记录 Evaluator、Runtime、Actor、Guard、提交的累计工作耗时与整回合墙钟；Actor 尝试数与真正供应商请求数分开，成功失败均保留诊断。`dispute_review_attempts / dispute_review_degraded` 记录争议复查尝试与失败，`transition_review_results.review_mode` 区分快速和争议判断，`transition_judge_calls` 包含两者尝试；`review_budget_skips` 记录因整回合复核预算被跳过的复检次数，只作诊断，不代表复核通过；`target_opening_leak_markers` 记录普通回合把目标幕开场或桥接独有**时点**演成现在时的确定性命中（问题2.141）；`transition_bridge_leak_markers`／`transition_bridge_leak_markers_after_rewrite`／`transition_structure_rejected` 记录换场桥段复制目标幕开场短句或时点、改写后残留及因此回滚（问题7.59）；`contract_missing`／`contract_missing_after_rewrite`／`contract_missing_fallback` 记录关键道具交付核对结果，`contract_violated`／`contract_violated_after_rewrite` 记录作者禁令窄判定的命中与复检，`contract_check_degraded` 记录该窄判定失败或超时（问题2.143）；`semantic_rewrite_attempts` 统计共享语义改稿次数，违规类别计数不能相加冒充调用次数；已删除恢复路径的专属计数同步删除。演绎流畅度评叙事衔接、重复、等待和发送中断，不评生成速度；P50/P95 只属于技术耗时。
 
 #### 可关闭的演绎文案日志
 
@@ -817,6 +871,8 @@ NEKO_THEATER_TRACE_DIR="$HOME/.codex/experiments/theater-text-traces" \
   --story-id story_ea2a73b46670 --strategy mixed --turns 10 \
   --output "$HOME/.codex/experiments/theater-text-report.json"
 ```
+
+压测也支持显式参数 `--trace-dir <目录>`；该参数优先于继承的环境变量。压测未传参数且环境变量为空时，会自动把详细日志写到本次压测临时目录，保证压测默认可回溯；报告在 `text_trace.enabled/directory` 中记录实际路径。普通 HTTP/桌面运行仍保持未设置环境变量即关闭。
 
 每份文件以 UTC 时间和随机 `trace_id` 命名，逐事件刷新；行内带 schema、序号、时间及累计耗时。`trace.started`／`opening.context` 关联 Session、回合请求、输入来源、节点及剧本 revision/hash；模型调用在同一文件内以 `call_id` 配对。
 

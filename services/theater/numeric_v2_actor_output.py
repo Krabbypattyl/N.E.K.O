@@ -217,12 +217,11 @@ def _parse_actor_suggestions(
             diagnostics.update(parse_counts)
         return []
     if len(value) > 3:
-        # 推荐合同是 2—3 条；超出上限不能静默截断，交给唯一一次轻量补推荐处理。
+        # 推荐合同是 2—3 条。超出时保留前三条，而不是整份丢弃：这些都是演员自己写出的
+        # 合法按钮，丢弃只会白白触发一次补推荐调用（或让按钮全空）。只做确定性裁剪，
+        # 不替模型新增内容。
         parse_counts["too_many_items"] = 1
-        if diagnostics is not None:
-            diagnostics.clear()
-            diagnostics.update(parse_counts)
-        return []
+        value = value[:3]
     parsed: list[str] = []
     for item in value:
         text = _normalize_suggestion_quotes(str(item or "").strip())
@@ -279,6 +278,38 @@ def _parse_transition_offered(value: Any) -> bool:
     return value
 
 
+def _parse_actor_fact_candidates(
+    value: Any,
+    *,
+    expected: bool = False,
+    diagnostics: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """保留 Actor 候选；缺失或坏格式只降级并记数，不为辅助字段重跑正文。"""  # noqa: DOCSTRING_CJK
+
+    parse_counts = {
+        "expected": int(expected),
+        "missing": 0,
+        "invalid": 0,
+        "accepted_items": 0,
+    }
+    if value is None:
+        parse_counts["missing"] = int(expected)
+        parsed: list[dict[str, Any]] = []
+    elif not isinstance(value, list) or len(value) > 16:
+        parse_counts["invalid"] = 1
+        parsed = []
+    elif any(not isinstance(item, Mapping) for item in value):
+        parse_counts["invalid"] = 1
+        parsed = []
+    else:
+        parsed = [dict(item) for item in value]
+        parse_counts["accepted_items"] = len(parsed)
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(parse_counts)
+    return parsed
+
+
 def _parse_output(
     content: Any,
     *,
@@ -291,6 +322,8 @@ def _parse_output(
     suggestions_only: bool = False,
     transition_suggestions_only: bool = False,
     suggestion_diagnostics: dict[str, int] | None = None,
+    fact_candidates_expected: bool = False,
+    fact_candidate_diagnostics: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """把单次 Actor 返回解析为唯一合法的开场、普通回合或换场形状。"""  # noqa: DOCSTRING_CJK
 
@@ -386,10 +419,18 @@ def _parse_output(
     allowed_fields = {"performance"}
     if "scene_update" in payload:
         allowed_fields.add("scene_update")
-    tolerated_fields = {*allowed_fields, "suggested_inputs", "transition_offered"}
+    tolerated_fields = {
+        *allowed_fields,
+        "suggested_inputs",
+        "transition_offered",
+        "fact_candidates",
+    }
     optional_legacy_fields = {
         frozenset(allowed_fields),
         frozenset({*allowed_fields, "suggested_inputs"}),
+        frozenset({*allowed_fields, "suggested_inputs", "transition_offered"}),
+        frozenset({*allowed_fields, "fact_candidates"}),
+        frozenset({*allowed_fields, "suggested_inputs", "fact_candidates"}),
         frozenset(tolerated_fields),
     }
     if set(payload) not in optional_legacy_fields:
@@ -414,6 +455,11 @@ def _parse_output(
         scene_update = _parse_scene_update(payload.get("scene_update"))
         if scene_update:
             result["scene_narration"] = scene_update
+    result["fact_candidates"] = _parse_actor_fact_candidates(
+        payload.get("fact_candidates"),
+        expected=fact_candidates_expected,
+        diagnostics=fact_candidate_diagnostics,
+    )
     return result
 
 

@@ -233,6 +233,73 @@ def current_scene_records(
     return visit_records, entered_current_node
 
 
+_SCENE_FACT_KEY_RE = re.compile(
+    r"^event:scene\.(entered|left):([A-Za-z0-9][A-Za-z0-9._-]{0,127}):r([0-9]+)$"
+)
+
+
+def project_scene_facts(
+    session: Any,
+    *,
+    max_facts: int = 24,
+    public_only: bool = True,
+) -> dict[str, Any]:
+    """投影有界的场景进入/离开事实，供 Actor 与 Evaluator 共用。"""  # noqa: DOCSTRING_CJK
+
+    state = getattr(session, "story_state", None)
+    if not isinstance(state, Mapping):
+        return {"revision": 0, "facts": [], "truncated": False}
+    raw_facts = state.get("facts")
+    if not isinstance(raw_facts, Mapping):
+        return {"revision": int(state.get("revision") or 0), "facts": [], "truncated": False}
+    rows: list[dict[str, Any]] = []
+    for key, fact in raw_facts.items():
+        if not isinstance(key, str):
+            continue
+        match = _SCENE_FACT_KEY_RE.fullmatch(key)
+        if match is None:
+            continue
+        if not isinstance(fact, Mapping):
+            continue
+        if public_only and fact.get("visibility") != "public":
+            continue
+        rows.append({
+            "key": key,
+            # 结构化字段由 Runtime 事实键确定性解析，模型无需从字符串猜测事件含义。
+            "event": f"scene.{match.group(1)}",
+            "node_id": match.group(2),
+            "event_revision": int(match.group(3)),
+            "value": fact.get("value"),
+            "source_revision": fact.get("source_revision"),
+            "updated_revision": fact.get("updated_revision"),
+        })
+    rows.sort(key=lambda row: (int(row.get("updated_revision") or 0), str(row["key"])))
+    truncated = len(rows) > max_facts
+    if truncated:
+        rows = rows[-max_facts:]
+    return {
+        "revision": int(state.get("revision") or 0),
+        "facts": rows,
+        "truncated": truncated,
+    }
+
+
+def scene_facts_prompt_text(session: Any) -> str:
+    """把公开场景事件压成短句，嵌入现有历史字段而不新增提示词顶层协议。"""  # noqa: DOCSTRING_CJK
+
+    projection = project_scene_facts(session)
+    rows = projection["facts"]
+    if not rows:
+        return ""
+    lines = [
+        f"- {row['event']}：{row['node_id']}（event_revision {row['event_revision']}，"
+        f"updated_revision {row['updated_revision']}，key {row['key']}）"
+        for row in rows
+    ]
+    suffix = "（更早事件已截断）" if projection["truncated"] else ""
+    return "Runtime 已提交的场景事件：" + suffix + "\n" + "\n".join(lines)
+
+
 def scene_narrative_focus(beat: Mapping[str, Any]) -> str:
     """提取一条非任务化叙事重心，供两个模型共享，不参与完成判定。
 
@@ -282,6 +349,10 @@ def pending_transition_record(
             if record.get("transition_offered") is True:
                 origin = record
             break
+        # 本轮正文重新公开了经复核的有效邀请时，回复对象刷新到这一轮；后续仅保留状态的闲聊不会刷新。
+        if record.get("transition_offer_presented") is True:
+            origin = record
+            break
         if record.get("transition_offered") is not True:
             # 重新考虑时只跳过当前访问中撤下邀请后的记录；找到最近一段 true 后仍定位其原文。
             # 不跨越 current_scene_records 已截断的入幕边界，也不把闲聊当成新邀请。
@@ -314,6 +385,199 @@ def pending_transition_performance(
     else:
         performance = " ".join(block["text"] for block in performance_content_blocks(record))
     return truncate_to_tokens(performance, max_tokens=max_tokens)
+
+
+_CONTRACT_PROP_PATTERN = re.compile(r"关键道具\s*[“\"]([^”\"]+)[”\"]|\[([a-z][a-z0-9_]{2,})\]")
+
+
+CONTRACT_NON_FACT_MARKERS = ("替玩家", "需要玩家回答", "篇幅", "节奏", "重复确认", "配角任务")
+
+
+def project_contract_boundaries(
+    beat: Mapping[str, Any],
+    *,
+    include_opening_only: bool = False,
+    fact_only: bool = False,
+    max_items: int | None = None,
+    max_tokens: int | None = None,
+) -> tuple[str, ...]:
+    """按统一顺序投影作者边界，避免 Actor 与复核器各自拼接出不同合同。"""  # noqa: DOCSTRING_CJK
+
+    if not isinstance(beat, Mapping):
+        return ()
+    if max_items is not None and int(max_items) <= 0:
+        return ()
+    character_state = beat.get("character_state")
+    acting_contract = beat.get("acting_contract")
+    opening_boundaries = (
+        list(beat.get("opening_only_boundaries") or [])
+        if include_opening_only
+        else []
+    )
+    scene_boundaries = (
+        list(character_state.get("scene_boundaries") or [])
+        if isinstance(character_state, Mapping)
+        else []
+    )
+    forbidden_behaviors = (
+        list(acting_contract.get("forbidden_behaviors") or [])
+        if isinstance(acting_contract, Mapping)
+        else []
+    )
+    must_not_happen = list(beat.get("must_not_happen") or [])
+    # 窄合同复核沿用原有 must_not_happen 优先顺序；Actor/Evaluator 的公开边界则共享场景优先顺序。
+    candidates = [
+        *(must_not_happen if fact_only else opening_boundaries),
+        *(scene_boundaries if fact_only else []),
+        *(opening_boundaries if fact_only else []),
+        *(scene_boundaries if not fact_only else []),
+        *(forbidden_behaviors if not fact_only else []),
+        *(must_not_happen if not fact_only else []),
+    ]
+    boundaries: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        text = str(item or "").strip()
+        if fact_only and any(marker in text for marker in CONTRACT_NON_FACT_MARKERS):
+            continue
+        if max_tokens is not None:
+            text = truncate_to_tokens(text, max_tokens=max_tokens).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        boundaries.append(text)
+        if max_items is not None and len(boundaries) >= max(0, int(max_items)):
+            break
+    return tuple(boundaries)
+
+
+def contract_boundary_items(node: Mapping[str, Any]) -> tuple[str, ...]:
+    """该幕作者写明的**世界事实**类禁令：must_not_happen 与 character_state.scene_boundaries。
+
+    只取作者已经写死的短句，用于窄判定核对，不解释自然语言条件。玩家授权与写作风格类要求
+    （提到玩家、篇幅、节奏、重复确认、配角任务）不进入窄判定：它们要么由复核模块的授权核对负责，
+    要么按单轮可见文本无法核对，混进来只会把正常邀请与角色自主动作判成越界（问题2.143的run-D反例）。
+    """  # noqa: DOCSTRING_CJK
+
+    beat = node.get("story_beat") if isinstance(node, Mapping) else None
+    return project_contract_boundaries(beat, fact_only=True)
+
+
+def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tuple[str, ...]:
+    """换场合同里作者声明本轮必须交付的关键道具名称。
+
+    `must_preserve` 只约束状态不能互相矛盾，不要求每次换幕逐项复述；这里只读取
+    `must_deliver` 中作者明确要求本轮可见交付的结构化道具声明。
+    """  # noqa: DOCSTRING_CJK
+
+    names: list[str] = []
+    for route in node.get("route_gates") or []:
+        if not isinstance(route, Mapping) or str(route.get("target_node_id") or "") != str(target_node_id):
+            continue
+        contract = route.get("transition_contract")
+        if not isinstance(contract, Mapping):
+            continue
+        values = contract.get("must_deliver")
+        if not isinstance(values, (list, tuple)):
+            continue
+        for item in values:
+            # 中文道具名才是可见正文里可能出现的东西；内部编号只是兜底。
+            matches = list(_CONTRACT_PROP_PATTERN.finditer(str(item or "")))
+            quoted = [m.group(1).strip() for m in matches if m.group(1) and m.group(1).strip()]
+            fallback = [m.group(2).strip() for m in matches if m.group(2) and m.group(2).strip()]
+            for name in (quoted or fallback):
+                if name not in names:
+                    names.append(name)
+    return tuple(names)
+
+
+def _visible_contract_delivery_text(performance: Mapping[str, Any]) -> str:
+    """汇总玩家真正能看到的三段正文与旁白，供显式交付项做逐字核对。"""  # noqa: DOCSTRING_CJK
+
+    parts: list[str] = []
+    for field in ("performance", "scene_narration"):
+        value = performance.get(field)
+        if isinstance(value, str):
+            parts.append(value)
+    segments = performance.get("segments")
+    if isinstance(segments, (list, tuple)):
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                continue
+            for field in ("performance", "scene_narration"):
+                value = segment.get(field)
+                if isinstance(value, str):
+                    parts.append(value)
+    return "\n".join(parts)
+
+
+def missing_contract_names(
+    node: Mapping[str, Any],
+    target_node_id: str,
+    performance: Mapping[str, Any],
+    session: Any,
+) -> tuple[str, ...]:
+    """作者要求本轮交付、但候选与已提交历史里都没有出现过的道具名。
+
+    纯程序核对：只要道具中文名在候选可见文本或已提交原文里出现过就算交付。
+    """  # noqa: DOCSTRING_CJK
+
+    required = contract_required_names(node, target_node_id)
+    if not required:
+        return ()
+    haystack = "\n".join((
+        _visible_contract_delivery_text(performance),
+        *(str(row.get("text") or "") for row in performance_history_records(session)),
+    ))
+    return tuple(name for name in required if name not in haystack)
+
+
+def transition_bridge_leak_markers(
+    *,
+    target_opening: str,
+    bridge_text: str,
+    authored_bridge: str = "",
+) -> tuple[str, ...]:
+    """Return target-opening clauses copied into a transition bridge.
+
+    This is intentionally a narrow provenance check, not a semantic duplicate detector. It only
+    reports exact normalized clauses or time markers that belong to the target opening and are not
+    explicitly present in the authored bridge contract. A paraphrase still needs model review or
+    a future structured fact projection.
+    """  # noqa: DOCSTRING_CJK
+
+    target = str(target_opening or "").strip()
+    bridge = str(bridge_text or "").strip()
+    if not target or not bridge:
+        return ()
+
+    def normalize(value: str) -> str:
+        return re.sub(r"[\s，,。！？!?；;：:、‘’“”\"'（）()【】\[\]]+", "", value)
+
+    def units(value: str) -> tuple[str, ...]:
+        result: list[str] = []
+        for raw in re.split(r"[\n。！？!?；;,，]+", value):
+            item = normalize(raw)
+            # Short generic fragments such as “她看向窗外” are too common to prove a leak.
+            if len(item) < 8 or item in result:
+                continue
+            result.append(item)
+        return tuple(result)
+
+    target_text = normalize(target)
+    bridge_text = normalize(bridge)
+    authored_text = normalize(str(authored_bridge or ""))
+    markers: list[str] = []
+    for unit in units(target):
+        if unit in bridge_text and unit not in authored_text:
+            markers.append(unit)
+
+    # Time markers are useful even when punctuation or the surrounding clause was rewritten.
+    authored_times = _time_markers(authored_bridge)
+    for marker in sorted(_time_markers(target) & _time_markers(bridge)):
+        if marker not in authored_times and marker not in markers:
+            markers.append(marker)
+    return tuple(markers)
 
 
 _TIME_MARKER_PATTERN = re.compile(r"\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*月\s*\d{1,2}\s*[日号]")
@@ -406,13 +670,85 @@ def premature_target_markers(
     return tuple(sorted(narrated & owned_by_target))
 
 
+def premature_target_scene_facts(
+    engine: Any,
+    session: Any,
+    outcome: Any,
+    performance: Mapping[str, Any],
+    player_input: str = "",
+) -> tuple[str, ...]:
+    """返回目标幕尚未进入前被旁白写出的逐字开场片段。
+
+    这里只核对目标幕开场中的较长、可定位原文片段；玩家输入、来源幕作者事实和已提交
+    演绎会作为已知文本排除。目标幕已经有 Runtime 入幕事实时允许再次提及，避免把重返
+    场景误判为首次抵达。改写或同义复述仍交给模型复核，不在这里猜测语义。
+    """  # noqa: DOCSTRING_CJK
+
+    ledger = getattr(outcome, "ledger_event", None) or {}
+    source_id = str(ledger.get("from_node_id") or getattr(session, "current_node_id", "") or "")
+    if not source_id or str(ledger.get("to_node_id") or source_id) != source_id:
+        # 正式转场本来就要交付目标幕开场，不适用本检查。
+        return ()
+    nodes = getattr(engine, "nodes", {}) or {}
+    source = nodes.get(source_id)
+    if not isinstance(source, Mapping) or not source.get("route_gates"):
+        return ()
+    route = engine.preview_route(source_id, getattr(session, "metrics", {}) or {})
+    if not isinstance(route, Mapping):
+        return ()
+    target_id = str(route.get("target_node_id") or "")
+    target = nodes.get(target_id)
+    if not target_id or not isinstance(target, Mapping):
+        return ()
+
+    # 事实投影只证明已经发生过入幕；已有入幕记录时，当前检查不再把重返开场当作提前。
+    scene_facts = project_scene_facts(session)
+    target_entry_prefix = f"event:scene.entered:{target_id}:"
+    if any(str(row.get("key") or "").startswith(target_entry_prefix)
+           for row in scene_facts.get("facts", ())):
+        return ()
+
+    def normalize(value: str) -> str:
+        return re.sub(r"[\s，,。！？!?；;：:、‘’“”\"'（）()【】\[\]]+", "", value)
+
+    def units(value: str) -> tuple[str, ...]:
+        result: list[str] = []
+        for raw in re.split(r"[\n。！？!?；;,，]+", value):
+            item = normalize(raw)
+            # 过短的通用片段缺乏归属证据；时钟/日期由 premature_target_markers 单独核对。
+            if len(item) < 8 or item in result:
+                continue
+            result.append(item)
+        return tuple(result)
+
+    target_units = units(scene_opening_text(target.get("story_beat") or {}))
+    if not target_units:
+        return ()
+    allowed_text = "\n".join((
+        _beat_source_text(source.get("story_beat") or {}),
+        str(player_input or ""),
+        *(str(row.get("text") or "") for row in performance_history_records(session)),
+    ))
+    allowed = normalize(allowed_text)
+    narrated = normalize(_visible_narration_text(performance))
+    return tuple(unit for unit in target_units if unit in narrated and unit not in allowed)
+
+
 __all__ = [
+    "contract_boundary_items",
+    "project_contract_boundaries",
+    "contract_required_names",
+    "missing_contract_names",
+    "transition_bridge_leak_markers",
     "HISTORY_EVIDENCE_RULE",
     "history_evidence",
     "PLAYER_ACTION_LANGUAGE_RULE",
     "premature_target_markers",
+    "premature_target_scene_facts",
     "scene_opening_text",
     "current_scene_records",
+    "project_scene_facts",
+    "scene_facts_prompt_text",
     "pending_transition_performance",
     "pending_transition_record",
     "scene_narrative_focus",

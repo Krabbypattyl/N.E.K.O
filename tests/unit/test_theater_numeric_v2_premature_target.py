@@ -1,11 +1,15 @@
-"""普通回合不得把目标幕开场或桥接独有的时点演成现在时（问题2.141 B3）。"""
+"""普通回合不得把目标幕开场或桥接独有的时点演成现在时（问题2.141 B3）。"""  # noqa: DOCSTRING_CJK
 
 from types import SimpleNamespace
 
 import pytest
 
 from services.theater import numeric_v2_context as context
-from services.theater.numeric_v2_context import premature_target_markers
+from services.theater.numeric_v2_context import (
+    premature_target_markers,
+    premature_target_scene_facts,
+    transition_bridge_leak_markers,
+)
 
 TARGET_OPENING = "19:47，信标预热还剩三分钟，隔壁控制台突然报警。"
 SOURCE_BEAT = {
@@ -80,5 +84,64 @@ def test_marker_in_segment_narration_is_still_flagged():
     leaked = premature_target_markers(
         _engine(), _session(), _outcome(),
         {"segments": [{"phase": "source_response", "scene_narration": "警报在19:47响起。"}]},
+    )
+    assert leaked == ("19:47",)
+
+
+def test_exact_target_opening_fact_in_narration_is_flagged():
+    leaked = premature_target_scene_facts(
+        _engine(), _session(), _outcome(),
+        {"scene_narration": "信标预热还剩三分钟，隔壁控制台突然报警。"},
+    )
+    assert leaked == ("信标预热还剩三分钟", "隔壁控制台突然报警")
+
+
+def test_exact_target_opening_fact_in_dialogue_is_allowed():
+    # 对白可以提出将来要去目标幕，只有可见旁白才证明目标事实已经发生。
+    leaked = premature_target_scene_facts(
+        _engine(), _session(), _outcome(),
+        {"performance": "信标预热还剩三分钟，隔壁控制台突然报警。"},
+    )
+    assert leaked == ()
+
+
+def test_entered_target_scene_fact_allows_rementioning_opening():
+    session = _session()
+    session.story_state = {
+        "revision": 1,
+        "facts": {"event:scene.entered:target:r1": {"visibility": "public"}},
+    }
+    leaked = premature_target_scene_facts(
+        _engine(), session, _outcome(),
+        {"scene_narration": "信标预热还剩三分钟，隔壁控制台突然报警。"},
+    )
+    assert leaked == ()
+
+
+def test_transition_bridge_cannot_copy_target_opening_clause():
+    leaked = transition_bridge_leak_markers(
+        target_opening="视野豁然开朗，小葵快步走向平台边缘。晚霞铺满山谷。",
+        bridge_text="沿着石阶向上，视野豁然开朗，小葵快步走向平台边缘。",
+    )
+    # 过短的常见短句不作为结构证据；更具体的目标动作仍会命中。
+    assert leaked == ("小葵快步走向平台边缘",)
+
+
+def test_authored_bridge_and_common_short_phrases_are_allowed():
+    assert transition_bridge_leak_markers(
+        target_opening="视野豁然开朗，小葵快步走向平台边缘。",
+        bridge_text="沿着石阶向上，视野豁然开朗，小葵快步走向平台边缘。",
+        authored_bridge="视野豁然开朗，小葵快步走向平台边缘。",
+    ) == ()
+    assert transition_bridge_leak_markers(
+        target_opening="她看向窗外。",
+        bridge_text="她看向窗外。",
+    ) == ()
+
+
+def test_transition_bridge_time_marker_is_flagged_after_rephrasing():
+    leaked = transition_bridge_leak_markers(
+        target_opening="时间来到19:47，控制台响起警报。",
+        bridge_text="等候片刻后，钟表指向19:47。",
     )
     assert leaked == ("19:47",)

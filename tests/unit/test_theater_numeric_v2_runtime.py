@@ -18,14 +18,67 @@ from services.theater.numeric_v2_maintenance import (
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.numeric_v2_store import update_numeric_v2_character_bindings
 from services.theater.numeric_v2_runtime import (
+    apply_fact_ops,
+    _fact_projection,
+    _timeline_projection,
     MetricChangeV2,
     NumericV2Engine,
     NumericV2Runtime,
     NumericV2RuntimeError,
     TurnRequestV2,
 )
+from services.theater.numeric_v2_context import project_scene_facts
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from utils.config_manager import ensure_catgirl_character_id, get_reserved
+
+
+def test_fact_projection_keeps_only_runtime_proven_evidence():
+    """事实投影记录输入、可见文本和确定性事件，不猜自然语言动作语义。"""  # noqa: DOCSTRING_CJK
+
+    projection = _fact_projection(
+        {
+            "result_revision": 2,
+            "input_text": "把照片递给你。",
+            "from_node_id": "start",
+            "to_node_id": "next",
+            "metric_changes": [{"metric_id": "trust", "before": 1, "after": 3}],
+        },
+        {
+            "segments": [
+                {"phase": "source_response", "performance": "（接过照片）谢谢。"},
+                {"phase": "transition_bridge", "scene_narration": "雨声渐远。"},
+            ],
+        },
+    )
+    assert projection["semantic_status"] == "evidence_only"
+    assert projection["subject_evidence"]["player_input"] == "把照片递给你。"
+    assert [event["kind"] for event in projection["deterministic_events"]] == [
+        "metric_change", "node_transition"
+    ]
+    assert "action" not in projection["subject_evidence"]
+
+
+def test_timeline_projection_tracks_scene_visit_without_guessing_story_date():
+    """时间线只记录 Runtime 可证明的顺序和场景访问，不从正文猜自然日期。"""  # noqa: DOCSTRING_CJK
+
+    projection = _timeline_projection({
+        "result_revision": 7,
+        "from_node_id": "mainline_01",
+        "to_node_id": "mainline_02",
+        "node_turn_count": 0,
+        "route_status": "advanced",
+    })
+
+    assert projection["scene_scope"] == {
+        "node_id": "mainline_02",
+        "visit_id": "mainline_02:r7",
+        "started_revision": 7,
+    }
+    assert [event["kind"] for event in projection["events"]] == [
+        "scene_left", "scene_entered",
+    ]
+    assert "date" not in projection
+    assert "story_time" not in projection
 
 
 def test_numeric_v2_turn_request_validates_ephemeral_input_source():
@@ -89,6 +142,635 @@ def test_numeric_v2_session_budget_profile_persists_and_legacy_defaults_balanced
     legacy = session.to_dict()
     legacy.pop("actor_budget_profile")
     assert type(session).from_mapping(legacy).actor_budget_profile == "balanced"
+
+
+def test_numeric_v2_story_state_records_events_without_replacing_position_authority():
+    """故事状态只投影开场事件，当前位置仍由 Session.current_node_id 读取。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_opening",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    assert session.story_state["revision"] == session.revision == 0
+    assert "event:scene.entered:start:r0" in session.story_state["facts"]
+    assert all("current_node" not in key for key in session.story_state["facts"])
+    assert type(session).from_mapping(session.to_dict()).story_state == session.story_state
+
+
+def test_numeric_v2_apply_fact_ops_is_atomic_bounded_and_sorted():
+    """事实批次必须全量校验后再生成稳定顺序的下一版本。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_fact_ops",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    state = apply_fact_ops(
+        session.story_state,
+        revision=1,
+        client_turn_id="fact_ops_turn",
+        allowed_keys={"item:map:owner", "event:scene.entered:start:r0"},
+        ops=[{
+            "op": "set",
+            "key": "item:map:owner",
+            "value": "player",
+            "visibility": "public",
+        }],
+    )
+
+    assert list(state["facts"]) == sorted(state["facts"])
+    assert state["facts"]["item:map:owner"]["source_revision"] == 1
+
+    cleared = apply_fact_ops(
+        state,
+        revision=2,
+        client_turn_id="fact_ops_turn_2",
+        allowed_keys={"item:map:owner"},
+        ops=[{"op": "delete", "key": "item:map:owner"}],
+    )
+    assert "item:map:owner" not in cleared["facts"]
+
+
+def test_numeric_v2_apply_fact_ops_rejects_unknown_key_without_mutating_source():
+    """不在白名单内的事实操作必须拒绝，原状态保持不变。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_fact_reject",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    before = deepcopy(session.story_state)
+    with pytest.raises(NumericV2RuntimeError, match="story_state_fact_key_not_allowed"):
+        apply_fact_ops(
+            session.story_state,
+            revision=1,
+            client_turn_id="fact_ops_reject",
+            allowed_keys={"item:map:owner"},
+            ops=[{
+                "op": "set",
+                "key": "item:secret:owner",
+                "value": "player",
+                "visibility": "story",
+            }],
+        )
+    assert session.story_state == before
+
+
+def test_numeric_v2_engine_applies_only_story_fact_contract_values():
+    """Engine 包装入口同时执行剧本白名单、可见性和标量类型校验。"""
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "prop:old_letter": {"value_type": "string", "visibility": "public"},
+            "state:signal_seen": {"value_type": "bool", "visibility": "story"},
+        }
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="story_state_contract_ops",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    state = engine.apply_story_fact_ops(
+        session.story_state,
+        revision=1,
+        client_turn_id="fact_contract_turn",
+        ops=[{
+            "op": "set",
+            "key": "prop:old_letter",
+            "value": "柜台抽屉里的旧信",
+            "visibility": "public",
+        }],
+    )
+    assert state["facts"]["prop:old_letter"]["value"] == "柜台抽屉里的旧信"
+
+    with pytest.raises(NumericV2RuntimeError, match="story_state_fact_value_type_not_allowed"):
+        engine.apply_story_fact_ops(
+            session.story_state,
+            revision=1,
+            client_turn_id="fact_contract_wrong_type",
+            ops=[{
+                "op": "set",
+                "key": "state:signal_seen",
+                "value": "true",
+                "visibility": "story",
+            }],
+        )
+
+
+def test_numeric_v2_completion_contract_reads_only_committed_story_facts():
+    """完成判定只读取事实账本；缺失事实为未完成，全部命中后才成立。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "scene:start:rescued": {"value_type": "bool", "visibility": "public"},
+            "scene:start:sheltered_count": {
+                "value_type": "int",
+                "visibility": "story",
+                "description": "已进入安全区的平民人数。",
+            },
+        }
+    }
+    story["fact_contract"]["facts"]["scene:start:rescued"]["description"] = "伤者已经脱困。"
+    story["nodes"][0]["completion_contract"] = {
+        "all": [
+            {"key": "scene:start:rescued", "equals": True},
+            {"key": "scene:start:sheltered_count", "equals": 3},
+        ]
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="completion_contract_story_facts",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    assert engine.completion_contract_satisfied(session) is False
+
+    partial = engine.resolve_turn(
+        session,
+        TurnRequestV2("completion_partial", 0, "我把伤者救出来了。"),
+        (),
+        fact_operations=({
+            "op": "set",
+            "key": "scene:start:rescued",
+            "value": True,
+            "visibility": "public",
+        },),
+    ).session
+    assert engine.completion_contract_satisfied(partial) is False
+
+    complete = engine.resolve_turn(
+        partial,
+        TurnRequestV2("completion_ready", 1, "三个人都进入了安全区。"),
+        (),
+        fact_operations=({
+            "op": "set",
+            "key": "scene:start:sheltered_count",
+            "value": 3,
+            "visibility": "story",
+        },),
+    ).session
+    assert engine.completion_contract_satisfied(complete) is True
+
+
+def test_numeric_v2_completion_contract_absence_is_distinct_from_false():
+    """未声明完成合同与已声明但未满足保持不同结果。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="completion_contract_missing",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    assert engine.completion_contract_satisfied(session) is None
+
+    with pytest.raises(NumericV2RuntimeError, match="story_state_fact_key_not_allowed"):
+        engine.apply_story_fact_ops(
+            session.story_state,
+            revision=1,
+            client_turn_id="fact_contract_unknown",
+            ops=[{
+                "op": "set",
+                "key": "prop:unknown",
+                "value": "不能写入",
+                "visibility": "public",
+            }],
+        )
+
+
+def test_numeric_v2_engine_without_story_fact_contract_rejects_model_fact_ops():
+    """未声明事实合同的剧本不向模型候选开放任何事实键。"""
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_contract_missing",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    with pytest.raises(NumericV2RuntimeError, match="story_state_fact_key_not_allowed"):
+        engine.apply_story_fact_ops(
+            session.story_state,
+            revision=1,
+            client_turn_id="fact_contract_missing",
+            ops=[{
+                "op": "set",
+                "key": "prop:unknown",
+                "value": "不能写入",
+                "visibility": "public",
+            }],
+        )
+
+
+def test_numeric_v2_engine_adjudicates_fact_candidates_before_commit():
+    """候选必须提供完整主体四元组和可逐字核对的来源，验证后才进入唯一写入口。"""
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "prop:old_letter": {"value_type": "string", "visibility": "public"},
+        }
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="story_state_candidate_commit",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    candidate = {
+        "op": "set",
+        "key": "prop:old_letter",
+        "value": "柜台抽屉里的旧信",
+        "visibility": "public",
+        "confidence": "confirmed",
+        "subject": "环境",
+        "action": "放置",
+        "object": "旧信",
+        "result": "旧信位于柜台抽屉",
+        "evidence": [{"source": "actor_performance", "quote": "（拉开抽屉）柜台里放着旧信。"}],
+    }
+
+    state, audit = engine.apply_story_fact_candidates(
+        session.story_state,
+        revision=1,
+        client_turn_id="fact_candidate_turn",
+        candidates=[candidate],
+        evidence_sources={"actor_performance": "（拉开抽屉）柜台里放着旧信。"},
+    )
+
+    assert state["facts"]["prop:old_letter"]["value"] == "柜台抽屉里的旧信"
+    assert audit[0]["subject"] == "环境"
+    assert audit[0]["evidence"][0]["source"] == "actor_performance"
+
+
+def test_numeric_v2_turn_commits_fact_operations_atomically_and_records_them():
+    """事实操作与数值、场景事件共用同一回合版本，并可从 Ledger 重放。"""
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "prop:old_letter": {"value_type": "string", "visibility": "public"},
+        }
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="story_state_turn_fact",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("fact_turn", 0, "我看到了旧信。"),
+        (),
+        fact_operations=(
+            {
+                "op": "set",
+                "key": "prop:old_letter",
+                "value": "柜台抽屉里的旧信",
+                "visibility": "public",
+            },
+        ),
+    )
+
+    assert outcome.session.story_state["revision"] == 1
+    assert outcome.session.story_state["facts"]["prop:old_letter"]["value"] == "柜台抽屉里的旧信"
+    assert outcome.ledger_event["fact_operations"] == [{
+        "op": "set",
+        "key": "prop:old_letter",
+        "value": "柜台抽屉里的旧信",
+        "visibility": "public",
+    }]
+
+
+def test_numeric_v2_actor_facts_merge_with_evaluator_facts_in_one_revision():
+    """最终 Actor 候选与前置判定事实从回合起点重建，账本只增加一次 revision。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "scene:start:rescued": {"value_type": "bool", "visibility": "public"},
+            "scene:start:sheltered_count": {
+                "value_type": "int",
+                "visibility": "story",
+                "description": "已进入安全区的平民人数。",
+            },
+        }
+    }
+    story["fact_contract"]["facts"]["scene:start:rescued"]["description"] = "伤者已经脱困。"
+    story["nodes"][0]["completion_contract"] = {
+        "all": [
+            {"key": "scene:start:rescued", "equals": True},
+            {"key": "scene:start:sheltered_count", "equals": 3},
+        ]
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="actor_fact_same_revision",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("actor_fact_turn", 0, "我把伤者拉出来。"),
+        (),
+        fact_operations=({
+            "op": "set",
+            "key": "scene:start:rescued",
+            "value": True,
+            "visibility": "public",
+        },),
+    )
+    candidate = {
+        "key": "scene:start:sheltered_count",
+        "value": 3,
+        "evidence_quote": "三名平民已进入安全走廊。",
+    }
+
+    finalized, audit = engine.finalize_actor_fact_candidates(
+        session,
+        outcome,
+        candidates=[candidate],
+        evidence_sources={"actor_performance": "三名平民已进入安全走廊。"},
+    )
+
+    assert finalized.session.revision == 1
+    assert finalized.session.story_state["revision"] == 1
+    assert [operation["key"] for operation in finalized.ledger_event["fact_operations"]] == [
+        "scene:start:rescued",
+        "scene:start:sheltered_count",
+    ]
+    assert audit[0]["object"] == "scene:start:sheltered_count"
+    assert audit[0]["result"] == "已进入安全区的平民人数。"
+    assert engine.completion_contract_satisfied(finalized.session) is True
+
+
+def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
+    """未来计划不能提交为完成事实，同时保留同形名词中的真实完成表述。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {"facts": {
+        "scene:start:sheltered": {
+            "value_type": "bool",
+            "visibility": "public",
+            "description": "相关角色已经进入安全区域。",
+        },
+    }}
+    story["nodes"][0]["completion_contract"] = {
+        "all": [{"key": "scene:start:sheltered", "equals": True}],
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="future_fact_evidence",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("future_fact_turn", 0, "确认当前状态。"),
+        (),
+    )
+
+    with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_not_completed"):
+        engine.finalize_actor_fact_candidates(
+            session,
+            outcome,
+            candidates=[{
+                "key": "scene:start:sheltered",
+                "value": True,
+                "evidence_quote": "相关角色即将进入安全区域。",
+            }],
+            evidence_sources={"actor_performance": "相关角色即将进入安全区域。"},
+        )
+
+    with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_not_completed"):
+        engine.finalize_actor_fact_candidates(
+            session,
+            outcome,
+            candidates=[{
+                "key": "scene:start:sheltered",
+                "value": True,
+                "evidence_quote": "相关角色迅速向安全区域移动。",
+            }],
+            evidence_sources={"actor_performance": "相关角色迅速向安全区域移动。"},
+        )
+
+    finalized, _ = engine.finalize_actor_fact_candidates(
+        session,
+        outcome,
+        candidates=[{
+            "key": "scene:start:sheltered",
+            "value": True,
+            "evidence_quote": "准备工作已经完成，相关角色已进入安全区域。",
+        }],
+        evidence_sources={"actor_performance": "准备工作已经完成，相关角色已进入安全区域。"},
+    )
+    assert finalized.session.story_state["facts"]["scene:start:sheltered"]["value"] is True
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"confidence": "uncertain"},
+        {"evidence": [{"source": "actor_performance", "quote": "未出现的原文"}]},
+        {"result": ""},
+    ],
+)
+def test_numeric_v2_fact_candidate_rejection_does_not_write_partial_state(change):
+    """候选任一字段或证据失败时，整批事实都不落账。"""
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "prop:old_letter": {"value_type": "string", "visibility": "public"},
+            "prop:map": {"value_type": "string", "visibility": "public"},
+        }
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(
+        session_id="story_state_candidate_reject",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    base = {
+        "op": "set",
+        "key": "prop:old_letter",
+        "value": "柜台抽屉里的旧信",
+        "visibility": "public",
+        "confidence": "confirmed",
+        "subject": "环境",
+        "action": "放置",
+        "object": "旧信",
+        "result": "旧信位于柜台抽屉",
+        "evidence": [{"source": "actor_performance", "quote": "柜台里放着旧信。"}],
+    }
+    invalid = {**base, **change}
+    before = deepcopy(session.story_state)
+
+    with pytest.raises(NumericV2RuntimeError):
+        engine.apply_story_fact_candidates(
+            session.story_state,
+            revision=1,
+            client_turn_id="fact_candidate_reject",
+            candidates=[base, invalid],
+            evidence_sources={"actor_performance": "柜台里放着旧信。"},
+        )
+
+    assert session.story_state == before
+
+
+def test_numeric_v2_story_state_projects_route_transition_events():
+    """正式换幕时记录离开和进入事件，并绑定产生它们的回合。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(_branch_story())
+    session = engine.create_session(
+        session_id="story_state_transition",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    first = engine.resolve_turn(
+        session,
+        TurnRequestV2("story_state_turn_1", 0, "先聊聊。"),
+        (),
+        transition_intent="unclear",
+    )
+    second = engine.resolve_turn(
+        first.session,
+        TurnRequestV2("story_state_turn_2", 1, "我准备好了。"),
+        (
+            MetricChangeV2.from_mapping(
+                {
+                    "metric_id": "trust",
+                    "delta": 5,
+                    "criterion": "玩家兑现承诺",
+                    "evidence": "玩家明确表示准备好了。",
+                },
+                engine.metric_schema,
+            ),
+        ),
+        transition_intent="initiate",
+    )
+
+    assert second.route is not None
+    assert second.session.current_node_id == "ending_stay"
+    assert second.session.story_state["revision"] == second.session.revision == 2
+    facts = second.session.story_state["facts"]
+    assert facts["event:scene.left:start:r2"]["client_turn_id"] == "story_state_turn_2"
+    assert facts["event:scene.entered:ending_stay:r2"]["source_revision"] == 2
+
+
+def test_numeric_v2_scene_fact_projection_is_bounded_and_public_only():
+    """模型只读取有界的公开场景事件，不读取内部事实或当前节点副本。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_projection",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    state = deepcopy(session.story_state)
+    state["facts"]["event:scene.left:private:r0"] = {
+        "value": True,
+        "visibility": "story",
+        "source_revision": 0,
+        "client_turn_id": "opening",
+        "updated_revision": 0,
+    }
+    state["facts"]["event:scene.left:start:r0"] = {
+        "value": True,
+        "visibility": "public",
+        "source_revision": 0,
+        "client_turn_id": "opening",
+        "updated_revision": 0,
+    }
+    state["facts"]["event:scene.weather:r0"] = {
+        "value": True,
+        "visibility": "public",
+        "source_revision": 0,
+        "client_turn_id": "opening",
+        "updated_revision": 0,
+    }
+    projected = project_scene_facts(replace(session, story_state=state), max_facts=1)
+
+    assert projected["revision"] == 0
+    assert projected["truncated"] is True
+    assert len(projected["facts"]) == 1
+    assert projected["facts"][0]["key"] == "event:scene.left:start:r0"
+    assert projected["facts"][0]["event"] == "scene.left"
+    assert projected["facts"][0]["node_id"] == "start"
+    assert projected["facts"][0]["event_revision"] == 0
+    assert all("current_node" not in row["key"] for row in projected["facts"])
+    assert "event:scene.weather:r0" not in {row["key"] for row in projected["facts"]}
+
+
+def test_numeric_v2_scene_fact_projection_ignores_malformed_scene_event_keys():
+    """场景事实只接受 Runtime 规定的事件键，不把相似前缀当成结构化证据。"""
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_projection_invalid_key",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    state = deepcopy(session.story_state)
+    state["facts"]["event:scene.entered:bad node:r0"] = {
+        "value": True,
+        "visibility": "public",
+        "source_revision": 0,
+        "client_turn_id": "opening",
+        "updated_revision": 0,
+    }
+    state["facts"]["event:scene.left:start:not-a-revision"] = {
+        "value": True,
+        "visibility": "public",
+        "source_revision": 0,
+        "client_turn_id": "opening",
+        "updated_revision": 0,
+    }
+
+    projected = project_scene_facts(replace(session, story_state=state))
+
+    assert projected["facts"] == [
+        {
+            "key": "event:scene.entered:start:r0",
+            "event": "scene.entered",
+            "node_id": "start",
+            "event_revision": 0,
+            "value": True,
+            "source_revision": 0,
+            "updated_revision": 0,
+        }
+    ]
+
+
+def test_numeric_v2_session_rejects_missing_or_misaligned_story_state():
+    """旧 Session 不隐式迁移，故事状态缺失或错位都必须重新导入失败。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="story_state_invalid",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    missing = session.to_dict()
+    missing.pop("story_state")
+    with pytest.raises(NumericV2RuntimeError, match="story_state_schema_invalid"):
+        type(session).from_mapping(missing)
+
+    misaligned = session.to_dict()
+    misaligned["story_state"]["revision"] = 1
+    with pytest.raises(NumericV2RuntimeError, match="story_state_revision_mismatch"):
+        type(session).from_mapping(misaligned)
 
 
 def test_numeric_v2_session_rejects_unknown_budget_profile():
@@ -435,6 +1117,8 @@ def test_numeric_v2_runtime_is_the_only_transition_offer_state_writer(
     assert finalized.session.transition_offered is expected_offer
     assert finalized.ledger_event["transition_offered"] is expected_offer
     assert performance["transition_offered"] is expected_offer
+    assert finalized.ledger_event.get("transition_offer_presented", False) is new_offer
+    assert performance.get("transition_offer_presented", False) is new_offer
 
 
 @pytest.mark.asyncio
@@ -557,6 +1241,11 @@ async def test_numeric_v2_route_change_requires_visible_transition_before_commit
     assert restored is not None
     assert restored.session.current_node_id == second.session.current_node_id
     assert restored.session.performance_history[-1]["visible_node_id"] == second.session.current_node_id
+    timeline = restored.session.performance_history[-1]["timeline_projection"]
+    assert timeline["scene_scope"]["visit_id"].endswith(":r2")
+    assert [event["kind"] for event in timeline["events"]] == [
+        "scene_left", "scene_entered",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1438,6 +2127,51 @@ async def test_numeric_v2_uncommitted_candidate_does_not_change_session(tmp_path
     assert restored.session.revision == 0
     assert restored.session.performance_history == ()
     assert restored.ledger_events == ()
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_restore_replays_fact_operations_from_ledger(tmp_path):
+    """恢复存档时必须重放事实操作，不能只重算数值和场景位置。"""
+
+    story = _branch_story()
+    story["fact_contract"] = {
+        "facts": {
+            "prop:old_letter": {"value_type": "string", "visibility": "public"},
+        }
+    }
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_fact_replay",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    outcome = runtime.prepare_turn(
+        stored,
+        TurnRequestV2("fact_turn", 0, "我看到了旧信。"),
+        (),
+        fact_operations=(
+            {
+                "op": "set",
+                "key": "prop:old_letter",
+                "value": "柜台抽屉里的旧信",
+                "visibility": "public",
+            },
+        ),
+    )
+    await runtime.commit_turn(outcome, _performance("我先记下这件事。"))
+
+    restored = await runtime.restore_session("runtime_fact_replay")
+    assert restored is not None
+    assert restored.session.story_state["facts"]["prop:old_letter"]["value"] == "柜台抽屉里的旧信"
+    assert restored.ledger_events[0]["fact_operations"][0]["key"] == "prop:old_letter"
+
+    forked = await runtime.fork_session_for_test(
+        "runtime_fact_replay",
+        session_id="runtime_fact_replay_fork",
+        through_revision=1,
+    )
+    assert forked.session.story_state == restored.session.story_state
+    assert forked.ledger_events[0]["fact_operations"] == restored.ledger_events[0]["fact_operations"]
 
 
 @pytest.mark.asyncio

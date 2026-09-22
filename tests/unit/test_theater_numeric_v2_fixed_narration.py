@@ -241,6 +241,20 @@ def test_fixed_dependencies_still_belong_to_review_and_delivery():
     validate_delivery(engine.story, delivered, session=session)
 
 
+def test_actor_receive_trigger_requires_player_handoff_direction():
+    """猫娘接收类条件不能由候选正文自证；玩家明确递交时仍可触发。"""  # noqa: DOCSTRING_CJK
+
+    story = deepcopy(_engine().story)
+    story['nodes'][0]['story_beat']['fixed_narrations'][1]['trigger']['condition'] = '小葵接过旧照片。'
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id='handoff-direction', catgirl_binding=_binding(), opening_performance=OPENING)
+    raw = {'performance': '（接过旧照片）谢谢。'}
+    claim = ({'id': 'log', 'evidence': '接过旧照片'},)
+    assert apply_triggers(engine.nodes['start'], session, raw, claim, '我伸手拿起旧照片。', known=True) == raw
+    delivered = apply_triggers(engine.nodes['start'], session, raw, claim, '我把旧照片递给你。', known=True)
+    assert [piece['id'] for piece in delivered['fixed_narrations']] == ['log']
+
+
 @pytest.mark.asyncio
 async def test_literal_order_cold_recovery_fork_and_exit_gate(tmp_path):
     engine = _engine()
@@ -379,7 +393,7 @@ async def test_review_output_fits_all_refs_and_restores_literal_ids(monkeypatch,
     session = engine.create_session(session_id='quote-capacity', catgirl_binding=_binding(), opening_performance=OPENING)
     # Eight 80-token quotations plus their request references must fit the cap.
     assert len(encoding.encode(evidence)) == 80
-    payload = {'offer_present': False, 'valid': False, 'body_violations': [],
+    payload = {'offer_present': False, 'offer_quote': '', 'valid': False, 'body_violations': [],
                'unsafe_suggestion_indexes': [], 'failure_reason': ''}
     if ids:
         payload['fixed_narration_triggers'] = [{'id': str(index), 'evidence': evidence} for index in range(len(ids))]

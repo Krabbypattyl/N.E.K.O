@@ -63,6 +63,7 @@ def numeric_v2_story(*, player_address_known: bool = True) -> dict:
             },
             "transition_contract": {
                 "reason": "当前信任度满足作者路线条件。",
+                "accept_input": "（点头确认）好，就按这个安排。",
                 "must_deliver": ["平滑交付目标剧情"],
                 "must_preserve": ["不覆盖此前已经发生的内容"],
                 "tone": "克制",
@@ -172,6 +173,190 @@ def test_numeric_v2_compiles_canonical_package():
     assert compiled.story["schema"] == "neko.story.numeric.v2"
     assert compiled.package_hash.startswith("sha256:")
     assert json.loads(compiled.json_bytes)["meta"]["story_id"] == "numeric_v2_contract"
+
+
+def test_numeric_v2_fact_contract_accepts_only_explicit_typed_keys():
+    """事实白名单是剧本合同的一部分，值类型和公开范围必须同时声明。"""
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "prop:old_letter": {"value_type": "string", "visibility": "public"},
+            "state:signal_seen": {"value_type": "bool", "visibility": "story"},
+        }
+    }
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert compiled.story["fact_contract"] == story["fact_contract"]
+
+
+def test_numeric_v2_completion_contract_accepts_declared_typed_facts():
+    """幕完成条件只能引用事实合同，并保留作者声明的精确目标值。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "scene:start:letter_seen": {"value_type": "bool", "visibility": "public"},
+            "scene:start:rescued_count": {
+                "value_type": "int",
+                "visibility": "story",
+                "description": "已进入安全区的平民人数。",
+            },
+        }
+    }
+    story["fact_contract"]["facts"]["scene:start:letter_seen"]["description"] = "旧信已经被公开看见。"
+    story["nodes"][0]["completion_contract"] = {
+        "all": [
+            {"key": "scene:start:letter_seen", "equals": True},
+            {"key": "scene:start:rescued_count", "equals": 3},
+        ]
+    }
+
+    compiled = NumericV2Compiler().compile(story)
+
+    assert compiled.story["nodes"][0]["completion_contract"] == story["nodes"][0]["completion_contract"]
+
+
+@pytest.mark.parametrize(
+    ("completion_contract", "code"),
+    [
+        ({"all": []}, "completion_fact_required"),
+        ({"any": [{"key": "scene:start:done", "equals": True}]}, "invalid_completion_contract_shape"),
+        ({"all": [{"key": "scene:start:unknown", "equals": True}]}, "unknown_completion_fact_key"),
+        ({"all": [{"key": "scene:start:done", "equals": "true"}]}, "completion_fact_value_type_mismatch"),
+        ({"all": [
+            {"key": "scene:start:done", "equals": True},
+            {"key": "scene:start:done", "equals": True},
+        ]}, "duplicate_completion_fact_key"),
+    ],
+)
+def test_numeric_v2_completion_contract_rejects_ambiguous_or_invalid_facts(completion_contract, code):
+    """完成条件不接受任选分支、未知事实、错类型或重复键。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "scene:start:done": {"value_type": "bool", "visibility": "public"},
+        }
+    }
+    story["fact_contract"]["facts"]["scene:start:done"]["description"] = "当前幕核心结果已经成立。"
+    story["nodes"][0]["completion_contract"] = completion_contract
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert code in {issue.code for issue in caught.value.issues}
+
+
+def test_numeric_v2_completion_contract_is_forbidden_on_terminal_node():
+    """结局没有下一幕，不允许声明会误导收束逻辑的完成条件。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "ending:done": {"value_type": "bool", "visibility": "public"},
+        }
+    }
+    story["fact_contract"]["facts"]["ending:done"]["description"] = "结局已经完成。"
+    story["nodes"][1]["completion_contract"] = {
+        "all": [{"key": "ending:done", "equals": True}]
+    }
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert "terminal_completion_contract_forbidden" in {issue.code for issue in caught.value.issues}
+
+
+def test_numeric_v2_completion_route_requires_author_offer_and_accept_input_for_non_terminal_target():
+    """完成合同通向普通下一幕时，作者邀请与明确接受输入必须成对存在。"""  # noqa: DOCSTRING_CJK
+
+    story = numeric_v2_story()
+    story["fact_contract"] = {
+        "facts": {
+            "scene:start:done": {
+                "value_type": "bool",
+                "visibility": "public",
+                "description": "当前幕核心结果已经成立。",
+            },
+        },
+    }
+    story["nodes"][0]["completion_contract"] = {
+        "all": [{"key": "scene:start:done", "equals": True}],
+    }
+    # 低信任路线先进入普通幕，再由普通幕通向原有结局；高信任路线仍直接进入结局。
+    middle = story["nodes"][2]
+    middle["type"] = "scene"
+    middle.pop("terminal")
+    middle.pop("ending_id")
+    middle["min_turns"] = 1
+    middle["route_gates"] = [{
+        "id": "middle_to_leave",
+        "target_node_id": "ending_after_middle",
+        "priority": 100,
+        "conditions": {"all": []},
+        "transition_contract": deepcopy(
+            story["nodes"][0]["route_gates"][1]["transition_contract"]
+        ),
+    }]
+    story["nodes"].append({
+        "id": "ending_after_middle",
+        "type": "ending",
+        "chapter": "离开",
+        "story_beat": deepcopy(middle["story_beat"]),
+        "route_gates": [],
+        "terminal": True,
+        "ending_id": "leave",
+    })
+    story["nodes"][0]["route_gates"][1]["transition_contract"].pop("accept_input")
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+    assert "required_text" in {issue.code for issue in caught.value.issues}
+    assert any("fallback_offer" in issue.path for issue in caught.value.issues)
+
+    story["nodes"][0]["route_gates"][1]["transition_contract"]["fallback_offer"] = (
+        "雨已经停了。要现在和我一起去长街看看吗？"
+    )
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+    assert "required_text" in {issue.code for issue in caught.value.issues}
+    assert any("accept_input" in issue.path for issue in caught.value.issues)
+
+    story["nodes"][0]["route_gates"][1]["transition_contract"]["accept_input"] = (
+        "（收好雨伞）好，我们现在去长街。"
+    )
+    compiled = NumericV2Compiler().compile(story)
+    assert (
+        compiled.story["nodes"][0]["route_gates"][1]["transition_contract"]["fallback_offer"]
+        == "雨已经停了。要现在和我一起去长街看看吗？"
+    )
+    assert (
+        compiled.story["nodes"][0]["route_gates"][1]["transition_contract"]["accept_input"]
+        == "（收好雨伞）好，我们现在去长街。"
+    )
+
+
+@pytest.mark.parametrize(
+    ("contract", "code"),
+    [
+        ({"facts": {"prop:broken": {"value_type": "float", "visibility": "public"}}},
+         "invalid_fact_contract_value_type"),
+        ({"facts": {"prop:broken": {"value_type": "string", "visibility": "hidden"}}},
+         "invalid_fact_contract_visibility"),
+        ({"facts": {"bad key": {"value_type": "string", "visibility": "public"}}},
+         "invalid_fact_contract_key"),
+    ],
+)
+def test_numeric_v2_fact_contract_rejects_undeclared_shape(contract, code):
+    story = numeric_v2_story()
+    story["fact_contract"] = contract
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+
+    assert code in {issue.code for issue in caught.value.issues}
 
 
 def test_numeric_v2_old_compile_entry_requires_upgrade():

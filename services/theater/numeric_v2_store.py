@@ -1145,6 +1145,11 @@ class NumericV2SessionStore:
                     scene_complete=scene_complete,
                     transition_intent=str(event.get("transition_intent") or "unclear"),
                     natural_ending_ready=natural_ending_ready,
+                    fact_operations=tuple(
+                        dict(operation)
+                        for operation in event.get("fact_operations") or []
+                        if isinstance(operation, Mapping)
+                    ),
                 )
                 performance = stored.session.performance_history[event_index]
                 if not isinstance(performance, Mapping):
@@ -1169,6 +1174,7 @@ class NumericV2SessionStore:
                 "before_metrics",
                 "after_metrics",
                 "metric_changes",
+                "fact_operations",
             ):
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1178,6 +1184,12 @@ class NumericV2SessionStore:
                 if not isinstance(value.get("transition_offer_invalidated", False), bool):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if event.get("transition_offer_invalidated", False) != performance.get("transition_offer_invalidated", False):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            # 新邀请来源标记必须与可见正文同回合一致；缺省表示仅保留旧邀请。
+            for value in (event, performance):
+                if not isinstance(value.get("transition_offer_presented", False), bool):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if event.get("transition_offer_presented", False) != performance.get("transition_offer_presented", False):
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if "transition_offered" in event:
                 # 新 Ledger 的提议状态来自同 revision 的 Actor 正文；重放时只复用已提交值。
@@ -1323,6 +1335,7 @@ class NumericV2SessionStore:
             replay_session.player_address_known != stored.session.player_address_known
             or replay_session.dialogue_policy != stored.session.dialogue_policy
             or replay_session.transition_offered != stored.session.transition_offered
+            or replay_session.story_state != stored.session.story_state
         ):
             raise NumericV2StoreError("numeric_session_scene_progress_mismatch")
 

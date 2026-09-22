@@ -1,4 +1,4 @@
-"""固定旁白条件的证人来源诊断：以猫娘自身动作为准时提示自证触发风险（问题2.141 B1）。"""
+"""固定旁白条件的证人来源诊断：以猫娘自身动作为准时提示自证触发风险（问题2.141 B1）。"""  # noqa: DOCSTRING_CJK
 
 from theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
 

@@ -68,6 +68,10 @@ def test_player_fact_rule_reaches_all_suggestion_generation_paths():
         review = _build_transition_judge_messages(engine, session, player_input=message,
             actor_performance={'performance': '请问需要登记哪些信息？', 'suggested_inputs': ['（填写）我叫林风，擅长竹编。']},
             route_changed=outcome is not None, transition_outcome=outcome)[0]
-        assert '拒绝或解释中的个人情况也须核对依据' in review[0].content
-        assert '玩家已经明确披露的称呼不能再报虚构' in review[0].content
+        if outcome is None:
+            assert '按钮用第一人称断言玩家的姓名、联系方式、技能、经历、持物或既定行程' in review[0].content
+            assert '必须有作者、实际历史或本轮玩家自述依据' in review[0].content
+        else:
+            assert '拒绝或解释中的个人情况也须核对依据' in review[0].content
+            assert '玩家已经明确披露的称呼不能再报虚构' in review[0].content
         assert '仅按钮有误只报索引，不给正文添加违规' in review[0].content

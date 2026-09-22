@@ -248,6 +248,12 @@ def _path_result(plan: dict) -> dict:
             "to": "endpoint" if index == plan["length"] else f"scene:{index}",
             "reason": "新证据推动两人继续核对事实。",
             "bridge_scene_narration": "调查暂告一段落，新的核对地点已经亮起灯光。",
+            **({
+                "fallback_offer": "如果你愿意，我们带着这份证据继续核对下一处记录。",
+                "accept_input": "好，我们带着这份证据继续核对下一处记录。",
+            } if not (
+                index == plan["length"] and plan.get("endpoint_mode") != "mainline"
+            ) else {}),
             "must_preserve": ["幕后原因尚未被最终确认"],
             "tone": "警惕中逐渐合作",
         })
@@ -287,6 +293,13 @@ def _path_result_from_context(context: dict) -> dict:
             "to": "endpoint" if index == scene_count else f"scene:{index}",
             "reason": "证据推动剧情继续。",
             "bridge_scene_narration": "当前核对告一段落，调查转向下一处现场。",
+            **({
+                "fallback_offer": "如果你愿意，我们带着这份证据继续核对下一处现场。",
+                "accept_input": "好，我们带着这份证据继续核对下一处现场。",
+            } if not (
+                index == scene_count
+                and (context.get("endpoint") or {}).get("mode") != "mainline"
+            ) else {}),
             "must_preserve": ["固定终点尚未提前发生"],
             "tone": "克制",
         } for index in range(scene_count + 1)],
@@ -635,6 +648,18 @@ def test_path_draft_carries_skipped_facts_and_compiles_before_apply(context_copi
         "mode": "semantic",
         "anchors": [],
     }
+    completion_key = "scene:node_branch_scene:branch_complete"
+    assert branch_scene["completion_contract"] == {
+        "all": [{"key": completion_key, "equals": True}],
+    }
+    assert branch_scene["route_gates"][0]["transition_contract"]["trigger_fact_ids"] == [
+        "branch_complete"
+    ]
+    assert story["fact_contract"]["facts"][completion_key] == {
+        "value_type": "bool",
+        "visibility": "public",
+        "description": result["scenes"][0]["ordered_goals"][-1]["description"],
+    }
     for item in plan["continuity_items"]:
         assert item["text"] in [
             goal["description"] for goal in branch_scene["story_beat"]["goals"]
@@ -646,6 +671,30 @@ def test_path_draft_carries_skipped_facts_and_compiles_before_apply(context_copi
     assert source["route_gates"][1]["conditions"]["all"][0]["op"] == ">="
     assert semantics["route_branch_r0"]["label"].startswith("当信任度达到")
     assert key_props == project["authoring"]["key_props"]
+
+
+def test_branch_path_rejects_missing_or_generic_accept_input():
+    project = branchable_project()
+    service = NumericV2BranchService()
+    options = service.options(project, "main_3")
+    plan = service.prepare_path(
+        project,
+        source_node_id="main_3",
+        endpoint_mode="mainline",
+        endpoint_node_id="main_4",
+        direction="误会让两人转而调查一张旧照片。",
+        length=1,
+        condition_selection={"mode": "fixed", "key": options["condition_candidates"][0]["key"]},
+    )
+    result = _path_result(plan)
+    result["transitions"][0].pop("accept_input")
+    with pytest.raises(NumericV2BranchError, match="branch_transition_accept_input_required"):
+        service.finish_path(plan, result)
+
+    result = _path_result(plan)
+    result["transitions"][0]["accept_input"] = "我接受这个安排，继续进入下一阶段。"
+    with pytest.raises(NumericV2BranchError, match="branch_transition_accept_input_generic"):
+        service.finish_path(plan, result)
 
 
 @pytest.mark.parametrize("opening_transfer", [False, True])

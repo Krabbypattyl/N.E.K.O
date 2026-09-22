@@ -12,6 +12,8 @@ from utils.tokenize import count_tokens
 MAX_FIXED_NARRATIONS = 8
 MAX_FIXED_NARRATION_TOKENS = 2000
 _PLACEHOLDER = re.compile(r"\{\{(catgirl_name|player_name)\}\}")
+_ACTOR_RECEIVE_MARKERS = ("接过", "接到", "收到", "收下", "拿到", "戴上")
+_PLAYER_HANDOFF_MARKERS = ("递给", "递出", "交给", "交出", "给你", "交到你手里")
 
 
 def validate_definitions(collector, beat: Mapping[str, Any], path: str) -> None:
@@ -135,6 +137,16 @@ def review_candidates(node: Mapping[str, Any], session: Any) -> list[dict[str, A
             for item in pending_definitions(node, session) if item["trigger"]["type"] == "condition"]
 
 
+def _actor_receive_requires_handoff(condition: str) -> bool:
+    """只对明确写成猫娘接收/持有的条件增加交接方向门槛。"""
+
+    return any(marker in str(condition or "") for marker in _ACTOR_RECEIVE_MARKERS)
+
+
+def _handoff_is_explicit(player_input: str) -> bool:
+    return any(marker in str(player_input or "") for marker in _PLAYER_HANDOFF_MARKERS)
+
+
 def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[str, Any],
                    claims: tuple[dict[str, str], ...], player_input: str, *, known: bool) -> dict[str, Any]:
     """Accept only cited final-draft events; authored order decides insertion order."""
@@ -144,8 +156,23 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
     container = result["segments"][0] if isinstance(result.get("segments"), list) else result
     sources = [player_input, *(str(container.get(key) or "") for key in ("performance", "scene_narration")),
                *(row["text"] for row in performance_history_records(session))]
-    selected = {claim["id"] for claim in claims if claim.get("evidence")
-                and any(claim["evidence"] in text for text in sources)}
+    selected: set[str] = set()
+    for claim in claims:
+        evidence = str(claim.get("evidence") or "")
+        if not evidence or not any(evidence in text for text in sources):
+            continue
+        definition = next((item for item in definitions(node) if item["id"] == claim.get("id")), None)
+        condition = str((definition or {}).get("trigger", {}).get("condition") or "")
+        if _actor_receive_requires_handoff(condition):
+            # 候选正文自称“接过/收到”不能证明交接已经发生；必须有玩家明确递交，
+            # 或历史中已有该证据。这样保留“玩家递出→猫娘接收”，拦住“玩家拿起→猫娘接收”。
+            historical_text = "\n".join(
+                row["text"] for row in performance_history_records(session)
+                if isinstance(row, Mapping) and isinstance(row.get("text"), str)
+            )
+            if not _handoff_is_explicit(player_input) and evidence not in historical_text:
+                continue
+        selected.add(str(claim.get("id") or ""))
     seen = displayed_ids(session)
     pieces = []
     for item in definitions(node):

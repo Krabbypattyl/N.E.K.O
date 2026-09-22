@@ -280,23 +280,22 @@ def _reset_pending_retirements():
 
 
 @pytest.fixture(autouse=True)
-def _enable_theater_dispute_review(monkeypatch):
-    """Keep the dispute-review chain on for regression tests.
+def _enable_theater_review_modules(monkeypatch):
+    """Keep every optional theater module on for regression tests.
 
-    The product ships the theater "争议复查" switch off by default (it costs one
-    extra thinking call per first dispute), but the review-chain regressions were
-    written against the switch-on behaviour: they assert the second opinion, its
-    shared evidence and its shared rewrite budget. Enabling it here keeps those
-    tests testing what they document, while tests that exercise the switch itself
-    override this patch with their own ``monkeypatch`` and still win.
+    The product ships the theater module switches off by default (only the actor
+    reply runs), but the review-chain regressions were written against the
+    modules-on behaviour: they assert the second opinion, the fast review, the
+    shared rewrite budget and the output-retry contract. Enabling them here keeps
+    those tests testing what they document; tests that exercise the switches
+    themselves rebind ``aload_theater_module_options`` and still win.
     """
 
-    try:
-        import utils.preferences as preferences
-    except Exception:
-        return
+    import services.theater.numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_options import default_options
 
-    async def _enabled() -> bool:
-        return True
+    async def _all_on() -> dict[str, bool]:
+        # 交付校验是本轮新增的纯程序检查，既有回归不覆盖它，避免悄悄改变既有断言。
+        return {key: True for key in default_options() if key != 'review_delivery'}
 
-    monkeypatch.setattr(preferences, "aload_theater_dispute_review", _enabled, raising=False)
+    monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)

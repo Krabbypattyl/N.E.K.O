@@ -46,6 +46,7 @@ def _verdict(**changes):
 
     return {
         "offer_present": False,
+        "offer_quote": "",
         "valid": False,
         "body_violations": [],
         "unsafe_suggestion_indexes": [],
@@ -182,11 +183,11 @@ def test_guard_no_offer_does_not_skip_body_or_button_checks():
 
 
 def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
-    """Describe the five-field protocol once and distinguish completed actions, attempts and future invitations."""
+    """Describe the evidence-bearing protocol once and distinguish completed actions, attempts and future invitations."""
 
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     example, _ = json.JSONDecoder().raw_decode(system[system.index("{"):])
-    assert set(example) == {"offer_present", "valid", "body_violations", "unsafe_suggestion_indexes", "failure_reason"}
+    assert set(example) == {"offer_present", "offer_quote", "valid", "body_violations", "unsafe_suggestion_indexes", "failure_reason"}
     assert not _parse_transition_judge_output(json.dumps(example)).body_violations
     assert "_preserved" not in system
     assert "玩家已明确实施的同一动作可以被正文承接，不是 Actor 代做" in system
@@ -195,3 +196,27 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
     assert "历史另一次操作也不授权本次结果" in system
     assert "未来邀请即使请求立即开始也不是已执行" in system
     assert "开场状态是入幕起点，后续状态承接历史和本轮已实施动作" in system
+
+
+def test_guard_requires_offer_quote_from_reviewed_body():
+    """正文邀请必须给出本轮待审正文中的逐字短句，按钮和空引文不能制造邀请。"""
+
+    body = "（指向门口）我们现在去阅览室查档，好吗？"
+    missing = _parse_transition_judge_output(
+        json.dumps(_verdict(offer_present=True, valid=True)),
+        offer_evidence_text=body,
+    )
+    verified = _parse_transition_judge_output(
+        json.dumps(_verdict(
+            offer_present=True,
+            offer_quote="我们现在去阅览室查档，好吗？",
+            valid=True,
+        )),
+        offer_evidence_text=body,
+    )
+
+    assert not missing.offer_present
+    assert not missing.valid
+    assert verified.offer_present
+    assert verified.valid
+    assert verified.offer_quote == "我们现在去阅览室查档，好吗？"

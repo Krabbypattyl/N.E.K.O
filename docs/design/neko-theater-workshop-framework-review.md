@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-状态：**WS-01—02 已处理，匹配回归通过**；关联 IB-01 也已同步修复。实际优化与验收边界统一见[问题与处理 2.125](./neko-theater-issues-and-solutions.md)。审查基线为 N.E.K.O `theater_chat_window` / `201e4fc4a`；下文调用链、行号、隔离探针和建议保留优化前证据，“本轮”及原检查数量均指审查时点，不是现行待办。未修改正式作者项目、安装包或存档。
+状态：**WS-01—02 已处理，匹配回归通过**；关联 IB-01 也已同步修复。本文是工坊历史结构审查，当前模块职责和正式调用边界以[架构开发文档第2.3节](./neko-theater-architecture.md#23-剧本工坊-sdk-模块-theater_workshop)及[SDK迁移说明](./neko-theater-workshop-sdk-migration.md)为准。实际优化与验收边界统一见[问题与处理 2.125](./neko-theater-issues-and-solutions.md)。审查基线为 N.E.K.O `theater_chat_window` / `201e4fc4a`；下文调用链、行号、隔离探针和建议保留优化前证据，“本轮”及原检查数量均指审查时点，不是现行待办。未修改正式作者项目、安装包或存档。
 
 已核对 [SDK 迁移与接入说明](./neko-theater-workshop-sdk-migration.md)、[SDK 使用说明](/Users/mac/Code/N.E.K.O/theater_workshop/README.md)、[小剧场架构](./neko-theater-architecture.md) 的工坊边界，以及 `host.py`、`sdk/workshop.py`、`contracts.py`、`packages.py`、`model.py`、作者投影、支线和项目 Store 的真实调用链。创作与评分入口用于核对职责和消费者，未重新评估模型效果。
 

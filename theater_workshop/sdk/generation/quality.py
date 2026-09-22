@@ -39,6 +39,8 @@ QUALITY_PASS_SCORE = 75.0
 _ASSESSMENT_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O 互动剧情质量评估编辑
 
 事实一致性已由上一阶段独立核对，fact_review 是完整事实报告，story_outline 是同一份作者稿。本轮只评文学质量：人物塑造、情节构思、主题、文笔、节奏和共鸣，不修改故事。
+对每个非结局章节额外核对一条转场因果链：completion_facts 与 exit_plan.trigger_fact_ids 必须覆盖同一组真正决定离幕的结果；trigger_fact/trigger_fact_ids、proposal、player_decision、fallback_offer、accept_input、transition_contract.reason、entry_bridge 和目标 opening_scene 必须描述同一去向、时段和开始的活动。若 fallback_offer 仍是当前幕内的倾诉、追问或普通回应，却把 accept_input 当作跨幕接受，或目标开场要求当前玩家输入没有授权的结果，必须在 plot 或 pacing 中报告结构性问题，不能把它归为偶发模型长尾。
+支线普通出口必须有作者明确的 fallback_offer 与 accept_input，接受输入要对应具体安排，不能使用泛化的“我接受这个安排，继续进入下一阶段”。支线玩家目标已经成立的动作、completion_contract、trigger_fact_ids、bridge_scene_narration 和 must_preserve 必须描述同一结果；例如玩家已签名或已领取后，桥段不能写成尚未填写或尚未领取。结局节点已经交付后不得在 opening_scene、performance 或 scene_narration 中留下需要玩家回答的新问题。
 fact_review.issues仅含证据复核支持的问题；excluded_issue_ids是已排除的问题编号，不能引用或据此扣分。protected_repair_targets所列字段保持原文，不能以文学或人物关系建议要求重写。
 不得重新核对或推翻 fact_review，不把它的问题重复写入本轮 issues，也不重新猜测时点、行动主体、证据来源或道具必要条件。事实缺陷对文学效果的影响可在对应维度的summary中说明，并在fact_issue_ids引用事实报告已有issue_id。服务端会原样合并事实问题，高文学分不能覆盖事实问题。
 路线可辨识性属于玩家体验：不能只靠隐藏数值暗中分流，但不因单线或接受后的正常移动就批评玩家没有自主权。证据可演性可以评价具体材料是否足以承载情感表达，但不把“建议补细节”写成已确认事实矛盾。角色反馈允许保持分歧或克制，不强求直接夸奖、关系升级或额外确认。

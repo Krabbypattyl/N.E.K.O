@@ -68,3 +68,20 @@ async def test_interactive_target_direction_waits_until_after_its_opening(tmp_pa
                                    '克制。', '小岚', '你')
     assert future in '\n'.join(message.content for message in next_messages)
     assert '开场时星图尚未修复。' not in next_messages[0].content
+
+
+def test_extra_suggestions_are_trimmed_instead_of_discarded():
+    """超过三条时保留前三条：确定性裁剪替代一次补推荐模型调用。"""  # noqa: DOCSTRING_CJK
+
+    from services.theater.numeric_v2_actor_output import _parse_actor_suggestions
+
+    counts: dict[str, int] = {}
+    payload = [
+        '（走向窗边）外面下雨了吗',
+        '（放下杯子）我们等一下再走',
+        '（看向她）你想聊点什么',
+        '（起身）我该走了',
+    ]
+    parsed = _parse_actor_suggestions(payload, diagnostics=counts)
+    assert parsed == payload[:3]
+    assert counts.get('too_many_items') == 1
