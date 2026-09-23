@@ -2092,6 +2092,35 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failed_preflight", ("sessions", "archives", "receipts"))
+async def test_rename_catgirl_returns_json_when_numeric_preflight_fails(tmp_path, failed_preflight):
+    from main_routers.characters_router import crud
+
+    characters = {"猫娘": {"OldName": {"昵称": "OldName"}}, "当前猫娘": ""}
+    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    request = SimpleNamespace(json=AsyncMock(return_value={"new_name": "NewName"}))
+    with patch.object(crud, "get_config_manager", return_value=config_manager), \
+         patch.object(crud, "get_session_manager", return_value={}), \
+         patch.object(crud, "assert_cloudsave_writable"), \
+         patch.object(crud, "theater_root", return_value=tmp_path), \
+         patch.object(crud, "list_numeric_v2_sessions", return_value=[]) as sessions, \
+         patch.object(crud, "list_numeric_v2_public_archives", return_value=[]) as archives, \
+         patch.object(crud.NumericV2ArchiveStore, "receipt_paths_for_scope", return_value=[]) as receipts:
+        failing_call, failure = {
+            "sessions": (sessions, crud.NumericV2StoreError("session read failed")),
+            "archives": (archives, OSError("archive read failed")),
+            "receipts": (receipts, crud.NumericV2ArchiveError("receipt read failed")),
+        }[failed_preflight]
+        failing_call.side_effect = failure
+        response = await crud.rename_catgirl("OldName", request)
+
+    assert response.status_code == 500
+    assert json.loads(response.body)["success"] is False
+    assert characters["猫娘"] == {"OldName": {"昵称": "OldName"}}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatch):
     monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
     with TemporaryDirectory() as td:

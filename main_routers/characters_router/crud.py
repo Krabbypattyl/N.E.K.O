@@ -95,12 +95,13 @@ from utils.cloudsave_runtime import (
     is_cloudsave_disabled_due_to_local_state_unavailable,
 )
 from services.theater.numeric_v2_store import (
+    NumericV2StoreError,
     delete_numeric_v2_sessions,
     list_numeric_v2_public_archives,
     list_numeric_v2_sessions,
     update_numeric_v2_character_bindings,
 )
-from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+from services.theater.numeric_v2_archive import NumericV2ArchiveError, NumericV2ArchiveStore
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
 from services.theater.paths import theater_root
 
@@ -787,33 +788,40 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
         or ""
     ).strip()
     numeric_theater_root = theater_root(_config_manager)
-    numeric_session_targets = [
-        Path(item["path"])
-        for item in list_numeric_v2_sessions(
-            numeric_theater_root,
+    try:
+        numeric_session_targets = [
+            Path(item["path"])
+            for item in list_numeric_v2_sessions(
+                numeric_theater_root,
+                character_id=renamed_character_id,
+                legacy_catgirl_name=old_name,
+                raise_on_io_error=True,
+            )
+        ]
+        numeric_session_index_path = (
+            numeric_theater_root / "numeric_v2" / "story_sessions.json"
+        )
+        numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
+        numeric_public_archive_targets = [
+            Path(item["path"])
+            for item in list_numeric_v2_public_archives(
+                numeric_theater_root,
+                character_id=renamed_character_id,
+                legacy_catgirl_name=old_name,
+                raise_on_io_error=True,
+            )
+        ]
+        numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
             character_id=renamed_character_id,
             legacy_catgirl_name=old_name,
             raise_on_io_error=True,
         )
-    ]
-    numeric_session_index_path = (
-        numeric_theater_root / "numeric_v2" / "story_sessions.json"
-    )
-    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
-    numeric_public_archive_targets = [
-        Path(item["path"])
-        for item in list_numeric_v2_public_archives(
-            numeric_theater_root,
-            character_id=renamed_character_id,
-            legacy_catgirl_name=old_name,
-            raise_on_io_error=True,
+    except (OSError, NumericV2StoreError, NumericV2ArchiveError):
+        logger.exception("重命名角色 Numeric v2 预检失败: %s -> %s", old_name, new_name)
+        return JSONResponse(
+            {"success": False, "error": "重命名角色预检失败，请稍后重试"},
+            status_code=500,
         )
-    ]
-    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
-        character_id=renamed_character_id,
-        legacy_catgirl_name=old_name,
-        raise_on_io_error=True,
-    )
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)

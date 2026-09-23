@@ -1212,10 +1212,13 @@ async def forget_theater_memory(
                 )
             except Exception:
                 # recent 删除失败时恢复仍存在的原始摘要索引。
-                await runtime.time_manager.areconcile_theater_conversations(
-                    _theater_index_events(lanlan_name, current),
-                    lanlan_name,
-                )
+                try:
+                    await runtime.time_manager.areconcile_theater_conversations(
+                        _theater_index_events(lanlan_name, current),
+                        lanlan_name,
+                    )
+                except Exception:
+                    logger.exception("[MemoryServer] 剧本遗忘失败后时间索引回滚失败")
                 raise
         return {
             "ok": True,

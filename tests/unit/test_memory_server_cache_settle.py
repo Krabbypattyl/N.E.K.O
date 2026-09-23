@@ -385,6 +385,38 @@ async def test_forget_theater_memory_keeps_recent_when_index_update_fails():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_forget_theater_memory_reports_original_error_when_rollback_fails():
+    from app import memory_server
+    from app.memory_server import routes
+    from fastapi import HTTPException
+
+    recent_error = OSError("recent delete failed")
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(return_value=[])
+    fake_recent.forget_theater_story = AsyncMock(side_effect=recent_error)
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(side_effect=[
+        {"removed": 1}, OSError("index rollback failed"),
+    ])
+    fake_logger = MagicMock()
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time), \
+         patch.object(routes, "logger", fake_logger):
+        with pytest.raises(HTTPException) as exc:
+            await memory_server.forget_theater_memory(
+                "测试角色",
+                memory_server.TheaterMemoryForgetRequest(story_id="story_forget"),
+            )
+
+    assert exc.value.status_code == 500
+    assert fake_time.areconcile_theater_conversations.await_count == 2
+    fake_logger.exception.assert_called_once()
+    assert fake_logger.error.call_args.args[3] is recent_error
+
+
+@pytest.mark.unit
 def test_theater_episode_upsert_merges_session_and_caps_story_runs():
     """同 Session 只留一份，重复游玩只保留同剧本最近三个周目胶囊。"""  # noqa: DOCSTRING_CJK
 
@@ -816,7 +848,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
     ``test_run_post_turn_signals_skips_stage1_when_powerful_memory_on``。
 
     Regression: 旧 cache 完全跳过 outbox，evidence-RFC 链路全空转。
-    """
+    """  # noqa: DOCSTRING_CJK
     from app import memory_server
 
     fake_time_manager = MagicMock()
