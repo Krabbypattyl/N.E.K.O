@@ -123,6 +123,77 @@ def test_theater_capsule_drops_ordinary_reply_preview_on_takeover(
 
 
 @pytest.mark.frontend
+def test_runtime_enters_theater_loading_before_start_model_response(
+    mock_page: Page,
+    running_server: str,
+):
+    """本体先展示准备态并接管请求，不能让选剧窗口陪模型响应一起等待。"""  # noqa: DOCSTRING_CJK
+
+    pending: dict[str, Route] = {}
+
+    def handler(route: Route) -> None:
+        if route.request.url.split("?", 1)[0].endswith("/api/theater-numeric/session/start"):
+            pending["start"] = route
+            return
+        route.continue_()
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
+    mock_page.evaluate(
+        """() => {
+            window.__startReady = [];
+            window.__startReadyChannel = new BroadcastChannel('neko_page_channel');
+            window.__startReadyChannel.onmessage = event => {
+                if (event.data.action === 'theater:start-ready') window.__startReady.push(event.data);
+            };
+            window.postMessage({
+                schema: 'neko.theater.interpage.v1',
+                action: 'theater:start-request',
+                launch_id: 'fast-start-launch',
+                story_id: 'capsule-browser-story',
+                story_title: '雨巷来信',
+                session_id: 'capsule-browser-session',
+                character_id: 'character:test',
+                replace_existing: false
+            }, window.location.origin);
+        }"""
+    )
+
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'loading'")
+    mock_page.wait_for_function("() => window.__startReady.length === 1")
+    state = mock_page.evaluate("window.nekoTheaterRuntime.getState()")
+    assert state["active"] is True
+    assert state["storyTitle"] == "雨巷来信"
+    assert state["history"][0]["id"] == "opening-loading-capsule-browser-session"
+    assert "start" in pending
+    assert mock_page.evaluate(
+        "window.sessionStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1')"
+    ) is None
+
+    payload = json.loads(pending["start"].request.post_data or "{}")
+    assert payload == {
+        "story_id": "capsule-browser-story",
+        "session_id": "capsule-browser-session",
+        "character_id": "character:test",
+        "replace_existing": False,
+    }
+    pending["start"].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(_snapshot(revision=0), ensure_ascii=False),
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
+        timeout=10000,
+    )
+    assert mock_page.evaluate(
+        "window.nekoTheaterRuntime.getState().history.some(entry => entry.id.startsWith('opening-loading-'))"
+    ) is False
+
+
+@pytest.mark.frontend
 def test_theater_capsule_reasserts_composer_visibility_on_active_render(
     mock_page: Page,
     running_server: str,

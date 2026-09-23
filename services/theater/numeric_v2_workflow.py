@@ -405,7 +405,8 @@ async def generate_validated_opening(
     opening = await actor.generate_opening(
         engine=engine,
         actor_budget_profile=actor_budget_profile,
-        allow_suggestion_fill=bool(opening_options.get("suggestion_fill")),
+        # 开场只等待一次 Actor 正文；推荐按钮补全留给后续回合，避免进入演绎前再串行等一次模型请求。
+        allow_suggestion_fill=False,
     )
     trace_event("opening.candidate", attempt=1, performance=opening)
     start_node = engine.nodes[str(engine.story["start_node_id"])]
@@ -452,7 +453,7 @@ async def generate_validated_opening(
             opening = await actor.generate_opening(
                 engine=engine,
                 actor_budget_profile=actor_budget_profile,
-                allow_suggestion_fill=bool(opening_options.get("suggestion_fill")),
+                allow_suggestion_fill=False,
                 retry_hint=(
                     "上一版正文或推荐没有遵守 opening_only_boundaries。"
                     "只保留开场已授权的可见事实，不得提前交付后续阶段内容，也不得提出离幕行动。"

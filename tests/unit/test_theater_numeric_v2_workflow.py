@@ -186,6 +186,34 @@ async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
     assert review_calls == 0
 
 
+@pytest.mark.asyncio
+async def test_opening_skips_suggestion_fill_even_when_module_is_enabled(monkeypatch) -> None:
+    """开场不因补推荐再串行等待一次模型调用；普通回合仍由模块开关控制。"""
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    captured: dict[str, Any] = {}
+
+    async def module_options():
+        return {"review": False, "suggestion_fill": True}
+
+    async def generate_opening(self, **kwargs):
+        captured["allow_suggestion_fill"] = kwargs["allow_suggestion_fill"]
+        return {"performance": "（抬眼）这里是什么地方？", "suggested_inputs": []}
+
+    monkeypatch.setattr(numeric_v2_workflow, "aload_theater_module_options", module_options)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_opening", generate_opening)
+
+    await generate_validated_opening(
+        engine=engine,
+        config_manager=object(),
+        session_id="opening_without_suggestion_fill",
+        catgirl_binding={"catgirl_id": "catgirl:test", "catgirl_name": "测试猫娘"},
+        actor_budget_profile="balanced",
+    )
+
+    assert captured["allow_suggestion_fill"] is False
+
+
 def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None:
     """Boundary rewrites receive the author bridge and next opening only as stopping boundaries."""
 

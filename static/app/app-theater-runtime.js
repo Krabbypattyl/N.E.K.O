@@ -3,6 +3,7 @@
     'use strict';
 
     var api = {
+        start: '/api/theater-numeric/session/start',
         session: '/api/theater-numeric/session',
         input: '/api/theater-numeric/session/input',
         end: '/api/theater-numeric/session/end',
@@ -618,26 +619,9 @@
             && state.storyId === storyId
             && state.sessionId === sessionId;
     }
-    async function performLaunch(message, launchToken) {
+    async function prepareLaunchSurface(message, launchToken) {
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
-        var snapshot;
-        try {
-            snapshot = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId));
-        } catch (_) {
-            // 候选快照读取失败时还未接管全局状态，保留当前健康演绎并只结束本次启动。
-            delete launchReplyTargets[message.launch_id];
-            return false;
-        }
-        // 多个选剧页可能交错启动；候选快照通过世代与 revision 校验后才有权接管当前运行态。
-        if (launchToken !== launchEpoch) {
-            delete launchReplyTargets[message.launch_id];
-            return false;
-        }
-        if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
-            delete launchReplyTargets[message.launch_id];
-            return false;
-        }
         // 普通主动搭话只在小剧场运行期间暂停，退出时恢复进入前的用户状态。
         lockProactiveChatForTheater();
         // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
@@ -661,24 +645,47 @@
             state.pendingTurn = null;
             state.currentBlock = null;
         }
-        // 新快照已获准接管，旧提交的失败提示不再属于当前展示。
         state.errorMessage = '';
         state.tokenUsage = message.token_usage || null;
-        // A validated replacement owns the selector handshake from this point.
         state.pendingEnd = null;
-        state.active = true; state.phase = 'loading'; state.storyId = nextStoryId; state.sessionId = nextSessionId; render();
-        applySnapshot(snapshot);
-        state.history = buildCommittedHistory(snapshot);
+        committedSnapshot = null;
+        state.sessionStatus = '';
+        state.scene = null;
+        state.revision = 0;
+        state.lifecycleRevision = 0;
+        state.suggestedInputs = [];
+        state.storyTitle = String(message.story_title || state.storyTitle || nextStoryId);
+        state.history = [historyEntry(
+            'opening-loading-' + nextSessionId,
+            'narration',
+            t('theater.loading', '正在准备舞台...'),
+            undefined,
+            'scene',
+            'streaming'
+        )];
         state.active = true;
-        rememberPointer();
+        state.phase = 'loading';
+        state.storyId = nextStoryId;
+        state.sessionId = nextSessionId;
+        render();
         var hostReady = await waitForHost();
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
         if (!hostReady) {
-            // React 胶囊尚未挂载时不能谎报启动成功，否则选剧页关闭后演绎会停在不可见状态。
             delete launchReplyTargets[message.launch_id];
             clear('launch-host-unavailable');
             return false;
         }
+        return true;
+    }
+    async function completeLaunch(message, launchToken, snapshot) {
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
+        state.tokenUsage = message.token_usage || null;
+        applySnapshot(snapshot);
+        state.history = buildCommittedHistory(snapshot);
+        state.active = true;
+        rememberPointer();
         claimAudioPlayback();
         var readyMessage = postMessage({ action: 'theater:launch-ready', launch_id: message.launch_id, story_id: state.storyId, session_id: state.sessionId });
         postDirect(launchReplyTargets[message.launch_id], readyMessage);
@@ -696,6 +703,64 @@
         }
         return true;
     }
+    async function performLaunch(message, launchToken) {
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        var snapshot;
+        try {
+            snapshot = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId));
+        } catch (_) {
+            // 候选快照读取失败时还未接管全局状态，保留当前健康演绎并只结束本次启动。
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
+        // 多个选剧页可能交错启动；候选快照通过世代与 revision 校验后才有权接管当前运行态。
+        if (launchToken !== launchEpoch) {
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
+        if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
+            delete launchReplyTargets[message.launch_id];
+            return false;
+        }
+        message.story_title = snapshot.story_title || message.story_title;
+        if (!await prepareLaunchSurface(message, launchToken)) return false;
+        return completeLaunch(message, launchToken, snapshot);
+    }
+    async function performStart(message, launchToken) {
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        if (!await prepareLaunchSurface(message, launchToken)) return false;
+        // 胶囊接管完成后即可关闭选剧页；模型生成继续由本体持有，不受选剧窗口生命周期影响。
+        var startPromise = requestJson(api.start, { method: 'POST', body: {
+            story_id: nextStoryId,
+            session_id: nextSessionId,
+            character_id: String(message.character_id),
+            replace_existing: message.replace_existing === true
+        }});
+        var startReadyMessage = postMessage({ action: 'theater:start-ready', launch_id: message.launch_id, story_id: nextStoryId, session_id: nextSessionId });
+        postDirect(launchReplyTargets[message.launch_id], startReadyMessage);
+        delete launchReplyTargets[message.launch_id];
+        var snapshot;
+        try {
+            snapshot = await startPromise;
+        } catch (_) {
+            snapshot = { ok: false };
+        }
+        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
+        if (!snapshot.ok || !snapshot.session) {
+            state.phase = 'ended';
+            state.sessionStatus = 'ended';
+            state.history = [];
+            state.errorMessage = t('theater.startFailed', '启动演出失败，请重试。');
+            render();
+            return false;
+        }
+        message.token_usage = snapshot.token_usage || null;
+        message.launch_action = snapshot.resumed ? 'continue' : (message.replace_existing === true ? 'restart' : 'start');
+        message.revision = Number(snapshot.session.revision);
+        return completeLaunch(message, launchToken, snapshot);
+    }
     function launch(message) {
         var launchId = String(message.launch_id || '');
         if (launchRequests[launchId]) return launchRequests[launchId];
@@ -705,6 +770,30 @@
         pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
         var request = performLaunch(message, launchToken).catch(function () {
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) clear('launch-request-failed');
+            return false;
+        }).finally(function () {
+            if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
+        });
+        launchRequests[launchId] = request;
+        launchRequestOrder.push(launchId);
+        if (launchRequestOrder.length > 64) delete launchRequests[launchRequestOrder.shift()];
+        return request;
+    }
+    function startLaunch(message) {
+        var launchId = String(message.launch_id || '');
+        if (launchRequests[launchId]) return launchRequests[launchId];
+        var launchToken = ++launchEpoch;
+        var nextStoryId = String(message.story_id);
+        var nextSessionId = String(message.session_id);
+        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
+        var request = performStart(message, launchToken).catch(function () {
+            if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
+                state.phase = 'ended';
+                state.sessionStatus = 'ended';
+                state.history = [];
+                state.errorMessage = t('theater.startFailed', '启动演出失败，请重试。');
+                render();
+            }
             return false;
         }).finally(function () {
             if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
@@ -943,6 +1032,8 @@
     }
     async function requestEnd() {
         if (!state.active || endConfirmationPending) return false;
+        // 开场尚未提交时没有可结束的 Session；失败态仍可通过下一分支返回剧本页。
+        if (state.phase === 'loading' && committedSnapshot === null) return false;
         if (state.sessionStatus === 'ended' || state.phase === 'ended') {
             return returnToSelector(state.pendingEnd, 'natural-ending-return');
         }
@@ -1080,10 +1171,16 @@
             pendingLaunch = null;
             if (!state.active) rememberPointer();
         }
-        if (message.action === 'theater:launch-ready' && message.launch_id) {
+        if ((message.action === 'theater:launch-ready' || message.action === 'theater:start-ready') && message.launch_id) {
             stopDesktopLaunchRelay(message.launch_id);
         }
-        else if (message.action === 'theater:launch-request' && message.launch_id && message.story_id && message.session_id && Number.isInteger(message.revision)) {
+        else if (
+            (message.action === 'theater:launch-request' || message.action === 'theater:start-request')
+            && message.launch_id
+            && message.story_id
+            && message.session_id
+            && (message.action === 'theater:start-request' || Number.isInteger(message.revision))
+        ) {
             var role = desktopRuntimeRole();
             if (role === 'pet') {
                 if (message.runtime_host_kind) return;
@@ -1097,7 +1194,8 @@
             if (role && role !== 'compact') return;
             if (message.runtime_host_kind && role && message.runtime_host_kind !== role) return;
             if (event.source && event.source !== window) launchReplyTargets[message.launch_id] = event.source;
-            launch(message);
+            if (message.action === 'theater:start-request') startLaunch(message);
+            else launch(message);
         }
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
         else if (

@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 小剧场可选模块开关新增文案，让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-18-theater-module-switches';
+    // 小剧场设置页新增文案，让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-22-theater-settings-page';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

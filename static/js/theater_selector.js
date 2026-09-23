@@ -497,6 +497,35 @@
             window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 40000);
         });
     }
+    async function startThroughRuntime(payload) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = 0;
+            function ready(event) {
+                var message = event && event.data;
+                if (!message || message.action !== 'theater:start-ready' || message.launch_id !== payload.launch_id) return;
+                settled = true;
+                cleanup();
+                resolve(true);
+            }
+            function cleanup() {
+                window.removeEventListener('message', ready);
+                if (state.channel) state.channel.removeEventListener('message', ready);
+                if (timeoutId) window.clearTimeout(timeoutId);
+            }
+            window.addEventListener('message', ready);
+            if (state.channel) state.channel.addEventListener('message', ready);
+            if (!postMessage(payload, true)) {
+                cleanup();
+                resolve(false);
+                return;
+            }
+            // 本体最多等待约 8 秒挂载 React 胶囊；留出跨窗口转发余量后再判定接管失败。
+            timeoutId = window.setTimeout(function () {
+                if (!settled) { cleanup(); resolve(false); }
+            }, 12000);
+        });
+    }
     async function launchSnapshot(snapshot, action, storyId) {
         var ready = await handoff(snapshot, action, storyId);
         if (ready) { window.close(); return; }
@@ -508,14 +537,33 @@
         var startCharacterEpoch = characterEpoch;
         var startCharacterId = state.characterId;
         var startStoryId = state.storyId;
+        var startSessionId = createId('numeric_capsule_session_');
         // Starting the visible story is an explicit selection; a late memory
         // list must not restore the earlier URL preference over this action.
         var startSelectionEpoch = ++storySelectionEpoch;
         setBusy(true); setFeedback('');
+        // 开场模型生成期间保持明确的进行中状态，避免页面继续显示“就绪”而像是无响应。
+        setStatus('theater.loading', '正在准备舞台...');
         try {
+            // 由本体打开的选剧窗口把启动请求交还给本体持有，使窗口可在模型生成期间关闭，
+            // 胶囊立即展示准备态；独立打开的 /theater 仍沿用当前页面直连接口的兼容路径。
+            if (window.opener && !window.opener.closed) {
+                var accepted = await startThroughRuntime({
+                    action: 'theater:start-request',
+                    launch_id: createId('theater_launch_'),
+                    story_id: startStoryId,
+                    story_title: String((selectedStory() || {}).title || startStoryId),
+                    session_id: startSessionId,
+                    character_id: startCharacterId,
+                    replace_existing: replaceExisting === true
+                });
+                if (!accepted) throw new Error('runtime_start_unavailable');
+                window.close();
+                return;
+            }
             var result = await requestJson(api.start, { method: 'POST', body: {
                 story_id: startStoryId,
-                session_id: createId('numeric_capsule_session_'),
+                session_id: startSessionId,
                 character_id: startCharacterId,
                 replace_existing: replaceExisting === true
             }});

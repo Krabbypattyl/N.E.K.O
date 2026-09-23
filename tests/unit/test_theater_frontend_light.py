@@ -138,14 +138,15 @@ def test_capsule_runtime_restores_the_pre_theater_chat_surface():
     render = runtime.index("function render()")
     render_capture = runtime.index("captureChatSurfaceMode(chatHost);", render)
     force_compact = runtime.index("chatSurfaceMode: 'compact'", render)
-    launch = runtime.index("async function performLaunch(message, launchToken)")
-    capture = runtime.index("captureChatSurfaceMode(chatHost);", launch)
+    prepare = runtime.index("async function prepareLaunchSurface(message, launchToken)")
+    capture = runtime.index("captureChatSurfaceMode(chatHost);", prepare)
     launch_render = runtime.index("render();", capture)
+    launch = runtime.index("async function performLaunch(message, launchToken)", launch_render)
     clear = runtime.index("function clear(reason)")
     restore = runtime.index("restoreChatSurfaceMode(chatHost);", clear)
     final_view = runtime.index("chatHost.setViewProps({", restore)
 
-    assert render < render_capture < force_compact < launch < capture < launch_render < clear < restore < final_view
+    assert render < render_capture < force_compact < prepare < capture < launch_render < launch < clear < restore < final_view
 
 
 def test_capsule_runtime_pointer_only_survives_current_app_lifecycle():
@@ -170,6 +171,8 @@ def test_desktop_pet_runtime_routes_theater_to_the_compact_chat_host():
     assert "runtime_host_kind: 'compact'" in runtime
     assert "if (role === 'pet')" in runtime
     assert "if (role && role !== 'compact') return;" in runtime
+    assert "message.action === 'theater:start-request'" in runtime
+    assert "message.action === 'theater:start-ready'" in runtime
 
 
 def test_selector_does_not_publish_stale_story_after_archive_load():
@@ -348,6 +351,35 @@ def test_selector_binds_session_start_to_displayed_character():
     assert "character_id: startCharacterId" in start
 
 
+def test_selector_shows_preparing_status_before_opening_request():
+    selector = _source("static/js/theater_selector.js")
+    start = selector[
+        selector.index("async function startSession("):
+        selector.index("async function continueSession(")
+    ]
+    assert "setStatus('theater.loading', '正在准备舞台...');" in start
+    assert start.index("setStatus('theater.loading'") < start.index("await requestJson(api.start")
+
+
+def test_selector_hands_owned_window_start_to_runtime_before_model_wait():
+    selector = _source("static/js/theater_selector.js")
+    start = selector[
+        selector.index("async function startSession("):
+        selector.index("async function continueSession(")
+    ]
+    bridge = selector[
+        selector.index("async function startThroughRuntime("):
+        selector.index("async function launchSnapshot(")
+    ]
+
+    assert "window.opener && !window.opener.closed" in start
+    assert "action: 'theater:start-request'" in start
+    assert "await startThroughRuntime" in start
+    assert start.index("await startThroughRuntime") < start.index("await requestJson(api.start")
+    assert "message.action !== 'theater:start-ready'" in bridge
+    assert "window.close();" in start
+
+
 def test_selector_reads_saved_performance_through_archive_detail_api():
     """选剧页只能通过身份校验后的详情接口展示完整演绎。"""  # noqa: DOCSTRING_CJK
 
@@ -425,13 +457,14 @@ def test_capsule_runtime_requires_chat_host_before_launch_ready():
     """React 胶囊未挂载时不能发送启动成功回执或保留不可见运行态。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    launch_start = runtime.index("async function performLaunch(message, launchToken)")
-    host_wait = runtime.index("var hostReady = await waitForHost();", launch_start)
+    prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken)")
+    host_wait = runtime.index("var hostReady = await waitForHost();", prepare_start)
     host_guard = runtime.index("if (!hostReady)", host_wait)
     clear_runtime = runtime.index("clear('launch-host-unavailable');", host_guard)
-    launch_ready = runtime.index("action: 'theater:launch-ready'", clear_runtime)
+    complete_start = runtime.index("async function completeLaunch(message, launchToken, snapshot)", clear_runtime)
+    launch_ready = runtime.index("action: 'theater:launch-ready'", complete_start)
 
-    assert host_wait < host_guard < clear_runtime < launch_ready
+    assert host_wait < host_guard < clear_runtime < complete_start < launch_ready
 
 
 def test_capsule_runtime_clears_pointer_restore_when_chat_host_is_unavailable():
@@ -467,11 +500,11 @@ def test_capsule_runtime_stops_old_audio_before_every_launch():
     """同一 Session 再次启动也必须先停止旧播放协程与语音。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    launch_start = runtime.index("async function performLaunch(message, launchToken)")
-    switch_guard = runtime.index("if (state.active)", launch_start)
+    prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken)")
+    switch_guard = runtime.index("if (state.active)", prepare_start)
     clear_audio = runtime.index("claimAudioPlayback();", switch_guard)
     loading = runtime.index(
-        "state.active = true; state.phase = 'loading'",
+        "state.phase = 'loading';",
         switch_guard,
     )
 
@@ -548,6 +581,23 @@ def test_theater_transport_owns_shared_request_and_message_protocol():
     assert "async function requestJson" not in runtime
 
 
+def test_theater_settings_reuses_shared_shell_transport_and_locale():
+    html = _source("templates/theater_settings.html")
+    selector = _source("templates/theater.html")
+    script = _source("static/js/theater_settings.js")
+
+    assert "/static/i18n-i18next.js" in html
+    assert "/static/css/window_controls.css" in html
+    assert "/static/theme-manager.js" in html
+    assert "/static/js/window_controls.js" in html
+    assert 'data-i18n="theater.settingsTitle"' in html
+    assert 'data-i18n="theater.settingsButton"' in selector
+    assert "nekoTheaterTransport" in script
+    assert "requestJson" in script
+    assert "fetch(" not in script
+    assert "localechange" in script
+
+
 def test_theater_locales_remain_valid_and_aligned():
     locales = ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW")
     theater_keys = []
@@ -571,6 +621,16 @@ def test_theater_locales_remain_valid_and_aligned():
             "performanceArchiveOpening",
             "performanceArchiveTurn",
             "performanceArchiveLoadFailed",
+            "settingsButton",
+            "settingsTitle",
+            "settingsBack",
+            "settingsIntroTitle",
+            "settingsIntroBody",
+            "settingsTip",
+            "settingsSaved",
+            "settingsSaveFailed",
+            "settingsLoadFailed",
+            "moduleOptDetail.evaluator",
         ):
             assert theater[key]
     assert all(keys == theater_keys[0] for keys in theater_keys[1:])

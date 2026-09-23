@@ -93,6 +93,80 @@ def _install_selector_routes(
 
 
 @pytest.mark.frontend
+def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
+    mock_page: Page,
+    running_server: str,
+):
+    """由本体打开的选剧页在胶囊接管后关闭，不等待开场模型请求返回。"""  # noqa: DOCSTRING_CJK
+
+    pending: dict[str, Route] = {}
+
+    def handler(route: Route) -> None:
+        request = route.request
+        path = request.url.split("?", 1)[0]
+        if path.endswith("/api/theater-numeric/stories"):
+            _fulfill(route, {"ok": True, "stories": [STORY], "character_id": CHARACTER_ID})
+        elif path.endswith("/api/theater-numeric/session/active"):
+            _fulfill(route, {"ok": False, "reason": "numeric_session_not_found"}, 404)
+        elif path.endswith("/api/theater-numeric/memory/archives"):
+            _fulfill(route, {"ok": True, "archives": []})
+        elif path.endswith("/api/theater-numeric/session/start"):
+            pending["start"] = route
+        elif path.endswith("/api/theater-numeric/session/speak-block"):
+            _fulfill(route, {"ok": False})
+        else:
+            route.fallback()
+
+    mock_page.context.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
+
+    with mock_page.expect_popup() as popup_info:
+        mock_page.evaluate("() => window.open('/theater', 'neko_theater_test')")
+    selector = popup_info.value
+    selector.wait_for_load_state("domcontentloaded")
+    expect(selector.locator("#theater-start-btn")).to_be_enabled()
+    with mock_page.expect_request("**/api/theater-numeric/session/start"):
+        selector.locator("#theater-start-btn").click()
+
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'loading'")
+    if not selector.is_closed():
+        selector.wait_for_event("close", timeout=3000)
+    assert "start" in pending
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().history[0].status") == "streaming"
+
+    pending["start"].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps({
+            "ok": True,
+            "story_title": STORY["title"],
+            "participants": {"player_name": "玩家", "catgirl_name": "小葵"},
+            "scene": {"id": "start", "terminal": False, "ending": None},
+            "suggested_inputs": ["看看桌上的信", "问她等了多久"],
+            "session": {
+                "session_id": mock_page.evaluate("window.nekoTheaterRuntime.getState().sessionId"),
+                "story_package_id": STORY["story_id"],
+                "revision": 0,
+                "lifecycle_revision": 0,
+                "status": "active",
+                "opening_performance": {
+                    "scene_narration": "雨落在花店檐角。",
+                    "performance": "你终于回来了。",
+                    "suggested_inputs": [],
+                },
+                "performance_history": [],
+            },
+        }, ensure_ascii=False),
+    )
+    mock_page.wait_for_function(
+        "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
+        timeout=10000,
+    )
+
+
+@pytest.mark.frontend
 def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: Page, running_server: str):
     _install_selector_routes(mock_page)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
