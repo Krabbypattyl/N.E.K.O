@@ -299,3 +299,20 @@ def _enable_theater_review_modules(monkeypatch):
         return {key: True for key in default_options() if key != 'review_delivery'}
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
+
+
+@pytest.fixture
+def arbiter_logs_reach_caplog(monkeypatch):
+    """Let ``caplog`` see the realtime response arbiter's records for one test.
+
+    The arbiter logs under ``N.E.K.O.Main``. Importing ``main_logic.core`` runs
+    ``setup_logging``, which stops ``N.E.K.O`` propagating to root, and caplog
+    only listens on root. Opt in with
+    ``pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")``.
+    """
+    from main_logic.omni_realtime_client import _response_arbiter
+
+    logger = _response_arbiter.logger
+    while logger is not None:
+        monkeypatch.setattr(logger, "propagate", True)
+        logger = logger.parent

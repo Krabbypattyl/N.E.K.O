@@ -29,8 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 小剧场设置页新增文案，让长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-22-theater-settings-page';
+    // 合并小剧场设置页、Plugin API 设置入口与主动搭话社区来源新增 key；递增版本让长期缓存
+    // 重新拉取完整语言包，避免界面把新 key 当字面量显示。
+    const LOCALE_VERSION = '2026-09-23-theater-upstream-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
