@@ -1724,6 +1724,8 @@ def _system_prompt(
         phase_structure_rule = (
             "开场：scene_narration 建立场景，performance 演猫娘入场。只自然交付 opening_deliverables，"
             "不要罗列后续内容建议，并留下玩家可回应的话头。"
+            "suggested_inputs 至少给出 1 条可直接发送的玩家输入，优先给出 2—3 条真实选择；"
+            "每条都写成“（玩家动作）玩家对白”，不得预写环境、他人或成功结果。"
         )
     elif phase == "transition_compact":
         phase_structure_rule = (
@@ -2813,12 +2815,13 @@ class NumericV2Actor:
                 max_output_tokens=NUMERIC_V2_ACTOR_SUGGESTION_FILL_MAX_OUTPUT_TOKENS,
             )
         except NumericV2ActorError as exc:
-            # 补推荐失败不能回滚正文；已有合法推荐时继续保留，避免一次辅助调用抖动清空按钮。
+            # 补推荐失败不能回滚正文；已有一条合法推荐也继续保留，
+            # 避免一次辅助调用抖动清空按钮。
             logger.warning(
                 "Numeric v2 Actor suggestion fill failed: reason=%s",
                 str(exc),
             )
-            return suggestions if len(suggestions) in {2, 3} else []
+            return suggestions
         finally:
             self.suggestion_fill_provider_call_count += max(
                 0,
@@ -2830,9 +2833,9 @@ class NumericV2Actor:
             if str(item).strip()
             and " ".join(str(item).split()) != normalized_player_input
         ]
-        if len(filled_suggestions) in {2, 3}:
+        if filled_suggestions:
             return filled_suggestions
-        return suggestions if len(suggestions) in {2, 3} else []
+        return suggestions
 
     async def generate_opening(
         self,

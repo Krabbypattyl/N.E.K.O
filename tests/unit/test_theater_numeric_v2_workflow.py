@@ -188,7 +188,7 @@ async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_opening_skips_suggestion_fill_even_when_module_is_enabled(monkeypatch) -> None:
-    """开场不因补推荐再串行等待一次模型调用；普通回合仍由模块开关控制。"""
+    """开场不因补推荐再串行等待一次模型调用，且保留单条合法选项。"""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     captured: dict[str, Any] = {}
@@ -198,12 +198,15 @@ async def test_opening_skips_suggestion_fill_even_when_module_is_enabled(monkeyp
 
     async def generate_opening(self, **kwargs):
         captured["allow_suggestion_fill"] = kwargs["allow_suggestion_fill"]
-        return {"performance": "（抬眼）这里是什么地方？", "suggested_inputs": []}
+        return {
+            "performance": "（抬眼）这里是什么地方？",
+            "suggested_inputs": ["（看向她）你能先说说现在的情况吗？"],
+        }
 
     monkeypatch.setattr(numeric_v2_workflow, "aload_theater_module_options", module_options)
     monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_opening", generate_opening)
 
-    await generate_validated_opening(
+    opening = await generate_validated_opening(
         engine=engine,
         config_manager=object(),
         session_id="opening_without_suggestion_fill",
@@ -212,6 +215,7 @@ async def test_opening_skips_suggestion_fill_even_when_module_is_enabled(monkeyp
     )
 
     assert captured["allow_suggestion_fill"] is False
+    assert opening["suggested_inputs"] == ["（看向她）你能先说说现在的情况吗？"]
 
 
 def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None:

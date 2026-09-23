@@ -261,13 +261,14 @@ def _parse_actor_suggestions(
             continue
         parsed.append(text)
         parse_counts["accepted_items"] += 1
-    # 少于两条时由 Actor 的一次轻量补推荐决定是否重试；这里保留合法正文。
+    # 少于两条时仍保留已通过格式和主体校验的推荐；是否补齐由 Actor 层决定。
+    # 否则开场关闭补推荐时，模型返回的唯一合法选项会被误清空。
     if len(parsed) not in {2, 3}:
         parse_counts["insufficient_valid_items"] = 1
     if diagnostics is not None:
         diagnostics.clear()
         diagnostics.update(parse_counts)
-    return parsed if len(parsed) in {2, 3} else []
+    return parsed
 
 
 def _parse_transition_offered(value: Any) -> bool:

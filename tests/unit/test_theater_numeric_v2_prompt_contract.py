@@ -2428,6 +2428,60 @@ def test_numeric_v2_actor_suggestion_parser_reports_anonymous_rejection_reasons(
     assert diagnostics["insufficient_valid_items"] == 0
 
 
+def test_numeric_v2_actor_suggestion_parser_keeps_one_valid_item():
+    """推荐不足两条时也展示已验证的选项，不让开场因数量合同变成空白。"""  # noqa: DOCSTRING_CJK
+
+    diagnostics = {}
+    suggestions = _parse_actor_suggestions(
+        ["（看向她）你能先说说现在的情况吗？"],
+        diagnostics=diagnostics,
+    )
+
+    assert suggestions == ["（看向她）你能先说说现在的情况吗？"]
+    assert diagnostics["accepted_items"] == 1
+    assert diagnostics["insufficient_valid_items"] == 1
+
+
+def test_numeric_v2_opening_prompt_requires_at_least_one_suggestion():
+    """开场同一次 Actor 调用必须尝试产出至少一条可点击输入。"""  # noqa: DOCSTRING_CJK
+
+    system = numeric_v2_actor._system_prompt(
+        catgirl_name="测试猫娘",
+        player_address="你",
+        phase="opening",
+    )
+
+    assert "suggested_inputs 至少给出 1 条" in system
+    assert "优先给出 2—3 条" in system
+    assert "每条都写成“（玩家动作）玩家对白”" in system
+
+
+def test_numeric_v2_actor_keeps_one_suggestion_when_fill_fails(monkeypatch):
+    """补推荐失败时保留原本合法的单条选项。"""  # noqa: DOCSTRING_CJK
+
+    actor = NumericV2Actor(object())
+
+    async def fake_invoke(_messages, **_kwargs):
+        raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
+
+    monkeypatch.setattr(actor, "_invoke", fake_invoke)
+
+    import asyncio
+
+    suggestions = asyncio.run(actor._ensure_suggestions(
+        performance={
+            "performance": "（抬眼）我听到了。",
+            "suggested_inputs": ["（看向她）请继续说吧。"],
+        },
+        player_input="",
+        catgirl_name="测试猫娘",
+        max_input_tokens=900,
+    ))
+
+    assert suggestions == ["（看向她）请继续说吧。"]
+    assert actor.suggestion_fill_attempt_count == 1
+
+
 def test_numeric_v2_suggestion_fill_boundaries_come_from_authored_scene():
     """补推荐必须取得事实边界与禁演边界，不能只看到已经生成的正文。"""  # noqa: DOCSTRING_CJK
 
