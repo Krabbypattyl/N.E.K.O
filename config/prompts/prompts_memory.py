@@ -1128,6 +1128,17 @@ THEATER_MEMORY_COMPLETED = {
     "pt": "A encenação foi concluída e alcançou o final “{ending}”. {summary}",
 }
 
+THEATER_MEMORY_COMPLETED_UNTITLED = {
+    "zh": "这次演绎已经完成。{summary}",
+    "zh-TW": "這次演繹已經完成。{summary}",
+    "en": "This performance is complete. {summary}",
+    "ja": "この演目は完結しました。{summary}",
+    "ko": "이 연기는 완료되었습니다. {summary}",
+    "ru": "Постановка завершена. {summary}",
+    "es": "La representación terminó. {summary}",
+    "pt": "A encenação foi concluída. {summary}",
+}
+
 THEATER_MEMORY_RUN = {
     "zh": "这是双方第 {run_index} 次演绎这个剧本。",
     "zh-TW": "這是雙方第 {run_index} 次演繹這個劇本。",
@@ -1207,8 +1218,9 @@ def get_theater_memory_context(
             story_context = _loc(THEATER_MEMORY_STORY_COUNT, normalized).format(
                 count=story_run_count,
             )
-    if status == "completed" and ending:
-        state = _loc(THEATER_MEMORY_COMPLETED, normalized).format(
+    if status == "completed":
+        template = THEATER_MEMORY_COMPLETED if ending else THEATER_MEMORY_COMPLETED_UNTITLED
+        state = _loc(template, normalized).format(
             ending=ending,
             summary=summary,
         ).strip()

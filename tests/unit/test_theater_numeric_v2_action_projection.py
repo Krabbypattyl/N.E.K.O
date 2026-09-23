@@ -1,8 +1,7 @@
-"""玩家动作结果投影只保留可证明的完成与未来边界。"""
+"""玩家动作结果投影只保留可证明的完成与未来边界。"""  # noqa: DOCSTRING_CJK
 
 import pytest
 
-from main_routers.numeric_theater_router import _public_performance
 from services.theater.numeric_v2_action_projection import (
     PLAYER_ACTION_PROJECTION_SCHEMA,
     normalize_player_action_projection,

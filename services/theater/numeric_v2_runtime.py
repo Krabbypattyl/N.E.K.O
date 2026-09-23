@@ -125,7 +125,7 @@ def _story_scalar(value: Any, field: str) -> bool | int | str:
 
 
 def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
-    """提取已由编译器校验的事实合同；缺失合同表示不开放模型事实写入。"""
+    """提取已由编译器校验的事实合同；缺失合同表示不开放模型事实写入。"""  # noqa: DOCSTRING_CJK
 
     if value is None:
         return {}
@@ -165,7 +165,7 @@ def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
 
 
 def _story_fact_value_matches(value: bool | int | str, value_type: str) -> bool:
-    """按合同检查事实值类型，整数不接受布尔值的 Python 子类关系。"""
+    """按合同检查事实值类型，整数不接受布尔值的 Python 子类关系。"""  # noqa: DOCSTRING_CJK
 
     if value_type == "bool":
         return type(value) is bool
@@ -182,7 +182,7 @@ def validate_fact_candidates(
     fact_contract: Mapping[str, Any] | None,
     evidence_sources: Mapping[str, str],
 ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """只把带完整四元组和逐字证据的确定候选转换成事实操作与审计记录。"""
+    """只把带完整四元组和逐字证据的确定候选转换成事实操作与审计记录。"""  # noqa: DOCSTRING_CJK
 
     contract = _story_fact_contract(fact_contract)
     if not contract:
@@ -548,7 +548,7 @@ def _fact_projection(
 
 
 def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
-    """记录可由 Runtime 证明的场景访问顺序，不从演绎文案推断自然日期。"""
+    """记录可由 Runtime 证明的场景访问顺序，不从演绎文案推断自然日期。"""  # noqa: DOCSTRING_CJK
 
     revision = int(event.get("result_revision", 0) or 0)
     from_node_id = str(event.get("from_node_id") or "")
@@ -879,7 +879,7 @@ class NumericV2Engine:
         client_turn_id: str,
         ops: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     ) -> dict[str, Any]:
-        """按当前剧本的事实合同应用候选；未声明白名单时所有模型候选都会被拒绝。"""
+        """按当前剧本的事实合同应用候选；未声明白名单时所有模型候选都会被拒绝。"""  # noqa: DOCSTRING_CJK
 
         return apply_fact_ops(
             current,
@@ -898,7 +898,7 @@ class NumericV2Engine:
         candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
         evidence_sources: Mapping[str, str],
     ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
-        """先验证候选四元组和逐字证据，再一次性写入并返回审计记录。"""
+        """先验证候选四元组和逐字证据，再一次性写入并返回审计记录。"""  # noqa: DOCSTRING_CJK
 
         operations, audit = validate_fact_candidates(
             candidates,
@@ -1040,10 +1040,7 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("story_package_id_mismatch")
         if session.story_package_revision != str(self.story["meta"]["revision"]):
             raise NumericV2RuntimeError("story_package_revision_mismatch")
-        if session.story_package_hash not in {
-            self.compiled.package_hash,
-            *self.compiled.compatible_package_hashes,
-        }:
+        if session.story_package_hash != self.compiled.package_hash:
             raise NumericV2RuntimeError("story_package_hash_mismatch")
         if session.current_node_id not in self.nodes:
             raise NumericV2RuntimeError("session_current_node_missing")

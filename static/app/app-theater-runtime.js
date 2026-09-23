@@ -28,6 +28,7 @@
         errorMessage: '', tokenUsage: null
     };
     var launchRequests = Object.create(null);
+    var activeSpeechRequests = Object.create(null);
     var launchRequestOrder = [];
     var launchReplyTargets = Object.create(null);
     var desktopLaunchRelayTimers = Object.create(null);
@@ -552,13 +553,15 @@
             });
             var dialogueBlockIndexes = dialogueItems.map(function (item) { return item.blockIndex; });
             var dialogueText = dialogueItems.map(function (item) { return item.block.text; }).join(' ');
+            var playbackRequestId = 'theater_speech_' + state.sessionId + '_' + revision + '_' + state.lifecycleRevision + '_' + blockIndex;
+            activeSpeechRequests[playbackRequestId] = token;
             var result;
             try {
                 result = await requestJson(api.speakBlock, { method: 'POST', body: {
                     story_id: state.storyId, session_id: state.sessionId, revision: revision, block_index: blockIndex,
                     lifecycle_revision: state.lifecycleRevision,
                     dialogue_block_indexes: dialogueBlockIndexes,
-                    playback_request_id: 'theater_speech_' + state.sessionId + '_' + revision + '_' + state.lifecycleRevision + '_' + blockIndex
+                    playback_request_id: playbackRequestId
                 }});
             } catch (_) {
                 // TTS 是表现层旁路；请求失败时按阅读时长继续，不能中断正文播放或锁住输入。
@@ -566,6 +569,7 @@
             }
             if (result.ok && result.speech_id && (result.audio_queued || result.audio_sent)) alive = await waitForSpeech(result.speech_id, speechTimeout(dialogueText), token);
             else alive = await wait(readingDelay(dialogueText), token);
+            delete activeSpeechRequests[playbackRequestId];
         }
         return alive && token === state.queueToken;
     }
@@ -1218,6 +1222,9 @@
 
     var runtime = {
         isActive: function () { return state.active; },
+        allowsSpeechCorrelation: function (requestId) {
+            return state.active && activeSpeechRequests[requestId] === state.queueToken;
+        },
         handleComposerSubmit: function (text) {
             if (!state.active) return false;
             submitFromHost(text);

@@ -58,6 +58,12 @@ def _atomic_write_manifest(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path = Path(temporary.name)
         os.replace(temporary_path, path)
         temporary_path = None
+        if os.name != "nt":
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
@@ -232,10 +238,9 @@ def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, 
     except BaseException:
         try:
             _restore_delete_transaction(transaction_dir, manifest)
-        except OSError as rollback_exc:
+        except Exception as rollback_exc:
             raise NumericV2StoreError("numeric_story_delete_rollback_failed") from rollback_exc
-        finally:
-            shutil.rmtree(transaction_dir, ignore_errors=True)
+        shutil.rmtree(transaction_dir, ignore_errors=True)
         raise
     shutil.rmtree(transaction_dir, ignore_errors=True)
     return len(deleted)

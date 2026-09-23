@@ -3,7 +3,6 @@
 这些改动只约束等待与第二次判定看到的材料，不改变玩家授权、去向公开、数值结算或原子提交。
 """
 
-import pathlib
 from dataclasses import replace
 import asyncio
 import json
@@ -667,7 +666,7 @@ def test_review_budget_is_a_wait_limit_only():
     assert evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS > evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
 
 def test_delivery_check_finds_authored_props_only_from_contract():
-    """交付校验只核对本轮必须交付的道具；保留项无需逐幕复述。"""
+    """交付校验只核对本轮必须交付的道具；保留项无需逐幕复述。"""  # noqa: DOCSTRING_CJK
 
     from types import SimpleNamespace
 
@@ -935,7 +934,7 @@ async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path
 
 @pytest.mark.asyncio
 async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeypatch):
-    """结构重复改写后仍存在时，正式转场必须回滚而不是走末稿兜底提交。"""
+    """结构重复改写后仍存在时，正式转场必须回滚而不是走末稿兜底提交。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case

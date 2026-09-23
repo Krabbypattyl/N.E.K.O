@@ -75,7 +75,7 @@ async def test_invitation_invalidation_cannot_be_injected_by_actor(tmp_path):
 
 @pytest.mark.asyncio
 async def test_valid_represented_invitation_refreshes_origin_after_restore_and_fork(tmp_path):
-    """本轮重新公开有效邀请要刷新回复对象，单纯保留旧状态则不能刷新。"""
+    """本轮重新公开有效邀请要刷新回复对象，单纯保留旧状态则不能刷新。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_context import pending_transition_record
 
@@ -381,7 +381,7 @@ async def test_invalid_fallback_offer_without_prior_invitation_is_not_latched(tm
 
 @pytest.mark.asyncio
 async def test_current_scene_completion_action_is_not_rewritten_as_wrong_exit(tmp_path, monkeypatch):
-    """玩家已授权且能写入完成事实的幕内移动，不应因模型误报出口而进入改写和争议复查。"""
+    """玩家已授权且能写入完成事实的幕内移动，不应因模型误报出口而进入改写和争议复查。"""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 

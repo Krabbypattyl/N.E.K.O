@@ -1083,16 +1083,20 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                     if theater_episode_batch:
                         # 剧场完整正文由 Theater 冷档案承接；recent 只按 Session
                         # 更新一个摘要胶囊，暂停后继续完成不会再次追加整段原文。
+                        previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name
+                        )
                         stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
                             input_history[0],
                             lanlan_name,
                         )
                         input_history = [stored_episode]
+                        updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name
+                        )
                         theater_index_events = _theater_index_events(
                             lanlan_name,
-                            await runtime.recent_history_manager.aget_recent_history(
-                                lanlan_name
-                            ),
+                            updated_theater_history,
                         )
                     elif stable_event_id:
                         for message in input_history:
@@ -1114,10 +1118,21 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                     if theater_episode_batch:
                         # 以 recent 为唯一热记忆基线重建剧场时间索引：
                         # 这会同时淘汰超限周目和升级前遗留的完整正文行。
-                        await runtime.time_manager.areconcile_theater_conversations(
-                            theater_index_events,
-                            lanlan_name,
-                        )
+                        try:
+                            await runtime.time_manager.areconcile_theater_conversations(
+                                theater_index_events,
+                                lanlan_name,
+                            )
+                        except Exception:
+                            try:
+                                await runtime.recent_history_manager.restore_theater_cache_snapshot(
+                                    lanlan_name,
+                                    previous_theater_history,
+                                    updated_theater_history,
+                                )
+                            except Exception:
+                                logger.exception("[MemoryServer] 剧场时间索引失败后 recent 回滚失败")
+                            raise
                     else:
                         # 稳定 event_id 是本批公开记忆的提交标记；写成后重试直接短路。
                         await runtime.time_manager.astore_conversation(
@@ -1175,17 +1190,33 @@ async def forget_theater_memory(
         raise HTTPException(status_code=422, detail="story_id_required")
     try:
         async with runtime._get_settle_lock(lanlan_name):
-            removed_recent = await runtime.recent_history_manager.forget_theater_story(
-                story_id,
+            current = await runtime.recent_history_manager.aget_recent_history(
                 lanlan_name,
             )
-            remaining = await runtime.recent_history_manager.aget_recent_history(
-                lanlan_name,
-            )
+            remaining = [
+                message for message in current
+                if not (
+                    is_theater_memory_message(message)
+                    and str(message_metadata(message).get("story_id") or "") == story_id
+                )
+            ]
+            # 先移除可召回索引，再删除 recent；索引失败时原始摘要仍在。
             reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
                 _theater_index_events(lanlan_name, remaining),
                 lanlan_name,
             )
+            try:
+                removed_recent = await runtime.recent_history_manager.forget_theater_story(
+                    story_id,
+                    lanlan_name,
+                )
+            except Exception:
+                # recent 删除失败时恢复仍存在的原始摘要索引。
+                await runtime.time_manager.areconcile_theater_conversations(
+                    _theater_index_events(lanlan_name, current),
+                    lanlan_name,
+                )
+                raise
         return {
             "ok": True,
             "removed_recent": removed_recent,

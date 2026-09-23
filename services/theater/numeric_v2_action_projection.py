@@ -85,7 +85,7 @@ def _action_term(text: str) -> str:
 
 
 def _clauses(text: str) -> list[str]:
-    """按玩家输入里的自然分句保留动作证据，不把后续约定当成前句否定。"""
+    """按玩家输入里的自然分句保留动作证据，不把后续约定当成前句否定。"""  # noqa: DOCSTRING_CJK
 
     parenthetical = re.findall(r"（[^）]*）|\([^)]*\)", text)
     remainder = re.sub(r"（[^）]*）|\([^)]*\)", "", text)
@@ -154,7 +154,7 @@ def project_player_action_result(
 
     `player_input` 只提供证据原文；只有满足保守的直接执行结构时才进入
     `confirmed_actions`。Runtime 的转场和事实操作属于独立的确定性来源。
-    """
+    """  # noqa: DOCSTRING_CJK
 
     text = _evidence(message)
     confirmed: list[dict[str, Any]] = []
@@ -219,7 +219,7 @@ def project_player_action_result(
 
 
 def normalize_player_action_projection(value: Any) -> dict[str, Any]:
-    """校验并复制投影，供 Ledger/Prompt 读取，拒绝外部注入的自由字段。"""
+    """校验并复制投影，供 Ledger/Prompt 读取，拒绝外部注入的自由字段。"""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, Mapping) or value.get("schema") != PLAYER_ACTION_PROJECTION_SCHEMA:
         return project_player_action_result("")

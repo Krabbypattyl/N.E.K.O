@@ -564,7 +564,6 @@ def transition_bridge_leak_markers(
             result.append(item)
         return tuple(result)
 
-    target_text = normalize(target)
     bridge_text = normalize(bridge)
     authored_text = normalize(str(authored_bridge or ""))
     markers: list[str] = []

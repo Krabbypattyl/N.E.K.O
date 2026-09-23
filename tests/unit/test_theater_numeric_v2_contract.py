@@ -176,7 +176,7 @@ def test_numeric_v2_compiles_canonical_package():
 
 
 def test_numeric_v2_fact_contract_accepts_only_explicit_typed_keys():
-    """事实白名单是剧本合同的一部分，值类型和公开范围必须同时声明。"""
+    """事实白名单是剧本合同的一部分，值类型和公开范围必须同时声明。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {

@@ -136,12 +136,6 @@ def test_numeric_v2_prompts_do_not_embed_story_specific_playbooks():
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
-    outcome = engine.resolve_turn(
-        session,
-        TurnRequestV2("domain_neutral_prompt", 0, "我开始处理眼前的事情。"),
-        (),
-        scene_complete=False,
-    )
     texts = [
         numeric_v2_actor._system_prompt(
             catgirl_name="测试猫娘",

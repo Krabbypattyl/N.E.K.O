@@ -107,7 +107,6 @@ class CompiledNumericV2Package:
     json_bytes: bytes
     package_hash: str
     warnings: tuple[NumericV2Warning, ...]
-    compatible_package_hashes: tuple[str, ...] = ()
 
     @property
     def story_id(self) -> str:
@@ -323,8 +322,6 @@ class NumericV2Compiler:
             json_bytes=canonical_bytes,
             package_hash=f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}",
             warnings=tuple(warnings),
-            # v2.2 不再接受旧包哈希；升级后的包必须使用新的规范字节重新生成哈希。
-            compatible_package_hashes=(),
         )
 
     def compile_v2_1(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
@@ -498,7 +495,7 @@ class NumericV2Compiler:
 
     @staticmethod
     def _validate_fact_contract(c: _Collector, value: Any) -> None:
-        """校验作者显式声明的事实白名单；没有声明时运行端不会接受模型事实候选。"""
+        """校验作者显式声明的事实白名单；没有声明时运行端不会接受模型事实候选。"""  # noqa: DOCSTRING_CJK
 
         contract = c.obj(value, "fact_contract")
         if set(contract).difference({"facts"}):
@@ -570,14 +567,9 @@ class NumericV2Compiler:
     ) -> None:
         beat = c.obj(value, path)
         validate_definitions(c, beat, path)
-        summary = c.require_text(beat.get("summary"), f"{path}.summary")
-        # opening_scene 是显式可见开场；缺失时仅使用当前摘要首句作为作者输入。
-        opening_path = f"{path}.opening_scene" if "opening_scene" in beat else f"{path}.summary"
-        opening_scene = (
-            c.require_text(beat.get("opening_scene"), opening_path)
-            if "opening_scene" in beat
-            else summary
-        )
+        c.require_text(beat.get("summary"), f"{path}.summary")
+        if "opening_scene" in beat:
+            c.require_text(beat.get("opening_scene"), f"{path}.opening_scene")
         if "relationship_ceiling" in beat and beat.get("relationship_ceiling") not in _RELATIONSHIP_CEILINGS:
             c.add(
                 "invalid_relationship_ceiling",

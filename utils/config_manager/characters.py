@@ -232,19 +232,20 @@ class CharactersMixin:
 
             assert_cloudsave_writable(self, operation="save", target="characters.json")
 
-        # 确保config目录存在
-        self.ensure_config_directory()
+        with self._characters_reload_lock:
+            # 确保config目录存在
+            self.ensure_config_directory()
 
-        atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
-        try:
-            new_mtime = os.path.getmtime(character_json_path)
-        except OSError:
-            new_mtime = None
-        with self._characters_cache_lock:
-            self._characters_cache = deepcopy(data)
-            self._characters_cache_mtime = new_mtime
-            self._characters_cache_path = character_json_path
-            self._characters_dirty = False
+            atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
+            try:
+                new_mtime = os.path.getmtime(character_json_path)
+            except OSError:
+                new_mtime = None
+            with self._characters_cache_lock:
+                self._characters_cache = deepcopy(data)
+                self._characters_cache_mtime = new_mtime
+                self._characters_cache_path = character_json_path
+                self._characters_dirty = False
 
     async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """Async wrapper: the sync version must not run directly on the event loop (atomic_write_json blocks)."""

@@ -78,7 +78,7 @@ def test_fence_does_not_authorize_unverified_destination(engine):
 
 
 def test_stale_invitation_requires_reply_target_binding(engine):
-    """邀请隔过一轮后，含糊同意必须明确指向原邀请，不能抢走最近互动的回复。"""
+    """邀请隔过一轮后，含糊同意必须明确指向原邀请，不能抢走最近互动的回复。"""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="reply_target",
@@ -131,7 +131,7 @@ def test_stale_invitation_requires_reply_target_binding(engine):
 
 
 def test_represented_invitation_refreshes_reply_binding(engine):
-    """正文在上一轮重新公开有效邀请时，玩家可用自然的“带路吧”直接接受。"""
+    """正文在上一轮重新公开有效邀请时，玩家可用自然的“带路吧”直接接受。"""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="refreshed_reply_target",
@@ -173,7 +173,7 @@ def test_represented_invitation_refreshes_reply_binding(engine):
 
 
 def test_latest_visible_acceptance_button_can_bind_repeated_invitation(engine):
-    """旧邀请被最新正文重述后，用户点击最新接受按钮仍应正常换幕。"""
+    """旧邀请被最新正文重述后，用户点击最新接受按钮仍应正常换幕。"""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="repeated_offer_button",
@@ -218,7 +218,7 @@ def test_latest_visible_acceptance_button_can_bind_repeated_invitation(engine):
 
 
 def test_latest_button_does_not_bind_unrelated_stale_invitation(engine):
-    """最新互动没有重述旧邀请时，其按钮不能误接受旧邀请。"""
+    """最新互动没有重述旧邀请时，其按钮不能误接受旧邀请。"""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="unrelated_latest_button",
@@ -262,7 +262,7 @@ def test_latest_button_does_not_bind_unrelated_stale_invitation(engine):
 
 
 def test_evaluator_rejects_target_scene_fact_before_entering_target(engine):
-    """出口预览不能让判定器提前完成尚未进入的目标幕。"""
+    """出口预览不能让判定器提前完成尚未进入的目标幕。"""  # noqa: DOCSTRING_CJK
 
     engine.fact_contract["scene:next:life_established"] = {
         "value_type": "bool",
@@ -298,7 +298,7 @@ def test_evaluator_rejects_target_scene_fact_before_entering_target(engine):
 
 
 def test_evaluator_accepts_only_evidenced_fact_candidates():
-    """判定器只把剧本合同内、能从玩家原话逐字核对的候选交给 Runtime。"""
+    """判定器只把剧本合同内、能从玩家原话逐字核对的候选交给 Runtime。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -336,7 +336,7 @@ def test_evaluator_accepts_only_evidenced_fact_candidates():
 
 
 def test_evaluator_drops_fact_candidates_without_contract_or_verifiable_quote(engine):
-    """脏事实候选不能阻断合法回合，也不能绕过剧本白名单。"""
+    """脏事实候选不能阻断合法回合，也不能绕过剧本白名单。"""  # noqa: DOCSTRING_CJK
 
     payload = json.loads(RESPONSE)
     payload["fact_candidates"] = [{

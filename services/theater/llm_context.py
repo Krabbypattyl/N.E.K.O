@@ -10,8 +10,6 @@ from typing import Any
 from utils.tokenize import truncate_to_tokens
 
 
-# 当前猫娘只读取短人格摘要；本地字符上限避免首次 tokenizer 下载阻塞开场。
-THEATER_PERSONA_MAX_CHARS = 512
 _THEATER_EXCLUDED_PERSONA_FIELDS = frozenset(
     {
         "外貌特征",
@@ -56,8 +54,6 @@ def truncate_prompt_value(value: Any, *, max_tokens: int, max_items: int = 8) ->
 def _load_character_profile(
     config_manager: Any | None,
     lanlan_name: str,
-    *,
-    max_chars: int | None = None,
 ) -> str:
     """只读取服务端当前猫娘的短人格摘要。"""  # noqa: DOCSTRING_CJK
     root = getattr(config_manager, "app_docs_dir", None) if config_manager is not None else None
@@ -96,8 +92,6 @@ def _load_character_profile(
             if text and not _theater_persona_field_excluded(text):
                 lines.append(text)
     profile = "\n".join(dict.fromkeys(lines))
-    if max_chars is not None:
-        return profile[: max(0, int(max_chars))]
     # Actor 负责按完整事实和完整回合装箱；这里不再从人格事实中间截断文本。
     return profile
 

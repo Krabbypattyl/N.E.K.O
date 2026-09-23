@@ -70,6 +70,7 @@ async def speak_committed_line(
             text,
             metadata=metadata,
             request_id=request_id,
+            speech_correlation_id=request_id,
             mirror_text=False,
             emit_turn_end_after=False,
             interrupt_audio=interrupt_audio,

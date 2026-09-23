@@ -138,7 +138,7 @@ def review_candidates(node: Mapping[str, Any], session: Any) -> list[dict[str, A
 
 
 def _actor_receive_requires_handoff(condition: str) -> bool:
-    """只对明确写成猫娘接收/持有的条件增加交接方向门槛。"""
+    """只对明确写成猫娘接收/持有的条件增加交接方向门槛。"""  # noqa: DOCSTRING_CJK
 
     return any(marker in str(condition or "") for marker in _ACTOR_RECEIVE_MARKERS)
 

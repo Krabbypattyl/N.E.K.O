@@ -652,7 +652,7 @@ def _terminal_new_question_markers(
     outcome: TurnOutcomeV2,
     performance: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    """结局交付不得留下需要玩家回答的新问题；返回稳定诊断标记而不记录正文。"""
+    """结局交付不得留下需要玩家回答的新问题；返回稳定诊断标记而不记录正文。"""  # noqa: DOCSTRING_CJK
 
     target_id = str(outcome.ledger_event.get("to_node_id") or "")
     target = engine.nodes.get(target_id)
@@ -793,19 +793,6 @@ def _evaluation_without_evaluator(current: Any, turn: Any) -> NumericV2Evaluatio
         transition_intent="accept" if accepted else "unclear",
         interaction_intent="scene_action" if accepted else "mixed_or_unclear",
     )
-
-
-async def _dispute_review_enabled() -> bool:
-    """争议复查开关：默认关闭；用户显式开启才追加这次独立思考复查。"""  # noqa: DOCSTRING_CJK
-
-    try:
-        from utils.preferences import aload_theater_dispute_review
-
-        value = await aload_theater_dispute_review()
-    except Exception as exc:
-        logger.warning("Numeric v2 dispute-review switch unavailable; keeping it disabled: %s", type(exc).__name__)
-        return False
-    return False if value is None else bool(value)
 
 
 def _increment_actor_attempts(diagnostics: dict[str, Any] | None) -> None:

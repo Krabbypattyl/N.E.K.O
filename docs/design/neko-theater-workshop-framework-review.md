@@ -4,7 +4,7 @@
 
 状态：**WS-01—02 已处理，匹配回归通过**；关联 IB-01 也已同步修复。本文是工坊历史结构审查，当前模块职责和正式调用边界以[架构开发文档第2.3节](./neko-theater-architecture.md#23-剧本工坊-sdk-模块-theater_workshop)及[SDK迁移说明](./neko-theater-workshop-sdk-migration.md)为准。实际优化与验收边界统一见[问题与处理 2.125](./neko-theater-issues-and-solutions.md)。审查基线为 N.E.K.O `theater_chat_window` / `201e4fc4a`；下文调用链、行号、隔离探针和建议保留优化前证据，“本轮”及原检查数量均指审查时点，不是现行待办。未修改正式作者项目、安装包或存档。
 
-已核对 [SDK 迁移与接入说明](./neko-theater-workshop-sdk-migration.md)、[SDK 使用说明](/Users/mac/Code/N.E.K.O/theater_workshop/README.md)、[小剧场架构](./neko-theater-architecture.md) 的工坊边界，以及 `host.py`、`sdk/workshop.py`、`contracts.py`、`packages.py`、`model.py`、作者投影、支线和项目 Store 的真实调用链。创作与评分入口用于核对职责和消费者，未重新评估模型效果。
+已核对 [SDK 迁移与接入说明](./neko-theater-workshop-sdk-migration.md)、[SDK 使用说明](../../theater_workshop/README.md)、[小剧场架构](./neko-theater-architecture.md) 的工坊边界，以及 `host.py`、`sdk/workshop.py`、`contracts.py`、`packages.py`、`model.py`、作者投影、支线和项目 Store 的真实调用链。创作与评分入口用于核对职责和消费者，未重新评估模型效果。
 
 成功标准：指出具体多余步骤或职责混合，以代码链路及隔离探针说明实际代价，保留现有安全和作者语义；不以文件长度、类数量或两仓相似度判定过度设计。
 
@@ -21,10 +21,10 @@ P2 表示有可复现的失败结果，应安排修正；P3 表示可确定的�
 
 ### 证据与调用链
 
-- [workshop.py:228](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/workshop.py:228)：公开 `import_story()` 在外层 Store 事务中编译，随后调用 `Store.import_story()`，最后单独 `record_compile()`。
-- [numeric_v2_project_store.py:808](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:808)：`import_story()` 先 `create()`，再把旧包投影为 setup，并经 `_update(..., preserve_imported_story=True)` 保存。
-- [numeric_v2_project_store.py:340](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:340)、[同文件:476](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:476)、[同文件:760](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:760)：三个步骤分别调用 `_write()`；结果依次是空项目 revision 1、有故事但无编译回执的 revision 2、完整导入结果 revision 2。
-- [numeric_v2_project_store.py:299](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:299)：`transaction()` 提供写栅栏和互斥锁，没有跨多次 `_write()` 的回滚机制。每次 `_write()` 的原子替换只保护该次文件内容。
+- [workshop.py:228](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/workshop.py#L228)：公开 `import_story()` 在外层 Store 事务中编译，随后调用 `Store.import_story()`，最后单独 `record_compile()`。
+- [numeric_v2_project_store.py:808](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L808)：`import_story()` 先 `create()`，再把旧包投影为 setup，并经 `_update(..., preserve_imported_story=True)` 保存。
+- [numeric_v2_project_store.py:340](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L340)、[同文件:476](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L476)、[同文件:760](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L760)：三个步骤分别调用 `_write()`；结果依次是空项目 revision 1、有故事但无编译回执的 revision 2、完整导入结果 revision 2。
+- [numeric_v2_project_store.py:299](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L299)：`transaction()` 提供写栅栏和互斥锁，没有跨多次 `_write()` 的回滚机制。每次 `_write()` 的原子替换只保护该次文件内容。
 
 隔离探针使用现行正式编译器和测试剧本，包装实例 `_write()`：
 
@@ -58,12 +58,12 @@ P2 表示有可复现的失败结果，应安排修正；P3 表示可确定的�
 
 ### 证据与调用链
 
-- [sdk/numeric_v2.py:283](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2.py:283)：作者编译入口先固定隐藏数值投影、调用正式编译器，再无条件执行 `analyze_numeric_v2_story()`，把作者警告追加到编译结果。
-- [numeric_v2_analysis.py:638](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_analysis.py:638)：存在数值定义时，作者分析分别对作者限幅和每轮约 2 点口径遍历图；此处两种分析用途明确，本身不是重复错误。
-- [workshop.py:390](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/workshop.py:390)：`_compiled_current()` 为核对当前稿 hash，再调用完整作者编译入口。
-- [workshop.py:401](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/workshop.py:401)、[同文件:412](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/workshop.py:412)：`validate` 和 `_publish_candidate` 消费 bytes/hash/story_id，不消费这次新计算的作者 warnings。
-- [numeric_v2_project_store.py:305](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:305)、[同文件:485](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:485)：纯 editor/stage 保存通过 `_carry_publish_receipts()` 核实原包 hash，同样执行完整作者分析，结果只取 hash。
-- [workshop.py:423](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/workshop.py:423)、[同文件:429](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/workshop.py:429)：导出和安装的最终候选复核在 Store 事务中进行；纯布局保存也在 [Store._update:404](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/numeric_v2_project_store.py:404) 的事务内。因此这些路径把并不消费的作者分析带进共享 Store 短时锁及写栅栏。
+- [sdk/numeric_v2.py:283](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2.py#L283)：作者编译入口先固定隐藏数值投影、调用正式编译器，再无条件执行 `analyze_numeric_v2_story()`，把作者警告追加到编译结果。
+- [numeric_v2_analysis.py:638](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_analysis.py#L638)：存在数值定义时，作者分析分别对作者限幅和每轮约 2 点口径遍历图；此处两种分析用途明确，本身不是重复错误。
+- [workshop.py:390](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/workshop.py#L390)：`_compiled_current()` 为核对当前稿 hash，再调用完整作者编译入口。
+- [workshop.py:401](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/workshop.py#L401)、[同文件:412](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/workshop.py#L412)：`validate` 和 `_publish_candidate` 消费 bytes/hash/story_id，不消费这次新计算的作者 warnings。
+- [numeric_v2_project_store.py:305](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L305)、[同文件:485](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L485)：纯 editor/stage 保存通过 `_carry_publish_receipts()` 核实原包 hash，同样执行完整作者分析，结果只取 hash。
+- [workshop.py:423](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/workshop.py#L423)、[同文件:429](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/workshop.py#L429)：导出和安装的最终候选复核在 Store 事务中进行；纯布局保存也在 [Store._update:404](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/numeric_v2_project_store.py#L404) 的事务内。因此这些路径把并不消费的作者分析带进共享 Store 短时锁及写栅栏。
 
 包装 `analyze_numeric_v2_story()` 并保留原函数执行，观察到：同稿 `validate` 1 次，`export` 1 次，已编译项目仅保存 `editor.node_positions` 也有 1 次。每次结果都不用于对应操作的返回或新报告。这是调用次数证据，不是性能基准；未据此宣称页面卡顿或等待秒数。
 
@@ -87,7 +87,7 @@ P2 表示有可复现的失败结果，应安排修正；P3 表示可确定的�
 
 ## 跨模块关联：IB-01 同源影响已复现
 
-[InkAI 后台框架审查的 IB-01](/Users/mac/Code/InkAI-/docs/superpowers/specs/neko-theater-generator-framework-review.md) 统一记录 JSON 修复器可能改写字符串正文的问题，不另分配 WS 编号。本次主审已独立实跑 SDK 同源的 [json_response.py:88](/Users/mac/Code/N.E.K.O/theater_workshop/sdk/json_response.py:88)：合法 JSON 中的固定旁白原文 `记录原文：,}；,]` 保持不变；仅在最外层增加尾逗号触发修复后，解析成功，但原文变为 `记录原文：}；]`。
+InkAI 后台框架审查的 IB-01 统一记录 JSON 修复器可能改写字符串正文的问题，不另分配 WS 编号。本次主审已独立实跑 SDK 同源的 [json_response.py:88](https://github.com/Project-N-E-K-O/N.E.K.O/blob/201e4fc4a/theater_workshop/sdk/json_response.py#L88)：合法 JSON 中的固定旁白原文 `记录原文：,}；,]` 保持不变；仅在最外层增加尾逗号触发修复后，解析成功，但原文变为 `记录原文：}；]`。
 
 该问题同时影响 SDK 的公共模型响应解析入口，不能只在 InkAI 修复。后续已按 IB-01 同步两端解析器，限定语法修复并验证字符串原文保留；结果见问题与处理 2.125。
 
@@ -103,11 +103,7 @@ P2 表示有可复现的失败结果，应安排修正；P3 表示可确定的�
 
 ## 验证记录与限制
 
-仓库外证据目录：[/Users/mac/.codex/experiments/neko-workshop-framework-review-lqd0gk/](/Users/mac/.codex/experiments/neko-workshop-framework-review-lqd0gk/)。
-
-- [probe.py](/Users/mac/.codex/experiments/neko-workshop-framework-review-lqd0gk/probe.py)：真实编译器、独立临时项目、计数与第 2/3 次写入失败注入；每次关闭 SDK 并清理自己的临时目录。自定义 `nullcontext` 仅用于结构探针，不代表真实写栅栏验收。
-- [probe-result.json](/Users/mac/.codex/experiments/neko-workshop-framework-review-lqd0gk/probe-result.json)：上述计数和失败残留结果。
-- [pytest.txt](/Users/mac/.codex/experiments/neko-workshop-framework-review-lqd0gk/pytest.txt)：`test_sdk_lifecycle.py`、`test_numeric_v2_project_store.py`、`test_numeric_v2.py` 共 **99 passed**；使用 `PYTHONDONTWRITEBYTECODE=1` 和 `-p no:cacheprovider`，作者及包数据均为测试临时目录。
+审查时的隔离探针使用真实编译器和独立临时项目，注入第 2/3 次写入失败并记录残留结果；本机探针文件未随仓库提交，因此这里只保留结果摘要。自定义 `nullcontext` 仅用于结构探针，不代表真实写栅栏验收。`test_sdk_lifecycle.py`、`test_numeric_v2_project_store.py`、`test_numeric_v2.py` 当时共 **99 passed**；作者及包数据均为测试临时目录。
 
 首次运行卡在 tiktoken 编码文件下载，已中止，未计为完成测试。随后使用本机已有且 SHA-256 与 tiktoken 官方加载代码预期值一致的 `o200k_base` 缓存重跑；没有修改仓库或全局配置，没有替换计数算法。
 
@@ -115,12 +111,6 @@ P2 表示有可复现的失败结果，应安排修正；P3 表示可确定的�
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH=/Users/mac/Code/N.E.K.O \
-TIKTOKEN_CACHE_DIR=/Users/mac/.cache/uv/archive-v0/pCPB4U8pH2GyfQbkYoD9B/litellm/litellm_core_utils/tokenizers \
-.venv/bin/python /Users/mac/.codex/experiments/neko-workshop-framework-review-lqd0gk/probe.py
-
-PYTHONDONTWRITEBYTECODE=1 \
-TIKTOKEN_CACHE_DIR=/Users/mac/.cache/uv/archive-v0/pCPB4U8pH2GyfQbkYoD9B/litellm/litellm_core_utils/tokenizers \
 .venv/bin/python -m pytest -q -p no:cacheprovider \
   tests/unit/theater_workshop/test_sdk_lifecycle.py \
   tests/unit/theater_workshop/test_numeric_v2_project_store.py \

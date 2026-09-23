@@ -3383,6 +3383,7 @@
 
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                if (options.source !== 'react-chat-window' && options.source !== 'legacy-text-button') return false;
                 if (!text) return false;
                 // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。
                 if (hasExtraImages) {

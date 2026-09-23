@@ -1,11 +1,11 @@
 """Numeric v2 小剧场可选模块开关。
 
-除"回复"（Actor 生成）之外的每一步模型调用都可以关闭：默认全部关闭，只保留一次
-演员调用。关闭某个模块会改变体验语义，各开关的取舍写在这里的唯一来源里，运行端、
+除"回复"（Actor 生成）之外的每一步模型调用都可以关闭：默认开启前置判定，
+其他可选调用默认关闭。关闭某个模块会改变体验语义，各开关的取舍写在这里的唯一来源里，运行端、
 HTTP 接口与前端只读这张表。
 
 开关存在全局偏好的全局条目旁（``theaterModule...``），未设置即默认值。
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TheaterModuleOption:
-    """一个可选模块：存储键、默认值与它关闭后的语义代价。"""
+    """一个可选模块：存储键、默认值与它关闭后的语义代价。"""  # noqa: DOCSTRING_CJK
 
     key: str
     default: bool
@@ -75,7 +75,7 @@ THEATER_MODULE_OPTIONS: tuple[TheaterModuleOption, ...] = (
 )
 
 _OPTION_BY_KEY = {option.key: option for option in THEATER_MODULE_OPTIONS}
-# 存储键前缀：与旧的 theaterDisputeReviewEnabled 无关，避免混用两种命名。
+# 存储键前缀：所有小剧场模块开关共用这一命名。
 _STORAGE_PREFIX = "theaterModule"
 
 
@@ -121,7 +121,7 @@ def storage_key_known(key: str) -> bool:
 
 
 async def aload_theater_module_options() -> dict[str, bool]:
-    """Read every switch at once; any failure falls back to the defaults (all off)."""
+    """Read every switch at once; any failure falls back to declared defaults."""
 
     try:
         from utils.preferences import aload_global_entry_flags

@@ -269,7 +269,6 @@ class NumericV2BranchService:
         if length not in {1, 2, 3}:
             raise NumericV2BranchError("branch_length_invalid")
         story = self._story(project)
-        nodes = _nodes(story)
 
         if endpoint_mode == "new_ending":
             if not isinstance(ending_draft, Mapping) or ending_draft.get("status") != "ending_review":

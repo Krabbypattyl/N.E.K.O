@@ -199,7 +199,7 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
 
 
 def test_guard_requires_offer_quote_from_reviewed_body():
-    """正文邀请必须给出本轮待审正文中的逐字短句，按钮和空引文不能制造邀请。"""
+    """正文邀请必须给出本轮待审正文中的逐字短句，按钮和空引文不能制造邀请。"""  # noqa: DOCSTRING_CJK
 
     body = "（指向门口）我们现在去阅览室查档，好吗？"
     missing = _parse_transition_judge_output(

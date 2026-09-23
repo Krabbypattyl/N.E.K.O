@@ -1540,8 +1540,9 @@ function CompactChatApp({
       openCompactExportHistory({ persist: false });
       return;
     }
+    if (theaterActive) return;
     closeCompactExportHistory({ persist: false });
-  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory, theaterActive]);
 
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
@@ -1627,12 +1628,13 @@ function CompactChatApp({
     }
   }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
+    if (theaterActive) return;
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
       return;
     }
     openCompactExportHistory();
-  }, [closeCompactExportHistory, compactExportHistoryOpen, openCompactExportHistory]);
+  }, [closeCompactExportHistory, compactExportHistoryOpen, openCompactExportHistory, theaterActive]);
   const handleCompactHistoryVisibilityPress = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     event.preventDefault();
@@ -5905,7 +5907,7 @@ function CompactChatApp({
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
       data-neko-tooltip={compactExportHistoryToggleLabel}
-      disabled={composerDisabled}
+      disabled={composerDisabled || theaterActive}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
       data-compact-no-drag="true"

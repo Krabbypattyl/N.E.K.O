@@ -1030,6 +1030,44 @@ class CompressedRecentHistoryManager:
             admission_generation,
         )
 
+    def _restore_theater_cache_snapshot_locked(
+        self, file_path, lanlan_name, previous, expected, expected_generation=None,
+    ):
+        """Restore a failed theater cache write only if no later write replaced it."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            status, history = self._load_history_unlocked(file_path, lanlan_name)
+            if status == RECENT_READ_UNREADABLE:
+                raise RuntimeError("theater_recent_history_unreadable")
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            if messages_to_dict(list(history) + list(pending)) != messages_to_dict(expected):
+                raise RuntimeError("theater_recent_history_changed")
+            recent_file.write_recent_payload_unlocked(file_path, messages_to_dict(previous))
+            recent_file.set_recent_pending_unlocked(file_path, [])
+            self._set_pending_batches(lanlan_name, [], file_path)
+            self._cache_history_view(file_path, lanlan_name, previous)
+
+    async def restore_theater_cache_snapshot(self, lanlan_name, previous, expected):
+        """Roll back an episode upsert when the time-index transaction fails."""
+
+        file_path, admission_generation = self._capture_recent_operation_admission(lanlan_name)
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        await _await_recent_mutation_to_completion(
+            self._restore_theater_cache_snapshot_locked,
+            file_path,
+            lanlan_name,
+            previous,
+            expected,
+            admission_generation,
+        )
+
     def _forget_theater_story_locked(
         self, file_path, lanlan_name, story_id, expected_generation=None,
     ):

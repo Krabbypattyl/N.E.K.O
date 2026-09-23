@@ -43,6 +43,7 @@ async def test_shared_tts_bridge_speaks_one_committed_numeric_dialogue():
     assert manager.calls[0][0] == "谢谢你陪着我。"
     assert manager.calls[0][1]["metadata"]["kind"] == "theater_numeric_dialogue_block"
     assert manager.calls[0][1]["interrupt_audio"] is False
+    assert manager.calls[0][1]["speech_correlation_id"] == "numeric_tts_test"
 
 
 @pytest.mark.asyncio

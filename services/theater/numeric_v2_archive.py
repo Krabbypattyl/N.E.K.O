@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -26,6 +27,19 @@ _RECEIPT_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
 _RECEIPT_LOCKS_GUARD = threading.Lock()
 PUBLIC_ARCHIVES_PER_STORY_CHARACTER = 5
 _RECEIPT_ID_RE = re.compile(r"^theater_end_[0-9a-f]{40}$")
+
+
+def _retry_windows_permission_error(operation):
+    """Retry transient Windows file-sharing failures without hiding persistent errors."""
+
+    for delay in (0.005, 0.01, 0.02, 0.04, 0.08):
+        try:
+            return operation()
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            time.sleep(delay)
+    return operation()
 
 
 def _receipt_lock(path: Path) -> threading.Lock:
@@ -165,7 +179,7 @@ class NumericV2ArchiveStore:
     @staticmethod
     def _read(path: Path) -> dict[str, Any] | None:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = json.loads(_retry_windows_permission_error(lambda: path.read_text(encoding="utf-8")))
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -187,7 +201,7 @@ class NumericV2ArchiveStore:
                 temporary.write(json.dumps(dict(value), ensure_ascii=False, sort_keys=True).encode("utf-8"))
                 temporary.flush()
                 os.fsync(temporary.fileno())
-            os.replace(temporary_path, path)
+            _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         except OSError as exc:
             raise NumericV2ArchiveError("numeric_end_receipt_write_failed") from exc
         finally:

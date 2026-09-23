@@ -910,6 +910,30 @@ def test_theater_episode_write_failure_is_not_reported_as_persisted(
     ]
 
 
+def test_theater_cache_rollback_restores_snapshot_only_without_later_writes(tmp_path):
+    mgr, name, path = _make_manager(tmp_path)
+    metadata = {
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story-rollback",
+        "session_id": "session-rollback",
+    }
+    _write_disk(path, [SystemMessage(content="暂停摘要", metadata=metadata)])
+    previous = asyncio.run(mgr.aget_recent_history(name))
+    asyncio.run(mgr.upsert_theater_episode(
+        SystemMessage(content="完成摘要", metadata=metadata), name,
+    ))
+    updated = asyncio.run(mgr.aget_recent_history(name))
+
+    asyncio.run(mgr.restore_theater_cache_snapshot(name, previous, updated))
+    assert messages_to_dict(asyncio.run(mgr.aget_recent_history(name))) == messages_to_dict(previous)
+
+    _write_disk(path, [SystemMessage(content="后续写入", metadata=metadata)])
+    with pytest.raises(RuntimeError, match="theater_recent_history_changed"):
+        asyncio.run(mgr.restore_theater_cache_snapshot(name, previous, updated))
+
+
 def test_authoritative_replace_discards_previous_pending(tmp_path, monkeypatch):
     """A user replacement must not resurrect an older failed append."""
     mgr, name, path = _make_manager(tmp_path)

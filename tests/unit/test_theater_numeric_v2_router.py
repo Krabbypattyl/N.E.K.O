@@ -29,7 +29,7 @@ from services.theater.numeric_v2_evaluator import (
 )
 from services.theater.numeric_v2_registry import NumericV2PackageError
 from services.theater.numeric_v2_runtime import MetricChangeV2
-from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, numeric_v2_story
+from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.llm_client import (
     AIMessage,
@@ -4843,6 +4843,24 @@ def test_recent_compression_prompt_uses_theater_episode_context_only():
     assert "雨点敲在窗沿。" not in rendered
     assert "测试猫娘 | （抬起头）你来了。" not in rendered
     assert "【旁白】" not in rendered
+
+
+def test_numeric_archive_retries_transient_windows_permission_error(monkeypatch):
+    from services.theater import numeric_v2_archive
+
+    monkeypatch.setattr(numeric_v2_archive, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(numeric_v2_archive, "time", SimpleNamespace(sleep=lambda _: None))
+    attempts = 0
+
+    def operation():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("busy")
+        return "ready"
+
+    assert numeric_v2_archive._retry_windows_permission_error(operation) == "ready"
+    assert attempts == 3
 
 
 @pytest.mark.asyncio

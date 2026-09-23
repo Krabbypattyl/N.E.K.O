@@ -669,59 +669,6 @@ async def aload_ui_language_override() -> Optional[str]:
     return await asyncio.to_thread(load_ui_language_override)
 
 
-def _load_global_entry_flag(key: str) -> Optional[bool]:
-    """Read a boolean flag stored beside the global conversation entry."""
-
-    try:
-        global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_active_preferences_path()
-        if os.path.exists(PREFERENCES_FILE):
-            with open(PREFERENCES_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                for pref in data:
-                    if pref.get("model_path") == GLOBAL_CONVERSATION_KEY and isinstance(pref.get(key), bool):
-                        return pref[key]
-    except Exception as e:
-        print(f"加载全局开关 {key} 失败: {e}")
-    return None
-
-
-def _save_global_entry_flag(key: str, value: Optional[bool]) -> bool:
-    """Persist or remove a boolean flag beside the global conversation entry."""
-
-    try:
-        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
-        _config_manager.ensure_config_directory()
-        with _locked_preferences_store():
-            data = _load_preferences_data_for_write_unlocked()
-            global_index = -1
-            for index, pref in enumerate(data):
-                if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
-                    global_index = index
-                    break
-            global_pref = data[global_index].copy() if global_index >= 0 else {"model_path": GLOBAL_CONVERSATION_KEY}
-            if value is None:
-                global_pref.pop(key, None)
-            else:
-                global_pref[key] = bool(value)
-            if global_index >= 0:
-                data[global_index] = global_pref
-            else:
-                data.append(global_pref)
-            _save_user_preferences_unlocked(data)
-        return True
-    except MaintenanceModeError:
-        raise
-    except Exception as e:
-        print(f"保存全局开关 {key} 失败: {e}")
-        return False
-
-
-# 争议复查默认开启（保持既有行为）；关闭后只跳过"首次争议的独立思考复查"这一步。
-THEATER_DISPUTE_REVIEW_KEY = "theaterDisputeReviewEnabled"
-
-
 def load_global_entry_flags() -> Dict[str, Any]:
     """Read every raw field stored beside the global conversation entry in one file read.
 
@@ -786,30 +733,6 @@ async def asave_global_entry_flags(values: Dict[str, Any]) -> bool:
     """Async wrapper for ``save_global_entry_flags``."""
 
     return await asyncio.to_thread(save_global_entry_flags, values)
-
-
-def load_theater_dispute_review() -> Optional[bool]:
-    """Return the stored dispute-review switch, or ``None`` when the user never set it."""
-
-    return _load_global_entry_flag(THEATER_DISPUTE_REVIEW_KEY)
-
-
-def save_theater_dispute_review(enabled: Optional[bool]) -> bool:
-    """Persist the theater dispute-review switch without touching conversation settings."""
-
-    return _save_global_entry_flag(THEATER_DISPUTE_REVIEW_KEY, enabled)
-
-
-async def aload_theater_dispute_review() -> Optional[bool]:
-    """Async wrapper for ``load_theater_dispute_review``."""
-
-    return await asyncio.to_thread(load_theater_dispute_review)
-
-
-async def asave_theater_dispute_review(enabled: Optional[bool]) -> bool:
-    """Async wrapper for ``save_theater_dispute_review``."""
-
-    return await asyncio.to_thread(save_theater_dispute_review, enabled)
 
 
 def is_privacy_mode_enabled() -> bool:

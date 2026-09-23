@@ -557,7 +557,7 @@ def _rejected_transition_input_seen(
     node_id: str,
     player_input: str,
 ) -> bool:
-    """检测同一待确认转场在复核拒绝后是否被压测器再次提交。"""
+    """检测同一待确认转场在复核拒绝后是否被压测器再次提交。"""  # noqa: DOCSTRING_CJK
 
     candidate = str(player_input or "").strip()
     if not candidate:

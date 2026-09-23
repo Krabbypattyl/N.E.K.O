@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
 import difflib
 import inspect
 import json
@@ -1016,7 +1015,7 @@ def _is_high_confidence_repeated_performance(
 
 
 def _is_short_stable_dialogue(performance: Mapping[str, Any]) -> bool:
-    """识别没有场景变化的短确认对白，避免把“明天见”一类收尾误判成机械复读。"""
+    """识别没有场景变化的短确认对白，避免把“明天见”一类收尾误判成机械复读。"""  # noqa: DOCSTRING_CJK
 
     blocks = performance_content_blocks(performance)
     if not blocks or any(block.get("type") != "dialogue" for block in blocks):
@@ -1029,7 +1028,7 @@ def _is_short_stable_dialogue(performance: Mapping[str, Any]) -> bool:
 
 
 def _timeline_visit_id(record: Mapping[str, Any]) -> str:
-    """读取 Runtime 写入的场景访问 ID；旧历史没有投影时返回空字符串。"""
+    """读取 Runtime 写入的场景访问 ID；旧历史没有投影时返回空字符串。"""  # noqa: DOCSTRING_CJK
 
     projection = record.get("timeline_projection")
     scope = projection.get("scene_scope") if isinstance(projection, Mapping) else None
@@ -2976,10 +2975,6 @@ class NumericV2Actor:
         # 所有正式转场统一用紧凑四文本合同，标签由 Runtime 确定，文字按历史适配。
         source_transition_dialogue_policy = transition_source_dialogue_policy(
             session.dialogue_policy
-        )
-        visible_contract = _acting_contract_for_actor(
-            cast,
-            (target if route_changed else source)["story_beat"],
         )
         actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
         performance = await self._invoke(

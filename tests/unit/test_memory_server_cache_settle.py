@@ -230,6 +230,7 @@ async def test_cache_reports_theater_episode_persist_failure():
         },
     }], ensure_ascii=False)
     fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(return_value=[])
     fake_recent.upsert_theater_episode = AsyncMock(
         side_effect=RuntimeError("theater_episode_persist_failed")
     )
@@ -254,6 +255,46 @@ async def test_cache_reports_theater_episode_persist_failure():
         "message": "theater_episode_persist_failed",
     }
     fake_time.areconcile_theater_conversations.assert_not_awaited()
+    fake_spawn_outbox.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cache_restores_recent_when_theater_index_update_fails():
+    from app import memory_server
+    from utils.llm_client import SystemMessage
+
+    metadata = {
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_rain",
+        "session_id": "session_rain",
+    }
+    previous = [SystemMessage(content="暂停摘要", metadata=metadata)]
+    updated = [SystemMessage(content="完成摘要", metadata=metadata)]
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(side_effect=[previous, updated])
+    fake_recent.upsert_theater_episode = AsyncMock(return_value=updated[0])
+    fake_recent.restore_theater_cache_snapshot = AsyncMock()
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(side_effect=OSError("index unavailable"))
+    fake_spawn_outbox = AsyncMock()
+    payload = json.dumps([{
+        "role": "system", "content": "完成摘要", "metadata": metadata,
+    }], ensure_ascii=False)
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time), \
+         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox):
+        result = await memory_server.cache_conversation(
+            memory_server.HistoryRequest(input_history=payload), "测试角色",
+        )
+
+    assert result["status"] == "error"
+    fake_recent.restore_theater_cache_snapshot.assert_awaited_once_with(
+        "测试角色", previous, updated,
+    )
     fake_spawn_outbox.assert_not_awaited()
 
 
@@ -309,6 +350,38 @@ async def test_forget_theater_memory_rebuilds_remaining_story_index():
     events = fake_time.areconcile_theater_conversations.await_args.args[0]
     assert set(events) == {"story_keep", "story_legacy_keep"}
     assert events["story_legacy_keep"][1] == legacy_remaining
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_forget_theater_memory_keeps_recent_when_index_update_fails():
+    from app import memory_server
+    from fastapi import HTTPException
+    from utils.llm_client import SystemMessage
+
+    current = SystemMessage(content="仍需保留", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_forget",
+        "session_id": "session_forget",
+    })
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(return_value=[current])
+    fake_recent.forget_theater_story = AsyncMock()
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(side_effect=OSError("index unavailable"))
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time):
+        with pytest.raises(HTTPException) as exc:
+            await memory_server.forget_theater_memory(
+                "测试角色",
+                memory_server.TheaterMemoryForgetRequest(story_id="story_forget"),
+            )
+
+    assert exc.value.status_code == 500
+    fake_recent.forget_theater_story.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -990,7 +1063,7 @@ async def test_settle_endpoint_msgs_zero_still_runs_review():
     LLM——这是 /settle 在新分工下的剩余职责（cache 已经负责 store + outbox）。
 
     不变量：不管 msgs 是否为空，settle 必须调一次 update_history([], detailed=True)。
-    """
+    """  # noqa: DOCSTRING_CJK
     from app import memory_server
 
     fake_time_manager = MagicMock()

@@ -40,7 +40,7 @@ class Client:
 
 
 def read_traces(root):
-    return [list(map(json.loads, path.read_text().splitlines())) for path in sorted(root.glob("*.jsonl"))]
+    return [list(map(json.loads, path.read_text(encoding="utf-8").splitlines())) for path in sorted(root.glob("*.jsonl"))]
 
 
 @pytest.mark.asyncio

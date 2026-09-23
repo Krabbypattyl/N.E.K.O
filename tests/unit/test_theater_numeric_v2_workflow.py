@@ -188,7 +188,7 @@ async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_opening_skips_suggestion_fill_even_when_module_is_enabled(monkeypatch) -> None:
-    """开场不因补推荐再串行等待一次模型调用，且保留单条合法选项。"""
+    """开场不因补推荐再串行等待一次模型调用，且保留单条合法选项。"""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     captured: dict[str, Any] = {}

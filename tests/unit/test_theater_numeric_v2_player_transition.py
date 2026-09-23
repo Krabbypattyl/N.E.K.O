@@ -7,7 +7,7 @@ from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_evaluator import _build_transition_judge_messages, _parse_output
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2, MetricChangeV2
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
-from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
+from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
 

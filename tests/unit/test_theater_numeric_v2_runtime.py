@@ -144,6 +144,21 @@ def test_numeric_v2_session_budget_profile_persists_and_legacy_defaults_balanced
     assert type(session).from_mapping(legacy).actor_budget_profile == "balanced"
 
 
+def test_numeric_v2_session_rejects_other_package_hash():
+    """恢复只接受当前 v2.2 包的哈希。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(
+        session_id="package_hash_mismatch",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+
+    engine.validate_session(session)
+    with pytest.raises(NumericV2RuntimeError, match="story_package_hash_mismatch"):
+        engine.validate_session(replace(session, story_package_hash="sha256:" + "0" * 64))
+
+
 def test_numeric_v2_story_state_records_events_without_replacing_position_authority():
     """故事状态只投影开场事件，当前位置仍由 Session.current_node_id 读取。"""  # noqa: DOCSTRING_CJK
 
@@ -222,7 +237,7 @@ def test_numeric_v2_apply_fact_ops_rejects_unknown_key_without_mutating_source()
 
 
 def test_numeric_v2_engine_applies_only_story_fact_contract_values():
-    """Engine 包装入口同时执行剧本白名单、可见性和标量类型校验。"""
+    """Engine 包装入口同时执行剧本白名单、可见性和标量类型校验。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -349,7 +364,7 @@ def test_numeric_v2_completion_contract_absence_is_distinct_from_false():
 
 
 def test_numeric_v2_engine_without_story_fact_contract_rejects_model_fact_ops():
-    """未声明事实合同的剧本不向模型候选开放任何事实键。"""
+    """未声明事实合同的剧本不向模型候选开放任何事实键。"""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -373,7 +388,7 @@ def test_numeric_v2_engine_without_story_fact_contract_rejects_model_fact_ops():
 
 
 def test_numeric_v2_engine_adjudicates_fact_candidates_before_commit():
-    """候选必须提供完整主体四元组和可逐字核对的来源，验证后才进入唯一写入口。"""
+    """候选必须提供完整主体四元组和可逐字核对的来源，验证后才进入唯一写入口。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -414,7 +429,7 @@ def test_numeric_v2_engine_adjudicates_fact_candidates_before_commit():
 
 
 def test_numeric_v2_turn_commits_fact_operations_atomically_and_records_them():
-    """事实操作与数值、场景事件共用同一回合版本，并可从 Ledger 重放。"""
+    """事实操作与数值、场景事件共用同一回合版本，并可从 Ledger 重放。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -586,7 +601,7 @@ def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
     ],
 )
 def test_numeric_v2_fact_candidate_rejection_does_not_write_partial_state(change):
-    """候选任一字段或证据失败时，整批事实都不落账。"""
+    """候选任一字段或证据失败时，整批事实都不落账。"""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -713,7 +728,7 @@ def test_numeric_v2_scene_fact_projection_is_bounded_and_public_only():
 
 
 def test_numeric_v2_scene_fact_projection_ignores_malformed_scene_event_keys():
-    """场景事实只接受 Runtime 规定的事件键，不把相似前缀当成结构化证据。"""
+    """场景事实只接受 Runtime 规定的事件键，不把相似前缀当成结构化证据。"""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -1899,6 +1914,42 @@ async def test_numeric_v2_recovers_prepared_story_delete_after_interruption(tmp_
     assert restored.session.session_id == stored.session.session_id
 
 
+def test_numeric_v2_delete_preserves_backup_when_rollback_fails(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_maintenance
+
+    transaction_dir = tmp_path / "numeric_v2" / "delete_transactions" / "pending"
+    transaction_dir.mkdir(parents=True)
+    manifest_path = transaction_dir / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        numeric_v2_maintenance,
+        "_prepare_delete_transaction",
+        lambda *_: (transaction_dir, manifest_path, {}),
+    )
+
+    def fail_delete(*args, **kwargs):
+        raise OSError("delete failed")
+
+    def fail_rollback(*args):
+        raise OSError("rollback failed")
+
+    monkeypatch.setattr(
+        numeric_v2_maintenance,
+        "_delete_numeric_v2_sessions_unlocked",
+        fail_delete,
+    )
+    monkeypatch.setattr(
+        numeric_v2_maintenance,
+        "_restore_delete_transaction",
+        fail_rollback,
+    )
+
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="numeric_story_delete_rollback_failed"):
+        numeric_v2_maintenance._delete_story_files(tmp_path, object(), "story")
+
+    assert manifest_path.is_file()
+
+
 @pytest.mark.asyncio
 async def test_numeric_v2_restart_replaces_ended_session_in_same_catgirl_slot(tmp_path):
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
@@ -2131,7 +2182,7 @@ async def test_numeric_v2_uncommitted_candidate_does_not_change_session(tmp_path
 
 @pytest.mark.asyncio
 async def test_numeric_v2_restore_replays_fact_operations_from_ledger(tmp_path):
-    """恢复存档时必须重放事实操作，不能只重算数值和场景位置。"""
+    """恢复存档时必须重放事实操作，不能只重算数值和场景位置。"""  # noqa: DOCSTRING_CJK
 
     story = _branch_story()
     story["fact_contract"] = {

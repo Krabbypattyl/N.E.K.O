@@ -33,6 +33,20 @@ def test_theater_memory_title_marks_are_idempotent(title, expected):
 
 
 @pytest.mark.unit
+def test_completed_theater_memory_without_ending_title_stays_completed():
+    from config.prompts.prompts_memory import get_theater_memory_context
+
+    rendered = get_theater_memory_context(
+        "zh-CN", name="小葵", master="哥哥", title="雨夜合租",
+        status="completed", summary="两人保住了共同的住处。",
+    )
+
+    assert "这次演绎已经完成" in rendered
+    assert "两人保住了共同的住处" in rendered
+    assert "暂停" not in rendered
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_get_recent_history_accepts_string_content():
     from app import memory_server

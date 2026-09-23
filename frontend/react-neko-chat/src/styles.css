@@ -3167,7 +3167,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
       calc(var(--compact-export-surface-width) * 1.18)
     ),
     max(
-      120px,
+      0px,
       calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 612px)) - 76px)
     )
   );

@@ -420,6 +420,23 @@ describe('App', () => {
     },
   );
 
+  it('keeps theater history accessible when the composer becomes disabled', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const props = { chatSurfaceMode: 'compact' as const, compactChatState: 'input' as const };
+    const { container, rerender } = render(
+      <App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />,
+    );
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(handle).toBeDisabled();
+    fireEvent.click(handle!);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(<App {...props} composerDisabled theaterPresentation={{ active: true, phase: 'performing' }} />);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+  });
+
   it('restores a theater IME draft on blur without overwriting the ordinary draft', () => {
     const onTheaterSubmit = vi.fn();
     const onComposerSubmit = vi.fn();
