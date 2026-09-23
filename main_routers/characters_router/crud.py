@@ -1705,6 +1705,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
     numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
         character_id=deleted_character_id,
         legacy_catgirl_name=name,
+        raise_on_io_error=True,
     )
     # Forget intents outlive deleted packages, but not their owning character.
     # Collect them under the same character mutation lock used by /memory/forget.

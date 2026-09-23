@@ -2092,6 +2092,33 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ("SafeName", "."))
+async def test_delete_catgirl_keeps_receipts_when_snapshot_read_fails(tmp_path, name):
+    from main_routers.characters_router import crud
+
+    receipt_root = tmp_path / "numeric_v2" / "end_receipts"
+    receipt_root.mkdir(parents=True)
+    receipt_path = receipt_root / ("theater_end_" + "0" * 40 + ".json")
+    receipt_path.write_text("{invalid", encoding="utf-8")
+    characters = {"猫娘": {name: {"昵称": name}}, "当前猫娘": ""}
+    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+
+    with patch.object(crud, "get_config_manager", return_value=config_manager), \
+         patch.object(crud, "assert_cloudsave_writable"), \
+         patch.object(crud, "theater_root", return_value=tmp_path), \
+         patch.object(crud, "list_numeric_v2_sessions", return_value=[]), \
+         patch.object(crud, "list_numeric_v2_public_archives", return_value=[]), \
+         patch.object(crud, "_create_character_operation_backup_dir") as backup:
+        with pytest.raises(crud.NumericV2ArchiveError, match="numeric_end_receipt_read_failed"):
+            await crud.delete_catgirl(name)
+
+    backup.assert_not_called()
+    assert receipt_path.read_text(encoding="utf-8") == "{invalid"
+    assert name in characters["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failed_preflight", ("sessions", "archives", "receipts"))
 async def test_rename_catgirl_returns_json_when_numeric_preflight_fails(tmp_path, failed_preflight):
     from main_routers.characters_router import crud
