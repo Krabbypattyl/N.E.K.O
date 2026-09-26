@@ -186,7 +186,7 @@ function getStableCompactHistoryHash(seed: string) {
 }
 
 function hasRichCompactHistoryContent(message: ChatMessage) {
-  return message.blocks.some(block => block.type === 'image' || block.type === 'buttons');
+  return message.blocks.some(block => block.type === 'image' || block.type === 'buttons' || block.type === 'html_card');
 }
 
 function getCompactHistoryBubbleTone(
@@ -765,6 +765,7 @@ export default function CompactExportHistoryPanel({
                   {message.blocks.map((block, index) => (
                     <MessageBlockView
                       key={`${message.id}-preview-${block.type}-${index}`}
+                      interactive={false}
                       block={block}
                       message={message}
                       isStreaming={streaming}
@@ -1087,6 +1088,7 @@ export default function CompactExportHistoryPanel({
                           {message.blocks.map((block, index) => (
                             <MessageBlockView
                               key={`${message.id}-${block.type}-${index}`}
+                              interactive={!selectionEnabled}
                               block={block}
                               message={message}
                               isStreaming={streaming}
