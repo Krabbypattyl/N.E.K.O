@@ -36,7 +36,8 @@
     var pendingLaunch = null;
     var endConfirmationPending = false;
     var committedSnapshot = null;
-    var proactiveChatSnapshot = null;
+    // 仅在内存中登记的主动搭话临时抑制；不写用户设置，页面关闭或崩溃时随之消失。
+    var proactiveSuppressionClaimed = false;
 
     function t(key, fallback) {
         if (typeof window.t === 'function') {
@@ -148,23 +149,26 @@
             audio.clearAudioQueueWithoutDecoderReset();
         }
     }
+    function suppressesProactiveChat() {
+        // 抑制与剧场会话是否活跃绑定；启动阶段在会话激活前先行登记，避免停麦期间插入主动搭话。
+        return state.active === true || proactiveSuppressionClaimed;
+    }
+    function notifyProactiveSuppressionChanged() {
+        // 主动搭话调度器（含其他窗口中的 leader）按该查询决定是否调度；这里只通知它重新读取。
+        var proactive = window.appProactive;
+        if (!proactive || typeof proactive.refreshProactiveSuppression !== 'function') return;
+        try { proactive.refreshProactiveSuppression(); } catch (_) {}
+    }
     function lockProactiveChatForTheater() {
-        var appState = window.appState;
-        if (!appState || proactiveChatSnapshot !== null) return;
-        proactiveChatSnapshot = { enabled: appState.proactiveChatEnabled === true };
-        appState.proactiveChatEnabled = false;
-        if (typeof window.stopProactiveChatSchedule === 'function') window.stopProactiveChatSchedule();
+        // 绝不改写 appState.proactiveChatEnabled：它是会被 saveSettings 持久化并同步到其他窗口的用户设置。
+        if (proactiveSuppressionClaimed) return;
+        proactiveSuppressionClaimed = true;
+        notifyProactiveSuppressionChanged();
     }
     function restoreProactiveChatAfterTheater() {
-        if (proactiveChatSnapshot === null) return;
-        var snapshot = proactiveChatSnapshot;
-        proactiveChatSnapshot = null;
-        var appState = window.appState;
-        if (!appState) return;
-        appState.proactiveChatEnabled = snapshot.enabled;
-        if (snapshot.enabled && typeof window.resetProactiveChatBackoff === 'function') {
-            window.resetProactiveChatBackoff();
-        }
+        proactiveSuppressionClaimed = false;
+        // 无论本页是否持有登记都要通知：会话可能由被取代的启动释放过登记，只剩 state.active 在抑制。
+        notifyProactiveSuppressionChanged();
     }
     async function stopOrdinaryVoiceInput() {
         var sharedState = window.appState || {};
@@ -1148,6 +1152,8 @@
                 archive_request_id: snapshot.archive_request_id || ''
             };
             state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot); state.currentBlock = null;
+            // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
+            lockProactiveChatForTheater();
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {
@@ -1222,6 +1228,7 @@
 
     var runtime = {
         isActive: function () { return state.active; },
+        suppressesProactiveChat: suppressesProactiveChat,
         allowsSpeechCorrelation: function (requestId) {
             return state.active && activeSpeechRequests[requestId] === state.queueToken;
         },
