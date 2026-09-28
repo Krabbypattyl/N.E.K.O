@@ -1239,8 +1239,24 @@ class CompressedRecentHistoryManager:
                 # 磁盘内容一起补写。
                 return
 
-            if compress and len(history) > self.compress_threshold:
-                to_compress = history[:-self.max_history_length+1]
+            # 剧场胶囊压缩时原样保留，不能计入触发门槛和尾部保留条数；否则胶囊一多，
+            # 压缩后的历史仍超门槛，每次 settle 都会重复压缩、反复摘要 memo。
+            # 无剧场消息时与 history[:-max_history_length+1] 完全等价。
+            ordinary_indices = [
+                index
+                for index, message in enumerate(history)
+                if not is_theater_memory_message(message)
+            ]
+            if compress and len(ordinary_indices) > self.compress_threshold:
+                compressed_ordinary = len(
+                    ordinary_indices[:-self.max_history_length+1]
+                )
+                cutoff = (
+                    ordinary_indices[compressed_ordinary]
+                    if compressed_ordinary < len(ordinary_indices)
+                    else len(history)
+                )
+                to_compress = history[:cutoff]
                 snapshot = list(to_compress)
                 preserved_theater = [
                     message
@@ -1252,8 +1268,12 @@ class CompressedRecentHistoryManager:
                     for message in snapshot
                     if not is_theater_memory_message(message)
                 ]
-                if not compression_input:
-                    # 当前可压缩头部全是剧场胶囊，只能交给保留胶囊的硬上限裁剪。
+                if not compression_input or (
+                    len(compression_input) == 1
+                    and isinstance(compression_input[0], SystemMessage)
+                ):
+                    # 当前可压缩头部全是剧场胶囊（或只剩已有备忘录），再调摘要模型只会
+                    # 反复改写 memo；只能交给保留胶囊的硬上限裁剪。
                     await self.enforce_hard_cap(
                         lanlan_name,
                         admission_generation,

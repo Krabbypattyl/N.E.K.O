@@ -487,3 +487,171 @@ def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
 
     status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
     assert status == "failed"  # 落盘失败必须报 failed，不能谎报 merged
+
+
+def _theater_capsule(index: int) -> SystemMessage:
+    return SystemMessage(
+        content=f"剧场单集摘要 {index}",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": f"story_{index}",
+            "session_id": f"session_{index}",
+        },
+    )
+
+
+def _record_compress_inputs(mgr) -> list:
+    calls: list[list] = []
+
+    async def _ok(messages, *_args, **_kwargs):
+        calls.append(list(messages))
+        return (SystemMessage(content="普通聊天摘要"), "普通聊天摘要")
+
+    setattr(mgr, "compress_history", _ok)
+    return calls
+
+
+def test_preserved_theater_capsules_do_not_count_toward_compress_threshold(tmp_path):
+    """Preserved theater capsules must not re-trigger compression on every settle."""
+    mgr, name = _make_manager(tmp_path)
+    capsules = [_theater_capsule(index) for index in range(12)]
+    original = [
+        SystemMessage(content="先前对话的备忘录: 旧摘要"),
+        *capsules,
+        HumanMessage(content="h1"),
+        AIMessage(content="a1"),
+        HumanMessage(content="h2"),
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    calls = _record_compress_inputs(mgr)
+
+    # 普通消息 memo + 3 + 1 = 5，未超过门槛 5；12 个剧场胶囊不能把它推过门槛。
+    _run(mgr.update_history([AIMessage(content="a2")], name, compress=True))
+
+    assert calls == []
+    final = _read_recent(mgr.log_file_path[name])
+    assert messages_to_dict(final) == messages_to_dict(
+        original + [AIMessage(content="a2")]
+    )
+
+
+def test_compression_keeps_same_ordinary_tail_with_theater_capsules(tmp_path):
+    """Over the ordinary threshold, the kept ordinary tail length is unchanged."""
+    mgr, name = _make_manager(tmp_path)
+    head_capsules = [_theater_capsule(index) for index in range(10)]
+    middle_capsule = _theater_capsule(10)
+    tail_capsule = _theater_capsule(11)
+    original = [
+        SystemMessage(content="先前对话的备忘录: 旧摘要"),
+        *head_capsules,
+        HumanMessage(content="h1"),
+        AIMessage(content="a1"),
+        HumanMessage(content="h2"),
+        AIMessage(content="a2"),
+        middle_capsule,
+        HumanMessage(content="h3"),
+        AIMessage(content="a3"),
+        tail_capsule,
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    calls = _record_compress_inputs(mgr)
+
+    _run(mgr.update_history([HumanMessage(content="h4")], name, compress=True))
+
+    assert len(calls) == 1
+    assert [message.content for message in calls[0]] == [
+        "先前对话的备忘录: 旧摘要", "h1", "a1", "h2", "a2",
+    ]
+    final = _read_recent(mgr.log_file_path[name])
+    ordinary = [
+        message for message in final
+        if message.metadata.get("source") != "theater_numeric_v2"
+    ]
+    assert [message.content for message in ordinary] == [
+        "普通聊天摘要", "h3", "a3", "h4",
+    ]
+    assert len(ordinary) == mgr.max_history_length
+    assert messages_to_dict(final) == messages_to_dict([
+        SystemMessage(content="普通聊天摘要"),
+        *head_capsules,
+        middle_capsule,
+        HumanMessage(content="h3"),
+        AIMessage(content="a3"),
+        tail_capsule,
+        HumanMessage(content="h4"),
+    ])
+
+
+def test_compression_skips_summary_when_head_is_only_existing_memo(tmp_path):
+    """Re-summarising a lone memo only erodes it, so no summary call is made."""
+    mgr, name = _make_manager(tmp_path)
+    mgr.max_history_length = 5
+    mgr.compress_threshold = 4
+    original = [
+        SystemMessage(content="先前对话的备忘录: 旧摘要"),
+        *[_theater_capsule(index) for index in range(3)],
+        HumanMessage(content="h1"),
+        AIMessage(content="a1"),
+        HumanMessage(content="h2"),
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    calls = _record_compress_inputs(mgr)
+
+    _run(mgr.update_history([AIMessage(content="a2")], name, compress=True))
+
+    assert calls == []
+    assert messages_to_dict(_read_recent(mgr.log_file_path[name])) == messages_to_dict(
+        original + [AIMessage(content="a2")]
+    )
+
+
+def test_repeated_idle_compression_with_capsules_summarises_once(tmp_path):
+    """IdleMaint-style update_history([]) must not re-compress after one pass."""
+    mgr, name = _make_manager(tmp_path)
+    original = [
+        SystemMessage(content="先前对话的备忘录: 旧摘要"),
+        *[_theater_capsule(index) for index in range(12)],
+        *[
+            HumanMessage(content=f"h{index}") if index % 2 == 0
+            else AIMessage(content=f"a{index}")
+            for index in range(8)
+        ],
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    calls = _record_compress_inputs(mgr)
+
+    for _ in range(3):
+        _run(mgr.update_history([], name, detailed=True, compress=True))
+
+    assert len(calls) == 1
+    final = _read_recent(mgr.log_file_path[name])
+    assert sum(
+        1 for message in final
+        if message.metadata.get("source") == "theater_numeric_v2"
+    ) == 12
+
+
+@pytest.mark.parametrize("max_history_length", [1, 2, 4])
+def test_compression_slice_without_theater_matches_legacy_slice(
+    tmp_path, max_history_length,
+):
+    """With no theater messages the compressed head is exactly the legacy slice."""
+    mgr, name = _make_manager(tmp_path)
+    mgr.max_history_length = max_history_length
+    original = [
+        HumanMessage(content=f"m{index}") if index % 2 == 0
+        else AIMessage(content=f"m{index}")
+        for index in range(8)
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    calls = _record_compress_inputs(mgr)
+
+    _run(mgr.update_history([HumanMessage(content="new")], name, compress=True))
+
+    history = original + [HumanMessage(content="new")]
+    legacy_head = history[:-max_history_length + 1]
+    assert [[message.content for message in call] for call in calls] == (
+        [[message.content for message in legacy_head]] if legacy_head else []
+    )
