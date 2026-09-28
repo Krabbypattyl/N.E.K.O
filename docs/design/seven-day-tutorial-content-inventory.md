@@ -21,9 +21,9 @@
 
 ### 2.1 内容事实源
 
-首页 [templates/index.html](../../templates/index.html) 实际加载 `static/tutorial/yui-guide/days/` 下的 7 个日模块，再加载 `UniversalTutorialManager`。每日的内容和顺序以日模块的 `round.scenes` 为准。
+首页 `templates/index.html` 实际加载 `static/tutorial/yui-guide/days/` 下的 7 个日模块，再加载 `UniversalTutorialManager`。每日的内容和顺序以日模块的 `round.scenes` 为准。
 
-中文显示内容主要来自 [static/locales/zh-CN.json](../../static/locales/zh-CN.json)：
+中文显示内容主要来自 `static/locales/zh-CN.json`：
 
 - 第 1 天部分台词使用 `tutorial.yuiGuide.lines.*`。
 - 其余每日台词主要使用 `tutorial.avatarFloating.dayN.*`。
@@ -42,9 +42,9 @@
 - `getAvatarFloatingSceneButtons()` 当前返回空数组，每日场景没有统一的“下一步”按钮列表，也没有统一的“用户点击目标后继续”条件。
 - 教程有交互接管、鼠标打断反应、跳过与清理恢复逻辑；用户鼠标操作可能触发打断演出。因此改成用户操作引导时，不能只替换遮罩样式。
 
-执行依据：[scene-orchestrator.js](../../static/tutorial/core/scene-orchestrator.js)、[operation-registry.js](../../static/tutorial/core/operation-registry.js)、[settings-tour-flow.js](../../static/tutorial/core/settings-tour-flow.js)、[director-core.js](../../static/tutorial/yui-guide/director/director-core.js)、[avatar-rounds.js](../../static/tutorial/yui-guide/director/avatar-rounds.js)。
+执行依据：`static/tutorial/core/scene-orchestrator.js`、`static/tutorial/core/operation-registry.js`、`static/tutorial/core/settings-tour-flow.js`、`static/tutorial/yui-guide/director/director-core.js`、`static/tutorial/yui-guide/director/avatar-rounds.js`。
 
-项目还存在 [page-tutorial-manager.js](../../static/tutorial/core/page-tutorial-manager.js) 中的 Driver.js 页面教程，用于模型、角色、设置、记忆等独立页面。它们与当前首页 7 天教程是不同入口；本次 48 个场景不包含这些独立页面教程。
+项目还存在 `static/tutorial/core/page-tutorial-manager.js` 中的 Driver.js 页面教程，用于模型、角色、设置、记忆等独立页面。它们与当前首页 7 天教程是不同入口；本次 48 个场景不包含这些独立页面教程。
 
 ### 2.3 天数、触发与重新查看
 
@@ -59,7 +59,7 @@
 | 存储 | 后端 `seven_day_tutorial_state.json` 保存教程进度，前端通过 `/api/seven-day-tutorial/state` 同步并保留本地缓存。 |
 | 重新查看 | 记忆管理页面的教程重置选择器支持首页某一天和首页全部天数；正式重置入口也处理对应破冰状态。 |
 
-依据：[seven-day-state.js](../../static/tutorial/core/seven-day-state.js) 的 `getNextAutoRound()`、[universal-manager.js](../../static/tutorial/core/universal-manager.js)、[seven_day_tutorial_state.py](../../utils/seven_day_tutorial_state.py)、[floating-guide-reset.js](../../static/tutorial/avatar/floating-guide-reset.js)、[memory_browser.js](../../static/js/memory_browser.js)。
+依据：`static/tutorial/core/seven-day-state.js` 的 `getNextAutoRound()`、`static/tutorial/core/universal-manager.js`、`utils/seven_day_tutorial_state.py`、`static/tutorial/avatar/floating-guide-reset.js`、`static/js/memory_browser.js`。
 
 这些是当前规则。新版是否继续分 7 天，尚未由本次需求决定。
 
@@ -86,7 +86,7 @@
 
 ### 第 1 天：初次唤醒、聊天与基础入口
 
-来源：[day1-home-guide.js](../../static/tutorial/yui-guide/days/day1-home-guide.js)。
+来源：`static/tutorial/yui-guide/days/day1-home-guide.js`。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -105,7 +105,7 @@
 
 ### 第 2 天：互动、娱乐与摸得到的陪伴
 
-来源：[day2-screen-voice-guide.js](../../static/tutorial/yui-guide/days/day2-screen-voice-guide.js)。文件名中的 screen/voice 不代表当前内容。
+来源：`static/tutorial/yui-guide/days/day2-screen-voice-guide.js`。文件名中的 screen/voice 不代表当前内容。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -120,7 +120,7 @@
 
 ### 第 3 天：个性化、声音与主动搭话
 
-来源：[day3-interaction-guide.js](../../static/tutorial/yui-guide/days/day3-interaction-guide.js)。
+来源：`static/tutorial/yui-guide/days/day3-interaction-guide.js`。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -137,11 +137,11 @@
 - 未记录到：使用 `tutorial.avatarFloating.day3.intro`，表达还没听到用户声音，邀请说一句。
 - 记录到：使用 `tutorial.avatarFloating.day3.introVoiceUsed`，表达记得用户语气，邀请继续语音聊天。
 
-分支依据：[director-core.js](../../static/tutorial/yui-guide/director/director-core.js) 的 `resolveAvatarFloatingSceneText/VoiceKey/Emotion()` 和 [foundation.js](../../static/tutorial/yui-guide/director/foundation.js) 的 `hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart()`。
+分支依据：`static/tutorial/yui-guide/director/director-core.js` 的 `resolveAvatarFloatingSceneText/VoiceKey/Emotion()` 和 `static/tutorial/yui-guide/director/foundation.js` 的 `hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart()`。
 
 ### 第 4 天：相处距离、主动陪伴与模型行为
 
-来源：[day4-companion-guide.js](../../static/tutorial/yui-guide/days/day4-companion-guide.js)。
+来源：`static/tutorial/yui-guide/days/day4-companion-guide.js`。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -158,7 +158,7 @@
 
 ### 第 5 天：个性化与长期配置
 
-来源：[day5-personalization-guide.js](../../static/tutorial/yui-guide/days/day5-personalization-guide.js)。
+来源：`static/tutorial/yui-guide/days/day5-personalization-guide.js`。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -169,7 +169,7 @@
 
 ### 第 6 天：Agent、任务 HUD 与能力节奏
 
-来源：[day6-agent-guide.js](../../static/tutorial/yui-guide/days/day6-agent-guide.js)。HUD 在这里指任务进度浮层。
+来源：`static/tutorial/yui-guide/days/day6-agent-guide.js`。HUD 在这里指任务进度浮层。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -182,11 +182,11 @@
 | 7. `day6_wrap_cleanup` | 收起复杂界面，减少干扰。 | 聊天输入框 | 清理教程展示的面板和临时界面。 |
 | 8. `day6_wrap` | 表达既可以帮忙，也可以安静陪伴。 | 聊天输入框 | 收尾演出。 |
 
-第 6 天不是纯单页面高亮：当前已经涉及新窗口的打开、启动消息和展示结束反馈。相关实现见 [avatar-rounds.js](../../static/tutorial/yui-guide/director/avatar-rounds.js)、[page-flows.js](../../static/tutorial/yui-guide/director/page-flows.js) 和 [插件页教程运行时](../../frontend/plugin-manager/src/yui-guide-runtime.ts)。新版若保留这部分，应先明确用户在哪个窗口继续操作。
+第 6 天不是纯单页面高亮：当前已经涉及新窗口的打开、启动消息和展示结束反馈。相关实现见 `static/tutorial/yui-guide/director/avatar-rounds.js`、`static/tutorial/yui-guide/director/page-flows.js` 和 插件页教程运行时（`frontend/plugin-manager/src/yui-guide-runtime.ts`）。新版若保留这部分，应先明确用户在哪个窗口继续操作。
 
 ### 第 7 天：毕业、进阶入口与共生约定
 
-来源：[day7-graduation-guide.js](../../static/tutorial/yui-guide/days/day7-graduation-guide.js)。
+来源：`static/tutorial/yui-guide/days/day7-graduation-guide.js`。
 
 | 顺序 / 场景标识 | 讲解内容 | 对应位置 | 当前动作与推进 |
 | --- | --- | --- | --- |
@@ -208,7 +208,7 @@
 - 用户点击确认、关闭按钮或弹窗外遮罩关闭；这是用户控制的说明弹窗，不会要求实际点到系统托盘。
 - 第 1 天正常完成后需要启动破冰对话时，会等这个说明弹窗关闭。
 
-依据：[universal-manager.js](../../static/tutorial/core/universal-manager.js) 的 `shouldShowDay1SystrayIntro()` 与 `showDay1SystrayIntroModal()`，以及 `tutorial.systray.*` 文案。
+依据：`static/tutorial/core/universal-manager.js` 的 `shouldShowDay1SystrayIntro()` 与 `showDay1SystrayIntroModal()`，以及 `tutorial.systray.*` 文案。
 
 当前中文说明采用“屏幕右下角托盘”的口径，不能直接当成 macOS、Linux 与浏览器端通用位置。本文只记录现状，未验证各宿主平台的实际托盘表现。
 
@@ -230,7 +230,7 @@
 
 触发代码监听教程正常完成事件。**跳过教程或生气退出不会由这条结束事件链新启动破冰**；已有未完成破冰会话另有恢复逻辑。后续更换引导形式时，需要单独决定是否继续衔接这些对话。
 
-依据：[icebreaker_scripts.json](../../static/tutorial/icebreaker/icebreaker_scripts.json)、[破冰中文文案](../../static/tutorial/icebreaker/locales/zh-CN.json)、[new-user-icebreaker.js](../../static/tutorial/icebreaker/new-user-icebreaker.js)。
+依据：`static/tutorial/icebreaker/icebreaker_scripts.json`、破冰中文文案（`static/tutorial/icebreaker/locales/zh-CN.json`）、`static/tutorial/icebreaker/new-user-icebreaker.js`。
 
 ## 6. 转为“暗色遮罩 + 高亮 + 点击推进”前需要区分的内容
 
