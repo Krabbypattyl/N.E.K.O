@@ -390,6 +390,35 @@ test('history lessons focus the visible blue bar instead of its transparent butt
     dom.window.close();
 });
 
+test('chat guide opens an initially unmounted host before waiting for its mount', async () => {
+    const { dom, api } = setup();
+    const root = dom.window;
+    root.t = key => key;
+    let mounted = false;
+    const calls = [];
+    root.reactChatWindowHost = {
+        getState: () => ({ mounted, chatSurfaceMode: 'full', compactChatState: 'history', composerHidden: true }),
+        openWindow: () => { calls.push('open'); root.setTimeout(() => { mounted = true; }, 0); },
+        setChatSurfaceMode: mode => calls.push('surface:' + mode),
+        setCompactChatState: mode => calls.push('chat:' + mode),
+        setAvatarToolMenuOpen: () => {}, deactivateAvatarTool: () => {},
+        setCompactToolFanOpen: () => {}, setCompactHistoryOpen: () => {},
+    };
+    api.waitUntil = async predicate => {
+        if (predicate()) return;
+        await delay(10);
+        if (!predicate()) throw new Error('target_not_ready');
+    };
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    try {
+        const restore = await api.prepareChat();
+        assert.equal(mounted, true);
+        assert.deepEqual(calls.slice(0, 3), ['open', 'surface:compact', 'chat:input']);
+        await restore();
+        assert.deepEqual(calls.slice(-2), ['surface:full', 'chat:history']);
+    } finally { dom.window.close(); }
+});
+
 test('typing a greeting and pressing Enter submits once before opening history', async () => {
     const { dom, api, doc } = setup();
     const input = doc.createElement('textarea');

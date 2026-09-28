@@ -67,7 +67,8 @@
     }
 
     api.prepareChat = async function () {
-        await api.waitUntil(() => root.reactChatWindowHost?.getState()?.mounted, new AbortController().signal, 10000);
+        await api.waitUntil(() => root.reactChatWindowHost?.getState && root.reactChatWindowHost?.openWindow,
+            new AbortController().signal, 10000);
         const host = root.reactChatWindowHost;
         if (!host?.getState) throw new Error('chat_host_unavailable');
         const snapshot = host.getState();
@@ -81,6 +82,7 @@
             if (!nativeSnapshot.ready) throw new Error('native_chat_not_ready');
         }
         await host.openWindow();
+        await api.waitUntil(() => host.getState()?.mounted, new AbortController().signal, 10000);
         host.setChatSurfaceMode('compact');
         host.setCompactChatState('input');
         // The React composer appears on the next render; inspect its real draft only then.
