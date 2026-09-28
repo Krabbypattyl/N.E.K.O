@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并小剧场与主分支屏幕授权等待、独立 ASR 恢复、插件 HTML 卡片与唤醒词提示，递增版本刷新网页和 Electron 的语言包缓存。
-    const LOCALE_VERSION = '2026-09-28-theater-locale-key-sync-main-merge';
+    // 合并小剧场与主分支屏幕授权等待、独立 ASR 恢复、插件 HTML 卡片、唤醒词与免费服务拒绝访问提示，递增版本刷新网页和 Electron 的语言包缓存。
+    const LOCALE_VERSION = '2026-09-28-theater-free-tts-quota-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
