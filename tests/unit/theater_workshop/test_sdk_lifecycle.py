@@ -611,17 +611,20 @@ async def test_cancelled_install_keeps_story_lock_until_worker_settles(opened, m
     assert host.sdk.get_project(project["project_id"])["install_result"] is not None
 
 
-def test_release_smoke_and_build_entries_cover_sdk(tmp_path):
+def test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds(tmp_path):
     from theater_workshop.release_smoke import run
     fixture = dict(title="旧信", setup=_generation_setup(), outline=named_outline(), names=NAMES)
     result = asyncio.run(run(fixture))
     assert result["success"] is True
     assert {"resume", "reopen", "maintenance", "load_engine"}.issubset(result["checks"])
+    # The SDK has no UI or HTTP caller yet, so it must not ship in the frozen
+    # backend. Nuitka follows static imports, so launcher.py must not import it
+    # either, or dropping --include-package would not keep it out.
     repo = Path(__file__).resolve().parents[3]
-    for filename, count in (("build-desktop.yml", 2), ("build-desktop-linux.yml", 1)):
+    for filename in ("build-desktop.yml", "build-desktop-linux.yml"):
         workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
-        assert workflow.count("--include-package=theater_workshop") == count
-        assert "scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8" in workflow
+        assert "theater_workshop" not in workflow
+    assert "theater_workshop" not in (repo / "launcher.py").read_text(encoding="utf-8")
 
 
 def test_close_waits_for_inflight_generation_before_releasing_writer(tmp_path):

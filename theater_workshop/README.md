@@ -149,6 +149,6 @@ SDK 可单独注入 `model_call` 返回 `ModelReply`／文本／`LLMCallFailure`
 .venv/bin/python -m pytest -q tests/unit/theater_workshop
 ```
 
-正式 Nuitka 工作流已加入 `--include-package=theater_workshop` 和 `scripts/check_theater_workshop_release.py`。该检查通过发行二进制运行固定模型的失败续写、编译、复验、导出、安装、引擎加载、重开、维护态拒写、ID 分配和完整作者项目导入后的重新复验；不会退回源码解释器完成被测业务。
+SDK 目前没有界面或 HTTP 调用方，暂不进入 Nuitka 冻结发行物：两个桌面构建工作流不包含 `theater_workshop`，`launcher.py` 也不引用它（Nuitka 会跟随静态 import，入口保留就等于打包）。`theater_workshop.release_smoke.run` 仍可在源码环境运行固定模型的失败续写、编译、复验、导出、安装、引擎加载、重开和维护态拒写检查；待工坊有正式入口时再恢复冻结包含与发行检查。
 
 完整边界、迁移基线及已验证／待验证范围见 [迁移文档](../docs/design/neko-theater-workshop-sdk-migration.md)。

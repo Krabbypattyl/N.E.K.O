@@ -179,7 +179,6 @@ Numeric v2 的产品定位是：
 | `scripts/evaluate_numeric_v2_review.py` | 用跨剧本冻结正反例统计普通复核误杀、漏放、命中率和耗时；不修改剧本或 Session。 |
 | `scripts/evaluate_numeric_v2_completion_facts.py` | 用冻结正反例统计完成事实“模型提议”和“Runtime 接纳”的差异；不代替整剧体验验收。 |
 | `scripts/validate_numeric_v2_story.py` | 对单个 Story Package 执行当前 Numeric v2.2 编译/校验入口，报告字段、路线和可达性问题；不安装、不改包。 |
-| `scripts/check_theater_workshop_release.py` | 在发行冒烟环境中调用工坊宿主，覆盖生成失败续写、编译、复验、导出、安装和重开；不属于线上回合。 |
 
 当前主链路没有独立 Planner、Director、自动文学评分或动态剧情规划层；工坊评分/修订属于作者流程，不会在演绎回合中自动运行。
 
