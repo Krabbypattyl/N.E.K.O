@@ -252,6 +252,26 @@ SCENARIOS = (
         assert.equal(after.draftRestore.text, '');
       }
     """),
+    # 已发出的 speak-block 在退出、换 Session 或结束后才回音频时，app-websocket.js
+    # 依赖 allowsSpeechCorrelation 丢弃这段旧对白，不能按当前音频 epoch 重新入队。
+    ("late_speech_correlation_is_rejected_after_exit", r"""
+      for (const exit of ['clear', 'relaunch', 'end']) {
+        const ctx = createContext(); await launch(ctx);
+        const turn = await submit(ctx);
+        await respond(turn, { ...snapshot('session_a', 5), performance: { performance: '你好。' } });
+        const speak = ctx.requests.find(r => /speak-block/.test(r.url));
+        assert.ok(speak, '对白必须发起 speak-block');
+        const id = JSON.parse(speak.options.body).playback_request_id;
+        assert.match(id, /^theater_speech_/);
+        assert.equal(ctx.runtime.allowsSpeechCorrelation(id), true, '播放中的对白必须放行');
+        if (exit === 'clear') ctx.runtime.clear('test_exit');
+        else if (exit === 'relaunch') {
+          ctx.requests.splice(ctx.requests.indexOf(speak), 1);
+          await launch(ctx, 'session_b', 7);
+        } else { ctx.runtime.requestEnd(); await tick(); await tick(); }
+        assert.equal(ctx.runtime.allowsSpeechCorrelation(id), false, exit + ' 后旧对白音频必须被拒绝');
+      }
+    """),
 )
 
 

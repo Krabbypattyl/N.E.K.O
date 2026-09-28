@@ -1211,10 +1211,18 @@ async def forget_theater_memory(
                     lanlan_name,
                 )
             except Exception:
-                # recent 删除失败时恢复仍存在的原始摘要索引。
+                # recent 删除失败时按 recent 的实际内容恢复索引：删除可能已部分落盘，
+                # 直接用删除前快照回滚会把已删掉的剧本重新写回可召回索引。
                 try:
+                    try:
+                        actual = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name,
+                        )
+                    except Exception:
+                        logger.exception("[MemoryServer] 剧本遗忘失败后重读 recent 失败，按删除前快照回滚索引")
+                        actual = current
                     await runtime.time_manager.areconcile_theater_conversations(
-                        _theater_index_events(lanlan_name, current),
+                        _theater_index_events(lanlan_name, actual),
                         lanlan_name,
                     )
                 except Exception:

@@ -416,6 +416,125 @@ async def test_forget_theater_memory_reports_original_error_when_rollback_fails(
     assert fake_logger.error.call_args.args[3] is recent_error
 
 
+def _theater_summary(story_id: str):
+    from utils.llm_client import SystemMessage
+
+    return SystemMessage(content=f"{story_id} 摘要", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": story_id,
+        "session_id": f"session_{story_id}",
+    })
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_forget_rollback_reindexes_what_recent_actually_holds():
+    """A forget that persisted before raising must not resurrect the story in the index."""
+    from app import memory_server
+    from fastapi import HTTPException
+
+    forgotten = _theater_summary("story_forget")
+    kept = _theater_summary("story_keep")
+    fake_recent = MagicMock()
+    # Before: both stories. After the partially persisted delete: only the kept one.
+    fake_recent.aget_recent_history = AsyncMock(side_effect=[[forgotten, kept], [kept]])
+    fake_recent.forget_theater_story = AsyncMock(side_effect=OSError("pending write failed"))
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(return_value={"removed": 1})
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time):
+        with pytest.raises(HTTPException):
+            await memory_server.forget_theater_memory(
+                "测试角色",
+                memory_server.TheaterMemoryForgetRequest(story_id="story_forget"),
+            )
+
+    assert fake_time.areconcile_theater_conversations.await_count == 2
+    rollback_events = fake_time.areconcile_theater_conversations.await_args_list[1].args[0]
+    assert set(rollback_events) == {"story_keep"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_forget_rollback_falls_back_to_snapshot_when_reread_fails():
+    from app import memory_server
+    from app.memory_server import routes
+    from fastapi import HTTPException
+
+    forgotten = _theater_summary("story_forget")
+    kept = _theater_summary("story_keep")
+    recent_error = OSError("recent delete failed")
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(side_effect=[
+        [forgotten, kept], OSError("recent unreadable"),
+    ])
+    fake_recent.forget_theater_story = AsyncMock(side_effect=recent_error)
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(return_value={"removed": 1})
+    fake_logger = MagicMock()
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time), \
+         patch.object(routes, "logger", fake_logger):
+        with pytest.raises(HTTPException):
+            await memory_server.forget_theater_memory(
+                "测试角色",
+                memory_server.TheaterMemoryForgetRequest(story_id="story_forget"),
+            )
+
+    rollback_events = fake_time.areconcile_theater_conversations.await_args_list[1].args[0]
+    assert set(rollback_events) == {"story_forget", "story_keep"}
+    fake_logger.exception.assert_called_once()
+    assert fake_logger.error.call_args.args[3] is recent_error
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cache_reports_error_when_theater_index_and_rollback_both_fail():
+    from app import memory_server
+    from app.memory_server import routes
+    from utils.llm_client import SystemMessage
+
+    metadata = {
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story_rain",
+        "session_id": "session_rain",
+    }
+    previous = [SystemMessage(content="暂停摘要", metadata=metadata)]
+    updated = [SystemMessage(content="完成摘要", metadata=metadata)]
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(side_effect=[previous, updated])
+    fake_recent.upsert_theater_episode = AsyncMock(return_value=updated[0])
+    fake_recent.restore_theater_cache_snapshot = AsyncMock(
+        side_effect=RuntimeError("theater_recent_history_changed"),
+    )
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(side_effect=OSError("index unavailable"))
+    fake_spawn_outbox = AsyncMock()
+    fake_logger = MagicMock()
+    payload = json.dumps([{
+        "role": "system", "content": "完成摘要", "metadata": metadata,
+    }], ensure_ascii=False)
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time), \
+         patch.object(routes, "logger", fake_logger), \
+         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox):
+        result = await memory_server.cache_conversation(
+            memory_server.HistoryRequest(input_history=payload), "测试角色",
+        )
+
+    assert result["status"] == "error"
+    fake_recent.restore_theater_cache_snapshot.assert_awaited_once()
+    fake_logger.exception.assert_called_once()
+    fake_spawn_outbox.assert_not_awaited()
+
+
 @pytest.mark.unit
 def test_theater_episode_upsert_merges_session_and_caps_story_runs():
     """同 Session 只留一份，重复游玩只保留同剧本最近三个周目胶囊。"""  # noqa: DOCSTRING_CJK
