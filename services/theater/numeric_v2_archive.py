@@ -11,6 +11,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -183,8 +184,25 @@ class NumericV2ArchiveStore:
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise NumericV2ArchiveError("numeric_end_receipt_read_failed") from exc
+            error = NumericV2ArchiveError("numeric_end_receipt_read_failed")
+            # 严格枚举失败时调用方需要指出具体文件，便于用户修复或移走它。
+            error.path = str(path)
+            raise error from exc
         return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _valid_public_archive_payload(payload: Mapping[str, Any] | None) -> bool:
+        """Return whether a public archive payload names its story, session and owner."""
+        return bool(
+            payload is not None
+            and payload.get("schema") == "neko.theater.numeric.v2.public-archive"
+            and isinstance(payload.get("story_id"), str)
+            and payload["story_id"].strip()
+            and isinstance(payload.get("session_id"), str)
+            and payload["session_id"].strip()
+            and "character_id" in payload
+            and isinstance(payload["character_id"], str)
+        )
 
     @staticmethod
     def _write(path: Path, value: Mapping[str, Any]) -> None:
@@ -566,19 +584,12 @@ class NumericV2ArchiveStore:
                 if raise_on_io_error:
                     raise
                 continue
-            if (
-                payload is None
-                or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
-                or not isinstance(payload.get("story_id"), str)
-                or not payload["story_id"].strip()
-                or not isinstance(payload.get("session_id"), str)
-                or not payload["session_id"].strip()
-                or "character_id" not in payload
-                or not isinstance(payload["character_id"], str)
-            ):
+            if not self._valid_public_archive_payload(payload):
                 # 严格枚举无法确认未知载荷的故事与角色归属，必须中止而不能宣称删除完整。
                 if raise_on_io_error:
-                    raise NumericV2ArchiveError("numeric_public_archive_invalid")
+                    error = NumericV2ArchiveError("numeric_public_archive_invalid")
+                    error.path = str(path)
+                    raise error
                 continue
             if normalized_story_id and str(payload.get("story_id") or "") != normalized_story_id:
                 continue
@@ -619,6 +630,38 @@ class NumericV2ArchiveStore:
             reverse=True,
         )
         return archives
+
+    def quarantine_invalid_public_archives(self, quarantine_root: Path) -> int:
+        """Move unparseable public archives aside so strict scans stop failing on them.
+
+        Only files that the normal listing already hides and the strict
+        enumeration refuses are moved; nothing is deleted, and files that fail
+        with an OS error are left in place because they may be valid.
+        """
+        if not self.public_archive_root.is_dir():
+            return 0
+        moved = 0
+        for path in sorted(self.public_archive_root.glob("*.json")):
+            try:
+                payload = self._read(path)
+            except NumericV2ArchiveError as exc:
+                if isinstance(exc.__cause__, OSError):
+                    # 暂时不可读的档案可能仍然有效，绝不能移走。
+                    continue
+                payload = None
+            if self._valid_public_archive_payload(payload) or not path.is_file():
+                continue
+            try:
+                quarantine_root.mkdir(parents=True, exist_ok=True)
+                # 只移动、不删除；该目录不参与 Session 隔离区的数量裁剪。
+                os.replace(
+                    path,
+                    quarantine_root / f"invalid-{int(time.time() * 1000)}-{uuid.uuid4().hex}-{path.name}",
+                )
+                moved += 1
+            except OSError:
+                continue
+        return moved
 
     def load_public_archive(
         self,

@@ -33,6 +33,8 @@ from .numeric_v2_storage_transaction import run_storage_mutation
 
 
 QUARANTINE_FILE_LIMIT = 6
+# 公开冷档案隔离区独立于 Session 隔离区，避免被 QUARANTINE_FILE_LIMIT 裁剪删除。
+PUBLIC_ARCHIVE_QUARANTINE_DIRNAME = "quarantine_public_archives"
 DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
 
 _MAINTENANCE_LOCK = threading.Lock()
@@ -469,16 +471,22 @@ def maintain_numeric_v2_storage_once(
                 item["session_id"]
                 for item in list_numeric_v2_sessions(theater_root)
             }
-            result.update(
-                NumericV2ArchiveStore(theater_root).cleanup_receipts(
-                    active_session_ids
-                )
+            archive_store = NumericV2ArchiveStore(theater_root)
+            result.update(archive_store.cleanup_receipts(active_session_ids))
+            # 损坏的公开冷档案会让角色改名/删除的严格快照对所有角色失败；
+            # 与坏档 Session 一样移入隔离区，但使用独立目录，不参与数量裁剪删除。
+            archives_quarantined = archive_store.quarantine_invalid_public_archives(
+                Path(theater_root) / "numeric_v2" / PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
             )
+            if archives_quarantined:
+                logger.warning("Numeric v2 已隔离 %d 份无法解析的公开冷档案", archives_quarantined)
+                result["archives_quarantined"] = archives_quarantined
             _MAINTAINED_ROOTS.add(key)
             return result
 
 
 __all__ = [
+    "PUBLIC_ARCHIVE_QUARANTINE_DIRNAME",
     "QUARANTINE_FILE_LIMIT",
     "audit_numeric_v2_storage",
     "delete_numeric_v2_story_transactionally",

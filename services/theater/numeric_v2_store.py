@@ -184,6 +184,12 @@ def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path.unlink()
 
 
+def _with_failed_path(error: NumericV2StoreError, path: Path) -> NumericV2StoreError:
+    """Record which file made a strict enumeration fail so callers can report it."""
+    error.path = str(path)
+    return error
+
+
 def _numeric_v2_session_root(theater_storage_root: Path) -> Path:
     return Path(theater_storage_root) / "numeric_v2" / "sessions"
 
@@ -221,17 +227,19 @@ def _read_numeric_v2_session_summary(
     except (UnicodeError, json.JSONDecodeError) as exc:
         # 删除前无法确认归属就必须中止；启动审计会按既有坏档隔离流程处理此错误。
         if raise_on_io_error:
-            raise NumericV2StoreError("numeric_session_read_failed") from exc
+            raise _with_failed_path(
+                NumericV2StoreError("numeric_session_read_failed"), path,
+            ) from exc
         return None
     if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
         if raise_on_io_error:
-            raise NumericV2StoreError("numeric_session_read_failed")
+            raise _with_failed_path(NumericV2StoreError("numeric_session_read_failed"), path)
         return None
     raw_session = payload.get("session")
     binding = raw_session.get("catgirl_binding") if isinstance(raw_session, dict) else None
     if not isinstance(raw_session, dict) or not isinstance(binding, dict):
         if raise_on_io_error:
-            raise NumericV2StoreError("numeric_session_read_failed")
+            raise _with_failed_path(NumericV2StoreError("numeric_session_read_failed"), path)
         return None
     return {
         "session_id": str(raw_session.get("session_id") or path.stem),
@@ -313,14 +321,18 @@ def list_numeric_v2_public_archives(
             continue
         except (UnicodeError, json.JSONDecodeError) as exc:
             if raise_on_io_error:
-                raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
+                raise _with_failed_path(
+                    NumericV2StoreError("numeric_public_archive_read_failed"), path,
+                ) from exc
             continue
         if (
             not isinstance(payload, dict)
             or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
         ):
             if raise_on_io_error:
-                raise NumericV2StoreError("numeric_public_archive_read_failed")
+                raise _with_failed_path(
+                    NumericV2StoreError("numeric_public_archive_read_failed"), path,
+                )
             continue
         summary = {
             "session_id": str(payload.get("session_id") or "").strip(),

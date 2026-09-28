@@ -1919,8 +1919,6 @@ async def test_character_management_and_recent_save_regression():
                 initial_name,
             ]
 
-            from services.theater.numeric_v2_store import NumericV2StoreError
-
             original_session = numeric_session_path.read_bytes()
             original_characters = cm.load_characters()
             original_recent = recent_path.read_bytes()
@@ -1932,8 +1930,14 @@ async def test_character_management_and_recent_save_regression():
                 legacy_catgirl_name='另一角色')
             for corrupt_bytes in (b"{broken-json", b"\xff"):
                 numeric_session_path.write_bytes(corrupt_bytes)
-                with pytest.raises(NumericV2StoreError, match="numeric_session_read_failed"):
-                    await characters_router_module.delete_catgirl("测试角色")
+                # 仍然整体中止（fail-closed），但以结构化 JSON 指出阻塞的剧场文件，而不是抛出裸异常。
+                blocked = await characters_router_module.delete_catgirl("测试角色")
+                assert blocked.status_code == 500
+                blocked_payload = json.loads(blocked.body)
+                assert blocked_payload["success"] is False
+                assert blocked_payload["theater_file"] == (
+                    f"numeric_v2/sessions/{numeric_session.session.session_id}.json"
+                )
                 assert cm.load_characters() == original_characters
                 assert numeric_session_path.read_bytes() == corrupt_bytes
                 assert numeric_public_archive_path.is_file()
@@ -2293,9 +2297,12 @@ async def test_delete_catgirl_keeps_receipts_when_snapshot_read_fails(tmp_path, 
          patch.object(crud, "list_numeric_v2_sessions", return_value=[]), \
          patch.object(crud, "list_numeric_v2_public_archives", return_value=[]), \
          patch.object(crud, "_create_character_operation_backup_dir") as backup:
-        with pytest.raises(crud.NumericV2ArchiveError, match="numeric_end_receipt_read_failed"):
-            await crud.delete_catgirl(name)
+        response = await crud.delete_catgirl(name)
 
+    assert response.status_code == 500
+    payload = json.loads(response.body)
+    assert payload["success"] is False
+    assert payload["theater_file"] == f"numeric_v2/end_receipts/{receipt_path.name}"
     backup.assert_not_called()
     assert receipt_path.read_text(encoding="utf-8") == "{invalid"
     assert name in characters["猫娘"]
@@ -2328,6 +2335,55 @@ async def test_rename_catgirl_returns_json_when_numeric_preflight_fails(tmp_path
     assert response.status_code == 500
     assert json.loads(response.body)["success"] is False
     assert characters["猫娘"] == {"OldName": {"昵称": "OldName"}}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "file_name"),
+    (
+        ("sessions", "other_character_session.json"),
+        ("public_archives", "0" * 64 + ".json"),
+        ("end_receipts", "theater_end_" + "1" * 40 + ".json"),
+    ),
+)
+async def test_character_rename_and_delete_name_unreadable_theater_file(tmp_path, kind, file_name):
+    """An unreadable theater file of unknown owner fails closed with an actionable JSON error."""
+    from main_routers.characters_router import crud
+
+    # 损坏文件的归属只能从正文判断，所以即便该角色从未使用剧场也必须中止；
+    # 但删除和改名都要返回结构化错误，并指出剧场根目录下的具体文件。
+    bad_file = tmp_path / "numeric_v2" / kind / file_name
+    bad_file.parent.mkdir(parents=True)
+    bad_file.write_text("{broken", encoding="utf-8")
+    characters = {
+        "猫娘": {"A": {"昵称": "A", "_reserved": {"character_id": "character-a"}}},
+        "当前猫娘": "",
+    }
+    original_characters = copy.deepcopy(characters)
+    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    expected_file = f"numeric_v2/{kind}/{file_name}"
+
+    with patch.object(crud, "get_config_manager", return_value=config_manager), \
+         patch.object(crud, "get_session_manager", return_value={}), \
+         patch.object(crud, "assert_cloudsave_writable"), \
+         patch.object(crud, "theater_root", return_value=tmp_path), \
+         patch.object(crud, "_create_character_operation_backup_dir") as backup:
+        delete_response = await crud.delete_catgirl("A")
+        rename_response = await crud.rename_catgirl(
+            "A",
+            SimpleNamespace(json=AsyncMock(return_value={"new_name": "B"})),
+        )
+
+    for response in (delete_response, rename_response):
+        assert response.status_code == 500
+        payload = json.loads(response.body)
+        assert payload["success"] is False
+        assert payload["theater_file"] == expected_file
+        assert expected_file in payload["error"]
+    backup.assert_not_called()
+    assert characters == original_characters
+    assert bad_file.read_text(encoding="utf-8") == "{broken"
 
 
 @pytest.mark.unit

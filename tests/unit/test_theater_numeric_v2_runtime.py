@@ -2540,3 +2540,69 @@ except NumericV2SessionExistsError:
             if process.poll() is None:
                 process.kill()
             process.communicate(timeout=5)
+
+
+def test_maintenance_quarantines_unparseable_public_archives_without_trimming(tmp_path, monkeypatch):
+    """Unparseable public archives are moved aside, never deleted, so strict scans recover."""
+    from types import SimpleNamespace
+
+    from services.theater.numeric_v2_archive import NumericV2ArchiveError, NumericV2ArchiveStore
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_MAINTAINED_ROOTS", set())
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    store = NumericV2ArchiveStore(tmp_path)
+
+    def archive_session(session_id: str):
+        return SimpleNamespace(
+            story_package_id="story_archive_quarantine",
+            session_id=session_id,
+            revision=0,
+            catgirl_binding={"character_id": "character-b", "catgirl_name": "B"},
+            opening_performance={"performance": "你来了。"},
+            performance_history=(),
+        )
+
+    store.write_public_archive(title="有效档案", session=archive_session("valid"), ending=None)
+    store.write_public_archive(title="暂时不可读", session=archive_session("locked"), ending=None)
+    valid_path = store._public_archive_path("valid")
+    locked_path = store._public_archive_path("locked")
+    valid_bytes = valid_path.read_bytes()
+    locked_bytes = locked_path.read_bytes()
+    corrupt: dict[str, bytes] = {}
+    # 超过 Session 隔离区的裁剪上限，确认公开冷档案隔离不会删除任何文件。
+    for index in range(QUARANTINE_FILE_LIMIT + 2):
+        path = store.public_archive_root / f"{index:064x}.json"
+        path.write_text(
+            ("{broken", "[]", json.dumps({"schema": "other"}))[index % 3],
+            encoding="utf-8",
+        )
+        corrupt[path.name] = path.read_bytes()
+    with pytest.raises(numeric_v2_store.NumericV2StoreError):
+        numeric_v2_store.list_numeric_v2_public_archives(
+            tmp_path, character_id="character-a", raise_on_io_error=True,
+        )
+
+    original_read = NumericV2ArchiveStore._read
+
+    def flaky_read(path):
+        if path == locked_path:
+            raise NumericV2ArchiveError("numeric_end_receipt_read_failed") from PermissionError("locked")
+        return original_read(path)
+
+    monkeypatch.setattr(NumericV2ArchiveStore, "_read", staticmethod(flaky_read))
+    result = numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, registry, character_ids_by_name={},
+    )
+    monkeypatch.setattr(NumericV2ArchiveStore, "_read", staticmethod(original_read))
+
+    assert result["archives_quarantined"] == len(corrupt)
+    quarantine_root = tmp_path / "numeric_v2" / numeric_v2_maintenance.PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+    moved = {path.name.split("-", 3)[3]: path.read_bytes() for path in quarantine_root.iterdir()}
+    assert moved == corrupt
+    assert valid_path.read_bytes() == valid_bytes
+    # 暂时性 I/O 失败的档案可能仍然有效，必须原地保留。
+    assert locked_path.read_bytes() == locked_bytes
+    assert not list((tmp_path / "numeric_v2" / "quarantine").glob("*"))
+    assert numeric_v2_store.list_numeric_v2_public_archives(
+        tmp_path, character_id="character-a", raise_on_io_error=True,
+    ) == []

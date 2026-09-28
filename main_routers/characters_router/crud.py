@@ -393,6 +393,39 @@ def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
     return records
 
 
+def _numeric_v2_preflight_failure_response(
+    exc: BaseException,
+    numeric_theater_root: Path,
+    message: str,
+) -> JSONResponse:
+    """Build the fail-closed preflight error, naming the theater file that blocked it."""
+    failed_path = ""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and not failed_path:
+        seen.add(id(current))
+        failed_path = str(
+            getattr(current, "path", "")
+            or (getattr(current, "filename", "") if isinstance(current, OSError) else "")
+            or ""
+        )
+        current = current.__cause__ or current.__context__
+    payload = {"success": False, "error": f"{message}，请稍后重试"}
+    if failed_path:
+        # 文件内容无法确认归属时只能整体中止；返回剧场根目录下的相对路径，便于用户修复或移走该文件。
+        try:
+            # 存储层路径均由同一剧场根拼接，纯字符串比较即可，无需访问文件系统。
+            relative = Path(failed_path).relative_to(Path(numeric_theater_root)).as_posix()
+        except ValueError:
+            relative = Path(failed_path).name
+        payload["error"] = (
+            f"{message}：剧场存档文件 {relative} 无法读取或已损坏，"
+            "请修复或移走该文件后重试"
+        )
+        payload["theater_file"] = relative
+    return JSONResponse(payload, status_code=500)
+
+
 def _create_character_operation_backup_dir(config_manager, prefix: str):
     backup_root = Path(getattr(config_manager, "app_docs_dir", "")) / ".rollback_tmp"
     backup_root.mkdir(parents=True, exist_ok=True)
@@ -816,11 +849,10 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
             legacy_catgirl_name=old_name,
             raise_on_io_error=True,
         )
-    except (OSError, NumericV2StoreError, NumericV2ArchiveError):
+    except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
         logger.exception("重命名角色 Numeric v2 预检失败: %s -> %s", old_name, new_name)
-        return JSONResponse(
-            {"success": False, "error": "重命名角色预检失败，请稍后重试"},
-            status_code=500,
+        return _numeric_v2_preflight_failure_response(
+            exc, numeric_theater_root, "重命名角色预检失败",
         )
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
@@ -1680,38 +1712,45 @@ async def _delete_catgirl_by_name_serialized(name: str):
         )
         or ""
     ).strip()
-    numeric_session_targets = [
-        Path(item["path"])
-        for item in list_numeric_v2_sessions(
-            numeric_theater_root,
+    try:
+        numeric_session_targets = [
+            Path(item["path"])
+            for item in list_numeric_v2_sessions(
+                numeric_theater_root,
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+                raise_on_io_error=True,
+            )
+        ]
+        numeric_session_index_path = (
+            numeric_theater_root / "numeric_v2" / "story_sessions.json"
+        )
+        numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
+        numeric_public_archive_targets = [
+            Path(item["path"])
+            for item in list_numeric_v2_public_archives(
+                numeric_theater_root,
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+                raise_on_io_error=True,
+            )
+        ]
+        numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
             character_id=deleted_character_id,
             legacy_catgirl_name=name,
             raise_on_io_error=True,
         )
-    ]
-    numeric_session_index_path = (
-        numeric_theater_root / "numeric_v2" / "story_sessions.json"
-    )
-    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
-    numeric_public_archive_targets = [
-        Path(item["path"])
-        for item in list_numeric_v2_public_archives(
-            numeric_theater_root,
-            character_id=deleted_character_id,
-            legacy_catgirl_name=name,
-            raise_on_io_error=True,
+        # Forget intents outlive deleted packages, but not their owning character.
+        # Collect them under the same character mutation lock used by /memory/forget.
+        numeric_forget_targets = await asyncio.to_thread(
+            numeric_archive_store.forget_paths_for_character, deleted_character_id,
         )
-    ]
-    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
-        character_id=deleted_character_id,
-        legacy_catgirl_name=name,
-        raise_on_io_error=True,
-    )
-    # Forget intents outlive deleted packages, but not their owning character.
-    # Collect them under the same character mutation lock used by /memory/forget.
-    numeric_forget_targets = await asyncio.to_thread(
-        numeric_archive_store.forget_paths_for_character, deleted_character_id,
-    )
+    except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
+        # 与改名一致：无法确认归属的剧场文件使整个删除中止，并返回结构化错误而非裸 500。
+        logger.exception("删除角色 Numeric v2 预检失败: %s", name)
+        return _numeric_v2_preflight_failure_response(
+            exc, numeric_theater_root, "删除角色预检失败",
+        )
 
     if not safe_path_name:
         logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
