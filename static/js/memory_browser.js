@@ -2477,10 +2477,10 @@
         try {
             await window.NekoClickGuideState.refresh();
             await window.NekoClickGuideState.update('reset');
-            await showTutorialResetNotice(window.t('clickGuide.resetSuccess'));
+            await showTutorialResetNotice(translate('clickGuide.resetSuccess', '点击引导已重置，刷新主页即可开始。七天教程进度保持不变。'));
         } catch (error) {
             console.error('[MemoryBrowser] Click guide reset failed:', error);
-            await showTutorialResetNotice(window.t('clickGuide.saveFailed'), { variant: 'error' });
+            await showTutorialResetNotice(translate('clickGuide.saveFailed', '保存失败，请重试。'), { variant: 'error' });
         } finally {
             if (button) button.disabled = false;
         }

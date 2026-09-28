@@ -12,6 +12,8 @@
         let stopTracking;
         let leave;
         let readinessFailed = false;
+        let nativeFallbackEligible = false;
+        let nativeFallbackShown = false;
         let windowWatch;
         let currentView;
         let inspected = false;
@@ -151,6 +153,25 @@
             presentationFrame = { ...presentationFrame, nextDisabled: next.disabled, backDisabled: back.disabled };
             presentation.update(presentationFrame);
         }
+        function syncNativeFallback(available) {
+            if (!nativeFallbackEligible || !steps[index]?.nativeTarget || controller?.signal.aborted || ended) return;
+            if (available === true && nativeFallbackShown) {
+                nativeFallbackShown = false;
+                readinessFailed = false;
+                status.textContent = '';
+                next.disabled = !!steps[index].requireClick;
+            } else if (available !== true && !nativeFallbackShown) {
+                nativeFallbackShown = true;
+                readinessFailed = true;
+                status.textContent = labels.nativeFallback;
+                next.disabled = false;
+            } else return;
+            if (presentationFrame?.step === index) {
+                presentationFrame = { ...presentationFrame, cardFallback: readinessFailed,
+                    status: status.textContent, nextDisabled: next.disabled };
+                presentation?.update(presentationFrame);
+            }
+        }
         async function show(nextIndex, backward = false) {
             await cleanupStep();
             if (ended) return;
@@ -163,6 +184,7 @@
             skippedIndices.delete(index);
             const step = steps[index];
             readinessFailed = false;
+            nativeFallbackEligible = nativeFallbackShown = false;
             controller = new AbortController();
             const signal = controller.signal;
             progress.textContent = (labels.section ? labels.section + ' · ' : '')
@@ -300,10 +322,9 @@
                 }
             }, 2000);
             const nativeFallbackTimer = step.nativeTarget && presentation && root.setTimeout(() => {
-                if (!signal.aborted) {
-                    readinessFailed = true;
-                    status.textContent = labels.nativeFallback;
-                }
+                if (signal.aborted) return;
+                nativeFallbackEligible = true;
+                syncNativeFallback(presentation.nativeTargetAvailable?.());
             }, 6000);
             signal.addEventListener('abort', () => root.clearTimeout(unavailableTimer), { once: true });
             signal.addEventListener('abort', () => root.clearTimeout(nativeFallbackTimer), { once: true });
@@ -343,6 +364,7 @@
                     presentation.bind({ next: () => { if (!next.disabled) void advance(); },
                         back: () => { if (!back.disabled) void retreat(); },
                         target: () => { if (steps[index]?.nativeTarget) void advance(true); },
+                        nativeTargetAvailability: syncNativeFallback,
                         returned: () => void advance(),
                         skip: () => void finish('skipped'), failed: () => void finish('failed') });
                 }

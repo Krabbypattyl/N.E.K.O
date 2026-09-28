@@ -191,7 +191,7 @@ test(`nested browser pages preserve their parent and clean up (${closeFrom})`, a
 });
 }
 
-test('page tutorials pause for inspection without consuming manual intent or marking seen', () => {
+test('page tutorials pause for inspection and resume the interrupted step after the guide leaves', () => {
     const { dom } = setup();
     const root = dom.window;
     root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
@@ -204,14 +204,27 @@ test('page tutorials pause for inspection without consuming manual intent or mar
     assert.equal(pageGuide.startTutorial(), false);
     pageGuide.isTutorialRunning = true;
     root.isInTutorial = true;
-    pageGuide.driver = { destroy: () => pageGuide.handleTutorialEnd() };
+    pageGuide.driver = { currentStep: 2, destroy: () => pageGuide.handleTutorialEnd() };
     root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
     assert.equal(pageGuide.isTutorialRunning, false);
     assert.equal(root.isInTutorial, false);
     assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser'), null);
     assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
-    delete root.__nekoClickGuideWindowInspection;
     assert.equal(pageGuide.shouldManageCurrentPage(), true);
+    let resumedStep = -1;
+    pageGuide.cachedValidSteps = [{}, {}, {}];
+    pageGuide.startTutorial = () => {
+        pageGuide.driver = { showStep: index => { resumedStep = index; } };
+        pageGuide.isTutorialRunning = true;
+        return true;
+    };
+    root.opener = { isNekoClickGuideActive: true };
+    delete root.__nekoClickGuideWindowInspection;
+    root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(resumedStep, -1, 'the opener is still guiding another window');
+    root.opener.isNekoClickGuideActive = false;
+    root.dispatchEvent(new root.Event('focus'));
+    assert.equal(resumedStep, 2);
     dom.window.close();
 });
 
@@ -394,11 +407,16 @@ test('chat guide opens an initially unmounted host before waiting for its mount'
     const { dom, api } = setup();
     const root = dom.window;
     root.t = key => key;
+    const overlay = root.document.createElement('div');
+    overlay.id = 'react-chat-window-overlay';
+    overlay.hidden = true;
+    root.document.body.append(overlay);
     let mounted = false;
     const calls = [];
     root.reactChatWindowHost = {
         getState: () => ({ mounted, chatSurfaceMode: 'full', compactChatState: 'history', composerHidden: true }),
         openWindow: () => { calls.push('open'); root.setTimeout(() => { mounted = true; }, 0); },
+        closeWindow: () => calls.push('close'),
         setChatSurfaceMode: mode => calls.push('surface:' + mode),
         setCompactChatState: mode => calls.push('chat:' + mode),
         setAvatarToolMenuOpen: () => {}, deactivateAvatarTool: () => {},
@@ -415,7 +433,7 @@ test('chat guide opens an initially unmounted host before waiting for its mount'
         assert.equal(mounted, true);
         assert.deepEqual(calls.slice(0, 3), ['open', 'surface:compact', 'chat:input']);
         await restore();
-        assert.deepEqual(calls.slice(-2), ['surface:full', 'chat:history']);
+        assert.deepEqual(calls.slice(-3), ['surface:full', 'chat:history', 'close']);
     } finally { dom.window.close(); }
 });
 
@@ -891,6 +909,42 @@ test('native restore offers a visible continuation if the ball cannot be clicked
     assert.equal(guide.index, 1);
     await guide.stop('skipped');
     dom.window.close();
+});
+
+test('native restore keeps the real ball click required while the target is present', async () => {
+    const { dom, api, doc } = setup();
+    const original = dom.window.setTimeout.bind(dom.window);
+    dom.window.setTimeout = (callback, ms, ...args) => original(callback, ms === 6000 ? 30 : ms, ...args);
+    const available = true;
+    const guide = api.createRunner({ labels, presentation: {
+        bind() {}, update() {}, close() {},
+        nativeTargetAvailable: () => available,
+    }, steps: [{ id: 'restore', nativeTarget: 'minimizedBall', requireClick: true,
+        advanceOnClick: true }, { title: 'Next' }] });
+    await guide.start();
+    await delay(70);
+    assert.equal(doc.querySelector('.click-guide-next').disabled, true);
+    assert.equal(doc.querySelector('.click-guide-status').textContent, '');
+    await guide.stop('skipped'); dom.window.close();
+});
+
+test('a late native ball removes the unavailable fallback', async () => {
+    const { dom, api, doc } = setup();
+    const original = dom.window.setTimeout.bind(dom.window);
+    dom.window.setTimeout = (callback, ms, ...args) => original(callback, ms === 6000 ? 30 : ms, ...args);
+    let actions;
+    const guide = api.createRunner({ labels, presentation: {
+        bind(value) { actions = value; }, update() {}, close() {},
+        nativeTargetAvailable: () => false,
+    }, steps: [{ id: 'restore', nativeTarget: 'minimizedBall', requireClick: true,
+        advanceOnClick: true }, { title: 'Next' }] });
+    await guide.start();
+    await delay(70);
+    assert.equal(doc.querySelector('.click-guide-next').disabled, false);
+    actions.nativeTargetAvailability(true);
+    assert.equal(doc.querySelector('.click-guide-next').disabled, true);
+    assert.equal(doc.querySelector('.click-guide-status').textContent, '');
+    await guide.stop('skipped'); dom.window.close();
 });
 
 test('browser-only restore explains when the desktop ball is absent', async () => {

@@ -934,6 +934,7 @@
                 this.handleTutorialEnd('destroy');
                 return false;
             }
+            this._clickGuideInterruptedStep = null;
 
             window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
                 detail: {
@@ -1121,6 +1122,10 @@
                     ? 'complete'
                     : 'skip'
             );
+            if (reason === 'click-guide-window') {
+                this._clickGuideInterruptedStep = Number.isInteger(this.driver?.currentStep)
+                    ? this.driver.currentStep : 0;
+            }
 
             this._refreshTimers.forEach((timer) => window.clearTimeout(timer));
             this._refreshTimers = [];
@@ -1219,14 +1224,27 @@
     }
 
     window.PageTutorialManager = PageTutorialManager;
+    function resumeInterruptedPageTutorial() {
+        const manager = window.pageTutorialManager;
+        if (!Number.isInteger(manager?._clickGuideInterruptedStep) || isClickGuideInspectingPage()) return;
+        const index = manager._clickGuideInterruptedStep;
+        if (!manager.startTutorial()) return;
+        manager._clickGuideInterruptedStep = null;
+        if (index > 0 && manager.driver?.showStep) {
+            manager.driver.showStep(Math.min(index, manager.cachedValidSteps.length - 1));
+        }
+    }
     window.addEventListener('neko:click-guide-window-inspection', () => {
         const manager = window.pageTutorialManager;
-        if (!isClickGuideInspectingPage() || !manager?.isTutorialRunning) return;
+        if (!isClickGuideInspectingPage()) { resumeInterruptedPageTutorial(); return; }
+        if (!manager?.isTutorialRunning) return;
         // Temporary interruption must not mark a page tutorial as seen/skipped.
         manager.endReason = 'click-guide-window';
         manager.driver?.destroy();
         manager.handleTutorialEnd('click-guide-window');
     });
+    window.addEventListener('focus', resumeInterruptedPageTutorial);
+    document.addEventListener('visibilitychange', resumeInterruptedPageTutorial);
     window.initPageTutorialManager = initPageTutorialManager;
     window.resetPageTutorialStorage = resetPageTutorialStorage;
 })();

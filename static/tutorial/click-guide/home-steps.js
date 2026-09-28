@@ -72,6 +72,7 @@
         const host = root.reactChatWindowHost;
         if (!host?.getState) throw new Error('chat_host_unavailable');
         const snapshot = host.getState();
+        const chatWasVisible = document.getElementById('react-chat-window-overlay')?.hidden === false;
         const historyOpen = find('.compact-history-visibility-handle')?.getAttribute('aria-expanded') === 'true';
         const fanOpen = find('.compact-input-tool-fan')?.dataset.compactInputToolFanOpen === 'true';
         const wheelIndex = tools.findIndex(tool => document.querySelector(`.compact-input-tool-item-${tool}`)?.dataset.compactToolWheelSlot === '0');
@@ -98,6 +99,7 @@
             host.setChatSurfaceMode(snapshot.chatSurfaceMode);
             host.setCompactChatState(snapshot.compactChatState);
             if (nativeSnapshot?.wasCollapsed) await native.restoreCollapsedAfterTutorial?.();
+            else if (!chatWasVisible) host.closeWindow?.();
         };
     };
     api.chatSteps = function () {
