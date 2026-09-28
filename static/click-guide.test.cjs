@@ -1,0 +1,1189 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createRequire } = require('node:module');
+const { JSDOM } = createRequire(path.resolve(__dirname, '../frontend/react-neko-chat/package.json'))('jsdom');
+const labels = { tour: 'Tour', next: 'Next', skip: 'Skip', unavailable: 'Unavailable', nativeFallback: 'Click Next if blocked' };
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function setup() {
+    const dom = new JSDOM('<button id="target">Target</button><button id="outside">Outside</button>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+    for (const module of ['mask', 'highlight', 'target', 'advance', 'opened-window', 'runner']) {
+        dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide', module + '.js'), 'utf8'));
+    }
+    const target = dom.window.document.querySelector('#target');
+    target.getBoundingClientRect = () => ({ left: 100, top: 100, right: 140, bottom: 140, width: 40, height: 40 });
+    return { dom, api: dom.window.NekoClickGuide, target, doc: dom.window.document };
+}
+
+test('opened inline panels guide the real close action before advancing', async () => {
+    const { dom, api, target, doc } = setup();
+    const close = doc.createElement('button'); close.id = 'close';
+    close.getBoundingClientRect = target.getBoundingClientRect;
+    target.onclick = () => doc.body.append(close);
+    close.onclick = () => close.remove();
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'Open', target: '#target', view: () => close.isConnected && {
+            title: 'Close first', target: '#close', advanceOnClick: true, requireClick: true,
+            ready: () => !close.isConnected,
+        } }, { title: 'After close' },
+    ] });
+    await guide.start(); target.click(); await delay(35);
+    assert.equal(guide.index, 0);
+    assert.equal(doc.querySelector('h2').textContent, 'Close first');
+    assert.equal(doc.querySelector('.click-guide-next').disabled, true);
+    close.click(); await delay(80);
+    assert.equal(guide.index, 1);
+    await guide.stop(); dom.window.close();
+});
+
+test('preview returns to its parent panel without skipping the close lesson', async () => {
+    const { dom, api, target, doc } = setup();
+    let panel = 'preview';
+    target.onclick = () => { panel = panel === 'preview' ? 'selection' : null; };
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'Export', view: () => panel && {
+            title: panel, target: '#target', advanceOnClick: true, requireClick: true,
+            resume: panel === 'preview', ready: () => panel !== 'preview',
+        } }, { title: 'Next tool' },
+    ] });
+    await guide.start(); target.click(); await delay(80);
+    assert.equal(guide.index, 0);
+    assert.equal(doc.querySelector('h2').textContent, 'selection');
+    target.click(); await delay(80); assert.equal(guide.index, 1);
+    await guide.stop(); dom.window.close();
+});
+
+test('browser child gets shared close highlight and returns only after closure', async () => {
+    const { dom, api, target, doc } = setup();
+    const popup = new JSDOM('<button data-neko-window-control="close">Close</button>', {
+        url: 'http://localhost/settings', pretendToBeVisual: true,
+    });
+    const child = popup.window;
+    const destroyChild = child.close.bind(child);
+    child.closed = false;
+    const close = child.document.querySelector('button');
+    close.getBoundingClientRect = target.getBoundingClientRect;
+    child.close = () => { child.closed = true; };
+    close.onclick = child.close;
+    const original = dom.window.open = () => child;
+    target.onclick = () => dom.window.open('/settings', 'settings');
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'Settings', target: '#target', windowGuide: {
+            title: 'Return', body: 'Close this page', nextLabel: 'Close and continue',
+            closeSelector: '[data-neko-window-control="close"]',
+        } }, { title: 'After closing' },
+    ] });
+    await guide.start(); target.click(); await delay(125);
+    assert.equal(guide.index, 0);
+    assert.equal(doc.querySelector('h2').textContent, 'Return');
+    assert.equal(child.document.querySelector('h2').textContent, 'Return');
+    assert.equal(child.document.querySelector('.click-guide-highlight').style.left, '94px');
+    const radius = child.document.querySelector('.click-guide-highlight').style.borderRadius;
+    assert.equal(radius, child.document.querySelector('rect[fill="black"]').getAttribute('rx') + 'px');
+    close.click(); await delay(140);
+    assert.equal(guide.index, 1);
+    assert.equal(dom.window.open, original);
+    assert.equal(child.document.querySelector('.click-guide-layer'), null);
+    await guide.stop(); dom.window.close(); destroyChild();
+});
+
+test('ending during child inspection removes guide UI without closing user page', async () => {
+    const { dom, api, target } = setup();
+    const childDom = new JSDOM('<p>Settings</p>', { url: 'http://localhost/settings' });
+    const child = childDom.window;
+    const destroyChild = child.close.bind(child);
+    child.closed = false; let closes = 0; child.close = () => { closes++; child.closed = true; };
+    const original = dom.window.open = () => child;
+    target.onclick = () => dom.window.open('/settings');
+    const guide = api.createRunner({ labels, steps: [{ target: '#target', windowGuide: {
+        title: 'Return', body: 'Close first', nextLabel: 'Close', closeSelector: 'button',
+    } }] });
+    await guide.start(); target.click(); await delay(110);
+    await guide.stop('skipped');
+    assert.equal(closes, 0);
+    assert.equal(child.document.querySelector('.click-guide-layer'), null);
+    assert.equal(dom.window.open, original);
+    dom.window.close(); destroyChild();
+});
+
+test('child close targets use their own viewport instead of the smaller opener', () => {
+    const { dom, api } = setup();
+    const popup = new JSDOM('<button id="close">Close</button>', { url: 'http://localhost/settings' });
+    Object.defineProperties(dom.window, { innerWidth: { value: 400 }, innerHeight: { value: 300 } });
+    Object.defineProperties(popup.window, { innerWidth: { value: 1000 }, innerHeight: { value: 800 } });
+    const close = popup.window.document.querySelector('#close');
+    close.getBoundingClientRect = () => ({ left: 940, top: 20, right: 980, bottom: 60, width: 40, height: 40 });
+    try { assert.equal(api.resolveTarget('#close', popup.window.document), close); }
+    finally { dom.window.close(); popup.window.close(); }
+});
+
+test('the real page close action exposes its confirmation without advancing prematurely', async () => {
+    const { dom, api, target } = setup();
+    const popup = new JSDOM('<button id="close">Close</button>', { url: 'http://localhost/settings' });
+    const child = popup.window;
+    const destroyChild = child.close.bind(child);
+    child.closed = false;
+    child.close = () => { child.closed = true; };
+    const close = child.document.querySelector('#close');
+    close.getBoundingClientRect = target.getBoundingClientRect;
+    close.onclick = () => { child.document.body.insertAdjacentHTML('beforeend', '<div role="dialog">Unsaved changes</div>'); };
+    dom.window.open = () => child;
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', windowGuide: { title: 'Return', body: 'Close first', nextLabel: 'Close',
+            closePending: 'Finish the page confirmation', closeSelector: '#close' } }, { title: 'Next' },
+    ] });
+    try {
+        await guide.start(); dom.window.open('/settings'); await delay(120);
+        close.click(); await delay(120);
+        assert.equal(guide.index, 0, 'a close request is not a completed close');
+        assert.equal(child.document.querySelector('.click-guide-window-return p').textContent, 'Finish the page confirmation');
+        assert.ok([...child.document.querySelectorAll('.click-guide-mask')].every(pane =>
+            parseFloat(pane.style.width) === 0 || parseFloat(pane.style.height) === 0));
+        child.close(); await delay(140);
+        assert.equal(guide.index, 1);
+    } finally { await guide.stop(); dom.window.close(); destroyChild(); }
+});
+
+for (const closeFrom of ['page', 'child card', 'parent card', 'skip']) {
+test(`nested browser pages preserve their parent and clean up (${closeFrom})`, async () => {
+    const { dom, api, target } = setup();
+    const popups = ['/settings', '/details'].map(url => new JSDOM('<button id="close">Close</button>', {
+        url: 'http://localhost' + url,
+    }));
+    const children = popups.map(popup => popup.window);
+    const destroy = children.map(child => child.close.bind(child));
+    for (const child of children) {
+        child.closed = false; child.close = () => { child.closed = true; };
+        const close = child.document.querySelector('#close');
+        close.getBoundingClientRect = target.getBoundingClientRect;
+        close.onclick = child.close;
+    }
+    const originalOpen = dom.window.open = () => children[0];
+    const originalNestedOpen = children[0].open = () => children[1];
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', windowGuide: { title: 'Return', body: 'Close first', nextLabel: 'Close', closeSelector: '#close' } },
+        { title: 'Next' },
+    ] });
+    try {
+        await guide.start(); dom.window.open('/settings'); await delay(120);
+        children[0].open('/details'); await delay(120);
+        assert.ok(children[1].document.querySelector('.click-guide-window-return'));
+        if (closeFrom === 'skip') {
+            await guide.stop('skipped');
+            assert.ok(children.every(child => !child.closed));
+            assert.ok(children.every(child => !child.document.querySelector('.click-guide-layer')));
+            assert.equal(dom.window.open, originalOpen);
+            assert.equal(children[0].open, originalNestedOpen);
+            return;
+        }
+        const closeDocument = closeFrom === 'parent card' ? dom.window.document : children[1].document;
+        closeDocument.querySelector(closeFrom === 'page' ? '#close' : '.click-guide-next').click();
+        await delay(140);
+        assert.equal(guide.index, 0);
+        assert.ok(children[0].document.querySelector('.click-guide-window-return'));
+        children[0].document.querySelector('#close').click(); await delay(140);
+        assert.equal(guide.index, 1);
+        assert.equal(dom.window.open, originalOpen);
+        assert.equal(children[0].open, originalNestedOpen);
+    } finally { await guide.stop(); dom.window.close(); destroy.forEach(close => close()); }
+});
+}
+
+test('page tutorials pause for inspection without consuming manual intent or marking seen', () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
+    pageGuide.currentPage = 'memory_browser';
+    root.localStorage.setItem('neko_tutorial_memory_browser_manual_intent', 'true');
+    root.__nekoClickGuideWindowInspection = true;
+    pageGuide.checkAndStartTutorial();
+    assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
+    assert.equal(pageGuide.startTutorial(), false);
+    pageGuide.isTutorialRunning = true;
+    root.isInTutorial = true;
+    pageGuide.driver = { destroy: () => pageGuide.handleTutorialEnd() };
+    root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(pageGuide.isTutorialRunning, false);
+    assert.equal(root.isInTutorial, false);
+    assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser'), null);
+    assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
+    delete root.__nekoClickGuideWindowInspection;
+    assert.equal(pageGuide.shouldManageCurrentPage(), true);
+    dom.window.close();
+});
+
+test('only the actual target click advances, and only after the UI is ready', async () => {
+    const { dom, api, target, doc } = setup();
+    let ready = false;
+    let cleanups = 0;
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', advanceOnClick: true, ready: () => ready, enter: () => () => cleanups++ },
+        { title: 'Second' }, { title: 'Third' }
+    ] });
+    await guide.start();
+    doc.querySelector('#outside').click();
+    await delay(30);
+    assert.equal(guide.index, 0);
+    target.click();
+    target.click();
+    await delay(30);
+    assert.equal(guide.index, 0);
+    ready = true;
+    await delay(70);
+    assert.equal(guide.index, 1, 'double click must not skip a step');
+    assert.equal(cleanups, 1);
+    await guide.stop('skipped');
+    assert.equal(doc.querySelector('.click-guide-layer'), null);
+    dom.window.close();
+});
+
+test('skip aborts pending waits and removes listeners without later advancement', async () => {
+    const { dom, api, target, doc } = setup();
+    let ready = false;
+    const endings = [];
+    const guide = api.createRunner({ labels, onEnd: reason => endings.push(reason), steps: [
+        { target: '#target', advanceOnClick: true, ready: () => ready }, { title: 'Next' }
+    ] });
+    await guide.start();
+    target.click();
+    await delay(20);
+    await guide.stop('skipped');
+    ready = true;
+    target.click();
+    await delay(80);
+    assert.equal(guide.index, 0);
+    assert.deepEqual(endings, ['skipped']);
+    assert.equal(doc.querySelector('.click-guide-layer'), null);
+    dom.window.close();
+});
+
+test('highlight tracks target movement and does not expose hidden ancestors', async () => {
+    const { dom, api, target, doc } = setup();
+    const guide = api.createRunner({ labels, steps: [{ target: '#target' }] });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-highlight').style.left, '94px');
+    target.getBoundingClientRect = () => ({ left: 180, top: 150, right: 220, bottom: 190, width: 40, height: 40 });
+    await delay(40);
+    assert.equal(doc.querySelector('.click-guide-highlight').style.left, '174px');
+    const wrapper = doc.createElement('div');
+    target.replaceWith(wrapper);
+    wrapper.append(target);
+    wrapper.style.opacity = '0';
+    assert.equal(api.resolveTarget('#target'), null);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('the highlight uses seven-day rectangular and image circular frames with a precise circular aperture', async () => {
+    const { dom, api, target, doc } = setup();
+    Object.defineProperties(target, { offsetWidth: { value: 40 }, offsetHeight: { value: 40 } });
+    target.style.borderTopLeftRadius = '50%';
+    const guide = api.createRunner({ labels, steps: [{ target: '#target' }] });
+    await guide.start();
+    const frame = doc.querySelector('.click-guide-highlight');
+    assert.ok(frame.classList.contains('yui-guide-spotlight-frame'));
+    assert.ok(frame.querySelector('.yui-guide-spotlight-circle-skin'));
+    assert.equal(frame.classList.contains('is-circle-image'), true);
+    assert.equal(frame.classList.contains('has-cat-ears'), false);
+    const visual = doc.querySelector('.click-guide-mask-visual');
+    const circle = visual.querySelector('circle');
+    const rectangle = visual.querySelector('rect[fill="black"]');
+    assert.equal(circle.style.display, '');
+    assert.equal(circle.getAttribute('r'), '26');
+    assert.equal(rectangle.style.display, 'none');
+    target.style.borderTopLeftRadius = '0px';
+    await delay(30);
+    assert.equal(frame.classList.contains('is-circle-image'), false);
+    assert.ok(frame.querySelector('.yui-guide-spotlight-chrome'));
+    assert.equal(circle.style.display, 'none');
+    assert.equal(rectangle.style.display, '');
+    assert.equal(frame.style.borderRadius, rectangle.getAttribute('rx') + 'px');
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('capsule overview fits its rounded border without a padded gap', async () => {
+    const { dom, api, target, doc } = setup();
+    target.style.borderTopLeftRadius = '999px';
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', shape: 'rect', padding: 0, radiusMode: 'target' }
+    ] });
+    await guide.start();
+    const frame = doc.querySelector('.click-guide-highlight');
+    assert.equal(frame.style.left, '100px');
+    assert.equal(frame.style.top, '100px');
+    assert.equal(frame.style.width, '40px');
+    assert.equal(frame.style.borderRadius, '20px');
+    assert.equal(doc.querySelector('.click-guide-mask-visual rect[fill="black"]').getAttribute('rx'), '20');
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('hover lesson advances after the control opens without requiring a click', async () => {
+    const { dom, api, target, doc } = setup();
+    let opened = false;
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', advanceOnHover: true, ready: () => opened }, { title: 'Next' }
+    ] });
+    await guide.start();
+    target.click();
+    await delay(25);
+    assert.equal(guide.index, 0);
+    target.dispatchEvent(new dom.window.Event('pointerover', { bubbles: true }));
+    await delay(25);
+    opened = true;
+    await delay(65);
+    assert.equal(guide.index, 1);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('visual focus can follow a narrow mark without shrinking the real click target', async () => {
+    const { dom, api, target, doc } = setup();
+    const guide = api.createRunner({ labels, steps: [{ target: '#target', shape: 'rect', catEars: true,
+        focusRect: element => {
+            const button = element.getBoundingClientRect();
+            return { left: button.left + 10, right: button.right - 10,
+                top: button.top + 18, bottom: button.bottom - 18 };
+        }, advanceOnClick: true }, { title: 'Clicked' }] });
+    await guide.start();
+    const frame = doc.querySelector('.click-guide-highlight');
+    assert.equal(frame.style.width, '32px');
+    assert.equal(frame.style.height, '16px');
+    assert.equal(frame.style.borderRadius, '4px');
+    assert.equal(doc.querySelector('.click-guide-mask-visual rect[fill="black"]').getAttribute('rx'), '4');
+    assert.equal(frame.classList.contains('is-compact'), true);
+    assert.equal(frame.classList.contains('has-cat-ears'), true);
+    assert.equal(frame.classList.contains('is-circle-image'), false);
+    assert.equal(doc.querySelectorAll('.click-guide-mask')[2].style.width, '104px');
+    target.click();
+    await delay(30);
+    assert.equal(guide.index, 1);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('history lessons focus the visible blue bar instead of its transparent button', () => {
+    const { dom, api, target } = setup();
+    const root = dom.window;
+    root.t = key => key;
+    const originalStyle = root.getComputedStyle.bind(root);
+    let lineWidth = '44px';
+    root.getComputedStyle = (element, pseudo) => pseudo === '::before'
+        ? { width: lineWidth, height: '3px' } : originalStyle(element);
+    target.className = 'compact-history-visibility-handle';
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const [, open, close] = api.chatSteps();
+    for (const lesson of [open, close]) {
+        assert.equal(lesson.catEars, true);
+        assert.equal(lesson.shape, 'rect');
+        const rect = lesson.focusRect(target);
+        assert.equal(rect.right - rect.left, 44);
+        assert.equal(rect.bottom - rect.top, 3);
+    }
+    lineWidth = '100%';
+    const openRect = close.focusRect(target);
+    assert.equal(openRect.right - openRect.left, 40);
+    dom.window.close();
+});
+
+test('typing a greeting and pressing Enter submits once before opening history', async () => {
+    const { dom, api, doc } = setup();
+    const input = doc.createElement('textarea');
+    input.className = 'composer-input';
+    input.getBoundingClientRect = () => ({ left: 100, top: 100, right: 240, bottom: 140, width: 140, height: 40 });
+    doc.body.append(input);
+    let sent = '';
+    input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing && input.value.trim()) {
+            sent = input.value.trim();
+            input.value = '';
+        }
+    });
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'Capsule', target: '.composer-input', requireInput: true,
+            advanceOnKey: 'Enter', keyTarget: '.composer-input',
+            keyReady: element => element.value.trim() === '你好',
+            ready: () => !input.value.trim() },
+        { title: 'History' },
+    ] });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-next').disabled, true);
+    input.value = '';
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await delay(30);
+    assert.equal(guide.index, 0);
+    assert.equal(sent, '', 'empty Enter cannot advance');
+    input.value = '你好';
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
+    await delay(30);
+    assert.equal(guide.index, 0, 'IME confirmation is not mistaken for sending');
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await delay(90);
+    assert.equal(sent, '你好');
+    assert.equal(guide.index, 1);
+    await guide.stop(); dom.window.close();
+});
+
+test('the chat tour stays in one area and preserves a draft or attachment', () => {
+    const { dom, api, doc } = setup();
+    dom.window.t = key => key;
+    let mode = 'compact';
+    dom.window.reactChatWindowHost = { getChatSurfaceMode: () => mode, setCompactToolFanOpen() {} };
+    const frame = doc.createElement('div');
+    frame.className = 'compact-chat-surface-frame';
+    frame.innerHTML = '<textarea class="composer-input"></textarea>';
+    doc.body.append(frame);
+    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const steps = api.chatSteps();
+    assert.deepEqual(Array.from(steps, step => step.id), [
+        'chatOverview', 'history', 'historyClose', 'tools', 'screenshot', 'avatar', 'translate',
+        'jukebox', 'import', 'export', 'galgame', 'minimize', 'restore'
+    ]);
+    assert.equal(steps[0].target, '.compact-chat-surface-frame');
+    assert.equal(steps[0].shape, 'rect');
+    assert.equal(steps[0].padding, 0);
+    assert.equal(steps[0].radiusMode, 'target');
+    assert.equal(steps[0].advanceOnKey, 'Enter');
+    assert.equal(steps[0].requireInput, true);
+    assert.equal(steps.find(step => step.id === 'tools').advanceOnHover, true);
+    assert.equal(steps.find(step => step.id === 'tools').advanceOnClick, undefined);
+    let reopened = '';
+    dom.window.reactChatWindowHost.setCompactChatState = value => { reopened = value; };
+    steps.find(step => step.id === 'tools').enter();
+    assert.equal(reopened, 'input', 'the real send collapses the composer, so tools reopen it');
+    assert.equal(steps.find(step => step.id === 'restore').when(), false);
+    mode = 'minimized';
+    assert.equal(steps.find(step => step.id === 'restore').when(), true);
+    const attachment = doc.createElement('button');
+    attachment.className = 'compact-input-tool-toggle';
+    attachment.type = 'submit';
+    doc.body.append(attachment);
+    assert.equal(steps.find(step => step.id === 'avatar').when(), false);
+    assert.equal(steps.find(step => step.id === 'tools').body(), 'clickGuide.toolsDraft.body');
+    assert.equal(attachment.type, 'submit');
+    const draftSteps = api.chatSteps();
+    assert.equal(draftSteps[0].requireInput, false, 'an existing draft is never sent by the guide');
+    assert.equal(draftSteps.find(step => step.id === 'tools').body(), 'clickGuide.toolsDraft.body');
+    attachment.remove();
+    dom.window.reactChatWindowHost.getState = () => ({ composerAttachments: [{ id: 'photo' }] });
+    assert.equal(api.chatSteps()[0].requireInput, false, 'an existing attachment is never sent as a greeting');
+    frame.remove();
+    dom.window.reactChatWindowHost.getState = () => ({ composerAttachments: [] });
+    assert.equal(api.chatSteps()[0].requireInput, false, 'a missing composer cannot trap the first lesson');
+    dom.window.close();
+});
+
+test('history reveal covers the panel, then the close lesson focuses the bar', () => {
+    const { dom, api, doc } = setup();
+    dom.window.t = key => key;
+    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const handle = doc.createElement('button');
+    handle.className = 'compact-history-visibility-handle';
+    handle.getBoundingClientRect = () => ({ left: 200, right: 320, top: 500, bottom: 526, width: 120, height: 26 });
+    const anchor = doc.createElement('section');
+    anchor.className = 'compact-export-history-anchor';
+    anchor.dataset.compactExportHistoryOpen = 'true';
+    const panel = doc.createElement('div');
+    panel.className = 'compact-export-history-panel';
+    panel.getBoundingClientRect = () => ({ left: 80, right: 440, top: 120, bottom: 504, width: 360, height: 384 });
+    anchor.append(panel); doc.body.append(handle, anchor);
+    const [ , open, close] = api.chatSteps();
+    const bar = open.focusRect(handle);
+    handle.setAttribute('aria-expanded', 'true');
+    const rect = open.focusRect(handle);
+    const closeRect = close.focusRect(handle);
+    assert.equal(close.target, '.compact-history-visibility-handle');
+    assert.deepEqual({ ...rect }, { left: 80, top: 120, right: 440, bottom: bar.bottom });
+    assert.deepEqual({ ...closeRect }, { ...bar });
+    assert.equal(open.animateFocus(), true);
+    assert.equal(close.animateFocus, true);
+    dom.window.close();
+});
+
+test('history close step puts the ghost cursor on the blue bar after the panel reveal', async () => {
+    const { dom, api, doc } = setup();
+    const root = dom.window;
+    root.t = key => key;
+    const originalStyle = root.getComputedStyle.bind(root);
+    root.getComputedStyle = (element, pseudo) => pseudo === '::before'
+        ? { width: '44px', height: '3px' } : originalStyle(element);
+    const handle = doc.createElement('button');
+    handle.className = 'compact-history-visibility-handle';
+    handle.setAttribute('aria-expanded', 'false');
+    handle.getBoundingClientRect = () => ({ left: 100, right: 200, top: 500, bottom: 526, width: 100, height: 26 });
+    handle.onclick = () => handle.setAttribute('aria-expanded', handle.getAttribute('aria-expanded') === 'true' ? 'false' : 'true');
+    const anchor = doc.createElement('section');
+    anchor.className = 'compact-export-history-anchor';
+    anchor.dataset.compactExportHistoryOpen = 'true';
+    const panel = doc.createElement('div');
+    panel.className = 'compact-export-history-panel';
+    panel.getBoundingClientRect = () => ({ left: 50, right: 250, top: 200, bottom: 510, width: 200, height: 310 });
+    anchor.append(panel); doc.body.append(handle, anchor);
+    root.reactChatWindowHost = { setCompactHistoryOpen() {} };
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const [, open, close] = api.chatSteps();
+    const nativeFrames = [];
+    const presentation = { bind() {}, update(frame) { nativeFrames.push(frame); }, async close() {} };
+    const guide = api.createRunner({ labels, steps: [open, close], presentation });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-highlight').classList.contains('is-click-step'), true,
+        'the collapsed history bar initially has a click cursor');
+    assert.equal(nativeFrames.at(-1).clickable, true);
+    handle.click();
+    await delay(90);
+    assert.equal(guide.index, 0, 'the opened history remains visible for its reveal');
+    const expandedRing = doc.querySelector('.click-guide-highlight');
+    assert.equal(expandedRing.style.width, '212px');
+    assert.equal(expandedRing.classList.contains('is-click-step'), false,
+        'the expanded history panel has no click cursor during the reveal');
+    assert.equal(nativeFrames.at(-1).clickable, false);
+    await delay(600);
+    assert.equal(guide.index, 1);
+    const ring = doc.querySelector('.click-guide-highlight');
+    assert.equal(ring.style.width, '56px');
+    assert.equal(ring.classList.contains('is-click-step'), true);
+    assert.equal(nativeFrames.at(-1).clickable, true);
+    assert.equal(ring.classList.contains('has-cat-ears'), true);
+    assert.equal(ring.classList.contains('cursor-on-target'), true);
+    assert.equal(doc.querySelector('.click-guide-ghost-cursor').parentElement, ring);
+    handle.click();
+    await delay(75);
+    assert.equal(guide.index, 2);
+    dom.window.close();
+});
+
+test('hover lesson advances when the real wheel opens without a click event', async () => {
+    const { dom, api, doc } = setup();
+    let open = false;
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'Wheel', target: '#target', advanceOnHover: true, ready: () => open },
+        { title: 'First tool', target: '#target' },
+    ] });
+    await guide.start();
+    await delay(75);
+    assert.equal(guide.index, 0);
+    open = true;
+    await delay(100);
+    assert.equal(guide.index, 1);
+    assert.equal(doc.querySelector('h2').textContent, 'First tool');
+    await guide.stop(); dom.window.close();
+});
+
+test('floating tour covers main buttons once and recalls only after actual goodbye click', () => {
+    const { dom, api, doc } = setup();
+    dom.window.t = key => key;
+    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const steps = api.floatingSteps();
+    assert.deepEqual(Array.from(steps, step => step.id), [
+        'floatingOverview', 'mic', 'agent', 'social', 'settings', 'goodbye', 'return', 'lock', 'finish'
+    ]);
+    assert.equal(steps[0].shape, 'rect');
+    assert.equal(steps[0].advanceOnClick, true);
+    assert.equal(steps[0].consumeTargetClick, true);
+    const goodbye = steps.find(step => step.id === 'goodbye');
+    const recall = doc.createElement('button');
+    recall.className = 'neko-idle-return-btn';
+    recall.getBoundingClientRect = () => ({ left: 100, top: 100, right: 140, bottom: 140, width: 40, height: 40 });
+    doc.body.append(recall);
+    goodbye.onAdvance({ by: 'next' });
+    assert.equal(steps.find(step => step.id === 'return').when(), false);
+    goodbye.onAdvance({ by: 'target' });
+    assert.equal(steps.find(step => step.id === 'return').when(), true);
+    dom.window.close();
+});
+
+test('floating overview bounds include the first and last actual buttons', () => {
+    const { dom, api, doc } = setup();
+    dom.window.t = key => key;
+    dom.window.universalTutorialManager = { constructor: { detectModelPrefix: () => 'live2d' } };
+    const group = doc.createElement('div');
+    group.id = 'live2d-floating-buttons';
+    group.getBoundingClientRect = () => ({ left: 100, top: 120, right: 160, bottom: 270, width: 60, height: 150 });
+    for (const [id, top] of [['mic', 110], ['agent', 150], ['social', 180], ['settings', 210], ['goodbye', 250]]) {
+        const button = doc.createElement('button');
+        button.id = `live2d-btn-${id}`;
+        button.getBoundingClientRect = () => ({ left: 112, top, right: 142, bottom: top + 30, width: 30, height: 30 });
+        group.append(button);
+    }
+    doc.body.append(group);
+    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const overview = api.floatingSteps()[0];
+    assert.equal(overview.target(), group);
+    assert.deepEqual({ ...overview.focusRect(group) }, { left: 112, top: 110, right: 142, bottom: 280 });
+    dom.window.close();
+});
+
+test('informational buttons do not advance on click or show the ghost cursor', async () => {
+    const { dom, api, doc, target } = setup();
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'Info', target: '#target' },
+        { title: 'Click', target: '#target', advanceOnClick: true }
+    ] });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-highlight').classList.contains('is-click-step'), false);
+    target.click();
+    await delay(25);
+    assert.equal(guide.index, 0);
+    doc.querySelector('.click-guide-next').click();
+    await delay(30);
+    assert.equal(doc.querySelector('.click-guide-highlight').classList.contains('is-click-step'), true);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('conditional lessons can be skipped without touching the input draft', async () => {
+    const { dom, api, doc } = setup();
+    const input = doc.createElement('textarea');
+    input.value = 'Keep my draft';
+    doc.body.append(input);
+    let entered = false;
+    const guide = api.createRunner({ labels, steps: [
+        { when: () => false, enter: () => { entered = true; } }, { title: 'Next' }
+    ] });
+    await guide.start();
+    assert.equal(guide.index, 1);
+    assert.equal(entered, false);
+    assert.equal(input.value, 'Keep my draft');
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('chapter progress counts visited lessons without evaluating future conditions early', async () => {
+    const { dom, api, doc } = setup();
+    let checks = 0;
+    const guide = api.createRunner({ labels: { ...labels, section: 'Chat capsule' }, steps: [
+        { title: 'Overview' }, { when: () => { checks++; return false; } }, { title: 'Input' },
+    ] });
+    await guide.start();
+    assert.equal(checks, 0);
+    assert.equal(doc.querySelector('.click-guide-progress').textContent, 'Chat capsule · 1 / 3');
+    doc.querySelector('.click-guide-next').click();
+    await delay(35);
+    assert.equal(checks, 1);
+    assert.equal(guide.index, 2);
+    assert.equal(doc.querySelector('.click-guide-progress').textContent, 'Chat capsule · 2 / 2');
+    await guide.stop(); dom.window.close();
+});
+
+test('each highlighted chat tool advances without executing its action', async () => {
+    const { dom, api, doc } = setup();
+    dom.window.t = key => key;
+    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const ids = ['screenshot', 'avatar', 'translate', 'jukebox', 'import', 'export', 'galgame'];
+    const actions = Object.fromEntries(ids.map(id => [id, 0]));
+    dom.window.reactChatWindowHost = {
+        setAvatarToolMenuOpen() {}, deactivateAvatarTool() {}, setCompactToolFanOpen() {},
+        setCompactToolWheelIndex() {}, getState: () => ({ composerAttachments: [] })
+    };
+    const fan = doc.createElement('div');
+    fan.className = 'compact-input-tool-fan';
+    doc.body.append(fan);
+    for (const id of ids) {
+        const item = doc.createElement('div');
+        item.className = `compact-input-tool-item-${id}`;
+        const button = doc.createElement('button');
+        button.textContent = id;
+        button.onclick = () => actions[id]++;
+        item.append(button); fan.append(item);
+        item.getBoundingClientRect = button.getBoundingClientRect = () => ({
+            left: 100, top: 100, right: 140, bottom: 140, width: 40, height: 40
+        });
+    }
+    const steps = api.chatSteps().filter(step => ids.includes(step.id));
+    assert.ok(steps.every(step => step.advanceOnClick && step.consumeTargetClick));
+    assert.ok(steps.every(step => !step.view && !step.windowGuide));
+    const guide = api.createRunner({ labels, steps });
+    try {
+        await guide.start();
+        for (const [index, id] of ids.entries()) {
+            const button = doc.querySelector(`.compact-input-tool-item-${id} button`);
+            assert.equal(doc.querySelector('.click-guide-highlight').classList.contains('is-click-step'), true);
+            assert.match(doc.querySelector('.click-guide-card p:not(.click-guide-status)').textContent, /toolContinueHint/);
+            button.click();
+            await delay(35);
+            assert.equal(actions[id], 0, `${id} must not run during the guide`);
+            assert.equal(guide.index, index + 1);
+        }
+        doc.querySelector('.compact-input-tool-item-screenshot button').click();
+        assert.equal(actions.screenshot, 1, 'the original action works after the guide ends');
+    } finally { await guide.stop(); dom.window.close(); }
+});
+
+test('pointerup restoration may change the target selector before click', async () => {
+    const { dom, api, target } = setup();
+    target.className = 'minimized';
+    const guide = api.createRunner({ labels, steps: [
+        { target: '.minimized', advanceOnClick: true, ready: () => target.className === '' },
+        { title: 'Restored' }
+    ] });
+    await guide.start();
+    target.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    target.className = '';
+    target.click();
+    await delay(30);
+    assert.equal(guide.index, 1);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('a denied or unavailable action can be acknowledged after readiness times out', async () => {
+    const { dom, api, target, doc } = setup();
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', advanceOnClick: true, requireClick: true, ready: () => false, readyTimeout: 20 },
+        { title: 'Continued' }
+    ] });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-next').disabled, true);
+    target.click();
+    await delay(100);
+    assert.equal(doc.querySelector('.click-guide-next').disabled, false);
+    doc.querySelector('.click-guide-next').click();
+    await delay(25);
+    assert.equal(guide.index, 1);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('native presentation receives geometry and actions, and releases on exit', async () => {
+    const { dom, api, doc } = setup();
+    let actions, frame, closed = 0;
+    const guide = api.createRunner({ labels, steps: [{ target: '#target' }, { title: 'Second' }], presentation: {
+        bind(value) { actions = value; }, update(value) { frame = value; }, close() { closed++; }
+    } });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-layer').style.visibility, 'hidden');
+    assert.ok(doc.querySelector('.click-guide-layer').classList.contains('click-guide-native'));
+    assert.equal(frame.rect.left, 94);
+    actions.next();
+    await delay(25);
+    assert.equal(guide.index, 1);
+    actions.skip();
+    await delay(25);
+    assert.equal(closed, 1);
+    dom.window.close();
+});
+
+test('native card actions re-enable when a step settles without another animation frame', async () => {
+    const { dom, api, target } = setup();
+    dom.window.requestAnimationFrame = () => 1;
+    dom.window.cancelAnimationFrame = () => {};
+    const frames = [];
+    const guide = api.createRunner({ labels, presentation: {
+        bind() {}, update(value) { frames.push(value); }, close() {}
+    }, steps: [
+        { title: 'First', target: '#target', advanceOnClick: true },
+        { title: 'Second', target: '#target' }
+    ] });
+    await guide.start();
+    target.click();
+    await delay(20);
+    assert.equal(guide.index, 1);
+    assert.equal(frames.at(-1).nextDisabled, false);
+    assert.equal(frames.at(-1).backDisabled, false);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('native target click waits for restored state before continuing', async () => {
+    const { dom, api } = setup();
+    let actions;
+    let restored = false;
+    const guide = api.createRunner({
+        labels, presentation: { bind(value) { actions = value; }, update() {}, close() {} },
+        steps: [
+            { id: 'restore', target: '#missing', nativeTarget: 'minimizedBall',
+                requireClick: true, advanceOnClick: true, ready: () => restored },
+            { title: 'Restored' }
+        ]
+    });
+    await guide.start();
+    assert.equal(dom.window.document.querySelector('.click-guide-next').disabled, true);
+    actions.target();
+    await delay(30);
+    assert.equal(guide.index, 0);
+    restored = true;
+    await delay(60);
+    assert.equal(guide.index, 1);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('a disappearing goodbye button does not center its card before the return button appears', async () => {
+    const { dom, api, target, doc } = setup();
+    let frame;
+    const returning = doc.createElement('button');
+    returning.id = 'return';
+    returning.getBoundingClientRect = target.getBoundingClientRect;
+    target.onclick = () => {
+        target.remove();
+        dom.window.setTimeout(() => doc.body.append(returning), 100);
+    };
+    const guide = api.createRunner({ labels, presentation: {
+        bind() {}, update(value) { frame = value; }, close() {}
+    }, steps: [
+        { title: 'Goodbye', target: '#target', advanceOnClick: true,
+            ready: () => returning.isConnected },
+        { title: 'Return', target: '#return' }
+    ] });
+    await guide.start();
+    target.click();
+    await delay(45);
+    assert.equal(frame.targetExpected, true);
+    assert.equal(frame.rect, null);
+    assert.equal(doc.querySelector('.click-guide-card').style.display, 'none');
+    await delay(110);
+    assert.equal(guide.index, 1);
+    assert.equal(doc.querySelector('.click-guide-card').style.display, '');
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('native restore offers a visible continuation if the ball cannot be clicked', async () => {
+    const { dom, api, doc } = setup();
+    const original = dom.window.setTimeout.bind(dom.window);
+    dom.window.setTimeout = (callback, ms, ...args) => original(callback, ms === 6000 ? 30 : ms, ...args);
+    const guide = api.createRunner({ labels, presentation: { bind() {}, update() {}, close() {} }, steps: [
+        { id: 'restore', target: '#missing', nativeTarget: 'minimizedBall',
+            requireClick: true, advanceOnClick: true }, { title: 'Next' }
+    ] });
+    await guide.start();
+    assert.equal(doc.querySelector('.click-guide-card').style.display, 'none');
+    assert.equal(doc.querySelector('.click-guide-next').disabled, true);
+    await delay(70);
+    assert.equal(doc.querySelector('.click-guide-card').style.display, '', 'fallback card appears when the ball is unavailable');
+    assert.equal(doc.querySelector('.click-guide-next').disabled, false);
+    assert.equal(doc.querySelector('.click-guide-status').textContent, labels.nativeFallback);
+    doc.querySelector('.click-guide-next').click();
+    await delay(30);
+    assert.equal(guide.index, 1);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+test('browser-only restore explains when the desktop ball is absent', async () => {
+    const { dom, api, doc } = setup();
+    const original = dom.window.setTimeout.bind(dom.window);
+    dom.window.setTimeout = (callback, ms, ...args) => original(callback, ms === 2000 ? 20 : ms, ...args);
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#missing', nativeTarget: 'minimizedBall', requireClick: true, advanceOnClick: true }
+    ] });
+    await guide.start();
+    await delay(50);
+    assert.equal(doc.querySelector('.click-guide-next').disabled, false);
+    assert.equal(doc.querySelector('.click-guide-status').textContent, labels.unavailable);
+    await guide.stop('skipped');
+    dom.window.close();
+});
+
+function startup(state, old = {}) {
+    const context = setup();
+    const root = context.dom.window;
+    const calls = [];
+    root.t = key => key;
+    root.NekoSevenDayTutorialState = { loadState: () => old };
+    root.NekoClickGuideState = {
+        ready: async () => state, refresh: async () => state, get: () => state,
+        update: async (action, values) => {
+            calls.push(action);
+            Object.assign(state, values);
+            state.pending = action === 'choose' && values.choice === 'click';
+            return state;
+        }
+    };
+    const manager = root.universalTutorialManager = {
+        currentPage: 'home', isI18nReady: () => true,
+        setHomeTutorialPending: value => { root.isNekoHomeTutorialPending = value; },
+        clearStartupGreetingRelease: () => { root.isNekoHomeTutorialPending = false; },
+        dispatchStartupGreetingRelease: () => { calls.push('released'); }
+    };
+    Object.assign(context.api, {
+        createNativePresentation: () => null, chatSteps: () => [], floatingSteps: () => [],
+        prepareChat: async () => () => calls.push('chat-restored'),
+        prepareFloating: async () => () => calls.push('floating-restored')
+    });
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home.js'), 'utf8'));
+    return { ...context, manager, calls };
+}
+
+test('existing seven-day users and completed click users do not see the chooser', async () => {
+    for (const choice of ['seven-day', 'click']) {
+        const ctx = startup({ choice, status: 'completed', pending: false, revision: 1 });
+        assert.equal(await ctx.api.handleStartup(ctx.manager), choice === 'click');
+        assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
+        assert.ok(!ctx.calls.includes('choose'));
+        ctx.dom.window.close();
+    }
+});
+
+test('first user can choose either flow, with independent completion and cleanup', async () => {
+    for (const choice of ['seven-day', 'click']) {
+        const old = {};
+        const state = { choice: null, status: 'unseen', pending: false, revision: 0 };
+        const ctx = startup(state, old);
+        const result = ctx.api.handleStartup(ctx.manager);
+        await delay(20);
+        const buttons = ctx.doc.querySelectorAll('.click-guide-choice button');
+        assert.equal(buttons.length, 2);
+        buttons[choice === 'click' ? 0 : 1].click();
+        assert.equal(await result, choice === 'click');
+        assert.equal(state.choice, choice);
+        assert.deepEqual(old, {}, 'seven-day progress is untouched');
+        assert.equal(ctx.calls.includes('finish'), choice === 'click');
+        if (choice === 'click') {
+            assert.equal(ctx.dom.window.isNekoClickGuideActive, false);
+            assert.ok(ctx.calls.includes('chat-restored'));
+            assert.ok(ctx.calls.includes('floating-restored'));
+        }
+        ctx.dom.window.close();
+    }
+});
+
+test('a requested seven-day manual reset still takes precedence', async () => {
+    const ctx = startup({ choice: 'click', pending: true }, { manualResetRound: 1 });
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+    assert.deepEqual(ctx.calls, []);
+    ctx.dom.window.close();
+});
+
+test('the input lesson keeps focus on the composer instead of collapsing it', async () => {
+    const { dom, api, target, doc } = setup();
+    const input = doc.createElement('textarea');
+    input.className = 'composer-input';
+    input.getBoundingClientRect = target.getBoundingClientRect;
+    input.addEventListener('blur', () => input.remove());
+    doc.body.append(input);
+    const guide = api.createRunner({ labels, steps: [{ target: '#target', keyTarget: '.composer-input',
+        advanceOnKey: 'Enter', requireInput: true }] });
+    try {
+        await guide.start();
+        assert.equal(doc.activeElement, input);
+        await delay(40);
+        assert.equal(input.isConnected, true);
+        assert.equal(doc.querySelector('.click-guide-status').textContent, '');
+    } finally { await guide.stop(); dom.window.close(); }
+});
+
+test('history close keeps the panel and the blue collapse bar lit separately', async () => {
+    const { dom, api, doc } = setup();
+    const root = dom.window;
+    root.t = key => key;
+    const originalStyle = root.getComputedStyle.bind(root);
+    root.getComputedStyle = (element, pseudo) => pseudo === '::before'
+        ? { width: '44px', height: '3px' } : originalStyle(element);
+    const handle = doc.createElement('button');
+    handle.className = 'compact-history-visibility-handle';
+    handle.setAttribute('aria-expanded', 'true');
+    handle.getBoundingClientRect = () => ({ left: 100, right: 200, top: 500, bottom: 526, width: 100, height: 26 });
+    const anchor = doc.createElement('section');
+    anchor.className = 'compact-export-history-anchor';
+    anchor.dataset.compactExportHistoryOpen = 'true';
+    const panel = doc.createElement('div');
+    panel.className = 'compact-export-history-panel';
+    panel.getBoundingClientRect = () => ({ left: 50, right: 250, top: 200, bottom: 490, width: 200, height: 290 });
+    anchor.append(panel); doc.body.append(handle, anchor);
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const guide = api.createRunner({ labels, steps: [api.chatSteps()[2]] });
+    try {
+        await guide.start();
+        const [barFrame, panelFrame] = doc.querySelectorAll('.click-guide-highlight');
+        assert.equal(barFrame.style.width, '56px');
+        assert.equal(panelFrame.style.width, '200px');
+        assert.equal(barFrame.classList.contains('is-click-step'), true);
+        assert.equal(panelFrame.classList.contains('is-click-step'), false);
+        const apertures = doc.querySelectorAll('.click-guide-mask-visual rect[fill="black"]');
+        assert.equal(apertures.length, 2);
+        assert.ok([...apertures].every(rect => rect.style.display === ''));
+    } finally { await guide.stop(); dom.window.close(); }
+});
+
+test('floating overview consumes only a real button click and keeps the cursor on a button', async () => {
+    const { dom, api, doc } = setup();
+    const root = dom.window;
+    root.t = key => key;
+    root.universalTutorialManager = { constructor: { detectModelPrefix: () => 'live2d' } };
+    const group = doc.createElement('div');
+    group.id = 'live2d-floating-buttons';
+    group.getBoundingClientRect = () => ({ left: 100, right: 160, top: 100, bottom: 340, width: 60, height: 240 });
+    const actions = {};
+    for (const [i, name] of ['mic', 'agent', 'social', 'settings', 'goodbye'].entries()) {
+        const button = doc.createElement('button');
+        button.id = `live2d-btn-${name}`;
+        button.getBoundingClientRect = () => ({ left: 110, right: 150,
+            top: 110 + i * 45, bottom: 150 + i * 45, width: 40, height: 40 });
+        actions[name] = 0;
+        button.onclick = () => actions[name]++;
+        group.append(button);
+    }
+    doc.body.append(group);
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    try {
+        for (const name of Object.keys(actions)) {
+            const guide = api.createRunner({ labels, steps: [api.floatingSteps()[0], { title: 'Mic' }] });
+            try {
+                await guide.start();
+                group.click();
+                await delay(5);
+                assert.equal(guide.index, 0, 'empty space is not a button');
+                assert.equal(doc.querySelector('.click-guide-ghost-cursor').style.left, '10px');
+                group.querySelector(`#live2d-btn-${name}`).click();
+                await delay(35);
+                assert.equal(guide.index, 1);
+                assert.equal(actions[name], 0, `${name} action must be blocked`);
+            } finally { await guide.stop(); }
+        }
+        group.querySelector('#live2d-btn-mic').click();
+        assert.equal(actions.mic, 1, 'normal clicking is restored after the guide');
+    } finally { dom.window.close(); }
+});
+
+test('Back follows visited steps and does not count conditional skips twice', async () => {
+    const { dom, api, doc } = setup();
+    const guide = api.createRunner({ labels: { ...labels, back: 'Previous' }, steps: [
+        { title: 'First' }, { title: 'Skipped', when: () => false }, { title: 'Third' }
+    ] });
+    try {
+        await guide.start();
+        assert.equal(doc.querySelector('.click-guide-back').disabled, true);
+        doc.querySelector('.click-guide-next').click(); await delay(35);
+        assert.equal(guide.index, 2);
+        assert.equal(doc.querySelector('.click-guide-progress').textContent, '2 / 2');
+        doc.querySelector('.click-guide-back').click(); await delay(35);
+        assert.equal(guide.index, 0);
+        assert.equal(doc.querySelector('.click-guide-progress').textContent, '1 / 2');
+        doc.querySelector('.click-guide-next').click(); await delay(35);
+        assert.equal(guide.index, 2);
+        assert.equal(doc.querySelector('.click-guide-progress').textContent, '2 / 2');
+    } finally { await guide.stop(); dom.window.close(); }
+});
+
+test('Back from floating 1/9 returns to the chat final step, then its prior step', async () => {
+    const ctx = startup({ choice: 'click', status: 'unseen', pending: true, revision: 1 });
+    const root = ctx.dom.window;
+    let surface = 'compact';
+    root.reactChatWindowHost = {
+        setChatSurfaceMode(value) { surface = value; }, getChatSurfaceMode: () => surface
+    };
+    ctx.api.chatSteps = () => Array.from({ length: 13 }, (_, i) => ({
+        id: i === 12 ? 'restore' : `chat-${i}`, title: `Chat ${i + 1}`
+    }));
+    ctx.api.floatingSteps = () => [{ title: 'Floating 1' }];
+    const finished = ctx.api.startHome();
+    try {
+        await delay(30);
+        for (let i = 0; i < 13; i++) {
+            assert.equal(ctx.doc.querySelector('.click-guide-card h2')?.textContent, `Chat ${i + 1}`);
+            ctx.doc.querySelector('.click-guide-next').click();
+            await delay(25);
+        }
+        assert.equal(ctx.doc.querySelector('.click-guide-card h2')?.textContent, 'Floating 1');
+        assert.equal(ctx.doc.querySelector('.click-guide-back').disabled, false);
+        ctx.doc.querySelector('.click-guide-back').click();
+        await delay(50);
+        assert.equal(ctx.doc.querySelector('.click-guide-card h2')?.textContent, 'Chat 13');
+        assert.equal(ctx.doc.querySelector('.click-guide-progress').textContent, 'clickGuide.sections.chat · 13 / 13');
+        assert.equal(surface, 'minimized');
+        ctx.doc.querySelector('.click-guide-back').click();
+        await delay(35);
+        assert.equal(ctx.doc.querySelector('.click-guide-card h2')?.textContent, 'Chat 12');
+    } finally {
+        ctx.doc.querySelector('.click-guide-actions button')?.click();
+        await finished;
+        ctx.dom.window.close();
+    }
+});
+
+test('floating adaptation isolates the overlapping lock and restores presence on exit', async () => {
+    const { dom, api, doc } = setup();
+    const root = dom.window;
+    doc.body.innerHTML = '<div id="live2d-floating-buttons" style="opacity:0"><button id="live2d-btn-settings"></button></div>'
+        + '<div id="live2d-lock-icon" style="visibility:visible"></div><button class="neko-idle-return-btn"></button>';
+    doc.querySelector('.neko-idle-return-btn').getBoundingClientRect = () => ({left: 20, top: 20, right: 60, bottom: 60, width: 40, height: 40});
+    root.t = key => key;
+    root.universalTutorialManager = { constructor: { detectModelPrefix: () => 'live2d' } };
+    root.live2dManager = { _goodbyeClicked: false, closeAllPopups() {} };
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const cleanup = await api.prepareFloating();
+    const lock = doc.querySelector('#live2d-lock-icon');
+    assert.ok(lock.classList.contains('click-guide-hidden-control'));
+    api.floatingSteps().find(step => step.id === 'lock').enter();
+    assert.equal(lock.classList.contains('click-guide-hidden-control'), false);
+    root.live2dManager._goodbyeClicked = true;
+    doc.querySelector('.neko-idle-return-btn').onclick = () => { root.live2dManager._goodbyeClicked = false; };
+    await cleanup();
+    assert.equal(root.live2dManager._goodbyeClicked, false);
+    assert.equal(lock.style.visibility, 'visible');
+    assert.equal(lock.style.display, '');
+    assert.equal(doc.querySelector('#live2d-floating-buttons').style.opacity, '0');
+    assert.equal(doc.querySelector('#live2d-floating-buttons').hasAttribute('data-in-tutorial'), false);
+    dom.window.close();
+});
+
+test('an initially away character is recalled for the toolbar and returned afterwards', async () => {
+    const { dom, api, doc } = setup();
+    const root = dom.window;
+    doc.body.innerHTML = '<div id="live2d-floating-buttons"><button id="live2d-btn-goodbye"></button></div><button class="neko-idle-return-btn"></button>';
+    const recall = doc.querySelector('.neko-idle-return-btn');
+    recall.getBoundingClientRect = () => ({left: 20, top: 20, right: 60, bottom: 60, width: 40, height: 40});
+    root.t = key => key;
+    root.universalTutorialManager = { constructor: { detectModelPrefix: () => 'live2d' } };
+    root.live2dManager = { _goodbyeClicked: true, closeAllPopups() {} };
+    recall.onclick = () => { root.live2dManager._goodbyeClicked = false; };
+    doc.querySelector('#live2d-btn-goodbye').onclick = () => { root.live2dManager._goodbyeClicked = true; };
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    const cleanup = await api.prepareFloating();
+    assert.equal(root.live2dManager._goodbyeClicked, false);
+    await cleanup();
+    assert.equal(root.live2dManager._goodbyeClicked, true);
+    dom.window.close();
+});
+
+test('shared window proxies offer focus and wait for actual closure without pretending to close', async () => {
+    const { dom, api, doc } = setup();
+    let focuses = 0;
+    let closes = 0;
+    const shared = { closed: false, focus() { focuses++; }, close() { closes++; } };
+    dom.window.openOrFocusWindow = () => shared;
+    const shown = [];
+    const guide = api.createRunner({ labels, onStep: (_step, index) => shown.push(index), steps: [
+        { target: '#target', windowGuide: { title: 'Return', body: 'Close this page', nextLabel: 'Close',
+            manualClose: 'Close the existing page, then return here', returnToPage: 'Go to the page', closeSelector: '#close' } },
+        { title: 'Next' }, { title: 'Last' },
+    ] });
+    try {
+        await guide.start(); dom.window.openOrFocusWindow('/settings'); await delay(120);
+        assert.equal(doc.querySelector('.click-guide-card p').textContent, 'Close the existing page, then return here');
+        assert.equal(doc.querySelector('.click-guide-next').textContent, 'Go to the page');
+        doc.querySelector('.click-guide-next').click(); await delay(120);
+        assert.equal(focuses, 1);
+        assert.equal(closes, 0);
+        assert.equal(guide.index, 0);
+        shared.closed = true; await delay(240);
+        assert.equal(guide.index, 1);
+        assert.deepEqual(shown, [0, 1]);
+    } finally { await guide.stop(); dom.window.close(); }
+});
+
+test('cross-origin real windows retain their native close fallback', async () => {
+    const { dom, api, doc } = setup();
+    let closes = 0;
+    const child = { closed: false, close() { closes++; child.closed = true; } };
+    child.window = child;
+    Object.defineProperty(child, 'document', { get() { throw new Error('Cross-origin access denied'); } });
+    dom.window.open = () => child;
+    const guide = api.createRunner({ labels, steps: [
+        { target: '#target', windowGuide: { title: 'Return', body: 'Close this page', nextLabel: 'Close',
+            manualClose: 'Close the existing page', returnToPage: 'Go to the page', closeSelector: '#close' } },
+        { title: 'Next' },
+    ] });
+    try {
+        await guide.start(); dom.window.open('https://example.invalid'); await delay(120);
+        assert.equal(doc.querySelector('.click-guide-next').textContent, 'Close');
+        doc.querySelector('.click-guide-next').click(); await delay(140);
+        assert.equal(closes, 1);
+        assert.equal(guide.index, 1);
+    } finally { await guide.stop(); dom.window.close(); }
+});

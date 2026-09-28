@@ -2471,6 +2471,21 @@
         }
     }
 
+    async function resetClickGuide() {
+        const button = document.getElementById('click-guide-reset-btn');
+        if (button) button.disabled = true;
+        try {
+            await window.NekoClickGuideState.refresh();
+            await window.NekoClickGuideState.update('reset');
+            await showTutorialResetNotice(window.t('clickGuide.resetSuccess'));
+        } catch (error) {
+            console.error('[MemoryBrowser] Click guide reset failed:', error);
+            await showTutorialResetNotice(window.t('clickGuide.saveFailed'), { variant: 'error' });
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
     async function resetSelectedTutorial() {
         try {
             return await performSelectedTutorialReset();
@@ -5141,6 +5156,7 @@
     }
 
     window.resetSelectedTutorial = resetSelectedTutorial;
+    window.resetClickGuide = resetClickGuide;
     window.showTutorialResetNotice = showTutorialResetNotice;
 
 })();

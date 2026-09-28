@@ -4394,12 +4394,12 @@
                     buttonsContainer.style.display = 'none';
                     return;
                 }
-                if (this.isLocked) {
+                if (this.isLocked && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
                 }
-                if (this._pngtuberFloatingControlsVisible === false) {
+                if (this._pngtuberFloatingControlsVisible === false && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;

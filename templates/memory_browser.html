@@ -169,6 +169,9 @@
                             <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetSelectedTutorial()" disabled>
                                 <span data-i18n="memory.resetTutorialBtn">重置引导</span>
                             </button>
+                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="click-guide-reset-btn" onclick="resetClickGuide()">
+                                <span data-i18n="clickGuide.resetButton"></span>
+                            </button>
                         </div>
                     </div>
                     </div>
@@ -472,6 +475,7 @@
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/click-guide/state.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>

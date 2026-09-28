@@ -8,6 +8,11 @@
     'use strict';
 
     const PAGE_STORAGE_PREFIX = 'neko_tutorial_';
+    function isClickGuideInspectingPage() {
+        if (window.__nekoClickGuideWindowInspection) return true;
+        try { return window.opener?.isNekoClickGuideActive === true; }
+        catch (_) { return false; }
+    }
     const YUI_HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
     const SUPPORTED_PAGES = Object.freeze([
         'model_manager',
@@ -342,6 +347,7 @@
         }
 
         checkAndStartTutorial() {
+            if (isClickGuideInspectingPage()) return;
             if (!this.shouldManageCurrentPage()) return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
@@ -403,6 +409,7 @@
         }
 
         maybeStartModelManagerTutorial(delayMs = 400, reason = '') {
+            if (isClickGuideInspectingPage()) return;
             if (this.currentPage !== 'model_manager') return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
@@ -875,6 +882,7 @@
         }
 
         startTutorial() {
+            if (isClickGuideInspectingPage()) return false;
             if (!this.shouldManageCurrentPage()) return false;
             if (this.isTutorialRunning || window.isInTutorial) return false;
             if (this.hasActiveYuiHandoff()) return false;
@@ -1211,6 +1219,14 @@
     }
 
     window.PageTutorialManager = PageTutorialManager;
+    window.addEventListener('neko:click-guide-window-inspection', () => {
+        const manager = window.pageTutorialManager;
+        if (!isClickGuideInspectingPage() || !manager?.isTutorialRunning) return;
+        // Temporary interruption must not mark a page tutorial as seen/skipped.
+        manager.endReason = 'click-guide-window';
+        manager.driver?.destroy();
+        manager.handleTutorialEnd('click-guide-window');
+    });
     window.initPageTutorialManager = initPageTutorialManager;
     window.resetPageTutorialStorage = resetPageTutorialStorage;
 })();
