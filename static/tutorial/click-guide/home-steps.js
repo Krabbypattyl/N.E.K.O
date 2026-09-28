@@ -82,10 +82,20 @@
             nativeSnapshot = await native.prepareExpandedForTutorial();
             if (!nativeSnapshot.ready) throw new Error('native_chat_not_ready');
         }
-        await host.openWindow();
-        await api.waitUntil(() => host.getState()?.mounted, new AbortController().signal, 10000);
-        host.setChatSurfaceMode('compact');
-        host.setCompactChatState('input');
+        try {
+            await host.openWindow();
+            await api.waitUntil(() => host.getState()?.mounted, new AbortController().signal, 10000);
+            host.setChatSurfaceMode('compact');
+            host.setCompactChatState('input');
+        } catch (error) {
+            try {
+                if (nativeSnapshot?.wasCollapsed) await native.restoreCollapsedAfterTutorial?.();
+                else if (!chatWasVisible) host.closeWindow?.();
+            } catch (restoreError) {
+                console.warn('[ClickGuide] Failed to restore chat after preparation:', restoreError);
+            }
+            throw error;
+        }
         // The React composer appears on the next render; inspect its real draft only then.
         await api.waitUntil(() => !!document.querySelector('.compact-chat-surface-frame .composer-input')
             || host.getState()?.composerHidden, new AbortController().signal, 2000).catch(() => {});

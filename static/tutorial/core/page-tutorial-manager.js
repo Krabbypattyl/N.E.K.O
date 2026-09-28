@@ -348,6 +348,7 @@
 
         checkAndStartTutorial() {
             if (isClickGuideInspectingPage()) return;
+            if (!window.driver) return;
             if (!this.shouldManageCurrentPage()) return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
@@ -399,7 +400,15 @@
 
             const wait = () => {
                 if (isReady() || Date.now() - startedAt >= timeoutMs) {
-                    window.setTimeout(() => this.startTutorial(), delayMs);
+                    window.setTimeout(() => {
+                        if (isClickGuideInspectingPage()) {
+                            if (source === 'manual') {
+                                localStorage.setItem(manualIntentKeyForPage(this.currentPage), 'true');
+                            }
+                            return;
+                        }
+                        this.startTutorial();
+                    }, delayMs);
                     return;
                 }
                 window.setTimeout(wait, 100);
@@ -410,6 +419,7 @@
 
         maybeStartModelManagerTutorial(delayMs = 400, reason = '') {
             if (isClickGuideInspectingPage()) return;
+            if (!window.driver) return;
             if (this.currentPage !== 'model_manager') return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
@@ -1236,7 +1246,11 @@
     }
     window.addEventListener('neko:click-guide-window-inspection', () => {
         const manager = window.pageTutorialManager;
-        if (!isClickGuideInspectingPage()) { resumeInterruptedPageTutorial(); return; }
+        if (!isClickGuideInspectingPage()) {
+            if (Number.isInteger(manager?._clickGuideInterruptedStep)) resumeInterruptedPageTutorial();
+            else manager?.checkAndStartTutorial();
+            return;
+        }
         if (!manager?.isTutorialRunning) return;
         // Temporary interruption must not mark a page tutorial as seen/skipped.
         manager.endReason = 'click-guide-window';

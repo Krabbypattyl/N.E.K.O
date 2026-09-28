@@ -228,6 +228,54 @@ test('page tutorials pause for inspection and resume the interrupted step after 
     dom.window.close();
 });
 
+test('inspection ending before Driver loads keeps manual page tutorial intent', () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
+    pageGuide.currentPage = 'memory_browser';
+    root.localStorage.setItem('neko_tutorial_memory_browser_manual_intent', 'true');
+    root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
+    dom.window.close();
+});
+
+test('page tutorial starts after inspection ends without an interrupted step', () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
+    pageGuide.currentPage = 'memory_browser';
+    root.__nekoClickGuideWindowInspection = true;
+    let checks = 0;
+    pageGuide.checkAndStartTutorial = () => { checks++; };
+    root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(checks, 0);
+    delete root.__nekoClickGuideWindowInspection;
+    root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(checks, 1);
+    dom.window.close();
+});
+
+test('manual page tutorial intent survives an inspection during delayed startup', async () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
+    pageGuide.currentPage = 'memory_browser';
+    root.i18nReady = true;
+    root.__nekoClickGuideWindowInspection = true;
+    pageGuide.startTutorialWhenI18nReady(0, 'manual');
+    await delay(10);
+    assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
+    delete root.__nekoClickGuideWindowInspection;
+    let checks = 0;
+    pageGuide.checkAndStartTutorial = () => { checks++; };
+    root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(checks, 1);
+    dom.window.close();
+});
+
 test('only the actual target click advances, and only after the UI is ready', async () => {
     const { dom, api, target, doc } = setup();
     let ready = false;
@@ -434,6 +482,29 @@ test('chat guide opens an initially unmounted host before waiting for its mount'
         assert.deepEqual(calls.slice(0, 3), ['open', 'surface:compact', 'chat:input']);
         await restore();
         assert.deepEqual(calls.slice(-3), ['surface:full', 'chat:history', 'close']);
+    } finally { dom.window.close(); }
+});
+
+test('chat guide restores a collapsed native window if React host mounting fails', async () => {
+    const { dom, api } = setup();
+    const root = dom.window;
+    root.t = key => key;
+    let restores = 0;
+    root.nekoChatWindow = {
+        prepareExpandedForTutorial: async () => ({ ready: true, wasCollapsed: true }),
+        restoreCollapsedAfterTutorial: async () => { restores++; },
+    };
+    root.reactChatWindowHost = {
+        getState: () => ({ mounted: false }),
+        openWindow: async () => {},
+    };
+    api.waitUntil = async predicate => {
+        if (!predicate()) throw new Error('target_not_ready');
+    };
+    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    try {
+        await assert.rejects(api.prepareChat(), /target_not_ready/);
+        assert.equal(restores, 1);
     } finally { dom.window.close(); }
 });
 
