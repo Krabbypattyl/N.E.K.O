@@ -474,6 +474,8 @@
         return isProactiveSuppressedLocally() || isProactiveSuppressedByPeer();
     }
     mod.isProactiveChatSuppressed = isProactiveChatSuppressed;
+    // 对端抑制目前只来自小剧场运行态；Pet 窗口的麦克风守卫据此得知另一窗口正在演绎（同样按 TTL 过期）。
+    mod.isProactiveSuppressedByPeer = isProactiveSuppressedByPeer;
 
     function _syncProactiveSuppression() {
         const suppressed = isProactiveChatSuppressed();

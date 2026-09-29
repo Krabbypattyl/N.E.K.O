@@ -2100,10 +2100,17 @@
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
             if (micButton.disabled || S.isRecording) return;
-            // 浮动麦克风仍可能位于胶囊之外；在任何语音 Session 状态写入前阻止剧场期间启动。
+            // 浮动麦克风仍可能位于胶囊之外（Electron 下在 Pet 窗口，剧场在聊天窗口）；
+            // 在任何语音 Session 状态写入前阻止任一窗口剧场期间启动。
             if (window.nekoTheaterRuntime
-                    && typeof window.nekoTheaterRuntime.getState === 'function'
-                    && window.nekoTheaterRuntime.getState().active === true) return;
+                    && typeof window.nekoTheaterRuntime.blocksOrdinaryVoice === 'function'
+                    && window.nekoTheaterRuntime.blocksOrdinaryVoice()) {
+                window.showStatusToast(
+                    window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话',
+                    3500
+                );
+                return;
+            }
             if (mod._textSessionStartPromise) {
                 window.showStatusToast(
                     window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...',

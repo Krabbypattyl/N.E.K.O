@@ -2028,10 +2028,10 @@
     }
 
     async function startMicCapture() {
-        // 小剧场使用独立文本输入与 TTS 队列，活跃期间不能重新打开普通聊天麦克风。
+        // 小剧场使用独立文本输入与 TTS 队列，任一窗口演绎期间都不能重新打开普通聊天麦克风。
         if (window.nekoTheaterRuntime
-                && typeof window.nekoTheaterRuntime.getState === 'function'
-                && window.nekoTheaterRuntime.getState().active === true) {
+                && typeof window.nekoTheaterRuntime.blocksOrdinaryVoice === 'function'
+                && window.nekoTheaterRuntime.blocksOrdinaryVoice()) {
             return false;
         }
         // Refuse to open the hardware microphone onto a route the backend has

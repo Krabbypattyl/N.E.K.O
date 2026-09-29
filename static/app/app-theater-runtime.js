@@ -153,6 +153,19 @@
         // 抑制与剧场会话是否活跃绑定；启动阶段在会话激活前先行登记，避免停麦期间插入主动搭话。
         return state.active === true || proactiveSuppressionClaimed;
     }
+    function blocksOrdinaryVoice() {
+        if (state.active === true) return true;
+        // Electron 下剧场运行在紧凑聊天窗口，悬浮麦克风却在 Pet 窗口；另一窗口的剧场状态
+        // 随主动搭话 leader 心跳传播，剧场窗口关闭或崩溃后按心跳 TTL 自动失效，不会永久锁住麦克风。
+        var proactive = window.appProactive;
+        try {
+            return !!(proactive
+                && typeof proactive.isProactiveSuppressedByPeer === 'function'
+                && proactive.isProactiveSuppressedByPeer() === true);
+        } catch (_) {
+            return false;
+        }
+    }
     function notifyProactiveSuppressionChanged() {
         // 主动搭话调度器（含其他窗口中的 leader）按该查询决定是否调度；这里只通知它重新读取。
         var proactive = window.appProactive;
@@ -1234,6 +1247,7 @@
     var runtime = {
         isActive: function () { return state.active; },
         suppressesProactiveChat: suppressesProactiveChat,
+        blocksOrdinaryVoice: blocksOrdinaryVoice,
         allowsSpeechCorrelation: function (requestId) {
             return state.active && activeSpeechRequests[requestId] === state.queueToken;
         },
