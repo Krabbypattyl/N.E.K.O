@@ -2606,3 +2606,180 @@ def test_maintenance_quarantines_unparseable_public_archives_without_trimming(tm
     assert numeric_v2_store.list_numeric_v2_public_archives(
         tmp_path, character_id="character-a", raise_on_io_error=True,
     ) == []
+
+
+async def _started_story_session(tmp_path, session_id="index_heal"):
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id=session_id,
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    return story, registry, runtime, stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt_bytes",
+    [b"", b"{broken-json", b"\xff", json.dumps({"schema": "other", "stories": {}}).encode()],
+)
+async def test_audit_quarantines_and_rebuilds_corrupt_story_session_index(tmp_path, corrupt_bytes):
+    """A corrupt derived index is moved aside and rebuilt instead of failing every startup."""
+
+    _story, registry, runtime, stored = await _started_story_session(tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index_path.write_bytes(corrupt_bytes)
+
+    result = audit_numeric_v2_storage(
+        tmp_path, registry, character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    assert result == {"valid": 1, "quarantined": 0}
+    quarantine_root = tmp_path / "numeric_v2" / numeric_v2_maintenance.INDEX_QUARANTINE_DIRNAME
+    assert [path.read_bytes() for path in quarantine_root.iterdir()] == [corrupt_bytes]
+    restored = await runtime.restore_story_session(_binding())
+    assert restored is not None
+    assert restored.session.session_id == stored.session.session_id
+
+
+@pytest.mark.asyncio
+async def test_audit_keeps_transiently_unreadable_story_session_index(tmp_path, monkeypatch):
+    _story, registry, _runtime, _stored = await _started_story_session(tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    original_index = index_path.read_bytes()
+    path_type = type(index_path)
+    original_read_text = path_type.read_text
+
+    def flaky_read_text(path, *args, **kwargs):
+        if path == index_path:
+            raise PermissionError("locked")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", flaky_read_text)
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="index_read_failed"):
+        audit_numeric_v2_storage(tmp_path, registry)
+    monkeypatch.setattr(path_type, "read_text", original_read_text)
+
+    assert index_path.read_bytes() == original_index
+    assert not (tmp_path / "numeric_v2" / numeric_v2_maintenance.INDEX_QUARANTINE_DIRNAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_story_session_index_does_not_block_characters_without_theater_data(tmp_path):
+    _story, _registry, runtime, stored = await _started_story_session(tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index_path.write_bytes(b"{broken-json")
+    other = "character_22222222222222222222222222222222"
+
+    assert await numeric_v2_store.delete_numeric_v2_sessions(
+        tmp_path, character_id=other, legacy_catgirl_name="Mika",
+    ) == []
+    assert await update_numeric_v2_character_bindings(
+        tmp_path,
+        character_id=other,
+        legacy_catgirl_name="Mika",
+        catgirl_binding={**_binding(), "character_id": other, "catgirl_name": "Mika2"},
+    ) == 0
+    # Characters that do own theater data still fail closed before any mutation.
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="index_read_failed"):
+        await numeric_v2_store.delete_numeric_v2_sessions(
+            tmp_path, character_id=_binding()["character_id"], legacy_catgirl_name="Lan",
+        )
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="index_read_failed"):
+        await update_numeric_v2_character_bindings(
+            tmp_path,
+            character_id=_binding()["character_id"],
+            legacy_catgirl_name="Lan",
+            catgirl_binding=_binding(),
+        )
+    assert runtime.store._path(stored.session.session_id).is_file()
+    assert index_path.read_bytes() == b"{broken-json"
+
+
+@pytest.mark.asyncio
+async def test_settled_story_delete_rollback_is_not_replayed_after_later_delete(tmp_path, monkeypatch):
+    """A rolled-back manifest that rmtree failed to remove must not resurrect a later delete."""
+
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "rollback_leftover")
+    story_id = story["meta"]["story_id"]
+    original_delete = NumericV2PackageRegistry.delete_package
+
+    def delete_then_fail(self, target_story_id):
+        original_delete(self, target_story_id)
+        raise numeric_v2_store.NumericV2StoreError("forced_delete_failure")
+
+    monkeypatch.setattr(NumericV2PackageRegistry, "delete_package", delete_then_fail)
+    # Simulate a Windows share violation: rmtree(ignore_errors=True) removes nothing.
+    monkeypatch.setattr(numeric_v2_maintenance.shutil, "rmtree", lambda *_a, **_k: None)
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="forced_delete_failure"):
+        numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    assert registry.package_path(story_id).is_file()
+    assert runtime.store._path(stored.session.session_id).is_file()
+    monkeypatch.undo()
+
+    # Later, the story's saves are removed through another path (e.g. a character delete).
+    await numeric_v2_store.delete_numeric_v2_sessions(tmp_path, story_id=story_id)
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert not runtime.store._path(stored.session.session_id).exists()
+    assert registry.package_path(story_id).is_file()
+    assert not list((tmp_path / "numeric_v2" / "delete_transactions").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_later_story_delete_supersedes_pending_failed_rollback(tmp_path):
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "rollback_pending")
+    story_id = story["meta"]["story_id"]
+    # A delete whose rollback failed leaves its prepared manifest for startup recovery.
+    numeric_v2_maintenance._prepare_delete_transaction(tmp_path, registry, story_id)
+
+    numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert not registry.package_path(story_id).exists()
+    assert not runtime.store._path(stored.session.session_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_story_delete_recovery_does_not_overwrite_newer_state(tmp_path):
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "recover_old")
+    story_id = story["meta"]["story_id"]
+    numeric_v2_maintenance._prepare_delete_transaction(tmp_path, registry, story_id)
+    # State moved on after the backup: the session file changed and a newer round owns the slot.
+    session_path = runtime.store._path(stored.session.session_id)
+    advanced_bytes = session_path.read_bytes() + b"\n"
+    session_path.write_bytes(advanced_bytes)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    stories = numeric_v2_store._read_story_session_slots(index_path)
+    stories[story_id][_binding()["character_id"]] = "recover_new"
+    numeric_v2_store._write_story_session_slots(index_path, stories)
+    index_before = index_path.read_bytes()
+
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert session_path.read_bytes() == advanced_bytes
+    assert index_path.read_bytes() == index_before
+
+
+def test_story_delete_restore_continues_after_a_failed_step(tmp_path):
+    transaction_dir = tmp_path / "tx"
+    (transaction_dir / "sessions").mkdir(parents=True)
+    (transaction_dir / "package.json").write_text("{}", encoding="utf-8")
+    (transaction_dir / "sessions" / "s1.json").write_text("session", encoding="utf-8")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    session_root = tmp_path / "sessions"
+
+    with pytest.raises(OSError):
+        numeric_v2_maintenance._restore_delete_transaction(
+            transaction_dir,
+            {
+                "package_target": str(blocker / "packages" / "story.json"),
+                "session_root": str(session_root),
+            },
+        )
+
+    assert (session_root / "s1.json").read_text(encoding="utf-8") == "session"

@@ -24,6 +24,7 @@ from .numeric_v2_store import (
     _read_story_session_slots,
     _write_story_session_slots,
     _delete_numeric_v2_sessions_unlocked,
+    _is_story_session_index_content_error,
     numeric_v2_session_files_guard,
     list_numeric_v2_public_archives,
     list_numeric_v2_sessions,
@@ -36,6 +37,10 @@ QUARANTINE_FILE_LIMIT = 6
 # 公开冷档案隔离区独立于 Session 隔离区，避免被 QUARANTINE_FILE_LIMIT 裁剪删除。
 PUBLIC_ARCHIVE_QUARANTINE_DIRNAME = "quarantine_public_archives"
 DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
+# 损坏的 story_sessions.json 是可重建的派生缓存；移入独立目录保存，不参与裁剪删除。
+INDEX_QUARANTINE_DIRNAME = "quarantine_indexes"
+# 这些状态只需清理事务目录，绝不重放备份。
+_SETTLED_DELETE_TRANSACTION_STATES = frozenset({"committed", "rolled_back", "superseded"})
 
 _MAINTENANCE_LOCK = threading.Lock()
 _MAINTAINED_ROOTS: set[str] = set()
@@ -76,51 +81,86 @@ def _manifest_path(payload: Mapping[str, Any], key: str) -> Path | None:
     return Path(raw) if raw else None
 
 
+def _restore_missing_file(backup: Path, target: Path) -> None:
+    # Only undo this transaction's unlink: a file present again at the target is
+    # either untouched or newer (re-import, new round) and must not be overwritten.
+    if target.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(backup, target)
+
+
 def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any]) -> None:
+    """Best-effort undo of a story delete; every step runs, the first failure is raised last."""
+
+    failures: list[BaseException] = []
+
+    def attempt(step: Callable[[], None]) -> None:
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001 - collected and re-raised below
+            failures.append(exc)
+
     package_backup = transaction_dir / "package.json"
     package_target = _manifest_path(payload, "package_target")
     if package_backup.is_file() and package_target is not None:
-        package_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(package_backup, package_target)
+        attempt(lambda: _restore_missing_file(package_backup, package_target))
 
-    session_root = _manifest_path(payload, "session_root")
-    session_backup_root = transaction_dir / "sessions"
-    if session_backup_root.is_dir() and session_root is not None:
-        session_root.mkdir(parents=True, exist_ok=True)
-        for backup in session_backup_root.glob("*.json"):
-            shutil.copy2(backup, session_root / backup.name)
-
-    public_archive_root = _manifest_path(payload, "public_archive_root")
-    public_archive_backup_root = transaction_dir / "public_archives"
-    if public_archive_backup_root.is_dir() and public_archive_root is not None:
-        public_archive_root.mkdir(parents=True, exist_ok=True)
-        for backup in public_archive_backup_root.glob("*.json"):
-            shutil.copy2(backup, public_archive_root / backup.name)
-
-    receipt_root = _manifest_path(payload, "receipt_root")
-    receipt_backup_root = transaction_dir / "end_receipts"
-    if receipt_backup_root.is_dir() and receipt_root is not None:
-        receipt_root.mkdir(parents=True, exist_ok=True)
-        for backup in receipt_backup_root.glob("*.json"):
-            shutil.copy2(backup, receipt_root / backup.name)
+    for root_key, backup_dirname in (
+        ("session_root", "sessions"),
+        ("public_archive_root", "public_archives"),
+        ("receipt_root", "end_receipts"),
+    ):
+        target_root = _manifest_path(payload, root_key)
+        backup_root = transaction_dir / backup_dirname
+        if not backup_root.is_dir() or target_root is None:
+            continue
+        for backup in sorted(backup_root.glob("*.json")):
+            attempt(
+                lambda backup=backup, target_root=target_root: _restore_missing_file(
+                    backup, target_root / backup.name,
+                )
+            )
 
     index_target = _manifest_path(payload, "index_target")
     story_id = str(payload.get("story_id") or "").strip()
-    if index_target is not None and story_id:
-        stories = _read_story_session_slots(index_target)
-        raw_slots = payload.get("index_story_slots")
-        if isinstance(raw_slots, dict) and raw_slots:
-            stories[story_id] = {
-                str(character_id): str(session_id)
-                for character_id, session_id in raw_slots.items()
-                if str(character_id).strip() and str(session_id).strip()
-            }
-        else:
-            stories.pop(story_id, None)
-        if stories or payload.get("index_existed") is True:
+    raw_slots = payload.get("index_story_slots")
+    if index_target is not None and story_id and isinstance(raw_slots, dict) and raw_slots:
+        def restore_index_slots() -> None:
+            stories = _read_story_session_slots_or_quarantine(index_target)
+            story_slots = stories.setdefault(story_id, {})
+            for character_id, session_id in raw_slots.items():
+                if str(character_id).strip() and str(session_id).strip():
+                    # A slot written after the delete belongs to a newer session.
+                    story_slots.setdefault(str(character_id), str(session_id))
             _write_story_session_slots(index_target, stories)
-        elif index_target.exists():
-            index_target.unlink()
+
+        attempt(restore_index_slots)
+
+    if failures:
+        raise failures[0]
+
+
+def _read_story_session_slots_or_quarantine(index_path: Path) -> dict[str, dict[str, str]]:
+    """Read the derived story-session index, moving a corrupt one aside for a rebuild."""
+
+    try:
+        return _read_story_session_slots(index_path)
+    except NumericV2StoreError as exc:
+        if not _is_story_session_index_content_error(exc):
+            # Temporarily unreadable is not corrupt: fail closed, never move it.
+            raise
+        logger.warning(
+            "Numeric v2 story-session index %s is corrupt (%s); quarantining and rebuilding it",
+            index_path,
+            exc,
+        )
+        _quarantine_session(
+            index_path,
+            index_path.parent / INDEX_QUARANTINE_DIRNAME,
+            "corrupt",
+        )
+        return {}
 
 
 def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
@@ -138,11 +178,52 @@ def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             continue
-        if payload.get("schema") != DELETE_TRANSACTION_SCHEMA:
+        if not isinstance(payload, dict) or payload.get("schema") != DELETE_TRANSACTION_SCHEMA:
             continue
-        if payload.get("state") != "committed":
+        state = payload.get("state")
+        if state == "prepared":
             _restore_delete_transaction(transaction_dir, payload)
+        elif state not in _SETTLED_DELETE_TRANSACTION_STATES:
+            # Unknown state: keep the backup rather than guess.
+            logger.warning(
+                "Numeric v2 delete transaction %s has unknown state %r; leaving it in place",
+                transaction_dir,
+                state,
+            )
+            continue
         shutil.rmtree(transaction_dir, ignore_errors=True)
+
+
+def _supersede_pending_delete_transactions(
+    theater_root: Path, story_id: str, current_dir: Path,
+) -> None:
+    # A later committed delete of the same story supersedes an earlier one whose
+    # rollback failed; replaying that stale backup would resurrect the story.
+    root = Path(theater_root) / "numeric_v2" / "delete_transactions"
+    try:
+        transaction_dirs = [path for path in root.iterdir() if path.is_dir()]
+    except OSError:
+        logger.warning("Numeric v2 cannot scan delete transactions", exc_info=True)
+        return
+    for transaction_dir in transaction_dirs:
+        if transaction_dir == current_dir:
+            continue
+        manifest_path = transaction_dir / "manifest.json"
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema") != DELETE_TRANSACTION_SCHEMA
+                or payload.get("state") != "prepared"
+                or payload.get("story_id") != story_id
+            ):
+                continue
+            payload["state"] = "superseded"
+            _atomic_write_manifest(manifest_path, payload)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            logger.warning(
+                "Numeric v2 cannot supersede delete transaction %s", transaction_dir, exc_info=True,
+            )
 
 
 def _prepare_delete_transaction(
@@ -242,8 +323,16 @@ def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, 
             _restore_delete_transaction(transaction_dir, manifest)
         except Exception as rollback_exc:
             raise NumericV2StoreError("numeric_story_delete_rollback_failed") from rollback_exc
+        # rmtree may silently leave the manifest behind (e.g. a Windows share
+        # violation); settle it first so startup recovery never replays it.
+        try:
+            manifest["state"] = "rolled_back"
+            _atomic_write_manifest(manifest_path, manifest)
+        except OSError:
+            logger.warning("Numeric v2 cannot mark delete rollback settled", exc_info=True)
         shutil.rmtree(transaction_dir, ignore_errors=True)
         raise
+    _supersede_pending_delete_transactions(theater_root, story_id, transaction_dir)
     shutil.rmtree(transaction_dir, ignore_errors=True)
     return len(deleted)
 
@@ -397,7 +486,8 @@ def audit_numeric_v2_storage(
                     exc_info=True,
                 )
 
-    old_index = _read_story_session_slots(index_path)
+    # 索引是派生缓存：内容损坏时隔离后按 Session 文件重建；暂时性 I/O 故障仍中止本轮。
+    old_index = _read_story_session_slots_or_quarantine(index_path)
     slots: dict[
         tuple[str, str],
         list[tuple[Path, dict[str, str], int, int, str]],
@@ -486,6 +576,7 @@ def maintain_numeric_v2_storage_once(
 
 
 __all__ = [
+    "INDEX_QUARANTINE_DIRNAME",
     "PUBLIC_ARCHIVE_QUARANTINE_DIRNAME",
     "QUARANTINE_FILE_LIMIT",
     "audit_numeric_v2_storage",

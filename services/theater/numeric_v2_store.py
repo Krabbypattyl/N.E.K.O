@@ -120,6 +120,12 @@ def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
     return normalized
 
 
+def _is_story_session_index_content_error(exc: NumericV2StoreError) -> bool:
+    """Tell a corrupt index (a rebuildable cache) apart from a temporarily unreadable one."""
+
+    return not isinstance(exc.__cause__, OSError)
+
+
 def _write_story_session_slots(
     path: Path,
     stories: Mapping[str, Mapping[str, str]],
@@ -406,7 +412,13 @@ def _delete_numeric_v2_sessions_unlocked(
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
     # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
-    stories = _read_story_session_slots(index_path)
+    index_error: NumericV2StoreError | None = None
+    try:
+        stories = _read_story_session_slots(index_path)
+    except NumericV2StoreError as exc:
+        if not _is_story_session_index_content_error(exc):
+            raise
+        stories, index_error = {}, exc
     try:
         candidates = list_numeric_v2_sessions(
             theater_storage_root,
@@ -427,6 +439,12 @@ def _delete_numeric_v2_sessions_unlocked(
         )
     except OSError as exc:
         raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
+    if index_error is not None:
+        if candidates or archive_candidates:
+            raise index_error
+        # A corrupt index must not block scopes that own no theater data;
+        # the startup audit quarantines and rebuilds it.
+        return []
     deleted: list[dict[str, str]] = []
     for candidate in candidates:
         path = Path(candidate["path"])
@@ -522,7 +540,13 @@ async def update_numeric_v2_character_bindings(
             character_id=normalized_character_id,
             legacy_catgirl_name=legacy_catgirl_name,
         )
-        stories = _read_story_session_slots(index_path)
+        try:
+            stories = _read_story_session_slots(index_path)
+        except NumericV2StoreError as exc:
+            if candidates or not _is_story_session_index_content_error(exc):
+                raise
+            # Characters without theater data are not blocked by a corrupt index.
+            return 0
         updated = 0
         for candidate in candidates:
             path = Path(candidate["path"])
