@@ -8,7 +8,7 @@ import inspect
 import json
 import logging
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from config.providers import focus_extra_body
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
@@ -567,6 +567,32 @@ def _recent_metric_awards(
     return _metric_awards(engine, ledger_events)[-8:]
 
 
+def _smallest_fitting_cut(limit: int, fits: Callable[[int], bool]) -> int:
+    """Return the first cut in ``0..limit`` whose packed prompt fits, else ``limit``.
+
+    This replaces trying cuts 0, 1, 2, ... in order, which re-serialised and
+    re-tokenised the whole payload once per removed history record (O(N^2)).
+    Every caller's cut only removes, or compacts into a shorter index entry,
+    whole leading JSON list items. Compact JSON puts the punctuation between
+    items into its own pre-tokens, so dropping an item removes its tokens
+    without re-merging the rest; the packed count therefore never grows as the
+    cut advances and the binary search picks the same cut as the linear scan
+    with O(log N) tokenizations. ``limit`` is returned unevaluated when nothing
+    smaller fits, exactly where the linear scan also stopped.
+    """
+
+    if limit <= 0 or fits(0):
+        return 0
+    low, high = 1, limit
+    while low < high:
+        middle = (low + high) // 2
+        if fits(middle):
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
 def _build_contract_check_messages(
     *,
     required: Sequence[str],
@@ -871,19 +897,31 @@ def _build_messages(
     def over_budget() -> bool:
         return count_tokens(human_message.content) + system_tokens > budget["evaluator_input_max_tokens"]
 
+    def drop_leading(key: str, keep: int) -> list[Any]:
+        """Drop the fewest leading items of ``data[key]`` that bring the prompt within budget."""
+
+        nonlocal human_message
+        rows = list(data.get(key) or ())
+
+        def fits(cut: int) -> bool:
+            nonlocal human_message
+            data[key] = rows[cut:]
+            human_message = HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+            return not over_budget()
+
+        cut = _smallest_fitting_cut(max(0, len(rows) - keep), fits)
+        fits(cut)
+        return rows[:cut]
+
     # 当前幕历史按完整记录裁剪，只从更早回合开始移除，不截断当前玩家输入。
     dropped_revisions = []
-    while over_budget() and len(data.get("scene_context", [])) > 1:
-        dropped_revisions.append(data["scene_context"][0].get("revision"))
-        data["scene_context"] = data["scene_context"][1:]
-        human_message = HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
-    while over_budget() and data.get("recent_metric_awards"):
-        data["recent_metric_awards"].pop(0)
-        human_message = HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+    if "scene_context" in data:
+        dropped_revisions = [row.get("revision") for row in drop_leading("scene_context", 1)]
+    if data.get("recent_metric_awards"):
+        drop_leading("recent_metric_awards", 0)
     # 可选检索可以让出容量；本轮输入、最近完整记录和固定合同超限时由调用层明确拒绝。
-    while over_budget() and data.get("history_evidence"):
-        data["history_evidence"].pop(0)
-        human_message = HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+    if data.get("history_evidence"):
+        drop_leading("history_evidence", 0)
     messages = [SystemMessage(content=system), human_message]
     if diagnostics is not None:
         diagnostics.clear()
@@ -1559,9 +1597,42 @@ def _build_transition_judge_messages(
     def packed_tokens() -> int:
         return count_tokens(human_message.content) + system_tokens
 
-    while packed_tokens() > input_budget:
+    def rebuild() -> None:
+        nonlocal human_message
+        human_message = HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+    if packed_tokens() > input_budget and len(data["scene_context"]) > 1:
         # 先把较早完整回合移入索引，保住跨回合前因；不再先清空索引后直接丢掉旧回合。
+        # A compact index entry drops the phase and per-block JSON wrappers and
+        # caps both texts, so it is shorter than its full record and the packed
+        # size only shrinks as more leading records are compacted.
+        full_rows = list(data["scene_context"])
+        base_index = list(data["scene_fact_index"])
+        base_complete = data["current_visit_history_complete"]
+        compacted: list[dict[str, Any]] = []
+
+        def compacted_fits(cut: int) -> bool:
+            while len(compacted) < cut:
+                compacted.append(_compact_transition_fact(full_rows[len(compacted)]))
+            data["scene_context"] = full_rows[cut:]
+            data["scene_fact_index"] = [*base_index, *compacted[:cut]]
+            # 即使索引尚在，移走完整原文后也不能再以完整覆盖为由作缺项判断。
+            data["current_visit_history_complete"] = False if cut else base_complete
+            rebuild()
+            return packed_tokens() <= input_budget
+
+        compacted_fits(_smallest_fitting_cut(len(full_rows) - 1, compacted_fits))
+    if packed_tokens() > input_budget and len(data["scene_context"]) <= 1 and data.get("scene_fact_index"):
         # 全部早期证据已压缩仍超预算时才按时间丢弃最早索引，最新完整回合不参与压缩。
+        index_rows = list(data["scene_fact_index"])
+
+        def trimmed_fits(cut: int) -> bool:
+            data["scene_fact_index"] = index_rows[cut:]
+            rebuild()
+            return packed_tokens() <= input_budget
+
+        trimmed_fits(_smallest_fitting_cut(len(index_rows), trimmed_fits))
+    while packed_tokens() > input_budget:
         # 固定作者合同与最新完整回合自身超预算时保留原文，不静默删掉安全判断依据。
         if len(data["scene_context"]) > 1:
             data["scene_fact_index"].append(_compact_transition_fact(data["scene_context"].pop(0)))
@@ -2090,16 +2161,22 @@ class NumericV2MetricEvaluator:
             )
             async with client:
                 packing_diagnostics: dict[str, Any] = {}
-                messages = _build_messages(
-                    engine,
-                    session,
-                    message,
-                    recent_ledger_events=recent_ledger_events,
-                    diagnostics=packing_diagnostics,
-                    player_action_projection=player_action_projection,
-                )
+
+                def pack() -> tuple[list[Any], int]:
+                    packed = _build_messages(
+                        engine,
+                        session,
+                        message,
+                        recent_ledger_events=recent_ledger_events,
+                        diagnostics=packing_diagnostics,
+                        player_action_projection=player_action_projection,
+                    )
+                    return packed, sum(count_tokens(item.content) for item in packed)
+
+                # Serialisation and tokenisation grow with the scene; keep them off the loop.
+                messages, packed_tokens = await asyncio.to_thread(pack)
                 _log_prompt_diagnostics(session, packing_diagnostics)
-                if sum(count_tokens(item.content) for item in messages) > (
+                if packed_tokens > (
                     numeric_v2_actor_budget(session.actor_budget_profile)["evaluator_input_max_tokens"]
                 ):
                     # _build_messages 只按完整记录装箱；固定合同本身超限时明确停止，
@@ -2185,26 +2262,31 @@ class NumericV2MetricEvaluator:
             output_budget = max(output_budget, 350)
         # 消息构造不参与模型等待，先离线装配并核对预算：既不让分词时间落在时限之外，
         # 也不为一个必然被判超预算的请求先建立连接。
-        messages, recovery_evidence = _build_transition_judge_messages(
-            engine,
-            session,
-            actor_performance=actor_performance,
-            player_input=message,
-            scene_complete=scene_complete,
-            route_changed=route_changed,
-            transition_outcome=transition_outcome,
-            public_destination_quote=public_destination_quote,
-            check_missed_initiation=check_missed_initiation,
-            history_lookup=history_lookup,
-            cancelled_transition=cancelled_transition,
-            invalidated_invitation=invalidated_invitation,
-            fixed_candidates=fixed_candidates,
-            recheck_only=recheck_only,
-            player_action_projection=player_action_projection,
-        )
+        def pack() -> tuple[list[Any], tuple[str, ...], int]:
+            packed, evidence = _build_transition_judge_messages(
+                engine,
+                session,
+                actor_performance=actor_performance,
+                player_input=message,
+                scene_complete=scene_complete,
+                route_changed=route_changed,
+                transition_outcome=transition_outcome,
+                public_destination_quote=public_destination_quote,
+                check_missed_initiation=check_missed_initiation,
+                history_lookup=history_lookup,
+                cancelled_transition=cancelled_transition,
+                invalidated_invitation=invalidated_invitation,
+                fixed_candidates=fixed_candidates,
+                recheck_only=recheck_only,
+                player_action_projection=player_action_projection,
+            )
+            return packed, evidence, sum(count_tokens(item.content) for item in packed)
+
+        # Serialisation and tokenisation grow with the scene; keep them off the loop.
+        messages, recovery_evidence, packed_tokens = await asyncio.to_thread(pack)
         # 适配后的正文和作者边界不可截断；超预算中止调用，工作流沿用该阶段原有故障策略。
         if (
-            sum(count_tokens(item.content) for item in messages)
+            packed_tokens
             > numeric_v2_actor_budget(session.actor_budget_profile)[
                 "formal_judge_input_max_tokens" if transition_outcome is not None or check_missed_initiation else "judge_input_max_tokens"
             ]
