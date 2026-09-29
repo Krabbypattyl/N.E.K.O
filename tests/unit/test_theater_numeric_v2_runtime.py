@@ -2783,3 +2783,70 @@ def test_story_delete_restore_continues_after_a_failed_step(tmp_path):
         )
 
     assert (session_root / "s1.json").read_text(encoding="utf-8") == "session"
+
+
+def _loop_story() -> dict:
+    """Two ordinary scenes that can bounce back and forth before an ending."""
+    story = numeric_v2_story()
+    start = story["nodes"][0]
+    room = deepcopy(start)
+    room.update(id="room", type="scene")
+    to_room = deepcopy(start["route_gates"][0])
+    to_room.update(id="to_room", target_node_id="room", priority=30)
+    to_room["conditions"]["all"][0].update(op=">=", value=0)
+    start["route_gates"].append(to_room)
+    back = deepcopy(to_room)
+    back.update(id="back_to_start", target_node_id="start")
+    room["route_gates"] = [back]
+    story["nodes"].insert(1, room)
+    return story
+
+
+def _bounce(engine, session, turns):
+    outcomes = []
+    for index in range(turns):
+        outcome = engine.resolve_turn(
+            session, TurnRequestV2(f"loop-{index}", session.revision, "走吧。"), (),
+            transition_intent="initiate",
+        )
+        assert outcome.session.current_node_id != session.current_node_id
+        outcomes.append(outcome)
+        session = outcome.session
+    return session, outcomes
+
+
+def test_loop_story_scene_events_are_pruned_before_the_fact_cap():
+    """Every scene change adds two event facts; loop stories must not hit the fact cap and soft-lock."""
+    engine = NumericV2Engine.from_mapping(_loop_story())
+    session = engine.create_session(session_id="loop", catgirl_binding=_binding(), opening_performance=_opening())
+    before_cap = project_scene_facts(session)
+    session, _ = _bounce(engine, session, 200)
+    facts = session.story_state["facts"]
+    assert len(facts) == 256
+    # The newest events (what prompts project) survive; the oldest ones were dropped first.
+    assert "event:scene.entered:start:r200" in facts and "event:scene.left:room:r200" in facts
+    assert "event:scene.entered:start:r0" not in facts and before_cap["facts"]
+    projected = project_scene_facts(session)["facts"]
+    assert projected[-1]["key"] == "event:scene.left:room:r200"
+    assert min(row["updated_revision"] for row in projected) > 180
+
+
+@pytest.mark.asyncio
+async def test_pruned_scene_events_replay_identically(tmp_path, monkeypatch):
+    """Pruning is derived from committed state only, so cold restore and forks replay it exactly."""
+    from services.theater import numeric_v2_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_STORY_STATE_MAX_FACTS", 6)
+    engine = NumericV2Engine.from_mapping(_loop_story())
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="loop-replay", catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    for index in range(5):
+        outcome = runtime.prepare_turn(current, TurnRequestV2(f"loop-{index}", current.session.revision, "走吧。"),
+                                       (), transition_intent="initiate")
+        current = await runtime.commit_turn(outcome, _transition_performance(outcome.session.current_node_id))
+    assert len(current.session.story_state["facts"]) == 6
+    assert "event:scene.entered:start:r0" not in current.session.story_state["facts"]
+    assert await NumericV2Runtime(engine, tmp_path).restore_session("loop-replay") == current
+    forked = await runtime.fork_session_for_test("loop-replay", session_id="loop-fork", through_revision=5)
+    assert forked.session.story_state == current.session.story_state

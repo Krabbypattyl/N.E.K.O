@@ -52,6 +52,10 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _STORY_FACT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _STORY_FACT_VISIBILITIES = frozenset({"public", "story"})
 _STORY_STATE_MAX_FACTS = 256
+# Runtime-owned scene enter/leave events; one pair is added per scene change.
+_RUNTIME_SCENE_EVENT_KEY_RE = re.compile(
+    r"^event:scene\.(?:entered|left):[A-Za-z0-9][A-Za-z0-9._-]{0,127}:r[0-9]+$"
+)
 _STORY_STATE_MAX_FACT_OPS = 32
 _STORY_STATE_MAX_VALUE_CHARS = 240
 _FACT_CONTRACT_VALUE_TYPES = frozenset({"bool", "int", "string"})
@@ -451,6 +455,53 @@ def _initial_story_state(start_node_id: str) -> dict[str, Any]:
     })
 
 
+def _prune_runtime_scene_events(
+    current: Mapping[str, Any],
+    *,
+    operations: list[dict[str, Any]],
+    author_keys: set[str],
+) -> Mapping[str, Any]:
+    """Drop the oldest Runtime scene events only when this turn would exceed the fact cap.
+
+    Each scene change adds two unique event keys, so loop or hub stories would
+    otherwise hit the cap and reject every later transition. Pruning is a pure
+    function of the committed state and this turn's operations, so ledger replay
+    reproduces it exactly; states that never reached the cap are left untouched,
+    which keeps existing sessions replaying byte-for-byte. Prompt projections only
+    read the newest few scene events, which always survive.
+    """
+    state = _validate_story_state(current)
+    facts = state["facts"]
+    touched: set[str] = set()
+    added = 0
+    removed = 0
+    for operation in operations:
+        if not isinstance(operation, Mapping) or not isinstance(operation.get("key"), str):
+            continue
+        key = operation["key"]
+        if key in touched:
+            continue
+        touched.add(key)
+        if operation.get("op") == "set" and key not in facts:
+            added += 1
+        elif operation.get("op") == "delete" and key in facts:
+            removed += 1
+    overflow = len(facts) + added - removed - _STORY_STATE_MAX_FACTS
+    if overflow <= 0:
+        return state
+    prunable = sorted(
+        (int(fact["updated_revision"]), key)
+        for key, fact in facts.items()
+        if _RUNTIME_SCENE_EVENT_KEY_RE.fullmatch(key)
+        and key not in author_keys
+        and key not in touched
+    )
+    kept = dict(facts)
+    for _revision, key in prunable[:overflow]:
+        kept.pop(key)
+    return {**state, "facts": kept}
+
+
 def _advance_story_state(
     current: Mapping[str, Any],
     *,
@@ -482,6 +533,11 @@ def _advance_story_state(
         contract_facts.setdefault(key, {"value_type": "bool", "visibility": "public"})
     # 候选事实也必须落在同一份已声明合同内；允许集合同时覆盖内部事件和剧本白名单。
     allowed_keys.update(contract_facts)
+    current = _prune_runtime_scene_events(
+        current,
+        operations=operations,
+        author_keys=set((fact_contract or {}).get("facts") or {}),
+    )
     return apply_fact_ops(
         current,
         revision=revision,
