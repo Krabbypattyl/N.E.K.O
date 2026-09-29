@@ -15,6 +15,7 @@ from weakref import WeakValueDictionary
 
 import portalocker
 
+from .numeric_v2_storage_transaction import run_storage_mutation
 from .numeric_v2_performance import (
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
@@ -382,8 +383,6 @@ async def numeric_v2_session_files_guard(theater_storage_root: Path):
 
 
 async def delete_numeric_v2_sessions(theater_storage_root: Path, **scope) -> list[dict[str, str]]:
-    from .numeric_v2_storage_transaction import run_storage_mutation
-
     async with numeric_v2_session_files_guard(theater_storage_root):
         # Keep file locks until the worker finishes, including caller cancellation.
         return await run_storage_mutation(
@@ -618,7 +617,7 @@ class NumericV2SessionStore:
 
     async def get_story_session_id(self, story_id: str, character_id: str) -> str:
         async with _lock(self._story_session_index_path):
-            stories = self._read_story_session_index()
+            stories = await asyncio.to_thread(self._read_story_session_index)
             return stories.get(str(story_id or "").strip(), {}).get(
                 str(character_id or "").strip(),
                 "",
@@ -674,16 +673,28 @@ class NumericV2SessionStore:
                 return indexed
         return None
 
+    async def _mutate(self, operation):
+        """Run one synchronous session write on a worker inside the storage fence.
+
+        Callers keep the asyncio path locks on the event loop. The fence is
+        entered and left on the same worker thread (Windows mutexes are
+        thread-bound), and file I/O, fsync and ledger replay stay off the loop.
+        """
+
+        return await run_storage_mutation(self.write_transaction, operation)
+
     async def create(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def create() -> NumericV2StoredSession:
                 if path.exists():
                     raise NumericV2SessionExistsError("numeric_session_exists")
                 self.engine.validate_session(session)
                 stored = NumericV2StoredSession(session, ())
                 self._write(path, stored, exclusive=True)
                 return stored
+
+            return await self._mutate(create)
 
     async def create_isolated_snapshot(
         self,
@@ -693,13 +704,15 @@ class NumericV2SessionStore:
 
         path = self._path(stored.session.session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def create() -> NumericV2StoredSession:
                 if path.exists():
                     raise NumericV2SessionExistsError("numeric_session_exists")
                 # 先在内存中验证完整账本，再一次落盘；失败时不会留下半条分叉链。
                 self._validate_chain(stored)
                 self._write(path, stored, exclusive=True)
                 return stored
+
+            return await self._mutate(create)
 
     async def create_story_session(
         self,
@@ -714,7 +727,7 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_story_session_index_invalid")
         async with _lock(index_path):
             async with _lock(path):
-                with self.write_transaction():
+                def create() -> NumericV2StoredSession:
                     if path.exists():
                         raise NumericV2SessionExistsError("numeric_session_exists")
                     self.engine.validate_session(session)
@@ -739,6 +752,8 @@ class NumericV2SessionStore:
                         raise
                     return stored
 
+                return await self._mutate(create)
+
     async def replace_active(
         self,
         previous_session_id: str,
@@ -757,7 +772,7 @@ class NumericV2SessionStore:
         async with _lock(index_path):
             async with _lock(previous_path):
                 async with _lock(next_path):
-                    with self.write_transaction():
+                    def replace_session() -> NumericV2StoredSession:
                         if not previous_path.is_file():
                             raise NumericV2SessionNotFoundError("numeric_session_not_found")
                         previous = self._read(previous_path)
@@ -788,20 +803,27 @@ class NumericV2SessionStore:
                             raise NumericV2StoreError("numeric_session_replace_failed") from exc
                         return stored
 
+                    return await self._mutate(replace_session)
+
     async def load(self, session_id: str) -> NumericV2StoredSession | None:
         path = self._path(session_id)
         async with _lock(path):
-            try:
-                stored = self._read(path)
-            except NumericV2StoreError as exc:
-                if isinstance(exc.__cause__, FileNotFoundError):
-                    return None
-                raise
-            # 先按持久化身份拒绝跨剧本 Session，再用当前剧本引擎重放 Ledger。
-            if stored.session.story_package_id != self.engine.story_id:
+            # Reading and replaying the whole ledger grows with the session; keep
+            # it off the event loop while the path lock stays held on the loop.
+            return await asyncio.to_thread(self._load_validated, path)
+
+    def _load_validated(self, path: Path) -> NumericV2StoredSession | None:
+        try:
+            stored = self._read(path)
+        except NumericV2StoreError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
                 return None
-            self._validate_chain(stored)
-            return stored
+            raise
+        # 先按持久化身份拒绝跨剧本 Session，再用当前剧本引擎重放 Ledger。
+        if stored.session.story_package_id != self.engine.story_id:
+            return None
+        self._validate_chain(stored)
+        return stored
 
     async def load_for_lifecycle(
         self,
@@ -811,16 +833,19 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            try:
-                stored = self._read(path)
-            except NumericV2StoreError as exc:
-                if isinstance(exc.__cause__, FileNotFoundError):
-                    return None
-                raise
-            if stored.session.story_package_id != self.engine.story_id:
+            return await asyncio.to_thread(self._load_for_lifecycle_validated, path)
+
+    def _load_for_lifecycle_validated(self, path: Path) -> NumericV2StoredSession | None:
+        try:
+            stored = self._read(path)
+        except NumericV2StoreError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
                 return None
-            self._validate_lifecycle_chain(stored)
-            return stored
+            raise
+        if stored.session.story_package_id != self.engine.story_id:
+            return None
+        self._validate_lifecycle_chain(stored)
+        return stored
 
     async def commit(
         self,
@@ -829,7 +854,7 @@ class NumericV2SessionStore:
     ) -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def commit_turn() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -847,17 +872,19 @@ class NumericV2SessionStore:
                     raise NumericV2StoreError("numeric_revision_not_monotonic")
                 # Forget can advance while this turn is being generated without
                 # changing the story revision. Keep its durable boundary.
-                session = replace(
+                committed = replace(
                     session,
                     forgotten_through_revision=current.session.forgotten_through_revision,
                 )
                 stored = NumericV2StoredSession(
-                    session,
+                    committed,
                     (*current.ledger_events, deepcopy(dict(ledger_event))),
                 )
                 self._validate_chain(stored)
                 self._write(path, stored)
                 return stored
+
+            return await self._mutate(commit_turn)
 
     async def end_session(
         self,
@@ -869,7 +896,7 @@ class NumericV2SessionStore:
     ) -> NumericV2StoredSession:
         path = self._path(session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def end() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -898,6 +925,8 @@ class NumericV2SessionStore:
                 self._write(path, stored)
                 return stored
 
+            return await self._mutate(end)
+
     async def resume_session(
         self,
         session_id: str,
@@ -909,7 +938,7 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def resume() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -937,6 +966,8 @@ class NumericV2SessionStore:
                 self._write(path, resumed)
                 return resumed
 
+            return await self._mutate(resume)
+
     async def forget_history_through_current_revision(
         self,
         session_id: str,
@@ -947,7 +978,7 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def forget() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -973,6 +1004,9 @@ class NumericV2SessionStore:
                     self._validate_lifecycle_chain(forgotten)
                 self._write(path, forgotten)
                 return forgotten
+
+            return await self._mutate(forget)
+
 
     def _read(self, path: Path) -> NumericV2StoredSession:
         from .numeric_v2_runtime import ScriptSessionV2, _player_address_disclosed

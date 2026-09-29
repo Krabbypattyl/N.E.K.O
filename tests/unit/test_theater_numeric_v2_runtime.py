@@ -2300,6 +2300,45 @@ async def test_session_commit_rechecks_fence_after_waiting_for_file_lock(tmp_pat
     assert await runtime.restore_session("fenced") == current
 
 
+@pytest.mark.asyncio
+async def test_session_store_disk_work_and_fence_run_off_event_loop(tmp_path, monkeypatch):
+    """Ledger replay, file I/O and the storage fence must never run on the loop thread."""
+    from contextlib import contextmanager
+    import threading
+
+    loop_thread = threading.get_ident()
+    observed = {"fence": [], "read": [], "replay": [], "write": []}
+
+    @contextmanager
+    def transaction():
+        observed["fence"].append(threading.get_ident())
+        yield
+
+    store_type = numeric_v2_store.NumericV2SessionStore
+    for key, name in (("read", "_read"), ("replay", "_validate_chain"), ("write", "_write")):
+        original = getattr(store_type, name)
+
+        def tracked(self, *args, _original=original, _key=key, **kwargs):
+            observed[_key].append(threading.get_ident())
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(store_type, name, tracked)
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path, write_transaction=transaction)
+    current = await runtime.start_session(session_id="off_loop", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = runtime.prepare_turn(current, TurnRequestV2("off_loop_turn", 0, "input"), ())
+    await runtime.commit_turn(outcome, _performance("response"))
+    assert (await runtime.restore_session("off_loop")).session.revision == 1
+    await runtime.store.load_for_lifecycle("off_loop")
+    ended = await runtime.store.end_session("off_loop", base_revision=1, base_lifecycle_revision=0, reason="user_exit")
+    await runtime.store.resume_session("off_loop", base_revision=1, base_lifecycle_revision=ended.session.lifecycle_revision)
+    await runtime.store.forget_history_through_current_revision("off_loop")
+
+    for key, threads in observed.items():
+        assert threads, key
+        assert loop_thread not in threads, key
+
+
 @pytest.mark.parametrize('writer', ['index', 'payload', 'session', 'exclusive', 'archive'])
 @pytest.mark.parametrize('failure', ['write', 'flush', 'fsync'])
 def test_failed_atomic_writes_remove_temporary_files(tmp_path, monkeypatch, writer, failure):
