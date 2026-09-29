@@ -562,3 +562,91 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
     assert result.stored.session.node_turn_count == current.session.node_turn_count + 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert await runtime.restore_session('review_watermark') == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["missed_recovery", "review_rewrite", "contract_rewrite", "terminal_rewrite"])
+async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(tmp_path, monkeypatch, path):
+    """Every later formal transition draft must pass the bridge-leak and terminal-question checks or roll back."""
+    from services.theater import numeric_v2_evaluator as ev
+    from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+    from tests.unit.test_theater_numeric_v2_missed_transition import QUOTE
+    from tests.unit.test_theater_numeric_v2_natural_ending import _engine
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+    from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
+    from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+    if path == "missed_recovery":
+        case = initiation_case()
+        engine = case["engine"]
+        # Keep the recovered route pointing at a real ending so the terminal rule applies.
+        engine.nodes["ending_leave"].update(type="ending", terminal=True)
+        opening, message = case["session"].opening_performance, case["message"]
+    else:
+        engine, opening, message = _engine(), _opening(), "就到这里吧。"
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id=f"later_{path}", catgirl_binding=_binding(),
+                                          opening_performance=opening)
+    generations = []
+    question = {**_candidate(), "target_performance": "（回头）下次你还会回来吗？"}
+    # Copies the ending's opening clause into the bridge, which the provenance check rejects.
+    leak = {**_candidate(), "bridge_scene_narration": "雨停后的长街恢复了安静。"}
+
+    async def evaluate(self, **kwargs):
+        if path == "missed_recovery":
+            return ev.NumericV2EvaluationResult((), False)
+        return ev.NumericV2EvaluationResult((), True, natural_ending_ready=True)
+
+    async def generate(self, **kwargs):
+        generations.append(kwargs)
+        outcome = kwargs["outcome"]
+        if outcome.ledger_event["from_node_id"] == outcome.ledger_event["to_node_id"]:
+            return {"performance": "（点头）我听到了。", "suggested_inputs": [], "transition_offered": False}
+        first = sum(g["outcome"].ledger_event["from_node_id"] != g["outcome"].ledger_event["to_node_id"]
+                    for g in generations) == 1
+        if path == "terminal_rewrite":
+            candidate = question if first else leak
+        elif path == "missed_recovery":
+            candidate = question
+        else:
+            candidate = _candidate() if first else question
+        return engine.finalize_transition_performance(outcome, candidate, target_opening="雨后的长街。")
+
+    async def review(self, **kwargs):
+        if kwargs.get("check_missed_initiation"):
+            return ev.NumericV2TransitionOfferReview(False, False, (), (), missed_initiation=True,
+                                                     public_destination_quote=QUOTE)
+        segments = kwargs["actor_performance"].get("segments") or []
+        first_draft = path == "review_rewrite" and segments and "？" not in json.dumps(segments, ensure_ascii=False)
+        return ev.NumericV2TransitionOfferReview(
+            False, False, ("scene_boundary",) if first_draft else (), (), "三段事实冲突。" if first_draft else "")
+
+    calls = []
+
+    async def verify_contract(self, **kwargs):
+        calls.append(kwargs)
+        return ("不得提前离开",) if len(calls) == 1 else ()
+
+    if path == "contract_rewrite":
+        async def options():
+            return {"evaluator": True, "review": False, "dispute": False, "review_delivery": False,
+                    "review_contract": True, "suggestion_fill": False, "history_lookup": False,
+                    "actor_retry": False}
+
+        monkeypatch.setattr(numeric_v2_workflow, "aload_theater_module_options", options)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, "verify_contract_boundaries", verify_contract)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    diagnostics: dict[str, Any] = {}
+    expected = "segment_overlap" if path == "terminal_rewrite" else "terminal_new_question"
+    with pytest.raises(NumericV2ActorOutputError, match=expected):
+        await numeric_v2_workflow.execute_numeric_v2_turn(
+            config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
+            diagnostics_sink=diagnostics)
+    assert diagnostics["transition_structure_rejected" if path == "terminal_rewrite" else "terminal_structure_rejected"]
+    assert len(generations) == 2
+    # The failed turn is atomic: nothing reached storage.
+    assert await runtime.restore_session(f"later_{path}") == current

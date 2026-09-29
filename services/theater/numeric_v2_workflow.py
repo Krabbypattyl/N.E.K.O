@@ -1683,24 +1683,50 @@ async def _execute_numeric_v2_turn(
         != outcome.ledger_event["to_node_id"]
     )
     reviewed_transition_offered = False
-    if route_changed:
-        # 目标幕开场是下一段要交付的内容；桥段不能把其中的完整事实再提前演一次。
-        # 这里只做确定性的逐句/时点溯源检查，语义改写仍交给现有 Actor，改写后仍冲突则回滚。
+
+    def transition_bridge_leaks(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+        """Return target-opening facts that the candidate's bridge segment already narrates."""
+
         target_node = runtime.engine.nodes[str(outcome.ledger_event["to_node_id"])]
         transition_contract = outcome.transition_contract or {}
-        candidate_segments = performance.get("segments")
-        bridge_text = ""
-        if isinstance(candidate_segments, list):
-            bridge_text = "\n".join(
-                str(segment.get("scene_narration") or "")
-                for segment in candidate_segments
-                if isinstance(segment, Mapping) and segment.get("phase") == "transition_bridge"
-            )
-        leak_markers = transition_bridge_leak_markers(
+        candidate_segments = candidate.get("segments")
+        bridge_text = "\n".join(
+            str(segment.get("scene_narration") or "")
+            for segment in candidate_segments
+            if isinstance(segment, Mapping) and segment.get("phase") == "transition_bridge"
+        ) if isinstance(candidate_segments, list) else ""
+        return tuple(transition_bridge_leak_markers(
             target_opening=scene_opening_text(target_node.get("story_beat") or {}),
             bridge_text=bridge_text,
             authored_bridge=str(transition_contract.get("bridge_scene_narration") or ""),
-        )
+        ))
+
+    def verify_later_transition_draft(candidate: Mapping[str, Any], *, stage: str) -> None:
+        """Re-run the deterministic transition checks on a regenerated formal draft.
+
+        Only the first formal draft gets a repair attempt; any later draft (missed
+        initiation recovery, contract or review rewrite) must already satisfy the
+        checks, otherwise the turn rolls back as a retryable Actor failure.
+        """
+
+        leaks = transition_bridge_leaks(candidate)
+        if leaks:
+            diagnostics["transition_bridge_leak_markers_after_rewrite"] = list(leaks)
+            diagnostics["transition_structure_rejected"] = True
+            trace_event("transition.bridge_target_leak_unresolved", markers=list(leaks), stage=stage)
+            raise NumericV2ActorOutputError("numeric_v2_transition_segment_overlap")
+        questions = _terminal_new_question_markers(
+            engine=runtime.engine, outcome=outcome, performance=candidate)
+        if questions:
+            diagnostics["terminal_new_question_markers"] = list(questions)
+            diagnostics["terminal_structure_rejected"] = True
+            trace_event("transition.terminal_new_question_unresolved", markers=list(questions), stage=stage)
+            raise NumericV2ActorOutputError("numeric_v2_terminal_new_question")
+
+    if route_changed:
+        # 目标幕开场是下一段要交付的内容；桥段不能把其中的完整事实再提前演一次。
+        # 这里只做确定性的逐句/时点溯源检查，语义改写仍交给现有 Actor，改写后仍冲突则回滚。
+        leak_markers = transition_bridge_leaks(performance)
         if leak_markers:
             diagnostics["transition_bridge_leak_markers"] = list(leak_markers)
             trace_event("transition.bridge_target_leak", markers=list(leak_markers))
@@ -1709,19 +1735,7 @@ async def _execute_numeric_v2_turn(
                 "过渡桥段提前包含了目标幕开场独有内容：" + "、".join(leak_markers)
                 + "。只保留来源回应和作者允许的过渡时空；目标幕开场会在下一段单独交付，"
                 "不得在 transition_bridge 中重复写出目标幕的到达、时点或独有事实。"))
-            candidate_segments = performance.get("segments")
-            bridge_text = "\n".join(
-                str(segment.get("scene_narration") or "")
-                for segment in candidate_segments
-                if isinstance(candidate_segments, list)
-                and isinstance(segment, Mapping)
-                and segment.get("phase") == "transition_bridge"
-            ) if isinstance(candidate_segments, list) else ""
-            remaining_leaks = transition_bridge_leak_markers(
-                target_opening=scene_opening_text(target_node.get("story_beat") or {}),
-                bridge_text=bridge_text,
-                authored_bridge=str(transition_contract.get("bridge_scene_narration") or ""),
-            )
+            remaining_leaks = transition_bridge_leaks(performance)
             diagnostics["transition_bridge_leak_markers_after_rewrite"] = list(remaining_leaks)
             if remaining_leaks:
                 diagnostics["transition_structure_rejected"] = True
@@ -1751,6 +1765,9 @@ async def _execute_numeric_v2_turn(
                     performance=performance,
                 )
                 diagnostics["terminal_new_question_markers"] = list(terminal_question_markers)
+                if not terminal_question_markers:
+                    # 结局改写稿也是新正文，桥段溯源检查不能只看首稿。
+                    verify_later_transition_draft(performance, stage="terminal_rewrite")
             if terminal_question_markers:
                 diagnostics["terminal_structure_rejected"] = True
                 trace_event(
@@ -1791,6 +1808,7 @@ async def _execute_numeric_v2_turn(
                 "本轮换场前的合同核对发现问题：" + "；".join(problems)
                 + "。请按实际历史与作者边界改写：删除尚未发生或越界的内容，缺的道具自然写出，"
                 "其余已获准内容保持不变。"))
+            verify_later_transition_draft(performance, stage="contract_rewrite")
             if module_options.get("review_delivery"):
                 still_missing = missing_contract_names(source_node, target_node_id, performance, current.session)
                 diagnostics["contract_missing_after_rewrite"] = list(still_missing)
@@ -1891,6 +1909,7 @@ async def _execute_numeric_v2_turn(
                     diagnostics["effective_interaction_intent"] = effective_interaction_intent
                     route_changed = True
                     performance = await generate_actor_turn(outcome)
+                    verify_later_transition_draft(performance, stage="missed_initiation_recovery")
                     break
             performance, removed_suggestions = _drop_reported_unsafe_suggestions(
                 performance, transition_review.unsafe_suggestion_indexes,
@@ -2060,6 +2079,7 @@ async def _execute_numeric_v2_turn(
                 + _transition_review_failure_context(review)
                 + _actor_rewrite_candidate_context(performance)
             ))
+            verify_later_transition_draft(performance, stage="review_rewrite")
     # 只在完整复核确认正文安全且没有公开邀请时，追加作者写定的可见邀请。
     # 该文案属于剧本合同，不再调用 Actor；真正换幕仍需玩家下一回合明确接受。
     completion_ready_before_turn = (
