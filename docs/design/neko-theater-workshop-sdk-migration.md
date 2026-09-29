@@ -324,7 +324,7 @@ SDK发布门禁核对成功状态、非空hash和revision；两个缺失hash均�
 | 修改前后编译对照 | 未声明显式姓名的两个现行 v2.2 测试样例（披露前／后）canonical bytes 和 package hash 一致；不扩大为所有历史协议或旧客户端兼容性证明 |
 | 修改范围 | 未改前端、具体作者项目、安装包和演绎存档；未创建 SDK 目录 |
 
-补丁前基线、回归输出及 hash 对照在 `/Users/mac/.codex/experiments/neko-workshop-sdk-names-74zfflwx/`。临时材料不写入 `.agent/notes`。
+补丁前基线、回归输出及 hash 对照在 `<本机实验目录>/neko-workshop-sdk-names-74zfflwx/`。临时材料不写入 `.agent/notes`。
 
 ### 9.2 审核补充后的迁移准入条件
 
@@ -359,7 +359,7 @@ SDK发布门禁核对成功状态、非空hash和revision；两个缺失hash均�
 
 仍未执行：用户旧作者项目的实际导入／切换、真实模型跨题材生成与演绎、人工 TTS 体验及全平台发行验收。`import_story` 仅从 Story Package 新建作者项目，不能用于声称完整作者数据已迁移；原项目、正式包和 Session/Ledger 保留原状。小剧场输入预算、计分、路线、姓名披露和恢复合同未作改动。
 
-可复现证据保存在 `/Users/mac/.codex/experiments/neko-workshop-sdk-migration-npyis5aw/`，包含迁出基线、hash 清单、新旧编译对照、联合回归和源码发行冒烟日志。首轮新增测试曾因测试角色 ID 未带现行 `character_` 前缀，以及把 Pydantic 包内相对导入误判为旧顶层 config 而失败；已修正测试适配，未因此放宽产品姓名或导入边界。
+可复现证据保存在 `<本机实验目录>/neko-workshop-sdk-migration-npyis5aw/`，包含迁出基线、hash 清单、新旧编译对照、联合回归和源码发行冒烟日志。首轮新增测试曾因测试角色 ID 未带现行 `character_` 前缀，以及把 Pydantic 包内相对导入误判为旧顶层 config 而失败；已修正测试适配，未因此放宽产品姓名或导入边界。
 
 联合回归命令：
 
@@ -384,7 +384,7 @@ SDK发布门禁核对成功状态、非空hash和revision；两个缺失hash均�
 | 检查点边界 | 这 8 份真实项目当前均无检查点；检查点及姓名续写由确定性反例验证，不扩大为真实失败项目恢复的新证据 |
 | 源码冒烟 | launcher 入口新增 ID 分配、完整项目导入、拒绝沿用旧发布回执和重新复验检查，已通过。Nuitka 工作流使用同一检查入口，尚未运行冻结发行物 |
 
-本轮临时产物位于 `/Users/mac/.codex/experiments/neko-workshop-sdk-closeout-0stwvtd_/`；`legacy-import-final.json` 保存逐项目来源／副本 hash、revision 与发布检查，`verify_legacy_import.py` 可在新的隔离目录重放，`regression.txt` 保存联合回归结果。补齐期间还发现 `_write` 在 fsync 失败时可能未记录临时路径，现已在写入前登记并由失败测试验证清理。
+本轮临时产物位于 `<本机实验目录>/neko-workshop-sdk-closeout-0stwvtd_/`；`legacy-import-final.json` 保存逐项目来源／副本 hash、revision 与发布检查，`verify_legacy_import.py` 可在新的隔离目录重放，`regression.txt` 保存联合回归结果。补齐期间还发现 `_write` 在 fsync 失败时可能未记录临时路径，现已在写入前登记并由失败测试验证清理。
 
 代码接口及隔离数据验收已完成。仍待调用方指定配置后的真实模型验收、Windows／Linux／macOS 正式发行物验收和正式数据切换。TTS 由小剧场运行时负责，前文历史记录中的“未验证 TTS”不表示 SDK 缺少模块或未满足迁移条件。旧项目未正式冻结，当前共享规则同步边界以4.1为准。
 
