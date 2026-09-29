@@ -369,9 +369,15 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
     assert reply.usage["total_tokens"] == 15
     assert calls[0]["max_retries"] == 0
     assert calls[0]["max_completion_tokens"] == 16000
-    assert calls[0]["timeout"] == 120
+    # A non-streaming 16k-token completion needs a read timeout scaled to its budget.
+    assert calls[0]["timeout"].read == 400
+    assert calls[0]["timeout"].connect == 10
     assert calls[0]["api_key"] == (api_key or "")
     assert calls[1] == {"response_format":{"type":"json_object"}}
+    calls.clear()
+    NekoWorkshopModel({"model":"selected-model", "api_key":api_key, "max_input_tokens":16000,
+                       "base_url":"https://example.invalid/v1"})([], **{**options, "max_tokens": 1000})
+    assert calls[0]["timeout"].read == 120
 
 
 @pytest.mark.parametrize("budget", [None, True, 0, -1, 1.5, "16000"])
