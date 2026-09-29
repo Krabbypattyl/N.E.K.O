@@ -38,7 +38,11 @@ from .numeric_v2_evaluator import (
     NumericV2TransitionOfferReview,
 )
 from .numeric_v2_options import aload_theater_module_options
-from .numeric_v2_performance import mixed_performance_blocks, performance_content_blocks
+from .numeric_v2_performance import (
+    mixed_performance_blocks,
+    performance_content_blocks,
+    valid_mixed_performance_policy,
+)
 from .numeric_v2_runtime import (
     NumericV2Engine,
     NumericV2Runtime,
@@ -1006,6 +1010,7 @@ async def _execute_numeric_v2_turn(
         "phantom_transition_flags_cleared": 0,
         # 完成合同已满足但 Actor 漏写公开出口时，追加作者提供的确定性邀请次数。
         "completion_fallback_offer_applied": 0,
+        "completion_fallback_offer_skipped": 0,
         # 待确认期间普通追问不得覆盖原始接受按钮；记录实际补回次数便于压测回溯。
         "pending_acceptance_suggestions_preserved": 0,
         # 只在普通复核确认新邀请有效后插入固定接受按钮；不增加模型调用。
@@ -2123,18 +2128,35 @@ async def _execute_numeric_v2_turn(
             visible_performance = "\n".join(
                 item for item in (visible_performance, fallback_offer) if item
             )
-        performance = {
+        fallback_candidate = {
             **performance,
             "performance": visible_performance,
             "transition_offered": True,
         }
-        reviewed_transition_offered = True
-        diagnostics["completion_fallback_offer_applied"] += 1
-        trace_event(
-            "completion.fallback_offer_applied",
-            route_id=fallback_route.get("id"),
-            target_node_id=fallback_route.get("target_node_id"),
-        )
+        # 作者文案按与提交相同的发声合同复验；拼接后不合法（禁言、括号不配对、块数超限）
+        # 就跳过兜底，否则提交必然失败且条件不变时每轮都会重复失败。
+        if valid_mixed_performance_policy(
+            fallback_candidate,
+            str(
+                outcome.ledger_event.get("performance_dialogue_policy")
+                or outcome.session.dialogue_policy
+            ),
+        ):
+            performance = fallback_candidate
+            reviewed_transition_offered = True
+            diagnostics["completion_fallback_offer_applied"] += 1
+            trace_event(
+                "completion.fallback_offer_applied",
+                route_id=fallback_route.get("id"),
+                target_node_id=fallback_route.get("target_node_id"),
+            )
+        else:
+            diagnostics["completion_fallback_offer_skipped"] += 1
+            trace_event(
+                "completion.fallback_offer_skipped",
+                reason="performance_policy_invalid",
+                route_id=fallback_route.get("id"),
+            )
 
     # 最终复核比 Actor 更适合做语义检测；两者复用同一紧凑协议，按键去重后仍由 Runtime 裁定。
     actor_fact_candidates = performance.pop("fact_candidates", [])
