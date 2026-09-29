@@ -588,6 +588,10 @@ def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# 称呼按完整独立词匹配：两侧须为文本边界、空白或下列标点，避免“小哥哥”“我哥哥”误命中。
+PLAYER_ADDRESS_BOUNDARY_CHARS = r"\s,，。.!！;；:："
+
+
 def _player_address_disclosed(message: str, configured_address: str) -> bool:
     """只接受包含完整昵称的明确自我介绍或称呼请求。"""  # noqa: DOCSTRING_CJK
 
@@ -596,8 +600,8 @@ def _player_address_disclosed(message: str, configured_address: str) -> bool:
     if not text or not address or address in {"你", "男主"}:
         return False
     escaped = re.escape(address)
-    left = r"(?:^|[\s,，。.!！;；:：])"
-    right = r"(?=$|[\s,，。.!！;；:：])"
+    left = rf"(?:^|[{PLAYER_ADDRESS_BOUNDARY_CHARS}])"
+    right = rf"(?=$|[{PLAYER_ADDRESS_BOUNDARY_CHARS}])"
     quoted_address = rf"[\"'“‘「『]?{escaped}[\"'”’」』]?"
     patterns = (
         # 中文：限定为第一人称身份陈述或明确的称呼指令，排除“你认识小明吗”。

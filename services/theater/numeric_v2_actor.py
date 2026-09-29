@@ -7,6 +7,7 @@ import difflib
 import inspect
 import json
 import logging
+import re
 import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
@@ -63,7 +64,12 @@ from .numeric_v2_performance import (
     performance_content_blocks,
     transition_source_dialogue_policy,
 )
-from .numeric_v2_runtime import NumericV2Engine, ScriptSessionV2, TurnOutcomeV2
+from .numeric_v2_runtime import (
+    PLAYER_ADDRESS_BOUNDARY_CHARS,
+    NumericV2Engine,
+    ScriptSessionV2,
+    TurnOutcomeV2,
+)
 
 
 NUMERIC_V2_ACTOR_TIMEOUT_SECONDS = 35.0
@@ -377,6 +383,13 @@ def _project_player_address(player_address: str, *, known: bool) -> str:
     return "你"
 
 
+_PLAYER_AUTHORED_PERFORMANCE_KEYS = frozenset({
+    "suggested_inputs",
+    "accept_input",
+    "alternative_inputs",
+})
+
+
 def _assert_no_unknown_player_address_leak(
     performance: Mapping[str, Any],
     *,
@@ -394,7 +407,27 @@ def _assert_no_unknown_player_address_leak(
         or configured_address in str(player_input or "")
     ):
         return
-    if configured_address in json.dumps(performance, ensure_ascii=False, separators=(",", ":")):
+    # 推荐输入是玩家自己的台词，不是猫娘的称呼；只检查猫娘正文与旁白。
+    # 边界沿用 Runtime 披露判定，并补上混合正文的动作括号和引号/语气标点，
+    # 使“（抬头）哥哥，”仍算直接称呼，而“小哥哥”“你哥哥”不算。
+    boundary = PLAYER_ADDRESS_BOUNDARY_CHARS + r"（）()\[\]【】\"'“”‘’「」『』？?、…～~—"
+    pattern = re.compile(
+        rf"(?:^|(?<=[{boundary}])){re.escape(configured_address)}(?=$|[{boundary}])",
+        flags=re.IGNORECASE,
+    )
+
+    def speech_texts(value: Any, key: str = "") -> list[str]:
+        if key in _PLAYER_AUTHORED_PERFORMANCE_KEYS:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, Mapping):
+            return [text for k, v in value.items() for text in speech_texts(v, str(k))]
+        if isinstance(value, (list, tuple)):
+            return [text for item in value for text in speech_texts(item)]
+        return []
+
+    if any(pattern.search(text) for text in speech_texts(performance)):
         raise NumericV2ActorOutputError("numeric_v2_actor_player_address_leak")
 
 
