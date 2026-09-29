@@ -1370,6 +1370,19 @@ def _profile_for_acting_contract(
     return "\n".join(selected).strip()
 
 
+def actor_visible_profile(character_profile: str) -> str:
+    """Return every persona line any Actor prompt or output check can consume.
+
+    Actor prompts only see ``_profile_for_acting_contract`` projections and the
+    output check only reads the self-reference field. An empty contract keeps
+    the widest projection, so other persona facts (for example relationship
+    notes promoted by background memory work) can change without invalidating
+    a turn that never saw them.
+    """
+
+    return _profile_for_acting_contract(character_profile, {})
+
+
 def _assert_acting_contract_output(
     performance: Mapping[str, Any],
     *,
@@ -3444,4 +3457,5 @@ __all__ = [
     "NumericV2ActorError",
     "NumericV2ActorOutputError",
     "NumericV2ActorUnavailableError",
+    "actor_visible_profile",
 ]

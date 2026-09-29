@@ -5860,3 +5860,49 @@ def test_forget_memory_call_releases_character_lock_and_stops_after_character_de
     assert store.pending_forget(**scope) is None
     # Local cleanup stopped: the frozen receipt was neither deleted nor re-created as skipped.
     assert store.load(payload["end_receipt_id"])["status"] == "pending"
+
+
+@pytest.mark.parametrize(("added_fact", "expected_status"), [
+    # Background reflection promotion adds free-text relationship notes the Actor never sees.
+    ("主人最近常在晚上来找她聊天。", 200),
+    # A style field is part of the Actor prompt, so a turn generated without it must retry.
+    ("口癖: 喵呜", 409),
+])
+def test_numeric_turn_only_retries_for_actor_visible_persona_changes(
+    tmp_path, monkeypatch, added_fact, expected_status,
+):
+    persona_path = tmp_path / "memory" / "测试猫娘" / "persona.json"
+    persona_path.parent.mkdir(parents=True)
+
+    def write_persona(relationship_facts):
+        persona_path.write_text(json.dumps({
+            "neko": {"facts": [{"text": "性格: 安静而认真"}, {"text": "自称: 本喵"}]},
+            "relationship": {"facts": [{"text": text} for text in relationship_facts]},
+        }, ensure_ascii=False), encoding="utf-8")
+
+    write_persona(["主人会给她带点心。"])
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+
+    async def persona_update_during_actor(*args, **kwargs):
+        captured["character_profile"] = kwargs.get("character_profile")
+        write_persona(["主人会给她带点心。", added_fact])
+        return _performance("我在听。")
+
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "persona_mid_turn"},
+        ).status_code == 200
+        monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", persona_update_during_actor)
+        submitted = client.post("/api/theater-numeric/session/input", json={
+            "story_id": "numeric_v2_contract", "session_id": "persona_mid_turn",
+            "client_turn_id": "persona_mid_turn_1", "base_revision": 0, "message": "继续说吧。",
+        })
+
+    assert "主人会给她带点心。" in captured["character_profile"]
+    assert submitted.status_code == expected_status
+    if expected_status == 409:
+        assert submitted.json()["reason"] == "catgirl_profile_changed_requires_retry"
+    else:
+        assert submitted.json()["session"]["revision"] == 1

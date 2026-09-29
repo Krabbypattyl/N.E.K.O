@@ -15,6 +15,7 @@ from utils.character_memory import character_config_mutation_lock
 from .numeric_v2_actor import (
     NumericV2Actor,
     NumericV2ActorOutputError,
+    actor_visible_profile,
 )
 from .numeric_v2_action_projection import (
     normalize_player_action_projection,
@@ -2304,7 +2305,9 @@ async def _execute_numeric_v2_turn(
             same_display_name = str(display_binding.get("catgirl_name") or "") == str(
                 generation_binding.get("catgirl_name") or ""
             )
-            if current_profile != generation_profile or (
+            # Compare only what the Actor consumed; background persona updates to
+            # facts outside that projection must not discard a finished turn.
+            if actor_visible_profile(current_profile) != actor_visible_profile(generation_profile) or (
                 same_display_name
                 and str(display_binding.get("profile_hash") or "")
                 != str(generation_binding.get("profile_hash") or "")
