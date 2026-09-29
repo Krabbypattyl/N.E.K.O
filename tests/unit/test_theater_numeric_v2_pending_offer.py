@@ -833,3 +833,52 @@ async def test_rejected_offer_does_not_put_old_acceptance_button_first(tmp_path,
         # A follow-up that leaves the offer pending still keeps its acceptance entry first.
         assert result.stored.session.transition_offered is True
         assert suggestions[0] == acceptance
+
+
+@pytest.mark.asyncio
+async def test_dispute_recheck_keeps_author_fallback_invitation_protected(tmp_path, monkeypatch):
+    """The dispute verdict replaces the fast one, but must pass the same deterministic corrections."""
+    from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
+    from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+    fallback_offer = '要现在和我一起去长街找旧信吗？'
+    story = numeric_v2_story()
+    story['nodes'][0]['route_gates'][1]['transition_contract']['fallback_offer'] = fallback_offer
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='fallback_dispute', catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    current = await _commit(runtime, current, fallback_offer, offer=True)
+    reviews = []
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False, transition_intent='accept')
+
+    async def generate(self, **kwargs):
+        outcome = kwargs['outcome']
+        if outcome.ledger_event['from_node_id'] != outcome.ledger_event['to_node_id']:
+            return engine.finalize_transition_performance(outcome, _candidate(), target_opening='雨停了。')
+        return {'performance': '（点头）那我们先留在这里。', 'suggested_inputs': [], 'transition_offered': False}
+
+    async def review(self, **kwargs):
+        reviews.append(kwargs)
+        if kwargs['route_changed']:
+            # Both the fast and the independent dispute verdict deny this accept and call the invitation wrong.
+            return ev.NumericV2TransitionOfferReview(
+                False, False, ('player_action',), (), '玩家只是追问，并未接受。',
+                acceptance_authorized=False, pending_invitation_invalid=True)
+        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('accept_turn', current.session.revision, '远吗？'), ensure_current_binding=lambda _: _binding())
+    assert [bool(call.get('dispute_review')) for call in reviews if call['route_changed']] == [False, True]
+    assert result.diagnostics['transition_cancellations'] == 1
+    assert result.diagnostics['author_fallback_invitation_protected'] == 2
+    # The author's verbatim invitation survives the cancelled accept and stays acceptable.
+    assert 'transition_offer_invalidated' not in result.stored.ledger_events[-1]
+    assert result.stored.session.transition_offered is True

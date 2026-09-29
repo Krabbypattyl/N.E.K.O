@@ -1335,30 +1335,116 @@ async def _execute_numeric_v2_turn(
             if review_call_count > 1 or prior_review_seconds > 0.0:
                 review_kwargs["timeout_seconds"] = max(0.05, first_call_budget)
             review = await evaluator.validate_transition_offer(**review_kwargs)
-            if (
-                changed
-                and outcome.ledger_event.get("transition_intent") == "accept"
-                and review.pending_invitation_invalid is True
-            ):
-                transition_contract = outcome.transition_contract or {}
-                author_fallback = (
-                    str(transition_contract.get("fallback_offer") or "").strip()
-                    if isinstance(transition_contract, Mapping)
-                    else ""
-                )
-                pending_text = pending_transition_performance(
-                    current.session,
-                    ledger_events=current.ledger_events,
-                    include_withdrawn=True,
-                )
-                if author_fallback and author_fallback in pending_text:
-                    # 作者逐字兜底与当前实际路线一致时，模型只能否定本轮接受，不能撤下邀请本身。
-                    review = replace(review, pending_invitation_invalid=False)
-                    diagnostics["author_fallback_invitation_protected"] += 1
-                    trace_event(
-                        "review.author_fallback_invitation_protected",
-                        route_id=(outcome.route or {}).get("id"),
+            player_action_projection = normalize_player_action_projection(
+                outcome.ledger_event.get("player_action_projection")
+            )
+
+            def protect_author_fallback(
+                result: NumericV2TransitionOfferReview,
+            ) -> NumericV2TransitionOfferReview:
+                """Keep a verbatim author fallback invitation from being withdrawn by one rejected accept."""
+
+                if (
+                    changed
+                    and outcome.ledger_event.get("transition_intent") == "accept"
+                    and result.pending_invitation_invalid is True
+                ):
+                    transition_contract = outcome.transition_contract or {}
+                    author_fallback = (
+                        str(transition_contract.get("fallback_offer") or "").strip()
+                        if isinstance(transition_contract, Mapping)
+                        else ""
                     )
+                    pending_text = pending_transition_performance(
+                        current.session,
+                        ledger_events=current.ledger_events,
+                        include_withdrawn=True,
+                    )
+                    if author_fallback and author_fallback in pending_text:
+                        # 作者逐字兜底与当前实际路线一致时，模型只能否定本轮接受，不能撤下邀请本身。
+                        result = replace(result, pending_invitation_invalid=False)
+                        diagnostics["author_fallback_invitation_protected"] += 1
+                        trace_event(
+                            "review.author_fallback_invitation_protected",
+                            route_id=(outcome.route or {}).get("id"),
+                        )
+                return result
+
+            def correct_ordinary_review(
+                result: NumericV2TransitionOfferReview,
+            ) -> NumericV2TransitionOfferReview:
+                """Apply the deterministic ordinary-turn corrections to any review verdict.
+
+                Fast and dispute verdicts both pass through here, so an independent
+                recheck cannot reintroduce a flag these zero-call checks already refuted.
+                """
+
+                if not changed and _review_denies_narration_only_offer(candidate, result):
+                    # 旁白只展示出口标识不等于角色邀请玩家换幕。复核理由已明确否认
+                    # 邀请时，只清除自相矛盾的布尔标志，保留旁白和同轮事实候选。
+                    diagnostics["narration_offer_flags_cleared"] += 1
+                    trace_event(
+                        "review.narration_offer_cleared",
+                        offer_quote=result.offer_quote,
+                        failure_reason=result.failure_reason,
+                    )
+                    result = replace(
+                        result,
+                        offer_present=False,
+                        valid=False,
+                        offer_quote="",
+                        failure_reason="",
+                    )
+                current_scene_evidence = ()
+                if (
+                    not changed
+                    and evaluation.transition_intent == "unclear"
+                    and result.offer_present
+                    and not result.valid
+                    and not result.body_violations
+                ):
+                    current_scene_evidence = _current_scene_completion_offer_evidence(
+                        engine=runtime.engine,
+                        session=current.session,
+                        player_input=turn.message,
+                        review=result,
+                    )
+                if current_scene_evidence:
+                    # 三份独立原文都指向同一个完成事实时，这是玩家已经授权的幕内动作，
+                    # 不是等待玩家再次决定的节点出口；保留正文与事实候选，只清除邀请判定。
+                    diagnostics["current_scene_offer_flags_cleared"] += 1
+                    trace_event(
+                        "review.current_scene_offer_cleared",
+                        evidence=list(current_scene_evidence),
+                        fact_keys=[
+                            str(candidate.get("key") or "")
+                            for candidate in result.fact_candidates
+                            if isinstance(candidate, Mapping)
+                        ],
+                    )
+                    result = replace(
+                        result,
+                        offer_present=False,
+                        valid=False,
+                        offer_quote="",
+                        failure_reason="",
+                    )
+                if not changed and _review_mislabels_explicit_player_movement(
+                    result,
+                    player_action_projection,
+                ):
+                    # 玩家明确要求移动只授权该次移动；此处不推断目的地、不创建换幕，也不放行额外操作。
+                    diagnostics["explicit_player_movement_flags_cleared"] += 1
+                    trace_event(
+                        "review.explicit_player_movement_cleared",
+                        failure_reason=result.failure_reason,
+                    )
+                    result = replace(
+                        result,
+                        body_violations=(),
+                        failure_reason="",
+                    )
+                return result
 
             def record_review(result: NumericV2TransitionOfferReview, mode: str) -> None:
                 trace_event("review.result", mode=mode, phase="transition" if changed else "ordinary", result=result)
@@ -1384,75 +1470,9 @@ async def _execute_numeric_v2_turn(
                        if result.fact_candidates else {}),
                 })
 
+            review = protect_author_fallback(review)
             record_review(review, "fast")
-            if not changed and _review_denies_narration_only_offer(candidate, review):
-                # 旁白只展示出口标识不等于角色邀请玩家换幕。复核理由已明确否认
-                # 邀请时，只清除自相矛盾的布尔标志，保留旁白和同轮事实候选。
-                diagnostics["narration_offer_flags_cleared"] += 1
-                trace_event(
-                    "review.narration_offer_cleared",
-                    offer_quote=review.offer_quote,
-                    failure_reason=review.failure_reason,
-                )
-                review = replace(
-                    review,
-                    offer_present=False,
-                    valid=False,
-                    offer_quote="",
-                    failure_reason="",
-                )
-            current_scene_evidence = ()
-            if (
-                not changed
-                and evaluation.transition_intent == "unclear"
-                and review.offer_present
-                and not review.valid
-                and not review.body_violations
-            ):
-                current_scene_evidence = _current_scene_completion_offer_evidence(
-                    engine=runtime.engine,
-                    session=current.session,
-                    player_input=turn.message,
-                    review=review,
-                )
-            if current_scene_evidence:
-                # 三份独立原文都指向同一个完成事实时，这是玩家已经授权的幕内动作，
-                # 不是等待玩家再次决定的节点出口；保留正文与事实候选，只清除邀请判定。
-                diagnostics["current_scene_offer_flags_cleared"] += 1
-                trace_event(
-                    "review.current_scene_offer_cleared",
-                    evidence=list(current_scene_evidence),
-                    fact_keys=[
-                        str(candidate.get("key") or "")
-                        for candidate in review.fact_candidates
-                        if isinstance(candidate, Mapping)
-                    ],
-                )
-                review = replace(
-                    review,
-                    offer_present=False,
-                    valid=False,
-                    offer_quote="",
-                    failure_reason="",
-                )
-            player_action_projection = normalize_player_action_projection(
-                outcome.ledger_event.get("player_action_projection")
-            )
-            if not changed and _review_mislabels_explicit_player_movement(
-                review,
-                player_action_projection,
-            ):
-                # 玩家明确要求移动只授权该次移动；此处不推断目的地、不创建换幕，也不放行额外操作。
-                diagnostics["explicit_player_movement_flags_cleared"] += 1
-                trace_event(
-                    "review.explicit_player_movement_cleared",
-                    failure_reason=review.failure_reason,
-                )
-                review = replace(
-                    review,
-                    body_violations=(),
-                    failure_reason="",
-                )
+            review = correct_ordinary_review(review)
             failure_reason = str(review.failure_reason or "")
             projection_conflict = _player_action_projection_conflicts_with_review(
                 review,
@@ -1578,8 +1598,9 @@ async def _execute_numeric_v2_turn(
                             "review_mode": "dispute", "degraded": True, "failure_reason": str(exc),
                         })
                     else:
+                        reviewed = protect_author_fallback(reviewed)
                         record_review(reviewed, "dispute")
-                        review = reviewed
+                        review = correct_ordinary_review(reviewed)
             if not changed:
                 # 普通回合不得把目标幕开场或桥接独有的时间标记演成现在时（问题2.141 B3）。
                 # 该检查是确定性的，放在模型判定与争议之后：模型判断不能清除它。

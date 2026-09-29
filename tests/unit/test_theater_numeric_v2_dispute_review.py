@@ -429,3 +429,42 @@ async def test_dispute_real_timeout_becomes_evaluator_error(monkeypatch):
     with pytest.raises(evaluator.NumericV2EvaluatorError, match='timeout'):
         await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(
             engine=engine, session=session, message='好。', actor_performance=_opening(), dispute_review=True)
+
+
+@pytest.mark.asyncio
+async def test_dispute_verdict_gets_the_same_explicit_movement_correction(monkeypatch, tmp_path):
+    """A dispute verdict that mislabels the player's own requested movement is corrected like a fast one."""
+    engine = _engine()
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='dispute_movement', catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    generations, reviews = [], []
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult(
+            (), False, transition_intent='unclear', interaction_intent='scene_action')
+
+    async def generate(self, **kwargs):
+        generations.append(kwargs)
+        return {'performance': '（扶稳你的手臂）好，我们沿着墙边慢慢走。', 'scene_narration': '两人开始向左侧走廊移动。',
+                'suggested_inputs': ['（跟上她）继续走。', '（停下脚步）先等等。'], 'transition_offered': False}
+
+    async def review(self, **kwargs):
+        reviews.append(kwargs)
+        # The fast verdict is vague enough to earn a dispute; the dispute then blames the requested movement.
+        reason = ('正文scene_update直接执行了玩家本轮明确表达的移动动作，构成player_action。'
+                  if kwargs.get('dispute_review') else '正文存在问题。')
+        return evaluator.NumericV2TransitionOfferReview(False, False, ('player_action',), (), reason)
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('move_now', 0, '那带路吧，我们现在过去。'), ensure_current_binding=lambda _: _binding())
+    assert [bool(call.get('dispute_review')) for call in reviews] == [False, True]
+    assert result.diagnostics['explicit_player_movement_flags_cleared'] == 1
+    assert result.diagnostics['semantic_rewrite_attempts'] == 0
+    assert len(generations) == 1
+    assert result.performance['scene_narration'] == '两人开始向左侧走廊移动。'
