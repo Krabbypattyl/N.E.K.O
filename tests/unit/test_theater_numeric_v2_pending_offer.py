@@ -232,6 +232,39 @@ async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp
 
 
 @pytest.mark.asyncio
+async def test_evaluator_parser_keeps_evidenced_accept_of_withdrawn_offer(tmp_path):
+    """The parser keeps a verbatim re-acceptance of a withdrawn offer so the Runtime reconsider branch is reachable; vague or misbound accepts stay unclear."""
+
+    from services.theater.numeric_v2_evaluator import _parse_output
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id="reconsider_parser", catgirl_binding=_binding(), opening_performance=_opening())
+    stored = await _commit(runtime, stored, "我们沿长街寻找旧信，好吗？", offer=True)
+    stored = await _commit(runtime, stored, "那就先留在这里。", intent="reject")
+    assert not stored.session.transition_offered
+
+    def parse(message, reply_target="pending_transition"):
+        payload = {
+            "scene_complete": False,
+            "metric_changes": {},
+            "transition_intent": "accept",
+            "transition_reply_target": reply_target,
+        }
+        return _parse_output(json.dumps(payload, ensure_ascii=False), engine, message,
+                             stored.session, tuple(stored.ledger_events)).transition_intent
+
+    explicit = "我改主意了，就沿长街寻找旧信吧。"
+    assert parse(explicit) == "accept"
+    # 与隔轮回复相同：没有逐字指回原邀请，或模型未把回复绑定到原邀请时仍保守留幕。
+    assert parse("我改主意了，就按刚才说的走。") == "unclear"
+    assert parse(explicit, reply_target="latest_interaction") == "unclear"
+    outcome = runtime.prepare_turn(stored, TurnRequestV2("go", stored.session.revision, explicit), (),
+                                   transition_intent=parse(explicit))
+    assert outcome.session.current_node_id != stored.session.current_node_id
+
+
+@pytest.mark.asyncio
 async def test_withdrawn_offer_does_not_cross_a_scene_visit(tmp_path):
     """A departed scene cannot authorize a transition for free input in the new scene."""
 

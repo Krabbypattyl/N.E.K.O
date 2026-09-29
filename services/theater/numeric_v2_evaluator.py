@@ -1899,6 +1899,26 @@ def _parse_output(
                     current_revision=session.revision,
                 )
                 transition_intent = "unclear"
+        elif invitation is not None and transition_intent == "accept":
+            # 已撤回邀请允许明确改主意重新接受（Runtime include_withdrawn 分支）；
+            # 与隔轮回复同一证据门槛：必须指向原邀请，并逐字指回其独有地点或动作。
+            withdrawn_reference = (
+                transition_reply_target == "pending_transition"
+                and (
+                    bool(_stale_invitation_reference(message, session, invitation))
+                    or _selected_latest_suggestion_references_invitation(
+                        message, session, invitation,
+                    )
+                )
+            )
+            if not withdrawn_reference:
+                trace_event(
+                    "evaluator.withdrawn_acceptance_rejected",
+                    reply_target=transition_reply_target,
+                    origin_revision=origin_revision,
+                    current_revision=session.revision,
+                )
+                transition_intent = "unclear"
         elif transition_intent == "accept":
             transition_intent = "unclear"
     # 模型仅声称已公开不够；原文缺失或虚构时仍可正常回应，但不授权主动换幕。
