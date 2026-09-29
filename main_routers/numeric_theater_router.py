@@ -91,6 +91,12 @@ _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictiona
 _speak_request_results: dict[str, dict[str, Any]] = {}
 # 归档幂等事实保存在回执文件中，进程内锁只负责并发窗口，不应永久保留每个回执 ID。
 _archive_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+# Archive and forget await the memory service without the global character lock,
+# because that lock also serialises ordinary character switch/save/rename/delete.
+# This per-story lock keeps them ordered against the theater lifecycle writes that
+# used to rely on the global lock (restart replacement, resume, package deletion).
+# Lock order: memory operation lock -> character lock -> story guard.
+_memory_operation_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _request_lock(
@@ -105,6 +111,15 @@ def _request_lock(
         lock = asyncio.Lock()
         locks[request_id] = lock
     return lock
+
+
+def _memory_operation_lock(config_manager: Any, story_id: str) -> asyncio.Lock:
+    """Return the per-story lock held across a memory-service round trip."""
+
+    return _request_lock(
+        _memory_operation_locks,
+        f"{_numeric_root(config_manager)}::{str(story_id or '').strip()}",
+    )
 
 
 def _performance_block_group(
@@ -475,39 +490,43 @@ async def list_numeric_memory_stories():
     from utils.internal_http_client import get_internal_http_client
 
     config_manager = get_config_manager()
+    # Snapshot identity and local forget intents under the lock only. The memory
+    # service can wait on its per-character settle lock during /settle compression;
+    # holding the global character lock across that request would stall ordinary
+    # character switching and saving for the whole timeout.
     async with character_config_mutation_lock:
         binding = _current_catgirl_binding(config_manager)
         store = _archive_store(config_manager)
         pending_ids = await asyncio.to_thread(store.pending_forget_story_ids, binding["character_id"])
-        available = True
+    available = True
+    try:
+        response = await get_internal_http_client().get(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
+            f"{quote(binding['catgirl_name'], safe='')}/theater/stories", timeout=8.0,
+        )
+        data = response.json()
+        if not response.is_success or data.get("ok") is not True or not isinstance(data.get("stories"), list):
+            raise ValueError("numeric_memory_story_list_failed")
+        stories = {str(row["story_id"]): row for row in data["stories"]}
+    except Exception:
+        # Installed stories remain usable; local forget retries stay reachable
+        # even while the memory service is unavailable.
+        available = False
+        stories = {}
+    for story_id in pending_ids:
+        stories.setdefault(story_id, {"story_id": story_id, "title": story_id, "memory_summaries": []})
+        stories[story_id]["forget_pending"] = True
+    registry = NumericV2PackageRegistry(_numeric_root(config_manager) / "numeric_v2" / "packages")
+    result = []
+    for story_id, row in stories.items():
         try:
-            response = await get_internal_http_client().get(
-                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
-                f"{quote(binding['catgirl_name'], safe='')}/theater/stories", timeout=8.0,
-            )
-            data = response.json()
-            if not response.is_success or data.get("ok") is not True or not isinstance(data.get("stories"), list):
-                raise ValueError("numeric_memory_story_list_failed")
-            stories = {str(row["story_id"]): row for row in data["stories"]}
-        except Exception:
-            # Installed stories remain usable; local forget retries stay reachable
-            # even while the memory service is unavailable.
-            available = False
-            stories = {}
-        for story_id in pending_ids:
-            stories.setdefault(story_id, {"story_id": story_id, "title": story_id, "memory_summaries": []})
-            stories[story_id]["forget_pending"] = True
-        registry = NumericV2PackageRegistry(_numeric_root(config_manager) / "numeric_v2" / "packages")
-        result = []
-        for story_id, row in stories.items():
-            try:
-                path = registry.package_path(story_id)
-            except NumericV2PackageError:
-                continue
-            if not await asyncio.to_thread(path.is_file):
-                result.append({**row, "memory_only": True})
-        return {"ok": True, "stories": result, "character_id": binding["character_id"],
-                "memory_available": available}
+            path = registry.package_path(story_id)
+        except NumericV2PackageError:
+            continue
+        if not await asyncio.to_thread(path.is_file):
+            result.append({**row, "memory_only": True})
+    return {"ok": True, "stories": result, "character_id": binding["character_id"],
+            "memory_available": available}
 
 
 @router.get("/options")
@@ -649,7 +668,9 @@ async def delete_numeric_story(story_id: str, request: Request):
         # 删除恢复入口只校验安全路径与文件存在性；损坏包无法编译时也必须允许原子清理。
         package_path = registry.package_path(normalized_story_id)
         # 剧本删除与角色改名/删除会读写同一批 Session、回执和归档，统一按角色锁→故事锁串行。
-        async with character_config_mutation_lock, numeric_v2_story_session_guard(
+        async with _memory_operation_lock(
+            config_manager, normalized_story_id,
+        ), character_config_mutation_lock, numeric_v2_story_session_guard(
             _numeric_root(config_manager),
             normalized_story_id,
         ):
@@ -754,7 +775,10 @@ async def _start_numeric_session(request: Request):
             catgirl_binding=binding,
             actor_budget_profile=actor_budget_profile,
         )
-        async with character_config_mutation_lock, runtime.story_session_guard():
+        # Replacement deletes the previous run's receipts; wait for an in-flight archive.
+        async with _memory_operation_lock(
+            config_manager, story_id,
+        ), character_config_mutation_lock, runtime.story_session_guard():
             # Actor 调用期间剧本可能已被删除或同 ID 重装；提交前必须复验原包仍是当前事实。
             current_engine = await asyncio.to_thread(
                 NumericV2PackageRegistry(
@@ -1185,7 +1209,10 @@ async def resume_numeric_session(request: Request):
         config_manager = get_config_manager()
         runtime = await _runtime_for_story(config_manager, story_id)
         # 恢复状态与当前角色属于同一份可变事实，必须在统一锁顺序内读取并复验。
-        async with character_config_mutation_lock, runtime.story_session_guard():
+        # Resuming reopens the ledger, so it must not overlap an in-flight archive.
+        async with _memory_operation_lock(
+            config_manager, story_id,
+        ), character_config_mutation_lock, runtime.story_session_guard():
             current = await runtime.restore_session(session_id)
             if current is None:
                 return _error("numeric_session_not_found", 404)
@@ -1436,66 +1463,74 @@ async def archive_numeric_session(request: Request):
             if expected_request_id and archive_request_id != expected_request_id:
                 return _error("numeric_archive_request_mismatch", 409)
             runtime = await _runtime_for_story(config_manager, receipt["story_id"])
-            # 角色生命周期锁固定记忆目录名称；故事锁避免剧本删除完成后又写回孤立冷档案。
-            async with character_config_mutation_lock, runtime.story_session_guard():
-                if await asyncio.to_thread(store.pending_forget, receipt["story_id"], receipt.get("character_id", "")):
-                    return _error("numeric_theater_memory_forget_pending", 409)
-                compatible = True
-                try:
-                    stored = await runtime.restore_session(receipt["session_id"])
-                except NumericV2RuntimeError as exc:
-                    if str(exc) not in {"story_package_revision_mismatch", "story_package_hash_mismatch"}:
-                        raise
-                    stored = await runtime.restore_session_for_lifecycle(receipt["session_id"])
-                    compatible = False
-                if stored is None:
-                    return _error("numeric_session_not_found", 404)
-                current_binding = _ensure_current_catgirl(stored.session, config_manager)
-                if receipt.get("character_id") != current_binding.get("character_id"):
-                    return _error("numeric_end_receipt_character_mismatch", 409)
-                if stored.session.status != "ended" or stored.session.revision != receipt["revision"]:
-                    return _error("numeric_archive_session_not_ended", 409)
-                public = _numeric_payload(
-                    runtime,
-                    stored,
-                    display_binding=current_binding,
-                    story_projection_compatible=compatible,
-                )
-                title = str(runtime.engine.story["meta"]["title"])
-                messages = build_numeric_v2_memory_messages(
-                    title=title,
-                    session=stored.session,
-                    ending=(public["scene"] or {}).get("ending"),
-                    archive_from_revision=int(receipt.get("archive_from_revision") or 1),
-                    archive_through_revision=int(
-                        receipt.get("archive_through_revision") or stored.session.revision
-                    ),
-                    include_opening=bool(receipt.get("include_opening", True)),
-                )
-                if not messages:
-                    # Old pending receipts may predate the forget watermark fix.
-                    # Empty ranges must never reintroduce the previous performance.
-                    await store.aupdate(receipt, status="skipped")
-                    return {"ok": True, "status": "skipped"}
-                from config import MEMORY_SERVER_PORT
-                from utils.internal_http_client import get_internal_http_client
+            async with _memory_operation_lock(config_manager, receipt["story_id"]):
+                # 角色生命周期锁固定记忆目录名称；故事锁避免剧本删除完成后又写回孤立冷档案。
+                async with character_config_mutation_lock, runtime.story_session_guard():
+                    if await asyncio.to_thread(store.pending_forget, receipt["story_id"], receipt.get("character_id", "")):
+                        return _error("numeric_theater_memory_forget_pending", 409)
+                    compatible = True
+                    try:
+                        stored = await runtime.restore_session(receipt["session_id"])
+                    except NumericV2RuntimeError as exc:
+                        if str(exc) not in {"story_package_revision_mismatch", "story_package_hash_mismatch"}:
+                            raise
+                        stored = await runtime.restore_session_for_lifecycle(receipt["session_id"])
+                        compatible = False
+                    if stored is None:
+                        return _error("numeric_session_not_found", 404)
+                    current_binding = _ensure_current_catgirl(stored.session, config_manager)
+                    if receipt.get("character_id") != current_binding.get("character_id"):
+                        return _error("numeric_end_receipt_character_mismatch", 409)
+                    if stored.session.status != "ended" or stored.session.revision != receipt["revision"]:
+                        return _error("numeric_archive_session_not_ended", 409)
+                    public = _numeric_payload(
+                        runtime,
+                        stored,
+                        display_binding=current_binding,
+                        story_projection_compatible=compatible,
+                    )
+                    title = str(runtime.engine.story["meta"]["title"])
+                    messages = build_numeric_v2_memory_messages(
+                        title=title,
+                        session=stored.session,
+                        ending=(public["scene"] or {}).get("ending"),
+                        archive_from_revision=int(receipt.get("archive_from_revision") or 1),
+                        archive_through_revision=int(
+                            receipt.get("archive_through_revision") or stored.session.revision
+                        ),
+                        include_opening=bool(receipt.get("include_opening", True)),
+                    )
+                    if not messages:
+                        # Old pending receipts may predate the forget watermark fix.
+                        # Empty ranges must never reintroduce the previous performance.
+                        await store.aupdate(receipt, status="skipped")
+                        return {"ok": True, "status": "skipped"}
+                    from config import MEMORY_SERVER_PORT
+                    from utils.internal_http_client import get_internal_http_client
 
-                await _assert_numeric_writable(config_manager, "archives")
-                receipt = await store.aupdate(
-                    receipt,
-                    status="writing",
-                    archive_request_id=archive_request_id,
-                )
-                # 先落不含隐藏状态的完整冷档案，再让记忆服务迁移旧版全文；
-                # 这样旧时间索引被折叠时，公开演绎仍有可恢复副本。
-                await store.astage_public_archive(
-                    receipt=receipt,
-                    title=title,
-                    session=stored.session,
-                    ending=(public["scene"] or {}).get("ending"),
-                )
+                    await _assert_numeric_writable(config_manager, "archives")
+                    receipt = await store.aupdate(
+                        receipt,
+                        status="writing",
+                        archive_request_id=archive_request_id,
+                    )
+                    # 先落不含隐藏状态的完整冷档案，再让记忆服务迁移旧版全文；
+                    # 这样旧时间索引被折叠时，公开演绎仍有可恢复副本。
+                    await store.astage_public_archive(
+                        receipt=receipt,
+                        title=title,
+                        session=stored.session,
+                        ending=(public["scene"] or {}).get("ending"),
+                    )
+                    memory_url = (
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/"
+                        f"{quote(current_binding['catgirl_name'], safe='')}"
+                    )
+                # The durable "writing" receipt and staged archive make this request
+                # retryable, so the memory round trip runs without the global
+                # character lock (it may wait behind /settle compression).
                 response = await get_internal_http_client().post(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{quote(current_binding['catgirl_name'], safe='')}",
+                    memory_url,
                     # 记忆服务使用同一稳定键收敛未知响应和跨进程重试，不能只在剧场侧去重。
                     json={
                         "input_history": json.dumps(messages, ensure_ascii=False),
@@ -1504,16 +1539,30 @@ async def archive_numeric_session(request: Request):
                     timeout=8.0,
                 )
                 data = response.json() if response.content else {}
-                if not response.is_success or data.get("status") == "error":
-                    await store.aupdate(receipt, status="pending")
-                    return _error("numeric_archive_memory_failed", 502)
-                await store.acommit_staged_public_archive(receipt)
-                await store.aupdate(
-                    receipt,
-                    status="written",
-                    archive_request_id=archive_request_id,
-                )
-                return {"ok": True, "status": "written", "count": data.get("count")}
+                memory_written = response.is_success and data.get("status") != "error"
+                async with character_config_mutation_lock, runtime.story_session_guard():
+                    # Character rename/delete may have run meanwhile: rename rewrites
+                    # the receipt's display name, delete removes the receipt. Commit
+                    # only from the re-read receipt that still belongs to this request.
+                    current = await store.aload(str(receipt.get("receipt_id") or ""))
+                    if (
+                        current is None
+                        or current.get("status") != "writing"
+                        or current.get("archive_request_id") != archive_request_id
+                    ):
+                        receipt = None
+                        return _error("numeric_archive_state_changed", 409)
+                    receipt = current
+                    if not memory_written:
+                        receipt = await store.aupdate(current, status="pending")
+                        return _error("numeric_archive_memory_failed", 502)
+                    await store.acommit_staged_public_archive(current)
+                    receipt = await store.aupdate(
+                        current,
+                        status="written",
+                        archive_request_id=archive_request_id,
+                    )
+                    return {"ok": True, "status": "written", "count": data.get("count")}
         except NumericV2ArchiveError as exc:
             return _error(str(exc), 409)
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
@@ -1522,11 +1571,27 @@ async def archive_numeric_session(request: Request):
             raise
         except Exception:
             if store is not None and receipt is not None and receipt.get("status") == "writing":
-                try:
-                    await store.aupdate(receipt, status="pending")
-                except NumericV2ArchiveError:
-                    pass
+                await _reset_writing_archive_receipt(config_manager, store, receipt)
             return _error("numeric_archive_memory_failed", 502)
+
+
+async def _reset_writing_archive_receipt(
+    config_manager: Any,
+    store: NumericV2ArchiveStore,
+    receipt: Mapping[str, Any],
+) -> None:
+    """Return a failed archive to pending from a fresh read under the lifecycle locks."""
+
+    try:
+        async with character_config_mutation_lock, numeric_v2_story_session_guard(
+            _numeric_root(config_manager),
+            str(receipt.get("story_id") or ""),
+        ):
+            current = await store.aload(str(receipt.get("receipt_id") or ""))
+            if current is not None and current.get("status") == "writing":
+                await store.aupdate(current, status="pending")
+    except (NumericV2ArchiveError, NumericV2StoreError):
+        pass
 
 
 @router.post("/session/archive/skip")
@@ -1699,36 +1764,40 @@ async def forget_numeric_story_memory(request: Request):
         from utils.internal_http_client import get_internal_http_client
 
         # 遗忘同样写入角色记忆目录，必须与角色改名串行；独立故事锁不依赖剧本包存在。
-        async with character_config_mutation_lock, numeric_v2_story_session_guard(
-            _numeric_root(config_manager),
-            story_id,
-        ):
-            binding = _current_catgirl_binding(config_manager)
-            if binding["character_id"] != expected_character_id:
-                return _error("catgirl_changed_requires_refresh", 409)
-            await _assert_numeric_writable(config_manager, "memory")
-            archive_store = _archive_store(config_manager)
-            archive_scope = {
-                "story_id": story_id,
-                "character_id": binding["character_id"],
-                "legacy_catgirl_name": binding["catgirl_name"],
-            }
-            session_id = await runtime.store.get_story_session_id(story_id, binding["character_id"]) if runtime else ""
-            stored = await runtime.restore_session_for_lifecycle(session_id) if session_id else None
-            if stored is not None:
-                _ensure_current_catgirl(stored.session, config_manager)
-            pending = await archive_store.mutate(
-                archive_store.prepare_forget, **archive_scope,
-                session=stored.session if stored is not None else None,
-            )
-            if runtime is not None and pending["session_id"]:
-                target = await runtime.restore_session_for_lifecycle(pending["session_id"])
-                if target is not None:
-                    _ensure_current_catgirl(target.session, config_manager)
-                    # The frozen boundary survives retries; later turns are not forgotten.
-                    stored = await runtime.store.forget_history_through_current_revision(
-                        target.session.session_id, through_revision=pending["through_revision"],
-                    )
+        async with _memory_operation_lock(config_manager, story_id):
+            async with character_config_mutation_lock, numeric_v2_story_session_guard(
+                _numeric_root(config_manager),
+                story_id,
+            ):
+                binding = _current_catgirl_binding(config_manager)
+                if binding["character_id"] != expected_character_id:
+                    return _error("catgirl_changed_requires_refresh", 409)
+                await _assert_numeric_writable(config_manager, "memory")
+                archive_store = _archive_store(config_manager)
+                archive_scope = {
+                    "story_id": story_id,
+                    "character_id": binding["character_id"],
+                    "legacy_catgirl_name": binding["catgirl_name"],
+                }
+                session_id = await runtime.store.get_story_session_id(story_id, binding["character_id"]) if runtime else ""
+                stored = await runtime.restore_session_for_lifecycle(session_id) if session_id else None
+                if stored is not None:
+                    _ensure_current_catgirl(stored.session, config_manager)
+                pending = await archive_store.mutate(
+                    archive_store.prepare_forget, **archive_scope,
+                    session=stored.session if stored is not None else None,
+                )
+                if runtime is not None and pending["session_id"]:
+                    target = await runtime.restore_session_for_lifecycle(pending["session_id"])
+                    if target is not None:
+                        _ensure_current_catgirl(target.session, config_manager)
+                        # The frozen boundary survives retries; later turns are not forgotten.
+                        stored = await runtime.store.forget_history_through_current_revision(
+                            target.session.session_id, through_revision=pending["through_revision"],
+                        )
+            # The durable intent above makes every later step retryable, so the
+            # memory round trip runs without the global character lock (the memory
+            # service may wait behind /settle compression for this character).
             response = await get_internal_http_client().post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
                 f"{quote(binding['catgirl_name'], safe='')}/theater/forget",
@@ -1738,15 +1807,29 @@ async def forget_numeric_story_memory(request: Request):
             data = response.json() if response.content else {}
             if not response.is_success or data.get("ok") is not True:
                 return _error("numeric_theater_memory_forget_failed", 502)
-            await archive_store.mutate(archive_store.delete_forget_files, pending)
-            removed_archives = len(pending["archive_files"])
-            removed_receipts = len(pending["receipt_files"])
-            if stored is not None and stored.session.status == "ended":
-                # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
-                skipped = await archive_store.acreate_or_get(stored.session)
-                await archive_store.aupdate(skipped, status="skipped")
-            # Removing the intent is the last step; every preceding operation is retryable.
-            await archive_store.mutate(archive_store.complete_forget, story_id, binding["character_id"])
+            async with character_config_mutation_lock, numeric_v2_story_session_guard(
+                _numeric_root(config_manager),
+                story_id,
+            ):
+                # Character deletion removes this intent together with the scoped files;
+                # finish only while the exact intent this request prepared is still live.
+                if await asyncio.to_thread(
+                    archive_store.pending_forget, story_id, binding["character_id"],
+                ) != pending:
+                    return _error("catgirl_changed_requires_refresh", 409)
+                await _assert_numeric_writable(config_manager, "memory")
+                if stored is not None and runtime is not None:
+                    # The session may have ended while the lock was released.
+                    stored = await runtime.restore_session_for_lifecycle(stored.session.session_id)
+                await archive_store.mutate(archive_store.delete_forget_files, pending)
+                removed_archives = len(pending["archive_files"])
+                removed_receipts = len(pending["receipt_files"])
+                if stored is not None and stored.session.status == "ended":
+                    # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
+                    skipped = await archive_store.acreate_or_get(stored.session)
+                    await archive_store.aupdate(skipped, status="skipped")
+                # Removing the intent is the last step; every preceding operation is retryable.
+                await archive_store.mutate(archive_store.complete_forget, story_id, binding["character_id"])
         return {
             "ok": True,
             "removed_recent": int(data.get("removed_recent") or 0),

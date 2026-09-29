@@ -4266,7 +4266,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
         tmp_path / "theater" / "numeric_v2" / "sessions" / "archive_session.json"
     ).exists()
     assert captured["calls"] == 1
-    assert captured["character_lock_held"] is True
+    assert captured["character_lock_held"] is False
     assert captured["url"].endswith("/%E6%B5%8B%E8%AF%95%E7%8C%AB%E5%A8%98")
     assert captured["payload"]["idempotency_key"] == ended["archive_request_id"]
     memory_text = captured["payload"]["input_history"]
@@ -4630,7 +4630,7 @@ def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
         "removed_receipts": 0,
     }
     assert captured["payload"] == {"story_id": "numeric_v2_contract"}
-    assert captured["character_lock_held"] is True
+    assert captured["character_lock_held"] is False
 
 
 def test_numeric_story_memory_forget_rejects_switched_character(
@@ -5659,7 +5659,7 @@ def test_deleted_story_summary_list_excludes_installed_packages(tmp_path, monkey
 
     class MemoryClient:
         async def get(self, url, **kwargs):
-            assert numeric_theater_router.character_config_mutation_lock.locked()
+            assert not numeric_theater_router.character_config_mutation_lock.locked()
             return SimpleNamespace(is_success=True, json=lambda: {'ok': True, 'stories': rows})
 
     monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
@@ -5776,3 +5776,87 @@ def test_archiving_after_package_upgrade_preserves_completion(tmp_path, monkeypa
         retry = client.post('/api/theater-numeric/session/archive', json=payload)
         assert retry.json()['status'] == 'already_written'
         assert len(captured) == 1
+
+
+def _ended_archive_payload(client):
+    scope = {"story_id": "numeric_v2_contract", "session_id": "gap_session"}
+    assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+    ended = client.post("/api/theater-numeric/session/end", json={
+        **scope, "base_revision": 0, "base_lifecycle_revision": 0,
+    }).json()
+    return {**scope, "revision": 0, "end_receipt_id": ended["end_receipt_id"],
+            "archive_request_id": ended["archive_request_id"]}
+
+
+def test_archive_memory_call_releases_character_lock_and_keeps_concurrent_rename(tmp_path, monkeypatch):
+    """A rename that lands during the memory round trip must survive the final receipt write."""
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    observed = {}
+
+    async def post(url, **kwargs):
+        observed["character_lock"] = numeric_theater_router.character_config_mutation_lock.locked()
+        observed["memory_operation_lock"] = numeric_theater_router._memory_operation_lock(
+            numeric_theater_router.get_config_manager(), "numeric_v2_contract",
+        ).locked()
+        # With the global lock free, a character rename can rewrite the display name now.
+        async with numeric_theater_router.character_config_mutation_lock:
+            receipt = store.load(observed["receipt_id"])
+            store._write(store._receipt_path(observed["receipt_id"]), {**receipt, "catgirl_name": "改名猫娘"})
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached", "count": 1})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        observed["receipt_id"] = payload["end_receipt_id"]
+        response = client.post("/api/theater-numeric/session/archive", json=payload)
+    assert response.status_code == 200 and response.json()["status"] == "written"
+    assert observed["character_lock"] is False
+    assert observed["memory_operation_lock"] is True
+    receipt = store.load(payload["end_receipt_id"])
+    assert receipt["status"] == "written"
+    assert receipt["catgirl_name"] == "改名猫娘"
+
+
+def test_archive_aborts_when_character_deletion_removes_receipt_during_memory_call(tmp_path, monkeypatch):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    observed = {}
+
+    async def post(url, **kwargs):
+        store._receipt_path(observed["receipt_id"]).unlink()
+        store.discard_staged_public_archive(observed["receipt_id"])
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached", "count": 1})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        observed["receipt_id"] = payload["end_receipt_id"]
+        response = client.post("/api/theater-numeric/session/archive", json=payload)
+    assert response.status_code == 409
+    assert response.json()["reason"] == "numeric_archive_state_changed"
+    assert store.load(payload["end_receipt_id"]) is None
+    assert store.list_public_archives(story_id="numeric_v2_contract") == []
+
+
+def test_forget_memory_call_releases_character_lock_and_stops_after_character_deletion(tmp_path, monkeypatch):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    scope = {"story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32}
+    observed = {}
+
+    async def post(url, **kwargs):
+        if url.endswith("/theater/forget"):
+            observed["character_lock"] = numeric_theater_router.character_config_mutation_lock.locked()
+            # Character deletion removes the scoped forget intent with its files.
+            store.complete_forget(scope["story_id"], scope["character_id"])
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached"})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        response = client.post("/api/theater-numeric/memory/forget", json=scope)
+    assert observed["character_lock"] is False
+    assert response.status_code == 409
+    assert response.json()["reason"] == "catgirl_changed_requires_refresh"
+    assert store.pending_forget(**scope) is None
+    # Local cleanup stopped: the frozen receipt was neither deleted nor re-created as skipped.
+    assert store.load(payload["end_receipt_id"])["status"] == "pending"
