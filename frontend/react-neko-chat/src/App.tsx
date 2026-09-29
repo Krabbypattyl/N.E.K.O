@@ -37,6 +37,7 @@ import {
 } from './compactToolWheelGeometry';
 import { useFocusGlow } from './useFocusGlow';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
+import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -1134,7 +1135,6 @@ function CompactChatApp({
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastTheaterDraftRestoreIdRef = useRef('');
-  const lastOrdinaryDraftRestoreIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = visibleDraft.trim().length > 0
     || (!theaterActive && !catLocalTextOnly && composerAttachments.length > 0);
@@ -1155,9 +1155,8 @@ function CompactChatApp({
   useEffect(() => {
     if (theaterActive) return;
     const restore = theaterPresentation.ordinaryDraftRestore;
-    if (!restore?.id || restore.id === lastOrdinaryDraftRestoreIdRef.current) return;
     // 主页面可能在演绎期间重挂 React，这里只恢复进入小剧场前保存的普通聊天草稿。
-    lastOrdinaryDraftRestoreIdRef.current = restore.id;
+    if (!restore || !claimOrdinaryDraftRestore(restore.id)) return;
     setDraft(restore.text);
   }, [theaterActive, theaterPresentation.ordinaryDraftRestore]);
   const avatarToolRuntime = useAvatarToolRuntime({

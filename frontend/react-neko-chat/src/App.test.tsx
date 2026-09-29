@@ -457,6 +457,57 @@ describe('App', () => {
     expect(input).toHaveValue('ordinary draft');
   });
 
+  it('restores the pre-theater ordinary draft only once across full and compact remounts', () => {
+    // 剧场结束后宿主的 viewProps 会一直保留这份恢复协议；full/compact 切换重挂组件时不能再次填回。
+    const ended = {
+      active: false,
+      phase: 'inactive' as const,
+      history: [],
+      suggestedInputs: [],
+      ordinaryDraftRestore: { id: 'ordinary_restore_compact_exit', text: '晚饭吃什么' },
+    };
+    const { rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" theaterPresentation={ended} />,
+    );
+    const compactInput = screen.getByPlaceholderText('Type a message...');
+    expect(compactInput).toHaveValue('晚饭吃什么');
+    fireEvent.change(compactInput, { target: { value: '' } });
+
+    rerender(<App chatSurfaceMode="full" theaterPresentation={ended} />);
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" theaterPresentation={ended} />);
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
+  it('delivers the ordinary draft to the full surface when the theater exit restores full mode', () => {
+    const restore = { id: 'ordinary_restore_full_exit', text: '明天去哪玩' };
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        theaterPresentation={{ active: true, phase: 'awaiting_player', ordinaryDraftRestore: restore }}
+      />,
+    );
+    // 演绎期间胶囊输入框属于剧场，不能提前消费普通草稿。
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+
+    rerender(
+      <App
+        chatSurfaceMode="full"
+        theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('明天去哪玩');
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
     const onComposerSubmit = vi.fn();
     const { rerender } = render(

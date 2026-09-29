@@ -39,6 +39,7 @@ import {
   type AvatarToolItem,
 } from './avatarTools';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
+import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
 import {
   playCompactToolWheelDetentSound,
   useCompactToolWheelAudioPreload,
@@ -522,7 +523,6 @@ export default function FullChatSurface({
   const compactInputToolFanHoverInsideRef = useRef(false);
   const compactInputToolFanSuppressHoverUntilLeaveRef = useRef(false);
   const compactInputToolFanInteractiveRef = useRef(false);
-  const lastOrdinaryDraftRestoreIdRef = useRef('');
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
@@ -632,9 +632,9 @@ export default function FullChatSurface({
 
   useEffect(() => {
     const restore = theaterPresentation?.ordinaryDraftRestore;
-    if (!restore?.id || restore.id === lastOrdinaryDraftRestoreIdRef.current) return;
-    // full 与 compact 是独立组件并各自持有草稿；退出剧场切回 full 后必须再次消费同一恢复协议。
-    lastOrdinaryDraftRestoreIdRef.current = restore.id;
+    // full 与 compact 是独立组件并各自持有草稿；退出剧场切回 full 时由先挂载的一方消费，
+    // 已消费的 id 在模块级共享，之后的 full↔compact 切换不再重复填回。
+    if (!restore || !claimOrdinaryDraftRestore(restore.id)) return;
     setDraft(restore.text);
   }, [theaterPresentation?.ordinaryDraftRestore]);
 
