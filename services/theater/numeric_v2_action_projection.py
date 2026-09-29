@@ -50,6 +50,26 @@ _SINGLE_ACTION_SUFFIXES = {
 }
 
 
+# 动作词/离场词前紧邻否定（可带一两个情态字，如“不会”“没有再”“绝不”）时，
+# 该处不是已完成的动作；“不得不”是双重否定，仍按实施处理。
+_NEGATION_BEFORE_TERM = re.compile(
+    r"(?<!不得)[不没别未勿莫甭][有会要再能想用肯敢得准许必可]{0,2}$"
+)
+
+
+def _negated_at(text: str, start: int) -> bool:
+    return bool(_NEGATION_BEFORE_TERM.search(text[:start]))
+
+
+def _term_starts(text: str, term: str) -> list[int]:
+    starts: list[int] = []
+    start = text.find(term)
+    while start >= 0:
+        starts.append(start)
+        start = text.find(term, start + 1)
+    return starts
+
+
 def _evidence(value: Any) -> str:
     return " ".join(str(value or "").strip().split())[:_MAX_EVIDENCE_CHARS]
 
@@ -70,17 +90,17 @@ def _explicit_subject(text: str) -> bool:
 
 def _action_term(text: str) -> str:
     for term in sorted(_ACTION_TERMS, key=len, reverse=True):
-        start = text.find(term)
-        if start < 0:
-            continue
-        if len(term) > 1:
-            return term
-        suffixes = _SINGLE_ACTION_SUFFIXES.get(term)
-        if suffixes is None:
-            return term
-        end = start + len(term)
-        if end == len(text) or text[end] in suffixes:
-            return term
+        for start in _term_starts(text, term):
+            if _negated_at(text, start):
+                continue
+            if len(term) > 1:
+                return term
+            suffixes = _SINGLE_ACTION_SUFFIXES.get(term)
+            if suffixes is None:
+                return term
+            end = start + len(term)
+            if end == len(text) or text[end] in suffixes:
+                return term
     return ""
 
 
@@ -109,7 +129,11 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
     terms = _DEPARTURE_TERMS if departure else _ACTION_TERMS
     for clause in _clauses(text):
         if departure:
-            has_term = any(term in clause for term in terms)
+            has_term = any(
+                not _negated_at(clause, start)
+                for term in terms
+                for start in _term_starts(clause, term)
+            )
         else:
             has_term = bool(_action_term(clause))
         if not has_term:

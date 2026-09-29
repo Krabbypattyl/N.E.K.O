@@ -60,6 +60,39 @@ def test_questions_and_plans_do_not_become_completed_actions():
         assert projection["future_references"] == []
 
 
+@pytest.mark.parametrize("message", [
+    "我不会离开你。",
+    "我不走了，留下来陪你",
+    "我绝不回家",
+    "我决不离开这里。",
+    "我没走。",
+    "别走了，我陪着你。",
+    "我不签了。",
+])
+def test_negated_departure_or_action_is_not_projected(message):
+    """A verb directly preceded by a negation, optionally with a modal, is not a completed action on either path."""
+
+    projection = project_player_action_result(message)
+
+    assert projection["player_left_current_scene"] is False
+    assert projection["has_confirmed_player_action"] is False
+    assert projection["confirmed_actions"] == []
+
+
+@pytest.mark.parametrize("message,kind", [
+    ("我离开了。", "leave_current_scene"),
+    ("我走了", "leave_current_scene"),
+    ("我不得不走了。", "leave_current_scene"),
+    ("我签了字。", "player_action"),
+])
+def test_affirmative_departure_and_action_still_project(message, kind):
+    """Negation handling must not suppress plain completed actions."""
+
+    projection = project_player_action_result(message)
+
+    assert [row["kind"] for row in projection["confirmed_actions"]] == [kind]
+
+
 def test_noun_containing_action_character_is_not_a_player_action():
     projection = project_player_action_result(
         "（并肩跟上步伐）我想尝尝你推荐的拿铁。"
