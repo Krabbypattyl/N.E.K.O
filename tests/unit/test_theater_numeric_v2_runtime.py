@@ -2769,6 +2769,55 @@ async def test_settled_story_delete_rollback_is_not_replayed_after_later_delete(
 
 
 @pytest.mark.asyncio
+async def test_story_delete_erases_attributable_quarantined_public_archives(tmp_path, monkeypatch):
+    """Package delete erases this story's quarantined archives in its transaction, never unknown ones."""
+    import hashlib
+
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "quarantine_story")
+    story_id = story["meta"]["story_id"]
+    quarantine_root = tmp_path / "numeric_v2" / numeric_v2_maintenance.PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+    quarantine_root.mkdir(parents=True)
+
+    def quarantined(session_id: str, content: str) -> Path:
+        key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    erased = [
+        quarantined("by_story", json.dumps({"story_id": story_id, "schema": "other"})),
+        # Unparseable, but its basename is the story session's archive key.
+        quarantined(stored.session.session_id, "{broken"),
+    ]
+    kept = [
+        quarantined("other_story", json.dumps({"story_id": "other_story"})),
+        quarantined("unknown_owner", "{broken"),
+    ]
+    snapshot = {path: path.read_bytes() for path in [*erased, *kept]}
+
+    original_delete = NumericV2PackageRegistry.delete_package
+    deleted_before_failure = []
+
+    def delete_then_fail(self, target_story_id):
+        deleted_before_failure.append([path.exists() for path in erased])
+        original_delete(self, target_story_id)
+        raise numeric_v2_store.NumericV2StoreError("forced_delete_failure")
+
+    with monkeypatch.context() as broken:
+        broken.setattr(NumericV2PackageRegistry, "delete_package", delete_then_fail)
+        with pytest.raises(numeric_v2_store.NumericV2StoreError, match="forced_delete_failure"):
+            numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    assert deleted_before_failure == [[False, False]]
+    assert {path: path.read_bytes() for path in snapshot} == snapshot
+
+    numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    assert not registry.package_path(story_id).exists()
+    assert not runtime.store._path(stored.session.session_id).exists()
+    assert not any(path.exists() for path in erased)
+    assert {path: path.read_bytes() for path in kept} == {path: snapshot[path] for path in kept}
+
+
+@pytest.mark.asyncio
 async def test_later_story_delete_supersedes_pending_failed_rollback(tmp_path):
     story, registry, runtime, stored = await _started_story_session(tmp_path, "rollback_pending")
     story_id = story["meta"]["story_id"]

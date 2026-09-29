@@ -14,7 +14,11 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
-from .numeric_v2_archive import NumericV2ArchiveStore
+from .numeric_v2_archive import (
+    PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
+    NumericV2ArchiveError,
+    NumericV2ArchiveStore,
+)
 from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageNotFoundError
 from .numeric_v2_runtime import NumericV2RuntimeError
 from .numeric_v2_store import (
@@ -34,8 +38,8 @@ from .numeric_v2_storage_transaction import run_storage_mutation
 
 
 QUARANTINE_FILE_LIMIT = 6
-# 公开冷档案隔离区独立于 Session 隔离区，避免被 QUARANTINE_FILE_LIMIT 裁剪删除。
-PUBLIC_ARCHIVE_QUARANTINE_DIRNAME = "quarantine_public_archives"
+# 公开冷档案隔离区（PUBLIC_ARCHIVE_QUARANTINE_DIRNAME）独立于 Session 隔离区，
+# 不被 QUARANTINE_FILE_LIMIT 裁剪删除；只随显式删除/遗忘在可回滚事务内清理。
 DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
 # 损坏的 story_sessions.json 是可重建的派生缓存；移入独立目录保存，不参与裁剪删除。
 INDEX_QUARANTINE_DIRNAME = "quarantine_indexes"
@@ -110,6 +114,7 @@ def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any
         ("session_root", "sessions"),
         ("public_archive_root", "public_archives"),
         ("receipt_root", "end_receipts"),
+        ("public_archive_quarantine_root", PUBLIC_ARCHIVE_QUARANTINE_DIRNAME),
     ):
         target_root = _manifest_path(payload, root_key)
         backup_root = transaction_dir / backup_dirname
@@ -246,11 +251,13 @@ def _prepare_delete_transaction(
         transaction_dir.mkdir(parents=True)
         shutil.copy2(package_target, transaction_dir / "package.json")
         session_backup_root = transaction_dir / "sessions"
+        story_session_ids: set[str] = set()
         for summary in list_numeric_v2_sessions(
             theater_root,
             story_id=story_id,
             raise_on_io_error=True,
         ):
+            story_session_ids.add(str(summary.get("session_id") or ""))
             session_backup_root.mkdir(parents=True, exist_ok=True)
             source = Path(summary["path"])
             shutil.copy2(source, session_backup_root / source.name)
@@ -270,6 +277,17 @@ def _prepare_delete_transaction(
             receipt_backup_root.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, receipt_backup_root / source.name)
         index_stories = _read_story_session_slots(index_target)
+        story_session_ids.update(str(value) for value in index_stories.get(story_id, {}).values())
+        # Only quarantined archives attributable to this story are erased here: a
+        # package delete is not a request to erase data whose owner is unknown.
+        quarantined_archives = archive_store.quarantined_public_archive_paths(
+            story_id=story_id,
+            session_ids=story_session_ids,
+        )
+        quarantine_backup_root = transaction_dir / PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+        for source in quarantined_archives:
+            quarantine_backup_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, quarantine_backup_root / source.name)
         manifest = {
             "schema": DELETE_TRANSACTION_SCHEMA,
             "state": "prepared",
@@ -278,6 +296,8 @@ def _prepare_delete_transaction(
             "session_root": str(session_root),
             "public_archive_root": str(public_archive_root),
             "receipt_root": str(archive_store.root),
+            "public_archive_quarantine_root": str(archive_store.public_archive_quarantine_root),
+            "quarantined_archive_files": [path.name for path in quarantined_archives],
             "index_target": str(index_target),
             "index_existed": index_target.is_file(),
             "index_story_slots": index_stories.get(story_id, {}),
@@ -309,12 +329,16 @@ def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, 
         transaction_dir, manifest_path, manifest = _prepare_delete_transaction(
             theater_root, registry, story_id,
         )
-    except OSError as exc:
+    except (OSError, NumericV2ArchiveError) as exc:
         raise NumericV2StoreError("numeric_story_delete_backup_failed") from exc
     try:
-        deleted = _delete_numeric_v2_sessions_unlocked(theater_root, story_id=story_id)
+        deleted =_delete_numeric_v2_sessions_unlocked(theater_root, story_id=story_id)
         NumericV2ArchiveStore(theater_root).delete_receipts(story_id=story_id)
-        NumericV2ArchiveStore(theater_root).delete_public_archives(story_id=story_id, character_id="")
+        archive_store = NumericV2ArchiveStore(theater_root)
+        archive_store.delete_public_archives(story_id=story_id, character_id="")
+        for name in manifest["quarantined_archive_files"]:
+            # Backed up in the prepared transaction above, so a rollback restores it.
+            (archive_store.public_archive_quarantine_root / name).unlink(missing_ok=True)
         registry.delete_package(story_id)
         manifest["state"] = "committed"
         _atomic_write_manifest(manifest_path, manifest)

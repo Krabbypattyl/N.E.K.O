@@ -5668,6 +5668,46 @@ def test_deleted_story_summary_list_excludes_installed_packages(tmp_path, monkey
     assert listed['stories'] == [{**rows[1], 'memory_only': True}]
 
 
+def test_forget_erases_story_and_unattributable_quarantined_public_archives(tmp_path, monkeypatch):
+    """Forget covers quarantined archives of the story/character and those whose owner is unknown."""
+    import hashlib
+
+    class MemoryClient:
+        async def post(self, url, **kwargs):
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
+    scope = {'story_id': 'numeric_v2_contract', 'character_id': 'character_' + '1' * 32}
+    store = NumericV2ArchiveStore(tmp_path / 'theater')
+    quarantine_root = store.public_archive_quarantine_root
+
+    def quarantined(session_id, content):
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(session_id.encode('utf-8')).hexdigest()
+        path = quarantine_root / f'invalid-1-{"0" * 32}-{key}.json'
+        path.write_text(content, encoding='utf-8')
+        return path
+
+    with _client(tmp_path, monkeypatch) as client:
+        assert client.post('/api/theater-numeric/session/start', json={
+            'story_id': scope['story_id'], 'session_id': 'forget_quarantine'}).status_code == 200
+        erased = [
+            quarantined('own', json.dumps({'story_id': scope['story_id'], 'character_id': scope['character_id']})),
+            # The unparseable copy of the current session's archive is found by its basename.
+            quarantined('forget_quarantine', '{broken'),
+            quarantined('unknown', '[]'),
+        ]
+        kept = [
+            quarantined('other_story', json.dumps({'story_id': 'other_story', 'character_id': scope['character_id']})),
+            quarantined('other_character', json.dumps({'story_id': scope['story_id'], 'character_id': 'character_' + '2' * 32})),
+        ]
+        kept_bytes = [path.read_bytes() for path in kept]
+        assert client.post('/api/theater-numeric/memory/forget', json=scope).status_code == 200
+    assert not any(path.exists() for path in erased)
+    assert [path.read_bytes() for path in kept] == kept_bytes
+    assert store.pending_forget(**scope) is None
+
+
 def test_forget_then_exit_without_new_turn_cannot_archive_old_content(tmp_path, monkeypatch):
     memory_calls = []
 

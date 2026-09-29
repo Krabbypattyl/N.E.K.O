@@ -4966,6 +4966,108 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fail_after_delete", [False, True])
+async def test_delete_catgirl_erases_quarantined_public_archives_inside_snapshot(fail_after_delete):
+    """Quarantined cold archives of the character and of unknown owners go with her, rollback-safe."""
+    import hashlib
+
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router.crud")
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["隔离删除角色"] = {
+                "昵称": "隔离删除角色", "_reserved": {"character_id": "quarantine-delete-id"}}
+            cm.save_characters(characters, bypass_write_fence=True)
+            memory_dir = Path(cm.memory_dir) / "隔离删除角色"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            (memory_dir / "recent.json").write_text("[]", encoding="utf-8")
+
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            store = NumericV2ArchiveStore(Path(cm.app_docs_dir) / "theater")
+            quarantine_root = store.public_archive_quarantine_root
+            quarantine_root.mkdir(parents=True)
+
+            def quarantined(label: str, content: str) -> Path:
+                key = hashlib.sha256(label.encode("utf-8")).hexdigest()
+                path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+                path.write_text(content, encoding="utf-8")
+                return path
+
+            own = quarantined("own", json.dumps({"story_id": "s", "character_id": "quarantine-delete-id"}))
+            legacy = quarantined("legacy", json.dumps({"character_id": "", "catgirl_name": "隔离删除角色"}))
+            unattributable = quarantined("unknown", "{broken")
+            other = quarantined("other", json.dumps({"story_id": "s", "character_id": "other-character"}))
+            erased = {path: path.read_bytes() for path in (own, legacy, unattributable)}
+            other_before = other.read_bytes()
+            erased_before_config_save = []
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+            original_save_characters = cm.save_characters
+
+            def _save_characters(data, character_json_path=None, *, bypass_write_fence=False):
+                if not bypass_write_fence and "隔离删除角色" not in (data.get("猫娘") or {}):
+                    erased_before_config_save.append(
+                        [path.exists() for path in erased] + [other.exists()]
+                    )
+                    if fail_after_delete:
+                        raise OSError("disk full")
+                return original_save_characters(
+                    data,
+                    character_json_path=character_json_path,
+                    bypass_write_fence=bypass_write_fence,
+                )
+
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client), patch.object(
+                cm,
+                "save_characters",
+                side_effect=_save_characters,
+            ):
+                delete_result = await characters_router_module.delete_catgirl("隔离删除角色")
+
+            assert erased_before_config_save == [[False, False, False, True]]
+            assert other.read_bytes() == other_before
+            if fail_after_delete:
+                assert delete_result.status_code == 500
+                assert "隔离删除角色" in cm.load_characters().get("猫娘", {})
+                assert {path: path.read_bytes() for path in erased} == erased
+            else:
+                assert delete_result["success"] is True
+                assert "隔离删除角色" not in cm.load_characters().get("猫娘", {})
+                assert not any(path.exists() for path in erased)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

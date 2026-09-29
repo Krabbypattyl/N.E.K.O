@@ -1745,6 +1745,17 @@ async def _delete_catgirl_by_name_serialized(name: str):
         numeric_forget_targets = await asyncio.to_thread(
             numeric_archive_store.forget_paths_for_character, deleted_character_id,
         )
+        # Startup maintenance moves corrupt public archives out of the strict scan
+        # above; their copies may still hold this character's transcript. Erase the
+        # ones attributable to her and every one whose owner is unknown, inside
+        # the same snapshot so a failed delete restores them.
+        numeric_quarantined_archive_targets = await asyncio.to_thread(
+            numeric_archive_store.quarantined_public_archive_paths,
+            character_id=deleted_character_id,
+            legacy_catgirl_name=name,
+            session_ids=[path.stem for path in numeric_session_targets],
+            include_unattributable=True,
+        )
     except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
         # 与改名一致：无法确认归属的剧场文件使整个删除中止，并返回结构化错误而非裸 500。
         logger.exception("删除角色 Numeric v2 预检失败: %s", name)
@@ -1760,6 +1771,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
             *numeric_public_archive_targets,
             *numeric_receipt_targets,
             *numeric_forget_targets,
+            *numeric_quarantined_archive_targets,
             numeric_session_index_path,
         ]
         with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
@@ -1788,6 +1800,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 )
                 for intent_path in numeric_forget_targets:
                     await _await_thread_mutation(intent_path.unlink, missing_ok=True)
+                for quarantined_path in numeric_quarantined_archive_targets:
+                    await _await_thread_mutation(quarantined_path.unlink, missing_ok=True)
                 del characters['猫娘'][name]
                 await _config_manager.asave_characters(characters)
 
@@ -1849,6 +1863,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
     memory_targets.extend(numeric_public_archive_targets)
     memory_targets.extend(numeric_receipt_targets)
     memory_targets.extend(numeric_forget_targets)
+    memory_targets.extend(numeric_quarantined_archive_targets)
     memory_targets.append(numeric_session_index_path)
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     meta_path = _config_manager.card_face_meta_path(name)
@@ -1991,6 +2006,9 @@ async def _delete_catgirl_by_name_serialized(name: str):
             )
             for intent_path in numeric_forget_targets:
                 await _await_thread_mutation(intent_path.unlink, missing_ok=True)
+            # 隔离区冷档案已进入上方快照；删除失败时随其它目标一并恢复。
+            for quarantined_path in numeric_quarantined_archive_targets:
+                await _await_thread_mutation(quarantined_path.unlink, missing_ok=True)
 
             if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 await _await_thread_mutation(
