@@ -2203,6 +2203,8 @@ async def _execute_numeric_v2_turn(
         current=current,
         keep_pending=(
             current.session.transition_offered
+            # reject、不可达接受等都会让 Runtime 清除旧邀请；只沿用本轮仍待确认的邀请按钮。
+            and outcome.session.transition_offered
             and outcome.session.current_node_id == current.session.current_node_id
             and not invalidate_previous_offer
             and not new_offer

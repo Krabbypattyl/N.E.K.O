@@ -793,3 +793,43 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
         transition_intent='accept',
     )
     assert accepted.session.current_node_id == 'ending_leave'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('intent', ['reject', 'unclear'])
+async def test_rejected_offer_does_not_put_old_acceptance_button_first(tmp_path, monkeypatch, intent):
+    """Only an offer Runtime still keeps pending may pin its original acceptance button first."""
+    from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(numeric_v2_story()), tmp_path)
+    current = await runtime.start_session(session_id=f'reject_button_{intent}', catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    current = await _commit(runtime, current, '我们沿长街寻找旧信，好吗？', offer=True)
+    acceptance = current.session.performance_history[-1]['suggested_inputs'][0]
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False, transition_intent=intent)
+
+    async def generate(self, **kwargs):
+        return {'performance': '（点头）那就先不去。', 'suggested_inputs': ['我们再聊聊花店。', '（环顾四周）这里变了好多。'],
+                'transition_offered': False}
+
+    async def review(self, **kwargs):
+        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('decline', current.session.revision, '先不去了。'), ensure_current_binding=lambda _: _binding())
+    suggestions = result.performance['suggested_inputs']
+    if intent == 'reject':
+        assert result.stored.session.transition_offered is False
+        assert acceptance not in suggestions
+        assert result.diagnostics['pending_acceptance_suggestions_preserved'] == 0
+    else:
+        # A follow-up that leaves the offer pending still keeps its acceptance entry first.
+        assert result.stored.session.transition_offered is True
+        assert suggestions[0] == acceptance
