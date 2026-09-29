@@ -926,6 +926,8 @@
             try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
         }
         window.addEventListener('message', handleCrossWindowMessage);
+        // 剧本列表通常先于 i18n 渲染完成；脚本写入的提示、徽章和记忆行没有 data-i18n，语言就绪后需重绘。
+        window.addEventListener('localechange', function () { renderStories(); renderDetail(); });
         bindModalKeyboard();
         $('theater-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-empty-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
