@@ -24,7 +24,7 @@
         sessionStatus: '', scene: null, history: [], currentBlock: null, suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, presentationSeq: 0, composerVisibilityRestore: null,
-        chatSurfaceModeRestore: null,
+        chatSurfaceModeRestore: null, windowClaimed: false,
         errorMessage: '', tokenUsage: null
     };
     var launchRequests = Object.create(null);
@@ -438,7 +438,11 @@
             compactChatState: compactState,
             composerDisabled: state.active && state.phase !== 'awaiting_player'
         });
-        if (state.active && typeof chatHost.openWindow === 'function') chatHost.openWindow();
+        // 打字机每个字都会渲染；openWindow 会重挂窗口并重新请求普通 Galgame 选项，每个 Session 只需打开一次。
+        if (state.active && !state.windowClaimed && typeof chatHost.openWindow === 'function') {
+            state.windowClaimed = true;
+            chatHost.openWindow();
+        }
         return true;
     }
     function submitFromHost(text) {
@@ -675,6 +679,7 @@
         state.phase = 'loading';
         state.storyId = nextStoryId;
         state.sessionId = nextSessionId;
+        state.windowClaimed = false;
         render();
         var hostReady = await waitForHost();
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
@@ -934,7 +939,7 @@
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.currentBlock = null; state.history = []; state.suggestedInputs = [];
-        state.playerName = ''; state.catgirlName = '';
+        state.playerName = ''; state.catgirlName = ''; state.windowClaimed = false;
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
         committedSnapshot = null;
