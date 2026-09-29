@@ -13,6 +13,7 @@ from utils.tokenize import count_tokens
 from .numeric_v2_budget import numeric_v2_actor_budget
 from .numeric_v2_context import performance_history_records
 from .numeric_v2_evaluator import _model_config
+from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_usage import invoke_with_usage
 
 
@@ -84,7 +85,7 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
                     )
                     async with client:
                         response = await invoke_with_usage(client, _messages(query, rows), stage="history_lookup")
-                    payload = json.loads(response.content)
+                    payload = json.loads(strip_single_json_fence(response.content))
                     ids = payload.get("evidence_ids") if isinstance(payload, dict) else None
                     allowed = {row["id"] for row in rows}
                     if (not isinstance(ids, list) or len(ids) > 12

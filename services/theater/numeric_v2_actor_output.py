@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 import json
 from typing import Any, Mapping
 
+from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_performance import mixed_performance_blocks
 
 
@@ -331,7 +332,8 @@ def _parse_output(
     if not isinstance(content, str) or not content.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_empty_output")
     try:
-        payload = json.loads(content)
+        # 与 Evaluator 一致：只解包完整单个 JSON 围栏，不提取或修补夹杂说明的片段。
+        payload = json.loads(strip_single_json_fence(content))
     except (TypeError, ValueError) as exc:
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):

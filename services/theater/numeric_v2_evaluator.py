@@ -41,6 +41,7 @@ from .numeric_v2_context import (
 from .llm_context import truncate_prompt_value
 from .numeric_v2_performance import content_blocks, performance_content_blocks
 from .numeric_v2_fixed_narration import MAX_FIXED_NARRATIONS, review_candidates
+from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_runtime import (
     MetricChangeV2,
     NumericV2Engine,
@@ -1604,9 +1605,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
     if not isinstance(content, str) or not content.strip():
         raise NumericV2EvaluatorOutputError("numeric_v2_transition_judge_empty_output")
     # 只解包完整的单个 JSON 围栏；不提取夹杂说明的片段，不修补内容或放宽安全字段。
-    lines = content.strip().splitlines()
-    if len(lines) >= 3 and lines[0].lower() in {"```json", "```"} and lines[-1] == "```":
-        content = "\n".join(lines[1:-1])
+    content = strip_single_json_fence(content)
     try:
         payload = json.loads(content)
     except (TypeError, ValueError) as exc:
@@ -1797,9 +1796,7 @@ def _parse_output(
     if not isinstance(content, str) or not content.strip():
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_empty_output")
     # 与 Guard 一致：只解包完整单个 JSON 围栏，内部仍按原字段与类型严格校验。
-    lines = content.strip().splitlines()
-    if len(lines) >= 3 and lines[0].lower() in {"```json", "```"} and lines[-1] == "```":
-        content = "\n".join(lines[1:-1])
+    content = strip_single_json_fence(content)
     try:
         payload = json.loads(content)
     except (TypeError, ValueError) as exc:
