@@ -1099,6 +1099,8 @@ async def _execute_numeric_v2_turn(
                 natural_ending_ready=getattr(evaluation, "natural_ending_ready", False),
                 # 事实候选已经由 Evaluator 按剧本合同和逐字证据整批核验，Runtime 仍会再次校验。
                 fact_operations=getattr(evaluation, "fact_operations", ()),
+                # 条件型固定旁白只能经复核触发；复核关闭时不能让它们锁住出口。
+                condition_narrations_enabled=bool(module_options.get("review")),
             )
             trace_event("runtime.prepared", evaluation=evaluation, state=trace_state(prepared.session),
                         route=prepared.route, ledger_event=prepared.ledger_event)

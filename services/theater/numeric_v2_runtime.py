@@ -1081,10 +1081,13 @@ class NumericV2Engine:
         transition_intent: str = "unclear",
         natural_ending_ready: bool = False,
         fact_operations: tuple[Mapping[str, Any], ...] = (),
+        condition_narrations_enabled: bool = True,
     ) -> TurnOutcomeV2:
         """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
 
         self.validate_session(session)
+        if not isinstance(condition_narrations_enabled, bool):
+            raise NumericV2RuntimeError("condition_narrations_enabled_invalid")
         if session.status == "ended":
             raise NumericV2RuntimeError("session_already_ended")
         if request.base_revision != session.revision:
@@ -1150,7 +1153,11 @@ class NumericV2Engine:
 
         # Only explicitly required immutable pieces gate departure; ordinary goals
         # remain optional creative material and keep their existing semantics.
-        if route is not None and required_pending(source, session):
+        # 条件片段只能由复核模块的触发声明交付；模块关闭时它们永远无法展示，
+        # 因此不能继续锁住出口。该开关随 Ledger 记录，重放沿用当时的判定。
+        if route is not None and required_pending(
+            source, session, condition_triggers_enabled=condition_narrations_enabled,
+        ):
             route, route_status = None, "playing"
         target_node_id = session.current_node_id
         next_status = "active"
@@ -1250,6 +1257,9 @@ class NumericV2Engine:
         # 只记录新信号的阳性值；旧 Ledger 缺省为 false，分叉重放不会替旧历史提前结束。
         if natural_ending_ready is True:
             event["natural_ending_ready"] = True
+        # 只记录关闭值；旧 Ledger 缺省为开启，重放保持原有离幕门槛。
+        if condition_narrations_enabled is False:
+            event["condition_narrations_enabled"] = False
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
 
     def finalize_transition_offer_state(
@@ -1575,6 +1585,7 @@ class NumericV2Runtime:
                 scene_complete=bool(source_event.get("scene_complete")),
                 transition_intent=str(source_event.get("transition_intent") or "unclear"),
                 natural_ending_ready=source_event.get("natural_ending_ready") is True,
+                condition_narrations_enabled=source_event.get("condition_narrations_enabled") is not False,
                 fact_operations=tuple(
                     dict(operation)
                     for operation in source_event.get("fact_operations") or []
@@ -1647,6 +1658,7 @@ class NumericV2Runtime:
         transition_intent: str = "unclear",
         natural_ending_ready: bool = False,
         fact_operations: tuple[Mapping[str, Any], ...] = (),
+        condition_narrations_enabled: bool = True,
     ) -> TurnOutcomeV2:
         return self.engine.resolve_turn(
             current.session,
@@ -1656,6 +1668,7 @@ class NumericV2Runtime:
             transition_intent=transition_intent,
             natural_ending_ready=natural_ending_ready,
             fact_operations=fact_operations,
+            condition_narrations_enabled=condition_narrations_enabled,
         )
 
     async def commit_turn(

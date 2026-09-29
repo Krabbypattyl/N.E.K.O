@@ -482,3 +482,59 @@ async def test_generated_opening_replays_with_original_names_after_rename(tmp_pa
     restored = await NumericV2Runtime(engine, tmp_path).restore_session('original')
     assert restored.session.opening_performance == stored.session.opening_performance
     assert restored.session.catgirl_binding['catgirl_name'] == '新名字'
+
+
+@pytest.mark.asyncio
+async def test_disabled_review_does_not_let_condition_piece_lock_the_exit(tmp_path):
+    """Condition pieces need the review module; with it off they cannot gate exit, and replay keeps that choice."""
+    engine = _engine()
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='review-off', catgirl_binding=_binding(),
+                                          opening_performance=OPENING)
+    gated = runtime.prepare_turn(current, TurnRequestV2('one', 0, '就到这里吧。'), (),
+                                 scene_complete=True, natural_ending_ready=True)
+    assert gated.session.current_node_id == 'start' and 'condition_narrations_enabled' not in gated.ledger_event
+    outcome = runtime.prepare_turn(current, TurnRequestV2('one', 0, '就到这里吧。'), (),
+                                   scene_complete=True, natural_ending_ready=True,
+                                   condition_narrations_enabled=False)
+    assert outcome.session.status == 'ended' and outcome.ledger_event['condition_narrations_enabled'] is False
+    performance = engine.finalize_transition_performance(outcome, _candidate(), target_opening='记录继续。')
+    committed = await runtime.commit_turn(outcome, performance)
+    # Cold replay and test forks must reproduce the recorded gate, not today's default.
+    assert await NumericV2Runtime(engine, tmp_path).restore_session('review-off') == committed
+    forked = await runtime.fork_session_for_test('review-off', session_id='review-off-fork', through_revision=1)
+    assert forked.session.status == 'ended'
+    assert forked.ledger_events[0]['condition_narrations_enabled'] is False
+
+
+@pytest.mark.asyncio
+async def test_default_module_options_leave_conditional_required_scene(tmp_path, monkeypatch):
+    """Shipped defaults turn review off; a conditional required piece must not soft-lock the scene."""
+    from services.theater.numeric_v2_options import default_options
+
+    assert default_options()['review'] is False
+    runtime = NumericV2Runtime(_engine(), tmp_path)
+    current = await runtime.start_session(session_id='defaults', catgirl_binding=_binding(),
+                                          opening_performance=OPENING)
+
+    async def options():
+        return default_options()
+
+    async def evaluate(self, **kwargs):
+        return NumericV2EvaluationResult((), True, natural_ending_ready=True)
+
+    async def invoke(self, messages, **kwargs):
+        prompt = '\n'.join(str(message.content) for message in messages)
+        assert '离幕前必显片段' not in prompt
+        return _parse_output(json.dumps(_candidate()), transition_required=kwargs['transition_required'])
+
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_invoke', invoke)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('one', 0, '就到这里吧。'), ensure_current_binding=lambda _: _binding())
+    assert result.stored.session.current_node_id != 'start'
+    assert result.stored.session.status == 'ended'
+    assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session('defaults') == result.stored

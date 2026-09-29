@@ -80,8 +80,17 @@ def pending_definitions(node: Mapping[str, Any], session: Any) -> list[dict[str,
     return [item for item in definitions(node) if (node["id"], item["id"]) not in seen]
 
 
-def required_pending(node: Mapping[str, Any], session: Any) -> bool:
-    return any(item["required_before_exit"] for item in pending_definitions(node, session))
+def _gates_exit(item: Mapping[str, Any], condition_triggers_enabled: bool) -> bool:
+    """A required piece gates exit only when something can still deliver it."""
+    # Condition pieces are delivered solely through the review module's trigger claims;
+    # with that module off they can never be shown, so they must not lock the scene.
+    return bool(item["required_before_exit"]) and (
+        condition_triggers_enabled or item["trigger"]["type"] != "condition"
+    )
+
+
+def required_pending(node: Mapping[str, Any], session: Any, *, condition_triggers_enabled: bool = True) -> bool:
+    return any(_gates_exit(item, condition_triggers_enabled) for item in pending_definitions(node, session))
 
 
 def render_text(text: str, bindings: Mapping[str, str]) -> str:
@@ -113,7 +122,8 @@ def add_entry(node: Mapping[str, Any], performance: Mapping[str, Any], binding: 
 
 
 def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any], known: bool,
-               *, project_condition: Callable[[str], str] = str) -> str:
+               *, project_condition: Callable[[str], str] = str,
+               condition_triggers_enabled: bool = True) -> str:
     """Only entry text is readable before delivery; condition text stays private."""
     rows = pending_definitions(node, session)
     if not rows:
@@ -127,7 +137,7 @@ def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any]
         else:
             # Actor 不选择片段或结算依赖；只接收实际触发条件，避免内部编号进入可见旁白。
             lines.append(f"待展示原文的触发条件：{project_condition(item['trigger']['condition'])}。不得替玩家执行触发动作。")
-    if any(item["required_before_exit"] for item in rows):
+    if any(_gates_exit(item, condition_triggers_enabled) for item in rows):
         lines.append("当前尚有离幕前必显片段；回应当前互动，不提前邀请跳到下一幕或结束。")
     return "\n".join(lines)
 

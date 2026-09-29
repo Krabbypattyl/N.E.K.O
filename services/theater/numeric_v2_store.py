@@ -1167,6 +1167,10 @@ class NumericV2SessionStore:
                 natural_ending_ready = event.get("natural_ending_ready", False)
                 if not isinstance(natural_ending_ready, bool):
                     raise ValueError("natural_ending_ready_shape")
+                # 条件旁白离幕门槛随当时的复核开关记录；旧 Ledger 缺省开启。
+                condition_narrations_enabled = event.get("condition_narrations_enabled", True)
+                if not isinstance(condition_narrations_enabled, bool):
+                    raise ValueError("condition_narrations_enabled_shape")
                 request = TurnRequestV2.from_mapping(
                     {
                         "client_turn_id": turn_id,
@@ -1181,6 +1185,7 @@ class NumericV2SessionStore:
                     scene_complete=scene_complete,
                     transition_intent=str(event.get("transition_intent") or "unclear"),
                     natural_ending_ready=natural_ending_ready,
+                    condition_narrations_enabled=condition_narrations_enabled,
                     fact_operations=tuple(
                         dict(operation)
                         for operation in event.get("fact_operations") or []

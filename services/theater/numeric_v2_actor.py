@@ -2293,7 +2293,10 @@ def _turn_messages(
     )
     binding = {"catgirl_name": catgirl_name, "player_address": player_address}
     for label, node in [("当前幕", source)] + ([("目标幕", target)] if route_changed else []):
-        fixed_note = actor_note(node, session, binding, player_address_known, project_condition=cast.text)
+        fixed_note = actor_note(
+            node, session, binding, player_address_known, project_condition=cast.text,
+            condition_triggers_enabled=outcome.ledger_event.get("condition_narrations_enabled") is not False,
+        )
         if fixed_note:
             system_prompt += f"\n{label}固定旁白说明：\n{fixed_note}"
     if source["story_beat"].get("fixed_narrations"):
