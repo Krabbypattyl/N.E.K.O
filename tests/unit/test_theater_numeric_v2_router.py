@@ -2601,6 +2601,86 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert restored.json()["session"]["revision"] == 1
 
 
+_FORGET_SCOPE = {"story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32}
+
+
+def _prepare_forget(tmp_path):
+    NumericV2ArchiveStore(tmp_path / "theater").prepare_forget(
+        **_FORGET_SCOPE, legacy_catgirl_name="测试猫娘",
+    )
+
+
+def test_pending_forget_blocks_new_input_and_resume(tmp_path, monkeypatch):
+    """While a story forget is pending, neither new turns nor resume may reopen the story."""
+
+    client = _client(tmp_path, monkeypatch)
+    actor_calls = []
+
+    async def turn(*args, **kwargs):
+        actor_calls.append(kwargs)
+        return _performance("我在听。")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    scope = {"story_id": "numeric_v2_contract", "session_id": "forget_pending"}
+    with client:
+        assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+        exited = client.post("/api/theater-numeric/session/end", json={
+            **scope, "base_revision": 0, "base_lifecycle_revision": 0,
+        })
+        assert exited.status_code == 200
+        _prepare_forget(tmp_path)
+        resumed = client.post("/api/theater-numeric/session/resume", json={
+            **scope, "base_revision": 0, "base_lifecycle_revision": 1,
+        })
+        # Once the forget completes, resume works again; then block input with a new intent.
+        NumericV2ArchiveStore(tmp_path / "theater").complete_forget(**_FORGET_SCOPE)
+        assert client.post("/api/theater-numeric/session/resume", json={
+            **scope, "base_revision": 0, "base_lifecycle_revision": 1,
+        }).status_code == 200
+        _prepare_forget(tmp_path)
+        submitted = client.post("/api/theater-numeric/session/input", json={
+            **scope, "client_turn_id": "forget_pending_1", "base_revision": 0, "message": "我先把信收好。",
+        })
+        restored = client.get(
+            "/api/theater-numeric/session/forget_pending",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["reason"] == "numeric_theater_memory_forget_pending"
+    assert submitted.status_code == 409
+    assert submitted.json()["reason"] == "numeric_theater_memory_forget_pending"
+    assert actor_calls == []
+    assert restored.json()["session"]["revision"] == 0
+
+
+def test_forget_prepared_during_generation_blocks_the_commit(tmp_path, monkeypatch):
+    """A forget intent written while the models run is re-checked under the commit locks."""
+
+    client = _client(tmp_path, monkeypatch)
+
+    async def turn(*args, **kwargs):
+        # The player triggers "forget this story" from another window meanwhile.
+        _prepare_forget(tmp_path)
+        return _performance("我在听。")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    scope = {"story_id": "numeric_v2_contract", "session_id": "forget_race"}
+    with client:
+        assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+        submitted = client.post("/api/theater-numeric/session/input", json={
+            **scope, "client_turn_id": "forget_race_1", "base_revision": 0, "message": "我先把信收好。",
+        })
+        restored = client.get(
+            "/api/theater-numeric/session/forget_race",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert submitted.status_code == 409
+    assert submitted.json()["reason"] == "numeric_theater_memory_forget_pending"
+    assert restored.json()["session"]["revision"] == 0
+
+
 def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
     """主动退出只离开演绎界面，继续时必须恢复原 Session、revision 和历史。"""  # noqa: DOCSTRING_CJK
 

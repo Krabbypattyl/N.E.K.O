@@ -1007,6 +1007,29 @@ async def get_numeric_session(session_id: str, story_id: str):
     }
 
 
+_FORGET_PENDING_REASON = "numeric_theater_memory_forget_pending"
+
+
+class _NumericV2ForgetPendingError(RuntimeError):
+    """An explicit story forget is still pending for this story and character."""
+
+
+async def _forget_pending(config_manager: Any, story_id: str, character_id: str) -> bool:
+    return bool(await asyncio.to_thread(
+        _archive_store(config_manager).pending_forget, story_id, character_id,
+    ))
+
+
+async def _assert_commit_allowed(config_manager: Any, story_id: str, character_id: str) -> None:
+    """Final pre-commit gate: cloudsave write fence plus no forget prepared meanwhile."""
+
+    await _assert_numeric_writable(config_manager, "sessions")
+    # Runs under the character lock and story guard, the same locks forget takes
+    # to write its intent, so a forget cannot slip in between check and commit.
+    if await _forget_pending(config_manager, story_id, character_id):
+        raise _NumericV2ForgetPendingError(_FORGET_PENDING_REASON)
+
+
 @router.post("/session/input")
 @_track_theater_activity
 async def submit_numeric_input(request: Request):
@@ -1054,6 +1077,14 @@ async def _submit_numeric_input(request: Request):
                     display_binding=current_binding,
                 ),
             }
+        forget_scope = (
+            str(current.session.story_package_id),
+            str(current.session.catgirl_binding.get("character_id") or ""),
+        )
+        # A pending explicit forget must finish (or be retried) before the story
+        # gains new turns; checked again under the commit locks below.
+        if await _forget_pending(config_manager, *forget_scope):
+            return _error(_FORGET_PENDING_REASON, 409)
         if current.session.status == "ended":
             return _error("session_already_ended", 409)
         if turn.base_revision != current.session.revision:
@@ -1074,10 +1105,7 @@ async def _submit_numeric_input(request: Request):
                 session,
                 config_manager,
             ),
-            before_commit=lambda: _assert_numeric_writable(
-                config_manager,
-                "sessions",
-            ),
+            before_commit=lambda: _assert_commit_allowed(config_manager, *forget_scope),
         )
         outcome = workflow.outcome
         performance = workflow.performance
@@ -1098,6 +1126,8 @@ async def _submit_numeric_input(request: Request):
         return _error("numeric_base_revision_mismatch", 409)
     except NumericV2DuplicateTurnError:
         return _error("numeric_duplicate_client_turn_id", 409)
+    except _NumericV2ForgetPendingError:
+        return _error(_FORGET_PENDING_REASON, 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
     except NumericV2EvaluatorUnavailableError:
@@ -1275,6 +1305,13 @@ async def resume_numeric_session(request: Request):
             if current is None:
                 return _error("numeric_session_not_found", 404)
             current_binding = _ensure_current_catgirl(current.session, config_manager)
+            if await _forget_pending(
+                config_manager,
+                str(current.session.story_package_id),
+                str(current.session.catgirl_binding.get("character_id") or ""),
+            ):
+                # Reopening would add turns past the frozen forget boundary.
+                return _error(_FORGET_PENDING_REASON, 409)
             await _assert_numeric_writable(config_manager, "sessions")
             stored = await runtime.resume_session(
                 session_id,
