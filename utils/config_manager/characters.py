@@ -50,9 +50,20 @@ class CharactersMixin:
 
     def load_characters(self, character_json_path=None, *, require_authoritative=False):
         """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
-        use_default_path = character_json_path is None
+        # Migration results are written back to the file they came from, except
+        # when the default lookup fell back to a project/seed copy (the runtime
+        # copy is missing): those must land in the runtime config path instead,
+        # never in the seed, which is source-controlled or read-only when frozen.
+        persist_json_path = character_json_path
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
+            runtime_json_path = str(self.get_runtime_config_path('characters.json'))
+            persist_json_path = (
+                character_json_path
+                if os.path.normcase(os.path.abspath(character_json_path))
+                == os.path.normcase(os.path.abspath(runtime_json_path))
+                else runtime_json_path
+            )
 
         with self._characters_cache_lock:
             cache = self._characters_cache
@@ -107,7 +118,7 @@ class CharactersMixin:
                     try:
                         self.save_characters(
                             dirty_cache,
-                            character_json_path=character_json_path,
+                            character_json_path=persist_json_path,
                         )
                         logger.info("已补写此前未持久化的角色保留字段迁移。")
                     except Exception as persist_err:
@@ -190,7 +201,7 @@ class CharactersMixin:
                     logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(all_schema_errors))
             if migrated and migration_persistence_allowed:
                 try:
-                    self.save_characters(character_data, character_json_path=character_json_path)
+                    self.save_characters(character_data, character_json_path=persist_json_path)
                     logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
                 except Exception as migrate_err:
                     # character_id 即使在临时只读阶段也必须在本进程内保持稳定；

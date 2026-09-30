@@ -290,6 +290,82 @@ def test_missing_character_file_retries_dirty_identity_after_write_recovers(tmp_
     }
 
 
+def _seed_only_config_manager(tmp_path: Path):
+    """Config manager whose runtime characters.json is missing but a seed exists."""
+
+    cm = _make_config_manager(tmp_path)
+    cm.project_config_dir = tmp_path / "project_seed_config"
+    seed_path = cm.project_config_dir / "characters.json"
+    seed_path.parent.mkdir(parents=True, exist_ok=True)
+    seed_path.write_text(
+        json.dumps({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    runtime_path = Path(cm.get_runtime_config_path("characters.json"))
+    if runtime_path.exists():
+        runtime_path.unlink()
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+    assert Path(cm.get_config_path("characters.json")) == seed_path
+    return cm, seed_path, runtime_path
+
+
+@pytest.mark.unit
+def test_character_id_migration_from_seed_persists_only_to_runtime_config(tmp_path):
+    cm, seed_path, runtime_path = _seed_only_config_manager(tmp_path)
+    seed_bytes = seed_path.read_bytes()
+
+    loaded = cm.load_characters()
+
+    character_id = loaded["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    assert character_id
+    assert seed_path.read_bytes() == seed_bytes
+    persisted = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert persisted["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert Path(cm.get_config_path("characters.json")) == runtime_path
+    assert cm.load_characters() == loaded
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+def test_character_id_migration_never_writes_seed_when_runtime_config_unwritable(tmp_path):
+    from utils.config_manager import characters as characters_module
+
+    cm, seed_path, runtime_path = _seed_only_config_manager(tmp_path)
+    seed_bytes = seed_path.read_bytes()
+    real_write = characters_module.atomic_write_json
+    attempted: list[Path] = []
+
+    def refuse_write(path, *args, **kwargs):
+        attempted.append(Path(path))
+        raise OSError("runtime config unavailable")
+
+    with patch.object(characters_module, "atomic_write_json", side_effect=refuse_write):
+        first = cm.load_characters()
+        second = cm.load_characters()
+        with pytest.raises(OSError):
+            cm.load_characters(require_authoritative=True)
+
+    character_id = first["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    assert second["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert attempted and set(attempted) == {runtime_path}
+    assert seed_path.read_bytes() == seed_bytes
+    assert not runtime_path.exists()
+    assert cm._characters_dirty
+
+    with patch.object(characters_module, "atomic_write_json", side_effect=real_write) as write:
+        recovered = cm.load_characters(require_authoritative=True)
+    assert {Path(call.args[0]) for call in write.call_args_list} == {runtime_path}
+    assert recovered["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert seed_path.read_bytes() == seed_bytes
+    persisted = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert persisted["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert not cm._characters_dirty
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancelled_thread_call_returns_retained_lock_transaction():
