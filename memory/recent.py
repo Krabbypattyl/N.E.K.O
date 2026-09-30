@@ -35,6 +35,7 @@ import hashlib
 import logging
 import locale
 import sys
+import time
 from contextlib import suppress
 
 from config.prompts.prompts_memory import (
@@ -451,6 +452,66 @@ def is_retracted_theater_episode(
         and not isinstance(through, bool)
         and through == archive_through_revision
     )
+
+
+# A declined (retracted) theater archive leaves a tombstone next to recent.json so
+# a late /cache write of that same archive attempt cannot resurrect the capsule.
+# Late writes arrive within seconds to minutes; a week of history is ample.
+THEATER_RETRACTIONS_FILENAME = "theater_retractions.json"
+THEATER_RETRACTION_TTL_SECONDS = 7 * 24 * 3600
+THEATER_RETRACTIONS_MAX = 128
+
+
+class TheaterEpisodeRetracted(RuntimeError):
+    """A theater archive write matched a tombstone left by the player's decline."""
+
+
+def _load_theater_retractions_unlocked(recent_path) -> list[dict]:
+    """Read retraction tombstones; the caller holds the recent.json file lock.
+
+    A missing or structurally invalid file reads as empty (writes are atomic, so
+    invalid content only comes from outside tampering); an I/O failure raises so
+    a pending tombstone is never silently ignored.
+    """
+
+    path = recent_file.recent_sidecar_path(recent_path, THEATER_RETRACTIONS_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(f"[RecentHistory] ignoring invalid theater retraction file: {path}")
+        return []
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _theater_attempt_is_retracted(
+    entries: list[dict], archive_request_id: str, archive_attempt: int | None,
+) -> bool:
+    """True when this archive attempt was issued before a matching retraction.
+
+    Attempts are numbered per archive request; a retraction covers every attempt
+    up to the one the theater had issued when the player declined, while a later
+    explicit archive of the same request (a new attempt) stays allowed.
+    """
+
+    if not archive_request_id:
+        return False
+    for entry in entries:
+        if str(entry.get("archive_request_id") or "") != archive_request_id:
+            continue
+        through_attempt = entry.get("through_attempt")
+        if not isinstance(through_attempt, int) or isinstance(through_attempt, bool):
+            return True
+        if archive_attempt is None or archive_attempt <= through_attempt:
+            return True
+    return False
 
 
 def _theater_episode_capsule(messages: list):
@@ -984,12 +1045,19 @@ class CompressedRecentHistoryManager:
 
     def _upsert_theater_episode_locked(
         self, file_path, lanlan_name, incoming, expected_generation=None,
+        archive_request_id="", archive_attempt=None,
     ):
         """在单个文件临界区内替换同 Session 胶囊并落盘。"""  # noqa: DOCSTRING_CJK
 
         with recent_file.recent_file_access(
             file_path, expected_generation=expected_generation,
         ) as file_path:
+            if archive_request_id and _theater_attempt_is_retracted(
+                _load_theater_retractions_unlocked(file_path),
+                archive_request_id,
+                archive_attempt,
+            ):
+                raise TheaterEpisodeRetracted(archive_request_id)
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
@@ -1037,8 +1105,13 @@ class CompressedRecentHistoryManager:
             self._cache_history_view(file_path, lanlan_name, merged)
             return stored_incoming
 
-    async def upsert_theater_episode(self, message, lanlan_name):
-        """把同一 Session 的暂停与完成状态收敛成一条近期记忆。"""  # noqa: DOCSTRING_CJK
+    async def upsert_theater_episode(
+        self, message, lanlan_name, *, archive_request_id="", archive_attempt=None,
+    ):
+        """把同一 Session 的暂停与完成状态收敛成一条近期记忆。
+
+        带 archive_request_id 的写入若命中撤回墓碑，抛 TheaterEpisodeRetracted 且不落盘。
+        """  # noqa: DOCSTRING_CJK
 
         if not is_theater_episode_summary(message):
             raise ValueError("theater_episode_summary_required")
@@ -1065,6 +1138,8 @@ class CompressedRecentHistoryManager:
             lanlan_name,
             message,
             admission_generation,
+            str(archive_request_id or ""),
+            archive_attempt,
         )
 
     def _restore_theater_cache_snapshot_locked(
@@ -1160,6 +1235,80 @@ class CompressedRecentHistoryManager:
             self._set_pending_batches(lanlan_name, [], file_path)
             self._cache_history_view(file_path, lanlan_name, retained)
             return removed
+
+    def _record_theater_retraction_locked(
+        self, file_path, lanlan_name, entry, expected_generation=None,
+    ):
+        """Persist one retraction tombstone inside the recent.json critical section."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            now = float(entry["retracted_at"])
+            kept = []
+            through_attempt = int(entry["through_attempt"])
+            for existing in _load_theater_retractions_unlocked(file_path):
+                if existing.get("archive_request_id") == entry["archive_request_id"]:
+                    previous = existing.get("through_attempt")
+                    if isinstance(previous, int) and not isinstance(previous, bool):
+                        through_attempt = max(through_attempt, previous)
+                    continue
+                retracted_at = existing.get("retracted_at")
+                if (
+                    isinstance(retracted_at, (int, float))
+                    and not isinstance(retracted_at, bool)
+                    and now - retracted_at < THEATER_RETRACTION_TTL_SECONDS
+                ):
+                    kept.append(existing)
+            kept.append({**entry, "through_attempt": through_attempt})
+            recent_file.write_recent_sidecar_unlocked(
+                file_path,
+                THEATER_RETRACTIONS_FILENAME,
+                {
+                    "schema": "neko.theater.retractions.v1",
+                    "entries": kept[-THEATER_RETRACTIONS_MAX:],
+                },
+            )
+
+    async def record_theater_retraction(
+        self,
+        lanlan_name,
+        *,
+        story_id,
+        session_id,
+        archive_through_revision,
+        archive_request_id,
+        archive_attempt,
+    ):
+        """Durably block late writes of the archive attempts a declined archive issued."""
+
+        normalized_request_id = str(archive_request_id or "").strip()
+        if not normalized_request_id:
+            raise ValueError("theater_archive_request_id_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/{THEATER_RETRACTIONS_FILENAME}",
+        )
+        entry = {
+            "archive_request_id": normalized_request_id,
+            "through_attempt": max(0, int(archive_attempt or 0)),
+            "story_id": str(story_id or ""),
+            "session_id": str(session_id or ""),
+            "archive_through_revision": int(archive_through_revision),
+            "retracted_at": time.time(),
+        }
+        await _await_recent_mutation_to_completion(
+            self._record_theater_retraction_locked,
+            file_path,
+            lanlan_name,
+            entry,
+            admission_generation,
+        )
 
     async def retract_theater_episode(
         self, story_id, session_id, archive_through_revision, lanlan_name,

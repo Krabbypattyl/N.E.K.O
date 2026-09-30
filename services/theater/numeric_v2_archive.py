@@ -436,13 +436,24 @@ class NumericV2ArchiveStore:
                 return True
         return False
 
-    def update(self, receipt: Mapping[str, Any], *, status: str, archive_request_id: str = "") -> dict[str, Any]:
+    def update(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        status: str,
+        archive_request_id: str = "",
+        archive_attempt: int | None = None,
+    ) -> dict[str, Any]:
         if status not in {"pending", "writing", "written", "skipped"}:
             raise NumericV2ArchiveError("numeric_archive_status_invalid")
         updated = dict(receipt)
         updated["status"] = status
         if archive_request_id:
             updated["archive_request_id"] = archive_request_id
+        if archive_attempt is not None:
+            # Numbered before each memory request so a later skip can fence
+            # exactly the attempts that may still be in flight.
+            updated["archive_attempt"] = int(archive_attempt)
         self._write(self._receipt_path(str(updated.get("receipt_id") or "")), updated)
         session_id = str(updated.get("session_id") or "")
         if session_id:
@@ -487,6 +498,7 @@ class NumericV2ArchiveStore:
         *,
         status: str,
         archive_request_id: str = "",
+        archive_attempt: int | None = None,
     ) -> dict[str, Any]:
         """异步原子更新归档状态。"""  # noqa: DOCSTRING_CJK
 
@@ -495,6 +507,7 @@ class NumericV2ArchiveStore:
             receipt,
             status=status,
             archive_request_id=archive_request_id,
+            archive_attempt=archive_attempt,
         )
 
     def write_public_archive(

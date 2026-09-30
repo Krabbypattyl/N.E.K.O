@@ -1620,10 +1620,12 @@ async def archive_numeric_session(request: Request):
                     from utils.internal_http_client import get_internal_http_client
 
                     await _assert_numeric_writable(config_manager, "archives")
+                    archive_attempt = _receipt_archive_attempt(receipt) + 1
                     receipt = await store.aupdate(
                         receipt,
                         status="writing",
                         archive_request_id=archive_request_id,
+                        archive_attempt=archive_attempt,
                     )
                     # 先落不含隐藏状态的完整冷档案，再让记忆服务迁移旧版全文；
                     # 这样旧时间索引被折叠时，公开演绎仍有可恢复副本。
@@ -1646,11 +1648,14 @@ async def archive_numeric_session(request: Request):
                     json={
                         "input_history": json.dumps(messages, ensure_ascii=False),
                         "idempotency_key": archive_request_id,
+                        # A skip retracts every attempt up to the recorded number; an
+                        # attempt that times out and lands later is then dropped.
+                        "theater_archive_attempt": archive_attempt,
                     },
                     timeout=8.0,
                 )
                 data = response.json() if response.content else {}
-                memory_written = response.is_success and data.get("status") != "error"
+                memory_written = response.is_success and data.get("status") not in {"error", "retracted"}
                 async with character_config_mutation_lock, runtime.story_session_guard():
                     # Character rename/delete may have run meanwhile: rename rewrites
                     # the receipt's display name, delete removes the receipt. Commit
@@ -1784,6 +1789,15 @@ async def skip_numeric_session_archive(request: Request):
             return _error(str(exc), 409)
 
 
+def _receipt_archive_attempt(receipt: Mapping[str, Any]) -> int:
+    """Return the number of memory requests already issued for this receipt."""
+
+    value = receipt.get("archive_attempt")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0
+
+
 async def _retract_archived_episode(
     binding: Mapping[str, str],
     receipt: Mapping[str, Any],
@@ -1804,6 +1818,10 @@ async def _retract_archived_episode(
                 "archive_through_revision": int(
                     receipt.get("archive_through_revision") or receipt.get("revision") or 0
                 ),
+                # Fence late writes of every attempt issued so far; a later explicit
+                # archive of this receipt uses a higher attempt number and still lands.
+                "archive_request_id": str(receipt.get("archive_request_id") or ""),
+                "archive_attempt": _receipt_archive_attempt(receipt),
             },
             timeout=8.0,
         )

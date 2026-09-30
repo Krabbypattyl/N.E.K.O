@@ -6109,13 +6109,48 @@ def test_skip_after_archive_timeout_retracts_possibly_committed_summary(tmp_path
     assert store.load(payload["end_receipt_id"])["status"] == "skipped"
     assert not store.has_staged_public_archive(payload["end_receipt_id"])
     retracts = [body for url, body in calls if url.endswith("/theater/retract")]
+    caches = [body for url, body in calls if "/cache/" in url]
+    # The timed-out write was attempt 1; the retract fences it by request id and
+    # attempt number so a late landing of that write is dropped by the memory server.
+    assert caches[-1]["idempotency_key"] == payload["archive_request_id"]
+    assert caches[-1]["theater_archive_attempt"] == 1
     assert retracts[-1] == {
         "story_id": "numeric_v2_contract",
         "session_id": "gap_session",
         "archive_through_revision": 0,
+        "archive_request_id": payload["archive_request_id"],
+        "archive_attempt": 1,
     }
     # The memory round trip runs without the global character lock.
     assert observed_lock["character"] is False
+
+
+def test_archive_attempts_are_numbered_and_retracted_memory_reply_is_a_failure(tmp_path, monkeypatch):
+    """Each memory request gets a new attempt number; a "retracted" reply never commits."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    replies = [
+        {"status": "retracted", "count": 0},
+        {"status": "cached", "count": 1},
+    ]
+    attempts = []
+
+    async def post(url, **kwargs):
+        attempts.append(kwargs["json"]["theater_archive_attempt"])
+        reply = replies.pop(0)
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: reply)
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        refused = client.post("/api/theater-numeric/session/archive", json=payload)
+        assert refused.status_code == 502
+        receipt = store.load(payload["end_receipt_id"])
+        assert receipt["status"] == "pending" and receipt["archive_attempt"] == 1
+        written = client.post("/api/theater-numeric/session/archive", json=payload)
+    assert written.status_code == 200 and written.json()["status"] == "written"
+    assert attempts == [1, 2]
+    assert store.load(payload["end_receipt_id"])["archive_attempt"] == 2
 
 
 def test_skip_without_archive_attempt_does_not_call_memory_service(tmp_path, monkeypatch):

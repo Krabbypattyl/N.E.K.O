@@ -78,7 +78,7 @@ from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
-from memory.recent import is_retracted_theater_episode
+from memory.recent import TheaterEpisodeRetracted, is_retracted_theater_episode
 from .runtime import app
 
 
@@ -87,6 +87,9 @@ class HistoryRequest(BaseModel):
     language: str | None = None
     render_language: str | None = None
     idempotency_key: str | None = None
+    # Theater archive attempt number; lets a retraction fence late writes of
+    # attempts issued before the player declined the archive.
+    theater_archive_attempt: int | None = Field(default=None, ge=0)
 
 
 class PromptLocalePreferenceRequest(BaseModel):
@@ -101,6 +104,9 @@ class TheaterEpisodeRetractRequest(BaseModel):
     story_id: str = Field(min_length=1, max_length=256)
     session_id: str = Field(min_length=1, max_length=256)
     archive_through_revision: int = Field(ge=0)
+    # Identify the archive attempts to fence against late /cache writes.
+    archive_request_id: str = Field(default="", max_length=160)
+    archive_attempt: int = Field(default=0, ge=0)
 
 
 def _cache_event_id(lanlan_name: str, idempotency_key: str) -> str:
@@ -1074,6 +1080,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = stable_event_id or str(uuid4())
             duplicate_request = False
+            retracted_request = False
             theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
                 # 锁内再次检查才能收住两个相同请求同时通过首轮检查的竞争窗口。
@@ -1093,18 +1100,27 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                         previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
                             lanlan_name
                         )
-                        stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
-                            input_history[0],
-                            lanlan_name,
-                        )
-                        input_history = [stored_episode]
-                        updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
-                            lanlan_name
-                        )
-                        theater_index_events = _theater_index_events(
-                            lanlan_name,
-                            updated_theater_history,
-                        )
+                        try:
+                            stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
+                                input_history[0],
+                                lanlan_name,
+                                archive_request_id=idempotency_key,
+                                archive_attempt=request.theater_archive_attempt,
+                            )
+                        except TheaterEpisodeRetracted:
+                            # The player declined this archive while the request was
+                            # still in flight; the tombstone was checked under the
+                            # same settle lock the retraction holds.
+                            retracted_request = True
+                        else:
+                            input_history = [stored_episode]
+                            updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                                lanlan_name
+                            )
+                            theater_index_events = _theater_index_events(
+                                lanlan_name,
+                                updated_theater_history,
+                            )
                     elif stable_event_id:
                         for message in input_history:
                             message.metadata["cache_event_id"] = stable_event_id
@@ -1122,7 +1138,9 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                             lanlan_name,
                             compress=False,
                         )
-                    if theater_episode_batch:
+                    if retracted_request:
+                        pass
+                    elif theater_episode_batch:
                         # 以 recent 为唯一热记忆基线重建剧场时间索引：
                         # 这会同时淘汰超限周目和升级前遗留的完整正文行。
                         try:
@@ -1149,6 +1167,9 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                         )
             if duplicate_request:
                 return {"status": "already_cached", "count": len(input_history)}
+            if retracted_request:
+                logger.info(f"[MemoryServer] cache: {lanlan_name} dropped a retracted theater archive write")
+                return {"status": "retracted", "count": 0}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
@@ -1264,6 +1285,9 @@ async def retract_theater_episode(
     The theater may time out while this server still commits the archive; when
     the player then declines the archive, the theater calls this to take back
     exactly that range's capsule (matched by story, session and through-revision).
+    With ``archive_request_id`` it also leaves a persistent tombstone so a /cache
+    write of any attempt up to ``archive_attempt`` that is still in flight is
+    dropped instead of resurrecting the declined summary.
     """
 
     lanlan_name = validate_lanlan_name(lanlan_name)
@@ -1276,8 +1300,22 @@ async def retract_theater_episode(
     def is_target(message) -> bool:
         return is_retracted_theater_episode(message, story_id, session_id, through)
 
+    archive_request_id = request.archive_request_id.strip()
     try:
         async with runtime._get_settle_lock(lanlan_name):
+            if archive_request_id:
+                # The archive request may still be in flight (the theater only timed
+                # out). Record the tombstone first, under the settle lock /cache
+                # checks it under, so a late write of these attempts is dropped even
+                # when there is nothing to remove yet.
+                await runtime.recent_history_manager.record_theater_retraction(
+                    lanlan_name,
+                    story_id=story_id,
+                    session_id=session_id,
+                    archive_through_revision=through,
+                    archive_request_id=archive_request_id,
+                    archive_attempt=request.archive_attempt,
+                )
             current = await runtime.recent_history_manager.aget_recent_history(
                 lanlan_name,
             )
