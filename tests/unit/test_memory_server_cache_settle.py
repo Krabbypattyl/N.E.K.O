@@ -493,6 +493,58 @@ async def test_forget_rollback_falls_back_to_snapshot_when_reread_fails():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_retract_theater_episode_removes_only_the_declined_capsule():
+    """A declined archive's capsule is dropped from recent and the story index is rebuilt."""
+    from app import memory_server
+    from utils.llm_client import SystemMessage
+
+    def capsule(session_id: str, through: int):
+        return SystemMessage(content=f"{session_id}@{through}", metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story_rain",
+            "session_id": session_id,
+            "archive_through_revision": through,
+        })
+
+    declined = capsule("session_a", 9)
+    kept = capsule("session_b", 9)
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(return_value=[declined, kept])
+    fake_recent.retract_theater_episode = AsyncMock(return_value=1)
+    fake_time = MagicMock()
+    fake_time.areconcile_theater_conversations = AsyncMock(return_value={"removed": 1})
+    request = memory_server.TheaterEpisodeRetractRequest(
+        story_id="story_rain", session_id="session_a", archive_through_revision=9,
+    )
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time):
+        result = await memory_server.retract_theater_episode("测试角色", request)
+
+    assert result == {"ok": True, "removed_recent": 1, "removed_time_index": 1}
+    events = fake_time.areconcile_theater_conversations.await_args.args[0]
+    assert events["story_rain"][1] == [kept]
+    fake_recent.retract_theater_episode.assert_awaited_once_with(
+        "story_rain", "session_a", 9, "测试角色",
+    )
+
+    # Nothing written for that range (the timed-out write never landed): no-op.
+    fake_recent.aget_recent_history = AsyncMock(return_value=[kept])
+    fake_recent.retract_theater_episode.reset_mock()
+    fake_time.areconcile_theater_conversations.reset_mock()
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.runtime, "time_manager", fake_time):
+        result = await memory_server.retract_theater_episode("测试角色", request)
+
+    assert result == {"ok": True, "removed_recent": 0, "removed_time_index": 0}
+    fake_recent.retract_theater_episode.assert_not_awaited()
+    fake_time.areconcile_theater_conversations.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cache_reports_error_when_theater_index_and_rollback_both_fail():
     from app import memory_server
     from app.memory_server import routes

@@ -577,6 +577,15 @@ class NumericV2ArchiveStore:
             legacy_catgirl_name=str(archive.get("catgirl_name") or ""),
         )
 
+    def has_staged_public_archive(self, receipt_id: str) -> bool:
+        """True once an archive attempt staged its copy, i.e. a memory write may exist.
+
+        Staging happens after the receipt enters ``writing`` and before the memory
+        request is sent; only a commit or an explicit skip removes the file.
+        """
+
+        return self._staged_archive_path(receipt_id).is_file()
+
     def discard_staged_public_archive(self, receipt_id: str) -> None:
         try:
             self._staged_archive_path(receipt_id).unlink()

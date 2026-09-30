@@ -5986,6 +5986,75 @@ def test_archive_aborts_when_character_deletion_removes_receipt_during_memory_ca
     assert store.list_public_archives(story_id="numeric_v2_contract") == []
 
 
+def test_skip_after_archive_timeout_retracts_possibly_committed_summary(tmp_path, monkeypatch):
+    """The memory service may commit an archive the theater timed out on; skip takes it back."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+    retract_ok = {"value": False}
+
+    async def post(url, **kwargs):
+        calls.append((url, kwargs.get("json")))
+        if url.endswith("/cache/%E6%B5%8B%E8%AF%95%E7%8C%AB%E5%A8%98"):
+            # The memory service keeps running and commits after the client gave up.
+            raise TimeoutError("memory service slow")
+        if url.endswith("/theater/retract"):
+            observed_lock["character"] = numeric_theater_router.character_config_mutation_lock.locked()
+            if not retract_ok["value"]:
+                return SimpleNamespace(is_success=False, content=b"{}", json=lambda: {})
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        raise AssertionError(url)
+
+    observed_lock = {}
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        timed_out = client.post("/api/theater-numeric/session/archive", json=payload)
+        assert timed_out.status_code == 502
+        assert store.load(payload["end_receipt_id"])["status"] == "pending"
+        assert store.has_staged_public_archive(payload["end_receipt_id"])
+
+        skip_payload = {key: payload[key] for key in ("story_id", "session_id", "revision", "end_receipt_id")}
+        failed_skip = client.post("/api/theater-numeric/session/archive/skip", json=skip_payload)
+        # Retract failed: nothing local changes, so the player can retry or remember instead.
+        assert failed_skip.status_code == 502
+        assert store.load(payload["end_receipt_id"])["status"] == "pending"
+        assert store.has_staged_public_archive(payload["end_receipt_id"])
+
+        retract_ok["value"] = True
+        skipped = client.post("/api/theater-numeric/session/archive/skip", json=skip_payload)
+
+    assert skipped.status_code == 200, skipped.text
+    assert skipped.json() == {"ok": True, "status": "skipped"}
+    assert store.load(payload["end_receipt_id"])["status"] == "skipped"
+    assert not store.has_staged_public_archive(payload["end_receipt_id"])
+    retracts = [body for url, body in calls if url.endswith("/theater/retract")]
+    assert retracts[-1] == {
+        "story_id": "numeric_v2_contract",
+        "session_id": "gap_session",
+        "archive_through_revision": 0,
+    }
+    # The memory round trip runs without the global character lock.
+    assert observed_lock["character"] is False
+
+
+def test_skip_without_archive_attempt_does_not_call_memory_service(tmp_path, monkeypatch):
+    """A plain skip never needs the memory service (it may be offline)."""
+
+    async def post(url, **kwargs):
+        raise AssertionError(f"unexpected memory call: {url}")
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        skipped = client.post("/api/theater-numeric/session/archive/skip", json={
+            key: payload[key] for key in ("story_id", "session_id", "revision", "end_receipt_id")
+        })
+
+    assert skipped.status_code == 200, skipped.text
+    assert skipped.json()["status"] == "skipped"
+
+
 def test_forget_memory_call_releases_character_lock_and_stops_after_character_deletion(tmp_path, monkeypatch):
     store = NumericV2ArchiveStore(tmp_path / "theater")
     scope = {"story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32}

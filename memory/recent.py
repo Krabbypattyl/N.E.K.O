@@ -435,6 +435,24 @@ def _positive_metadata_int(value) -> int:
     return 0
 
 
+def is_retracted_theater_episode(
+    message, story_id: str, session_id: str, archive_through_revision: int,
+) -> bool:
+    """Match the capsule written by one theater archive range (story, session, through revision)."""
+
+    if not is_theater_memory_message(message):
+        return False
+    metadata = message_metadata(message)
+    through = metadata.get("archive_through_revision")
+    return (
+        str(metadata.get("story_id") or "") == story_id
+        and str(metadata.get("session_id") or "") == session_id
+        and isinstance(through, int)
+        and not isinstance(through, bool)
+        and through == archive_through_revision
+    )
+
+
 def _theater_episode_capsule(messages: list):
     """把旧版同 Session 多条正文折叠为一条单集摘要胶囊。"""  # noqa: DOCSTRING_CJK
 
@@ -1092,6 +1110,36 @@ class CompressedRecentHistoryManager:
     ):
         """在 recent.json 临界区内删除指定剧本胶囊。"""  # noqa: DOCSTRING_CJK
 
+        return self._drop_theater_messages_locked(
+            file_path,
+            lanlan_name,
+            lambda message: (
+                is_theater_memory_message(message)
+                and str(message_metadata(message).get("story_id") or "") == story_id
+            ),
+            expected_generation,
+        )
+
+    def _retract_theater_episode_locked(
+        self, file_path, lanlan_name, story_id, session_id, archive_through_revision,
+        expected_generation=None,
+    ):
+        """Drop only the episode capsule written for one archive range."""
+
+        return self._drop_theater_messages_locked(
+            file_path,
+            lanlan_name,
+            lambda message: is_retracted_theater_episode(
+                message, story_id, session_id, archive_through_revision,
+            ),
+            expected_generation,
+        )
+
+    def _drop_theater_messages_locked(
+        self, file_path, lanlan_name, should_drop, expected_generation=None,
+    ):
+        """Remove matching messages from recent.json inside its file critical section."""
+
         with recent_file.recent_file_access(
             file_path, expected_generation=expected_generation,
         ) as file_path:
@@ -1100,14 +1148,7 @@ class CompressedRecentHistoryManager:
                 raise RuntimeError("theater_recent_history_unreadable")
             pending = recent_file.get_recent_pending_unlocked(file_path)
             current = list(history) + list(pending)
-            retained = [
-                message
-                for message in current
-                if not (
-                    is_theater_memory_message(message)
-                    and str(message_metadata(message).get("story_id") or "") == story_id
-                )
-            ]
+            retained = [message for message in current if not should_drop(message)]
             removed = len(current) - len(retained)
             if not removed:
                 self._cache_history_view(file_path, lanlan_name, history, pending)
@@ -1119,6 +1160,34 @@ class CompressedRecentHistoryManager:
             self._set_pending_batches(lanlan_name, [], file_path)
             self._cache_history_view(file_path, lanlan_name, retained)
             return removed
+
+    async def retract_theater_episode(
+        self, story_id, session_id, archive_through_revision, lanlan_name,
+    ):
+        """Idempotently drop the episode capsule a declined theater archive wrote."""
+
+        normalized_story_id = str(story_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_story_id or not normalized_session_id:
+            raise ValueError("theater_episode_identity_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="delete",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        return await _await_recent_mutation_to_completion(
+            self._retract_theater_episode_locked,
+            file_path,
+            lanlan_name,
+            normalized_story_id,
+            normalized_session_id,
+            int(archive_through_revision),
+            admission_generation,
+        )
 
     async def forget_theater_story(self, story_id, lanlan_name):
         """幂等删除一个剧本的近期剧场记忆。"""  # noqa: DOCSTRING_CJK

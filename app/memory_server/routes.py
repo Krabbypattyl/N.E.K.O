@@ -78,6 +78,7 @@ from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
+from memory.recent import is_retracted_theater_episode
 from .runtime import app
 
 
@@ -94,6 +95,12 @@ class PromptLocalePreferenceRequest(BaseModel):
 
 class TheaterMemoryForgetRequest(BaseModel):
     story_id: str = Field(min_length=1, max_length=256)
+
+
+class TheaterEpisodeRetractRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(min_length=1, max_length=256)
+    archive_through_revision: int = Field(ge=0)
 
 
 def _cache_event_id(lanlan_name: str, idempotency_key: str) -> str:
@@ -1244,6 +1251,85 @@ async def forget_theater_memory(
         raise HTTPException(
             status_code=500,
             detail="theater_memory_forget_failed",
+        ) from exc
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/retract")
+async def retract_theater_episode(
+    lanlan_name: str,
+    request: TheaterEpisodeRetractRequest,
+):
+    """Idempotently remove the episode capsule of one declined theater archive.
+
+    The theater may time out while this server still commits the archive; when
+    the player then declines the archive, the theater calls this to take back
+    exactly that range's capsule (matched by story, session and through-revision).
+    """
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    session_id = request.session_id.strip()
+    through = int(request.archive_through_revision)
+    if not story_id or not session_id:
+        raise HTTPException(status_code=422, detail="theater_episode_identity_required")
+
+    def is_target(message) -> bool:
+        return is_retracted_theater_episode(message, story_id, session_id, through)
+
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            current = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            if not any(is_target(message) for message in current):
+                return {"ok": True, "removed_recent": 0, "removed_time_index": 0}
+            remaining = [message for message in current if not is_target(message)]
+            # Same order as story forget: drop the recallable index first, so a
+            # failed recent write still leaves the original summary in place.
+            reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
+                _theater_index_events(lanlan_name, remaining),
+                lanlan_name,
+            )
+            try:
+                removed_recent = await runtime.recent_history_manager.retract_theater_episode(
+                    story_id,
+                    session_id,
+                    through,
+                    lanlan_name,
+                )
+            except Exception:
+                try:
+                    try:
+                        actual = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name,
+                        )
+                    except Exception:
+                        logger.exception("[MemoryServer] theater episode retract: recent re-read failed; restoring index from snapshot")
+                        actual = current
+                    await runtime.time_manager.areconcile_theater_conversations(
+                        _theater_index_events(lanlan_name, actual),
+                        lanlan_name,
+                    )
+                except Exception:
+                    logger.exception("[MemoryServer] theater episode retract: time index rollback failed")
+                raise
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] retracting theater episode %s/%s for %s failed: %s",
+            story_id,
+            session_id,
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_retract_failed",
         ) from exc
 
 

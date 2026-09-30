@@ -264,3 +264,31 @@ def test_browser_save_without_theater_keeps_payload_unchanged():
     assert memory_router._merge_browser_payload_with_theater(
         current, payload, [{"role": "human", "text": "edited"}],
     ) is payload
+
+
+@pytest.mark.unit
+def test_retract_theater_episode_drops_only_the_declined_archive_capsule(tmp_path):
+    """Retract removes the capsule of one archive range and keeps everything else."""
+    from memory.recent import CompressedRecentHistoryManager
+
+    declined = dict(_CAPSULE_METADATA, archive_through_revision=7)
+    other_session = dict(_CAPSULE_METADATA, session_id="session_rain_2", archive_through_revision=7)
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir(parents=True)
+    recent_file.write_recent_payload(recent_path, messages_to_dict([
+        HumanMessage(content="h1"),
+        SystemMessage(content="被拒绝的摘要", metadata=declined),
+        SystemMessage(content="另一周目摘要", metadata=other_session),
+    ]))
+    mgr = object.__new__(CompressedRecentHistoryManager)
+    mgr.user_histories = {}
+    mgr.compress_threshold = 20
+
+    # A different through-revision is a different archive: nothing to take back.
+    assert mgr._retract_theater_episode_locked(recent_path, "Role", "story_rain", "session_rain_1", 3) == 0
+    assert mgr._retract_theater_episode_locked(recent_path, "Role", "story_rain", "session_rain_1", 7) == 1
+    # Idempotent retry.
+    assert mgr._retract_theater_episode_locked(recent_path, "Role", "story_rain", "session_rain_1", 7) == 0
+
+    remaining = messages_from_dict(json.loads(recent_path.read_text(encoding="utf-8")))
+    assert [message.content for message in remaining] == ["h1", "另一周目摘要"]

@@ -229,6 +229,7 @@ from .routes import (  # noqa: F401
     ExternalMemoryImportRequest,
     HistoryRequest,
     PromptLocalePreferenceRequest,
+    TheaterEpisodeRetractRequest,
     TheaterMemoryForgetRequest,
     NEW_DIALOG_QPS_FLUSH_INTERVAL,
     QueryMemoryRequest,
@@ -254,6 +255,7 @@ from .routes import (  # noqa: F401
     process_conversation,
     process_conversation_for_renew,
     query_memory,
+    retract_theater_episode,
     settle_conversation,
     set_prompt_locale_preference,
 )

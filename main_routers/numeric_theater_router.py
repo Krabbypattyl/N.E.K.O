@@ -1689,28 +1689,91 @@ async def skip_numeric_session_archive(request: Request):
             NumericV2PackageRegistry(
                 _numeric_root(config_manager) / "numeric_v2" / "packages"
             ).package_path(story_id)
-            # 跳过归档与角色/剧本删除使用相同锁顺序，防止删除后重新创建孤立回执。
-            async with character_config_mutation_lock, numeric_v2_story_session_guard(
-                _numeric_root(config_manager),
-                story_id,
-            ):
-                store = _archive_store(config_manager)
+            store = _archive_store(config_manager)
+
+            async def current_receipt() -> tuple[dict[str, Any] | None, JSONResponse | None, dict[str, str]]:
                 receipt = await _validated_receipt(store, payload)
                 binding = _current_catgirl_binding(config_manager)
                 if receipt.get("character_id") != binding["character_id"]:
-                    return _error("numeric_end_receipt_character_mismatch", 409)
+                    return None, _error("numeric_end_receipt_character_mismatch", 409), binding
                 if receipt.get("status") == "written":
-                    return _error("numeric_archive_already_written", 409)
-                await _assert_numeric_writable(config_manager, "end_receipts")
-                await store.adiscard_staged_public_archive(
-                    str(receipt.get("receipt_id") or "")
-                )
-                await store.aupdate(receipt, status="skipped")
-                return {"ok": True, "status": "skipped"}
+                    return None, _error("numeric_archive_already_written", 409), binding
+                return receipt, None, binding
+
+            # Lock order: memory operation lock -> character lock -> story guard.
+            async with _memory_operation_lock(config_manager, story_id):
+                # 跳过归档与角色/剧本删除使用相同锁顺序，防止删除后重新创建孤立回执。
+                async with character_config_mutation_lock, numeric_v2_story_session_guard(
+                    _numeric_root(config_manager),
+                    story_id,
+                ):
+                    receipt, rejected, binding = await current_receipt()
+                    if rejected is not None:
+                        return rejected
+                    # A staged copy means an earlier archive attempt already sent (or
+                    # was about to send) the summary, and the memory service may have
+                    # committed it even though this server timed out. A pending story
+                    # forget removes all of the story's memory anyway.
+                    retract = await asyncio.to_thread(
+                        store.has_staged_public_archive,
+                        str(receipt.get("receipt_id") or ""),
+                    ) and not await asyncio.to_thread(
+                        store.pending_forget,
+                        receipt["story_id"],
+                        receipt.get("character_id", ""),
+                    )
+                if retract:
+                    await _assert_numeric_writable(config_manager, "memory")
+                    if not await _retract_archived_episode(binding, receipt):
+                        # Nothing changed locally: the receipt keeps its status and
+                        # staged copy, so retrying skip (or choosing to remember) is safe.
+                        return _error("numeric_archive_memory_failed", 502)
+                async with character_config_mutation_lock, numeric_v2_story_session_guard(
+                    _numeric_root(config_manager),
+                    story_id,
+                ):
+                    receipt, rejected, _binding = await current_receipt()
+                    if rejected is not None:
+                        return rejected
+                    await _assert_numeric_writable(config_manager, "end_receipts")
+                    await store.adiscard_staged_public_archive(
+                        str(receipt.get("receipt_id") or "")
+                    )
+                    await store.aupdate(receipt, status="skipped")
+                    return {"ok": True, "status": "skipped"}
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except NumericV2ArchiveError as exc:
             return _error(str(exc), 409)
+
+
+async def _retract_archived_episode(
+    binding: Mapping[str, str],
+    receipt: Mapping[str, Any],
+) -> bool:
+    """Ask the memory service to drop the capsule this receipt's archive may have written."""
+
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
+
+    try:
+        response = await get_internal_http_client().post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
+            f"{quote(str(binding.get('catgirl_name') or ''), safe='')}/theater/retract",
+            json={
+                "story_id": str(receipt.get("story_id") or ""),
+                "session_id": str(receipt.get("session_id") or ""),
+                # The through-revision the archive request wrote into the capsule metadata.
+                "archive_through_revision": int(
+                    receipt.get("archive_through_revision") or receipt.get("revision") or 0
+                ),
+            },
+            timeout=8.0,
+        )
+        data = response.json() if response.content else {}
+    except Exception:
+        return False
+    return bool(response.is_success and data.get("ok") is True)
 
 
 @router.get("/memory/archives")
