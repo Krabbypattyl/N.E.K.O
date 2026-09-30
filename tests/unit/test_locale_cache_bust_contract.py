@@ -65,6 +65,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-30-theater-avatar-tools-main-merge",
+        "2026-09-30-social-login-prompt-avatar-tool-v3-merge",
         "2026-09-30-theater-performance-failed-key",
         "2026-09-29-avatar-tool-v3-voice-identity-merge",
         "2026-09-30-theater-local-asr-main-merge",
@@ -74,6 +76,10 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-theater-voiceprint-plugin-config-main-merge",
         "2026-09-29-theater-plugin-schema-screen-share-main-merge",
         "2026-09-28-theater-voice-unavailable",
+        "2026-09-29-social-login-prompt-screen-source-merge",
+        "2026-09-29-avatar-tool-v3-faster-whisper-merge",
+        "2026-09-29-avatar-tool-v3-main-merge",
+        "2026-09-28-avatar-tool-v3-review-fixes-main-merge",
         "2026-09-29-screen-source-current-summary",
         "2026-09-28-theater-glm-voice-clone-main-merge",
         "2026-09-28-pr3172-glm-voice-clone-main-merge",
@@ -88,9 +94,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-free-tts-quota-codes",
         "2026-09-28-theater-locale-key-sync-main-merge",
         "2026-09-26-theater-voice-plugin-main-merge",
-        "2026-09-29-avatar-tool-v3-faster-whisper-merge",
-        "2026-09-29-avatar-tool-v3-main-merge",
-        "2026-09-28-avatar-tool-v3-review-fixes-main-merge",
         "2026-09-28-avatar-tool-v3-review-fixes",
         "2026-09-28-avatar-tool-v3-glm-voice-clone-merge",
         "2026-09-28-avatar-tool-v3-screen-share-merge",
@@ -102,8 +105,12 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-local-asr-voiceprint-main-merge",
         "2026-09-28-local-asr-glm-voice-clone-merge",
         "2026-09-28-local-asr-screen-share-merge",
+        "2026-09-28-social-settings-login-prompt-pr3172-merge",
+        "2026-09-28-social-settings-login-prompt-glm-merge",
         "2026-09-28-local-asr-and-quota-codes",
         "2026-09-28-local-asr-toggle",
+        "2026-09-28-social-settings-login-prompt-main-merge",
+        "2026-09-27-social-settings-login-prompt",
         "2026-09-26-screen-share-hover-hints",
         "2026-09-28-voice-identity-short-capture-v1",
         "2026-09-28-pr3172-enrollment-copy",
@@ -259,8 +266,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-screen-source-choose-again",
         "2026-09-29-screen-source-choose-again-main-merge",
         "2026-09-29-screen-source-generic-labels",
+        "2026-09-29-social-login-prompt-tray-hint",
         "2026-09-29-voice-identity-feature-disabled",
         "2026-09-30-theater-voice-identity-main-merge",
+        "2026-09-30-social-login-prompt-local-asr-merge",
+        "2026-09-30-social-login-prompt-voice-identity-merge",
     }
 )
 
@@ -273,7 +283,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "cb4a50cadab6a276be73ddd6fcdbe867ecf40057e138e817ed12de5811cb5e5d"
+LOCALE_KEY_SIGNATURE = "8ad2e9328b2f70714b467e6c7de473e73d1d0ec9021bd683fd518b63216b0a76"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
