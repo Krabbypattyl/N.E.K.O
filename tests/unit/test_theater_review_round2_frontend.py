@@ -55,6 +55,7 @@ class FakeBroadcastChannel {
 function flush() { while (channelQueue.length) channelQueue.shift()(); }
 function createContext(options = {}) {
   const requests = [], listeners = {}, views = [], callbacks = {}, calls = [], storage = {}, timers = [];
+  const documentListeners = {};
   const clock = options.clock || null;
   if (options.pointer) storage['neko.theater.numeric.v2.capsule-pointer.v1'] = JSON.stringify(options.pointer);
   const hostState = Object.assign({ composerHiddenRequested: false, goodbyeComposerHidden: false }, options.hostState || {});
@@ -103,8 +104,9 @@ function createContext(options = {}) {
       setItem: (key, value) => { storage[key] = String(value); },
       removeItem: key => { delete storage[key]; },
     },
-    document: { readyState: options.pointer ? 'complete' : 'loading', addEventListener() {}, querySelector: () => null,
-      body: { classList: { contains: () => false } } },
+    document: { readyState: options.pointer ? 'complete' : 'loading', visibilityState: 'visible',
+      addEventListener: (name, fn) => { (documentListeners[name] = documentListeners[name] || []).push(fn); },
+      querySelector: () => null, body: { classList: { contains: () => false } } },
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
     fetch: (url, opts) => new Promise((resolve, reject) => requests.push({ url, options: opts, resolve, reject })),
   };
@@ -123,7 +125,12 @@ function createContext(options = {}) {
     }
   }
   const activeIntervals = () => timers.filter(timer => timer.kind === 'interval' && timer.active);
+  function setVisibility(value) {
+    window.document.visibilityState = value;
+    (documentListeners.visibilitychange || []).slice().forEach(fn => fn({ type: 'visibilitychange' }));
+  }
   return { window, requests, listeners, views, callbacks, calls, storage, hostState, emit, fireDueTimeouts, activeIntervals,
+    setVisibility,
     runtime: window.nekoTheaterRuntime, get surfaceMode() { return surfaceMode; } };
 }
 function snapshot(sessionId = 'session_a', revision = 4, status = 'active') {
@@ -376,17 +383,89 @@ RUNTIME_SCENARIOS = (
       assert.equal(alive.chat.activeIntervals().length, 0, '对白结束后停止续期');
       assert.equal(alive.pet.runtime.allowsSpeechCorrelation(alive.id), false);
 
-      // 剧场窗口崩溃：既不续期也不广播空表，Pet 在 TTL 后丢弃放行表并清掉正在播放的旧对白。
+      // 剧场窗口崩溃：既不续期也不广播空表。Pet 在 TTL 后拒绝该对白之后到达的新音频头，
+      // 但不清掉开始时仍有效、已在播放或排队的音频。
       const crashed = await pendingLine();
       crashed.clock.now += 7100; crashed.pet.fireDueTimeouts();
-      assert.equal(crashed.pet.runtime.allowsSpeechCorrelation(crashed.id), false, '广播窗口失联后迟到音频必须被拒绝');
-      assert.equal(crashed.cleared.count, 1, '失联窗口的对白正在 Pet 播放时必须清掉');
+      assert.equal(crashed.pet.runtime.allowsSpeechCorrelation(crashed.id), false, '广播窗口失联后迟到的新音频头必须被拒绝');
+      assert.equal(crashed.cleared.count, 0, '到期只拒绝新音频，不得截断已在播放的对白');
 
       // 剧场窗口关闭或重载：立即撤回放行表，不等待 TTL。
       const reloaded = await pendingLine();
       reloaded.chat.emit('pagehide'); flush();
       assert.equal(reloaded.pet.runtime.allowsSpeechCorrelation(reloaded.id), false, '页面卸载时必须立即撤回放行表');
       assert.equal(reloaded.cleared.count, 1);
+    """),
+    ("electron_pet_keeps_a_hidden_chat_windows_line_through_timer_throttling", r"""
+      channels.length = 0; channelQueue.length = 0;
+      const clock = { now: 1000000 };
+      const chat = createContext({ channel: true, clock });
+      const pet = createContext({ channel: true, clock });
+      const cleared = { count: 0 };
+      pet.window.appAudioPlayback = { clearAudioQueueWithoutDecoderReset() { cleared.count += 1; } };
+      const allowlists = [];
+      const petChannel = channels[channels.length - 1];
+      petChannel.addEventListener('message', event => {
+        if (event.data && event.data.action === 'theater:speech-allowlist') allowlists.push(event.data);
+      });
+      await launch(chat); flush();
+      const turn = await submit(chat);
+      await respond(turn, { ...snapshot('session_a', 5), performance: { performance: '你好。' } });
+      flush();
+      const speak = take(chat, /speak-block/);
+      const id = JSON.parse(speak.options.body).playback_request_id;
+      pet.window.appState.currentPlayingSpeechCorrelationId = id;
+      // 窗口转入后台后计时器被强节流：2 s 的续期计时器每分钟才触发一次，长句不能在 Pet 被截断。
+      const sent = allowlists.length;
+      chat.setVisibility('hidden'); flush();
+      const [refresh] = chat.activeIntervals();
+      for (let i = 0; i < 5; i += 1) {
+        clock.now += 60000; pet.fireDueTimeouts();
+        assert.equal(pet.runtime.allowsSpeechCorrelation(id), true, '节流期间对白的新音频头仍须放行');
+        refresh.fn(); flush();
+      }
+      assert.equal(cleared.count, 0, '节流期间不得清掉正在播放的对白');
+      // 可见时用短 TTL；转入后台立即以覆盖强节流的长 TTL 重发，不等下一次续期。
+      assert.equal(allowlists[sent - 1].ttl_ms, 7000, '可见窗口使用短 TTL');
+      assert.equal(allowlists[sent].ttl_ms, 75000, '可见性变化必须立即以长 TTL 重发放行表');
+      assert.equal(allowlists.at(-1).ttl_ms, 75000, '隐藏期间续期沿用长 TTL');
+
+      // 回到前台：立即改回短 TTL；此后窗口崩溃，Pet 在短 TTL 后拒绝新的音频头。
+      const beforeVisible = allowlists.length;
+      chat.setVisibility('visible'); flush();
+      assert.equal(allowlists.length, beforeVisible + 1);
+      assert.equal(allowlists.at(-1).ttl_ms, 7000);
+      clock.now += 7100; pet.fireDueTimeouts();
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), false, '恢复可见后崩溃，迟到的新音频头必须在短 TTL 后被拒绝');
+      assert.equal(cleared.count, 0, '到期不清掉已在播放的对白');
+
+      // 隐藏窗口崩溃：长 TTL 到期后同样拒绝新音频头。
+      chat.setVisibility('hidden'); flush();
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), true);
+      clock.now += 74900;
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), true);
+      clock.now += 200;
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), false, '隐藏窗口崩溃后长 TTL 到期必须拒绝新音频头');
+
+      // 收音窗口钳制 ttl_ms：超大值按上限，缺失或非法值按短 TTL。
+      function deliver(ttl) {
+        const data = pet.window.nekoTheaterTransport.createMessage('theater-runtime', {
+          action: 'theater:speech-allowlist', runtime_instance: 'theater_runtime_other', request_ids: [id], ttl_ms: ttl,
+        });
+        pet.listeners.message.forEach(fn => fn({ origin: 'https://local.test', data }));
+        assert.equal(pet.runtime.allowsSpeechCorrelation(id), true);
+      }
+      deliver(36e5);
+      clock.now += 119900;
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), true);
+      clock.now += 200;
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), false, 'ttl_ms 超过上限时按上限到期');
+      deliver('bogus');
+      clock.now += 6900;
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), true);
+      clock.now += 200;
+      assert.equal(pet.runtime.allowsSpeechCorrelation(id), false, '缺失或非法 ttl_ms 按短 TTL 到期');
+      assert.equal(cleared.count, 0);
     """),
 )
 
