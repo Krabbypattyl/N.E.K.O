@@ -26,7 +26,7 @@
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
         chatSurfaceModeRestore: null, windowClaimed: false,
-        errorMessage: '', tokenUsage: null
+        errorMessage: '', tokenUsage: null, endInFlight: null
     };
     var launchRequests = Object.create(null);
     var activeSpeechRequests = Object.create(null);
@@ -39,6 +39,15 @@
     var committedSnapshot = null;
     // 仅在内存中登记的主动搭话临时抑制；不写用户设置，页面关闭或崩溃时随之消失。
     var proactiveSuppressionClaimed = false;
+    var CHAT_SURFACE_MODES = ['compact', 'full', 'minimized'];
+    // 剧场自己写入输入区可见性时使用的来源标记；其他来源的写入代表剧场期间的真实变化。
+    var THEATER_COMPOSER_REASON = 'theater-presentation';
+    // Electron 下音频只进 Pet 窗口的真实 websocket（聊天窗口经代理转发且不转发 audio_chunk）；
+    // 剧场窗口把仍有效的播放请求广播给其他窗口，由收到音频的窗口据此放行。
+    var runtimeInstanceId = createId('theater_runtime_');
+    var peerSpeechAllowlists = Object.create(null);
+    var PEER_SPEECH_ALLOWLIST_TTL_MS = 10 * 60 * 1000;
+    var speechEventRelays = [];
 
     function t(key, fallback) {
         if (typeof window.t === 'function') {
@@ -92,7 +101,10 @@
             // 演绎指针只服务当前程序生命周期内的页面刷新；完整退出后必须回到普通模式。
             // Session 和 Ledger 仍由后端保存，玩家下次可从剧本页主动“继续演绎”。
             if (!state.active) { window.sessionStorage.removeItem(POINTER_KEY); return; }
-            window.sessionStorage.setItem(POINTER_KEY, JSON.stringify({ story_id: state.storyId, session_id: state.sessionId }));
+            var pointer = { story_id: state.storyId, session_id: state.sessionId };
+            // 剧场期间宿主形态被临时覆盖为 compact；刷新后不能把覆盖值当作进入前的用户形态重新采集。
+            if (CHAT_SURFACE_MODES.indexOf(state.chatSurfaceModeRestore) >= 0) pointer.chat_surface_mode = state.chatSurfaceModeRestore;
+            window.sessionStorage.setItem(POINTER_KEY, JSON.stringify(pointer));
         } catch (_) {}
     }
     function readPointer() {
@@ -124,31 +136,105 @@
         // 小剧场只临时占用胶囊界面，退出后恢复用户进入前选择的聊天形态。
         chatHost.setChatSurfaceMode(mode);
     }
+    function hostSnapshot(chatHost) {
+        var snapshot = chatHost && typeof chatHost.getState === 'function' ? chatHost.getState() : null;
+        return snapshot && typeof snapshot === 'object' ? snapshot : {};
+    }
+    function hostComposerLocked(chatHost) {
+        // 首页教程等外部输入锁由宿主持有；剧场只能叠加自己的禁用，不能把外部锁写成解锁。
+        return hostSnapshot(chatHost).composerExternallyLocked === true;
+    }
+    function observeExternalComposerVisibility(chatHost) {
+        var restore = state.composerVisibilityRestore;
+        if (!restore || !chatHost) return;
+        var snapshot = hostSnapshot(chatHost);
+        // 剧场每次渲染都把两项写成可见；此刻仍为隐藏，说明是剧场期间由外部新设的状态。
+        if (snapshot.composerHiddenRequested) restore.composerHidden = true;
+        // “请她离开”与“回来”都会经宿主留下来源记录；剧场之后的非剧场记录就是用户的最新意图，
+        // 即使它与剧场强制的可见值相同（剧场期间“回来”）也必须覆盖进入时的快照。
+        var record = window.__nekoGoodbyeChatComposerHidden;
+        if (record && typeof record === 'object' && record.reason !== THEATER_COMPOSER_REASON
+            && Number(record.timestamp) >= restore.claimedAt) {
+            restore.goodbyeComposerHidden = !!record.hidden;
+        } else if (snapshot.goodbyeComposerHidden) {
+            restore.goodbyeComposerHidden = true;
+        }
+    }
     function claimComposerVisibility(chatHost) {
         if (!state.active || !chatHost) return;
         if (!state.composerVisibilityRestore) {
-            var snapshot = typeof chatHost.getState === 'function' ? chatHost.getState() : {};
+            var snapshot = hostSnapshot(chatHost);
             state.composerVisibilityRestore = {
                 composerHidden: !!snapshot.composerHiddenRequested,
-                goodbyeComposerHidden: !!snapshot.goodbyeComposerHidden
+                goodbyeComposerHidden: !!snapshot.goodbyeComposerHidden,
+                claimedAt: Date.now()
             };
+        } else {
+            observeExternalComposerVisibility(chatHost);
         }
         // 快照只采集一次，但剧场活跃期间每次渲染都要重新声明输入区可见。
         if (typeof chatHost.setComposerHidden === 'function') chatHost.setComposerHidden(false);
-        if (typeof chatHost.setGoodbyeComposerHidden === 'function') chatHost.setGoodbyeComposerHidden(false);
+        if (typeof chatHost.setGoodbyeComposerHidden === 'function') chatHost.setGoodbyeComposerHidden(false, THEATER_COMPOSER_REASON);
     }
     function restoreComposerVisibility(chatHost) {
+        if (chatHost) observeExternalComposerVisibility(chatHost);
         var snapshot = state.composerVisibilityRestore;
         state.composerVisibilityRestore = null;
         if (!snapshot || !chatHost) return;
         if (typeof chatHost.setComposerHidden === 'function') chatHost.setComposerHidden(snapshot.composerHidden);
-        if (typeof chatHost.setGoodbyeComposerHidden === 'function') chatHost.setGoodbyeComposerHidden(snapshot.goodbyeComposerHidden);
+        if (typeof chatHost.setGoodbyeComposerHidden === 'function') {
+            chatHost.setGoodbyeComposerHidden(snapshot.goodbyeComposerHidden, THEATER_COMPOSER_REASON);
+        }
     }
     function claimAudioPlayback() {
         var audio = window.appAudioPlayback;
         if (audio && typeof audio.clearAudioQueueWithoutDecoderReset === 'function') {
             audio.clearAudioQueueWithoutDecoderReset();
         }
+    }
+    function currentSpeechAllowlist() {
+        if (!state.active) return [];
+        return Object.keys(activeSpeechRequests).filter(function (requestId) {
+            return activeSpeechRequests[requestId] === state.queueToken;
+        });
+    }
+    function publishSpeechAllowlist() {
+        // 只广播本窗口仍会接受的播放请求；换场、结束或退出后广播空表，收音窗口随即拒绝旧音频。
+        postMessage({ action: 'theater:speech-allowlist', runtime_instance: runtimeInstanceId, request_ids: currentSpeechAllowlist() });
+    }
+    function peerAllowsSpeech(requestId) {
+        var now = Date.now();
+        return Object.keys(peerSpeechAllowlists).some(function (instanceId) {
+            var entry = peerSpeechAllowlists[instanceId];
+            if (!entry || entry.expiresAt <= now) { delete peerSpeechAllowlists[instanceId]; return false; }
+            return entry.requestIds.indexOf(requestId) >= 0;
+        });
+    }
+    function hasPeerSpeechAllowance() {
+        var now = Date.now();
+        return Object.keys(peerSpeechAllowlists).some(function (instanceId) {
+            var entry = peerSpeechAllowlists[instanceId];
+            return !!entry && entry.expiresAt > now && entry.requestIds.length > 0;
+        });
+    }
+    function applyPeerSpeechAllowlist(message) {
+        if (state.active) return;
+        var instanceId = String(message.runtime_instance || '');
+        if (!instanceId) return;
+        var requestIds = Array.isArray(message.request_ids) ? message.request_ids.map(String) : [];
+        var playing = String((window.appState || {}).currentPlayingSpeechCorrelationId || '');
+        var wasAllowed = playing.indexOf('theater_speech_') === 0 && peerAllowsSpeech(playing);
+        if (requestIds.length) peerSpeechAllowlists[instanceId] = { requestIds: requestIds, expiresAt: Date.now() + PEER_SPEECH_ALLOWLIST_TTL_MS };
+        else delete peerSpeechAllowlists[instanceId];
+        // 剧场窗口已作废正在播放的对白（换场、结束或退出）时，本窗口的播放队列也必须一并清掉。
+        if (wasAllowed && !peerAllowsSpeech(playing)) claimAudioPlayback();
+    }
+    function relaySpeechEventToPeer(event) {
+        // 只有在为其他窗口的剧场播放对白时转发播放边界，让剧场窗口按真实播放完成推进正文。
+        if (state.active || !hasPeerSpeechAllowance()) return;
+        var turnId = event && event.detail && event.detail.turnId;
+        if (!turnId) return;
+        postMessage({ action: 'theater:speech-event', event: event.type, turn_id: String(turnId) });
     }
     function suppressesProactiveChat() {
         // 抑制与剧场会话是否活跃绑定；启动阶段在会话激活前先行登记，避免停麦期间插入主动搭话。
@@ -443,14 +529,17 @@
         var chatHost = host();
         if (!chatHost || typeof chatHost.setViewProps !== 'function') return false;
         if (state.active) captureChatSurfaceMode(chatHost);
-        claimComposerVisibility(chatHost);
-        var compactState = state.active && state.phase === 'awaiting_player' ? 'input' : 'default';
+        var externallyLocked = hostComposerLocked(chatHost);
+        var compactState = state.active && state.phase === 'awaiting_player' && !externallyLocked ? 'input' : 'default';
+        // 先让宿主知道剧场已接管，再把输入区设为可见：否则 goodbye 状态下的“恢复输入区”
+        // 会在剧场投影生效前为普通聊天请求一次 Galgame 选项。
         chatHost.setViewProps({
             theaterPresentation: presentation(),
             chatSurfaceMode: 'compact',
             compactChatState: compactState,
-            composerDisabled: state.active && state.phase !== 'awaiting_player'
+            composerDisabled: externallyLocked || (state.active && state.phase !== 'awaiting_player')
         });
+        claimComposerVisibility(chatHost);
         // 打字机每个字都会渲染；openWindow 会重挂窗口并重新请求普通 Galgame 选项，每个 Session 只需打开一次。
         if (state.active && !state.windowClaimed && typeof chatHost.openWindow === 'function') {
             state.windowClaimed = true;
@@ -540,6 +629,7 @@
                 window.removeEventListener('neko-assistant-speech-end', onEnd);
                 window.removeEventListener('neko-assistant-speech-unavailable', onEnd);
                 window.removeEventListener('neko-assistant-speech-cancel', onEnd);
+                speechEventRelays = speechEventRelays.filter(function (relay) { return relay !== onEnd; });
                 resolve(token === state.queueToken);
             }
             function onEnd(event) {
@@ -551,6 +641,8 @@
             window.addEventListener('neko-assistant-speech-end', onEnd);
             window.addEventListener('neko-assistant-speech-unavailable', onEnd);
             window.addEventListener('neko-assistant-speech-cancel', onEnd);
+            // 桌面端音频在其他窗口播放时，播放边界经跨窗口转发到达。
+            speechEventRelays.push(onEnd);
             timer = window.setTimeout(finish, timeoutMs);
         });
     }
@@ -584,6 +676,7 @@
             var dialogueText = dialogueItems.map(function (item) { return item.block.text; }).join(' ');
             var playbackRequestId = 'theater_speech_' + state.sessionId + '_' + revision + '_' + state.lifecycleRevision + '_' + blockIndex;
             activeSpeechRequests[playbackRequestId] = token;
+            publishSpeechAllowlist();
             var result;
             try {
                 result = await requestJson(api.speakBlock, { method: 'POST', body: {
@@ -599,11 +692,13 @@
             if (result.ok && result.speech_id && (result.audio_queued || result.audio_sent)) alive = await waitForSpeech(result.speech_id, speechTimeout(dialogueText), token);
             else alive = await wait(readingDelay(dialogueText), token);
             delete activeSpeechRequests[playbackRequestId];
+            publishSpeechAllowlist();
         }
         return alive && token === state.queueToken;
     }
     async function playPerformance(performance, revision, options) {
         var token = ++state.queueToken;
+        publishSpeechAllowlist();
         var groups = performanceHistoryGroups(performance, options && options.displayPhase || 'ordinary');
         var nextSuggestedInputs = state.suggestedInputs.slice();
         state.phase = 'performing'; state.suggestedInputs = []; render();
@@ -679,10 +774,13 @@
             claimAudioPlayback();
             state.queueToken += 1;
             state.pendingTurn = null;
+            publishSpeechAllowlist();
         }
         state.errorMessage = '';
         state.tokenUsage = message.token_usage || null;
         state.pendingEnd = null;
+        // 新启动（含同一 Session 被恢复后重新接管）使进行中的结束流程失效，迟到的结束响应不能关闭它。
+        state.endInFlight = null;
         committedSnapshot = null;
         state.sessionStatus = '';
         state.scene = null;
@@ -759,8 +857,11 @@
             return false;
         }
         message.story_title = snapshot.story_title || message.story_title;
-        if (!await prepareLaunchSurface(message, launchToken)) return false;
-        return completeLaunch(message, launchToken, snapshot);
+        if (!await prepareLaunchSurface(message, launchToken) || !await completeLaunch(message, launchToken, snapshot)) {
+            releaseAbandonedLaunchActivity(snapshot, launchToken);
+            return false;
+        }
+        return true;
     }
     async function performStart(message, launchToken) {
         var nextStoryId = String(message.story_id);
@@ -782,7 +883,11 @@
         } catch (_) {
             snapshot = { ok: false };
         }
-        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
+        if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
+            // 开场生成期间已退出或被新启动取代：迟到的开场结果只丢弃，不能重新接管胶囊。
+            releaseAbandonedLaunchActivity(snapshot, launchToken);
+            return false;
+        }
         if (!snapshot.ok || !snapshot.session) {
             state.phase = 'ended';
             state.sessionStatus = 'ended';
@@ -933,6 +1038,12 @@
             end_receipt_id: result.end_receipt_id,
             archive_request_id: result.archive_request_id || ''
         };
+        if (state.endInFlight) {
+            // 玩家已确认结束：先行提交的回合只更新权威历史，不再开始播放；结束流程会按新 revision 收尾。
+            state.history = buildCommittedHistory(result);
+            state.draftRestore = null;
+            return true;
+        }
         if (result.idempotent_replay === true) {
             // 上一次请求可能已在服务端提交但响应丢失；幂等重放只返回权威快照，
             // 不会再次返回 performance。必须用快照重建历史，不能留下乐观玩家气泡或漏掉猫娘回复。
@@ -966,6 +1077,14 @@
             })).catch(function () {});
         } catch (_) {}
     }
+    function releaseAbandonedLaunchActivity(snapshot, launchToken) {
+        // 被放弃的启动可能已在服务端登记剧场信号（开场或快照请求成功即登记）；否则普通对话会被兜底拦到 TTL。
+        // 本窗口仍在演绎或正在启动时不释放，避免误清正在进行的演绎。
+        var participants = snapshot && snapshot.ok === true ? snapshot.participants : null;
+        var name = String(participants && participants.catgirl_name || '').trim();
+        if (!name || state.active || (pendingLaunch && pendingLaunch.token !== launchToken)) return;
+        releaseServerTheaterActivity(name);
+    }
     function clear(reason) {
         var wasActive = state.active === true;
         var releasedCatgirlName = state.activityCatgirlName;
@@ -973,6 +1092,8 @@
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.history = []; state.suggestedInputs = [];
         state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.windowClaimed = false;
+        state.endInFlight = null;
+        if (wasActive) publishSpeechAllowlist();
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
         committedSnapshot = null;
@@ -991,7 +1112,8 @@
                     suggestedInputs: [],
                     ordinaryDraftRestore: state.ordinaryDraftRestore
                 },
-                composerDisabled: false
+                // 只撤销剧场自己的禁用；首页教程等外部输入锁仍由宿主持有。
+                composerDisabled: hostComposerLocked(chatHost)
             });
         }
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
@@ -1077,25 +1199,23 @@
         // 极早启动阶段统一弹窗尚未加载时保留原生确认，不能静默结束演绎。
         return window.confirm(message);
     }
+    function isEndRevisionConflict(result) {
+        return !!result && (result.reason === 'numeric_base_revision_mismatch'
+            || result.reason === 'numeric_base_lifecycle_revision_mismatch');
+    }
     async function requestEnd() {
         if (!state.active || endConfirmationPending) return false;
-        // 开场尚未提交时没有可结束的 Session；失败态仍可通过下一分支返回剧本页。
-        if (state.phase === 'loading' && committedSnapshot === null) return false;
         if (state.sessionStatus === 'ended' || state.phase === 'ended') {
             return returnToSelector(state.pendingEnd, 'natural-ending-return');
         }
         var requestedStoryId = state.storyId;
         var requestedSessionId = state.sessionId;
-        var requestedRevision = state.revision;
-        var requestedLifecycleRevision = state.lifecycleRevision;
-        var requestedLaunchEpoch = launchEpoch;
-        function isCurrentEndRequest() {
+        // 玩家确认的是结束这一场演绎，而不是某个 revision：确认期间先行提交的输入回合
+        // 只会推进 revision，结束意图仍然有效；只有切换到其他 Session 才作废本次结束。
+        function isSameSession() {
             return state.active
                 && state.storyId === requestedStoryId
-                && state.sessionId === requestedSessionId
-                && state.revision === requestedRevision
-                && state.lifecycleRevision === requestedLifecycleRevision
-                && launchEpoch === requestedLaunchEpoch;
+                && state.sessionId === requestedSessionId;
         }
         endConfirmationPending = true;
         var confirmed = false;
@@ -1103,29 +1223,72 @@
         try {
             confirmed = await confirmEnd(function () {
                 // 必须在确认按钮的原始点击事件里取得窗口句柄；等待结束接口后再打开会被桌面窗口策略拦截。
-                if (isCurrentEndRequest()) preparedSelector = openSelector();
+                if (isSameSession()) preparedSelector = openSelector();
             });
         } finally {
             endConfirmationPending = false;
         }
         // 取消只关闭确认框，Session、输入和演绎历史都保持原样。
-        if (!confirmed || !isCurrentEndRequest()) return false;
-        state.phase = 'ending'; state.errorMessage = ''; state.queueToken += 1; render();
+        if (!confirmed || !isSameSession()) return false;
+        if (state.phase === 'loading' && committedSnapshot === null) {
+            // 开场生成（最长 180 s）期间允许退出：此时还没有可结束的已提交 Session。
+            // 推进启动世代使迟到的开场结果只会被丢弃（并释放其服务端剧场信号），不能重新接管。
+            launchEpoch += 1;
+            pendingLaunch = null;
+            if (preparedSelector) restoreSelectorWindow(preparedSelector);
+            clear('opening-cancelled');
+            return true;
+        }
+        if (state.sessionStatus === 'ended' || state.phase === 'ended') {
+            return returnToSelector(state.pendingEnd, 'natural-ending-return', preparedSelector);
+        }
+        var endToken = {};
+        state.endInFlight = endToken;
+        function ownsEnd() { return isSameSession() && state.endInFlight === endToken; }
+        state.phase = 'ending'; state.errorMessage = ''; state.queueToken += 1; publishSpeechAllowlist(); render();
+        var requestedRevision = state.revision;
+        var requestedLifecycleRevision = state.lifecycleRevision;
         var result;
         var endRequestFailed = false;
-        try {
-            result = await requestJson(api.end, { method: 'POST', body: {
-                story_id: requestedStoryId,
-                session_id: requestedSessionId,
-                base_revision: requestedRevision,
-                base_lifecycle_revision: requestedLifecycleRevision
-            } });
-        } catch (_) {
-            endRequestFailed = true;
-            result = { ok: false };
+        for (var attempt = 0; ; attempt += 1) {
+            endRequestFailed = false;
+            try {
+                result = await requestJson(api.end, { method: 'POST', body: {
+                    story_id: requestedStoryId,
+                    session_id: requestedSessionId,
+                    base_revision: requestedRevision,
+                    base_lifecycle_revision: requestedLifecycleRevision
+                } });
+            } catch (_) {
+                endRequestFailed = true;
+                result = { ok: false };
+            }
+            // 结束接口返回前也可能切换 Session；旧响应不能改变新 Session 的阶段或回执。
+            if (!ownsEnd()) return false;
+            if (result.ok || endRequestFailed || attempt >= 1 || !isEndRevisionConflict(result)) break;
+            // 确认结束后输入回合先提交：读取权威快照，按最新 revision 重试一次，不能静默丢弃结束。
+            var refreshed = null;
+            try {
+                refreshed = await requestJson(api.session + '/' + encodeURIComponent(requestedSessionId) + '?story_id=' + encodeURIComponent(requestedStoryId));
+            } catch (_) {
+                refreshed = null;
+            }
+            if (!ownsEnd()) return false;
+            if (!refreshed || !refreshed.ok || !refreshed.session) break;
+            applySnapshot(refreshed);
+            state.history = buildCommittedHistory(refreshed);
+            if (state.sessionStatus === 'ended') {
+                state.endInFlight = null;
+                var endedReceipt = refreshed.end_receipt_id ? {
+                    story_id: state.storyId, session_id: state.sessionId, revision: state.revision,
+                    end_receipt_id: refreshed.end_receipt_id, archive_request_id: refreshed.archive_request_id || ''
+                } : state.pendingEnd;
+                return returnToSelector(endedReceipt, 'user-ended', preparedSelector);
+            }
+            requestedRevision = state.revision;
+            requestedLifecycleRevision = state.lifecycleRevision;
         }
-        // 结束接口返回前也可能切换 Session；旧响应不能改变新 Session 的阶段或回执。
-        if (!isCurrentEndRequest()) return false;
+        state.endInFlight = null;
         if (!result.ok) {
             var snapshot = committedSnapshot;
             var committedSession = snapshot && snapshot.session && typeof snapshot.session === 'object'
@@ -1190,6 +1353,10 @@
                 archive_request_id: snapshot.archive_request_id || ''
             };
             state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot);
+            // 刷新前记录的进入前形态优先；宿主此刻的形态可能已是剧场覆盖出的 compact。
+            if (state.chatSurfaceModeRestore === null && CHAT_SURFACE_MODES.indexOf(pointer.chat_surface_mode) >= 0) {
+                state.chatSurfaceModeRestore = pointer.chat_surface_mode;
+            }
             // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
             lockProactiveChatForTheater();
             var hostReady = await waitForHost();
@@ -1246,6 +1413,11 @@
             else launch(message);
         }
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
+        else if (message.action === 'theater:speech-allowlist') applyPeerSpeechAllowlist(message);
+        else if (message.action === 'theater:speech-event' && state.active && message.turn_id) {
+            var relayedEvent = { type: String(message.event || ''), detail: { turnId: String(message.turn_id) } };
+            speechEventRelays.slice().forEach(function (relay) { relay(relayedEvent); });
+        }
         else if (
             message.action === 'theater:external-end'
             && state.active
@@ -1270,7 +1442,10 @@
         blocksOrdinaryVoice: blocksOrdinaryVoice,
         blocksOrdinaryChat: blocksOrdinaryVoice,
         allowsSpeechCorrelation: function (requestId) {
-            return state.active && activeSpeechRequests[requestId] === state.queueToken;
+            var id = String(requestId || '');
+            if (state.active) return activeSpeechRequests[id] === state.queueToken;
+            // 本窗口未演绎时只接受其他窗口剧场当前仍有效的播放请求（Electron Pet 持有唯一真实音频通道）。
+            return peerAllowsSpeech(id);
         },
         handleComposerSubmit: function (text) {
             if (!state.active) return false;
@@ -1287,6 +1462,9 @@
         try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
     }
     window.addEventListener('message', handleCrossWindowMessage);
+    ['neko-assistant-speech-end', 'neko-assistant-speech-unavailable', 'neko-assistant-speech-cancel'].forEach(function (name) {
+        window.addEventListener(name, relaySpeechEventToPeer);
+    });
     window.addEventListener('localechange', function () {
         if (!state.active) return;
         // 语言切换会让聊天宿主重建基础 props；等宿主处理完成后恢复仍在进行的剧场投影。

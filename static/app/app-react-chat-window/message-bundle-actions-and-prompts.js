@@ -1143,6 +1143,10 @@
         return !!(viewProps && viewProps.theaterPresentation && viewProps.theaterPresentation.active === true);
     }
 
+    I.isTheaterPresentationActive = function () {
+        return isTheaterPresentationActive(I.state.viewProps);
+    };
+
     I.fetchGalgameOptionsForLatestTurn = function fetchGalgameOptionsForLatestTurn() {
         var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
         if (isGalgameModeTemporarilyDisabled()) return;
@@ -1839,7 +1843,12 @@
                 // the switch is lost on reload (readChatSurfaceModePreference
                 // returns the stale value). persistChatSurfaceModePreference
                 // no-ops for minimized, which still restores via lastRestorable.
-                I.persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+                // A theater presentation forces compact as a temporary override
+                // (entering render included, before viewProps is merged), never
+                // as the user's preference.
+                if (!isTheaterPresentationActive(Object.assign({}, I.state.viewProps, nextProps))) {
+                    I.persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+                }
             }
         }
         if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
@@ -2223,7 +2232,10 @@
             composerAttachments: I.state.composerAttachments.slice(),
             composerHidden: I.getEffectiveComposerHidden(),
             composerHiddenRequested: I.state.composerHidden,
-            goodbyeComposerHidden: I.state.goodbyeComposerHidden
+            goodbyeComposerHidden: I.state.goodbyeComposerHidden,
+            // External input locks (home tutorial) the theater must compose with
+            // instead of overwriting composerDisabled.
+            composerExternallyLocked: !!(I.state.homeTutorialInteractionLocked || I.state.homeTutorialInputLocked)
         };
     }
 

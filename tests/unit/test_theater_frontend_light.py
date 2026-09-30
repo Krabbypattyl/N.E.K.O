@@ -410,7 +410,7 @@ def test_capsule_runtime_reasserts_composer_visibility_without_overwriting_resto
     assert "if (!state.composerVisibilityRestore)" in claim
     assert "state.composerVisibilityRestore ||" not in claim
     assert "chatHost.setComposerHidden(false)" in claim
-    assert "chatHost.setGoodbyeComposerHidden(false)" in claim
+    assert "chatHost.setGoodbyeComposerHidden(false, THEATER_COMPOSER_REASON)" in claim
 
 
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():
@@ -518,8 +518,8 @@ def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     compact_css = "".join(css.split())
 
     assert "typeof window.showConfirm === 'function'" in runtime
-    assert "if (!confirmed || !isCurrentEndRequest()) return false" in runtime
-    assert "if (!isCurrentEndRequest()) return false" in runtime
+    assert "if (!confirmed || !isSameSession()) return false" in runtime
+    assert "if (!ownsEnd()) return false" in runtime
     assert "cancelText: t('common.cancel', '取消')" in runtime
     assert "skin: 'theater'" in runtime
     assert "onResolve: function (confirmed)" in runtime

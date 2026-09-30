@@ -503,6 +503,7 @@ stateDiagram-v2
     evaluating --> awaiting_player: 失败并恢复草稿
     performing --> ended: terminal scene
     awaiting_player --> ending: 玩家主动结束
+    loading --> inactive: 开场生成期间退出
     ending --> returning_selector: /session/end 成功并清理
     ended --> returning_selector: 玩家收起结局
     returning_selector --> inactive
@@ -517,24 +518,31 @@ stateDiagram-v2
 - 玩家提交后立即以临时 user 气泡进入历史；确认的模型失败撤回气泡、恢复原推荐（推荐点击不回填非空草稿）或把自由输入还给 `theaterDraft`；未知网络结果保留原输入与幂等编号，不自动重试；状态冲突只消费刷新后的权威快照；退出或切换后的迟到失败不接管输入。
 - 头部气泡只显示思考与情绪主题，不复制正文。
 - 刷新只重建已提交历史，不重播历史 TTS 或逐字动画；完整重启不保留前端剧场指针。
+- 胶囊形态：剧场期间宿主被临时覆盖为 `compact`，该覆盖不写入 `neko.reactChatWindow.chatSurfaceMode` 偏好（宿主在 `theaterPresentation.active` 期间跳过持久化）；进入前的形态随恢复指针存入 sessionStorage，刷新后按它恢复，关闭标签页或崩溃不会丢失用户原来的形态。
+- 输入区可见性：退出时恢复的是“剧场之外的最新意图”，不是进入时快照的回放；剧场期间“请她离开”或“回来”（宿主来源记录中非剧场来源的写入）覆盖进入时的值。进入时先投影 `theaterPresentation` 再恢复输入区，goodbye 模式下不会触发普通 Galgame 请求。
+- 首页教程等外部输入锁由宿主以 `getState().composerExternallyLocked` 暴露；剧场的 `composerDisabled` 与之叠加，`awaiting_player` 和退出都不会解除外部锁。
 
 ### 8.4 TTS
 
 - `session/start` 与 `session/input` 只返回公开快照，不自动整段朗读。本体逐块请求 `POST /session/speak-block`，只提交 Story、Session、revision、`lifecycle_revision`、确定性片段索引和稳定播放请求 ID，不提交文本；服务端从已提交历史解析该片段，确认是括号外猫娘对白且 Session/角色/生命周期仍有效（初读与持锁入队前各复验一次）才调用 TTS。手动退出后的旧请求被拒绝，正常结局对白仍可播放；旧页面缺少生命周期参数时按文字兜底。
 - 只有猫娘对白进入 TTS；括号动作、场景旁白、固定旁白和 NPC 旁白不朗读。
+- Electron 下聊天窗口没有真实 websocket（经 Pet 窗口代理，且 `audio_chunk` 不转发），剧场对白音频只会到达 Pet 窗口。剧场窗口经 `neko_page_channel` 广播当前仍有效的播放请求（`theater:speech-allowlist`，换场、结束、退出时广播空表），未演绎的窗口只放行表内关联 ID，作废正在播放的剧场对白时清空本窗口播放队列，并把播放结束/取消/不可用事件回传（`theater:speech-event`）给剧场窗口。表项 10 分钟兜底过期。
 - 前端只接受匹配本次 `speech_id` 的结束、取消或不可播放事件；TTS 不可用或事件丢失按文字估时继续。第一句剧场语音可中断进入剧场前残留的普通音频，后续句子不互相打断。播放队列键含 `session_id + revision + block_index`，新回合、结束、角色切换、Session 被替换或页面卸载时取消旧队列。
 
 ### 8.5 结束、终局与记忆询问
 
 - 主动结束：确认后停止队列与剧场 TTS，用当前 `base_revision` 调 `/session/end`（`user_exit`，返回 `end_receipt_id`）；只有成功后才清理剧场历史、推荐、结局层、`theaterDraft` 与播放指针，释放输入分流并恢复普通聊天，然后用命名窗口 `neko_theater` 打开或聚焦 `/theater?story_id=...`，等 `theater:selector-ready` 后发送 `theater:post-end`。结束失败保持剧场激活并常驻错误；选剧页打不开时进度不丢。
+- 确认结束后若输入回合先提交（结束返回 revision 冲突），按刷新后的权威快照用新 revision 重试一次；期间先提交的回合只更新历史、不再播放。第二次仍冲突才显示错误。只有切换到其他 Session 才作废已确认的结束。
+- 开场生成期间（最长 180 s）可退出：推进启动代次并清理胶囊；迟到的 `/session/start` 结果只丢弃，并释放它登记的服务端剧场信号，不会重新接管。
 - 自然终局：历史追加公开结局并关闭输入；玩家收起结局后执行相同的清理与返回，不再调用 `/session/end`。
 - 记忆询问只在选剧页出现：重新读取服务端状态、定位刚结束的剧本后弹出模态“记下本次演绎 / 暂不记录”；Esc、关闭按钮与“暂不记录”都不写入。写入中禁用按钮；失败保留弹窗供“重试”或“暂不记录”；刷新可按回执恢复询问；直接关闭窗口不后台默认写入。
-- 结束响应同时核对剧情 revision、生命周期 revision 和启动代次，不关闭刚恢复的同 Session；选剧页忙碌时暂存跨窗口回执，空闲后读取最新状态再询问。
+- 结束响应核对本次结束仍属于同一 Session 的同一结束流程，旧响应不关闭新 Session；选剧页忙碌时暂存跨窗口回执，空闲后读取最新状态再询问。
 
 ### 8.6 与普通聊天的隔离
 
 - 主动搭话抑制只存在于内存，不改写持久化的 `proactiveChatEnabled`：本窗口由 `nekoTheaterRuntime.suppressesProactiveChat()` 按剧场会话是否活跃（启动阶段先行登记）实时回答；其他窗口的抑制随主动搭话 leader 心跳传播，发起窗口关闭或崩溃后按心跳 TTL 自动失效。Electron 下同一心跳也让 Pet 窗口的悬浮麦克风在剧场期间让出，不会永久锁住。
-- 服务端兜底：`utils/theater_activity.py` 在内存中按角色记录最近一次成功的剧场请求（start / 读取 Session / input / end / resume），TTL 120 s；`ended` 或 `POST /session/release`（前端 `clear()` 时发出，只携带本窗口响应里登记的 `catgirl_name`，仅清除该角色，其他窗口演绎的角色不受影响）立即清除。期间主动搭话入口直接返回 pass，普通语音 `start_session` 在领取语音租约前被拒绝（`THEATER_SESSION_ACTIVE`），文字会话不受影响。信号 fail-open：超过 TTL 或服务重启即失效，只剩前端抑制；从未使用剧场的角色不会出现在表中。
+- 服务端兜底：`utils/theater_activity.py` 在内存中按角色记录最近一次成功的剧场请求（start / 读取 Session / input / end / resume），TTL 120 s；`ended` 或 `POST /session/release`（前端 `clear()` 时发出，只携带本窗口响应里登记的 `catgirl_name`，仅清除该角色，其他窗口演绎的角色不受影响）立即清除。期间主动搭话入口直接返回 pass，普通语音 `start_session` 在领取语音租约前被拒绝（`THEATER_SESSION_ACTIVE`）；普通文字/图片 `stream_data` 与 `avatar_interaction` 也被丢弃并回同一状态码（`details.input_type` 标明来源，前端显示 `theater.chatUnavailable`），剧场自身只走 HTTP 路由不受影响。信号 fail-open：超过 TTL 或服务重启即失效，只剩前端抑制；从未使用剧场的角色不会出现在表中。
+- 普通文字、头像拖放与头像互动的前端入口与普通语音共用 `blocksOrdinaryChat()`（本窗口演绎中，或其他窗口的剧场正在抑制），Electron 的 Pet 窗口与并存的 `/chat_full` 在演绎期间都不能发起普通回合。
 - 剧场激活期间普通聊天回复只更新普通聊天自己的状态，不覆盖剧场历史；普通预览缓存在剧场激活时不显示。
 - 八语言 locale key 集合一致；小剧场用户文案不写仅中文 fallback。
 
