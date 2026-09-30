@@ -145,7 +145,7 @@ flowchart TD
 | `scripts/run_numeric_v2_stress.py` | 隔离 Session/报告/日志的真实模型多轮压测；支持推荐/自由/混合输入、指定 revision 分叉、`--trace-dir`；不写正式存档、不调用 TTS。 |
 | `scripts/evaluate_numeric_v2_review.py` | 用冻结正反例统计普通复核的误杀、漏放、命中率和耗时。 |
 | `scripts/evaluate_numeric_v2_completion_facts.py` | 用冻结正反例统计完成事实“模型提议”与“Runtime 接纳”的差异。 |
-| `scripts/validate_numeric_v2_story.py` | 对单个 Story Package 执行 v2.2 编译校验。 |
+| `scripts/validate_numeric_v2_story.py` | 对单个 Story Package 执行 v2.2 编译校验；`--install` 与路由导入共用 8 MiB 上限和云存档写栅栏（维护模式返回可重试的 `CLOUDSAVE_WRITE_FENCE_ACTIVE`）。 |
 
 ### 2.5 权限边界
 

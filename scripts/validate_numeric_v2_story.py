@@ -15,18 +15,40 @@ if str(REPO_ROOT) not in sys.path:
 
 from services.theater.numeric_v2 import NumericV2CompileError, NumericV2Compiler  # noqa: E402
 from services.theater.numeric_v2_registry import (  # noqa: E402
+    MAX_PACKAGE_BYTES,
     NumericV2PackageError,
     NumericV2PackageExistsError,
     NumericV2PackageRegistry,
 )
 
 
-def _package_root() -> Path:
+def _package_root(config_manager=None) -> Path:
     """复用 N.E.K.O 自己的存储策略，不在 InkAI 复制平台路径规则。"""  # noqa: DOCSTRING_CJK
 
+    from services.theater.paths import theater_root
     from utils.config_manager import ConfigManager
 
-    return Path(ConfigManager().app_docs_dir) / "theater" / "numeric_v2" / "packages"
+    return theater_root(config_manager or ConfigManager()) / "numeric_v2" / "packages"
+
+
+def _install(compiler: NumericV2Compiler, story) -> dict:
+    """Install through the same cloudsave write fence as the router's package import.
+
+    The fence refuses writes while cloud-save maintenance (apply/restore) holds
+    the storage root, and serialises this process with the running server.
+    """
+
+    from utils.cloudsave_runtime import cloudsave_writable_transaction
+    from utils.config_manager import ConfigManager
+
+    config_manager = ConfigManager()
+    registry = NumericV2PackageRegistry(_package_root(config_manager), compiler)
+    with cloudsave_writable_transaction(
+        config_manager,
+        operation="save",
+        target="theater/numeric_v2/packages",
+    ):
+        return registry.import_package(story)
 
 
 def main() -> int:
@@ -46,13 +68,19 @@ def main() -> int:
         print(json.dumps({"success": False, "error": {"code": "invalid_arguments"}}))
         return 2
     source = Path(sys.argv[1])
+    from utils.cloudsave_runtime import MaintenanceModeError
+
     try:
+        if source.stat().st_size > MAX_PACKAGE_BYTES:
+            # Same limit as the router's /packages/import request body.
+            print(json.dumps({"success": False, "error": {"code": "numeric_story_package_too_large"}}))
+            return 5
         payload = json.loads(source.read_text(encoding="utf-8"))
         compiler = NumericV2Compiler()
         # CLI 与服务端安装入口共用 v2.2 严格门禁，旧包只会得到明确的升级提示。
         compiled = compiler.compile_v2_2(payload)
         if len(sys.argv) == 3:
-            data = NumericV2PackageRegistry(_package_root(), compiler).import_package(compiled.story)
+            data = _install(compiler, compiled.story)
         else:
             meta = compiled.story["meta"]
             data = {
@@ -80,6 +108,9 @@ def main() -> int:
             },
         }, ensure_ascii=False))
         return 3
+    except MaintenanceModeError as exc:
+        print(json.dumps({"success": False, "error": {"code": exc.code, "retryable": True}}))
+        return 5
     except NumericV2PackageExistsError:
         print(json.dumps({"success": False, "error": {"code": "numeric_v2_story_exists"}}))
         return 4
