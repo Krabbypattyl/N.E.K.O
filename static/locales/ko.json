@@ -2965,6 +2965,7 @@
     "tokenStage_evaluator": "수치 및 진행 판정",
     "tokenStage_suggestions": "추천 보충",
     "tokenStage_actor": "배우",
+    "performanceFailed": "공연 재생이 중단되었습니다. 계속 입력하거나 소극장을 다시 여세요.",
     "tokenUsageHint": "입력에는 캐시가, 출력에는 보고된 추론 토큰이 포함됩니다. 추가 호출도 합산됩니다. 요금 견적이 아닙니다.",
     "tokenUsageCall": "{number}. {stage} · 입력 {input} · 출력 {output}",
     "tokenUsagePartial": "일부 호출의 사용량이 보고되지 않았습니다",

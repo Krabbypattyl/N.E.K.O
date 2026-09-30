@@ -2965,6 +2965,7 @@
     "tokenStage_evaluator": "数值与进度判定",
     "tokenStage_suggestions": "补推荐",
     "tokenStage_actor": "演员",
+    "performanceFailed": "演绎播放中断，请继续输入或重新打开小剧场。",
     "tokenUsageHint": "供应商报告的输入包含缓存，输出包含已报告的思考用量。额外调用已计入；这里显示用量，不代表费用。",
     "tokenUsageCall": "{number}. {stage} · 输入 {input} · 输出 {output}",
     "tokenUsagePartial": "统计不完整，部分调用未返回用量",

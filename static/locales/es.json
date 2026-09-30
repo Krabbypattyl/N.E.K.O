@@ -2965,6 +2965,7 @@
     "tokenStage_evaluator": "Métricas y progreso",
     "tokenStage_suggestions": "Completar sugerencias",
     "tokenStage_actor": "Actor",
+    "performanceFailed": "Se interrumpió la reproducción de la actuación. Sigue escribiendo o vuelve a abrir el Teatro.",
     "tokenUsageHint": "La entrada incluye caché y la salida incluye razonamiento declarado. Las llamadas adicionales están incluidas. El uso no es una estimación de precio.",
     "tokenUsageCall": "{number}. {stage} · entrada {input} · salida {output}",
     "tokenUsagePartial": "Uso parcial; faltan datos de algunas llamadas",

@@ -2965,6 +2965,7 @@
     "tokenStage_evaluator": "Metrics and progress",
     "tokenStage_suggestions": "Suggestion fill",
     "tokenStage_actor": "Actor",
+    "performanceFailed": "Performance playback was interrupted. Keep typing or reopen the Theater.",
     "tokenUsageHint": "Provider input includes cached tokens; output includes reported reasoning tokens. Extra calls are included. Usage is not a price estimate.",
     "tokenUsageCall": "{number}. {stage} · input {input} · output {output}",
     "tokenUsagePartial": "Partial usage; some calls were not reported",

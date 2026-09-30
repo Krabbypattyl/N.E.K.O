@@ -2965,6 +2965,7 @@
     "tokenStage_evaluator": "數值與進度判定",
     "tokenStage_suggestions": "補推薦",
     "tokenStage_actor": "演員",
+    "performanceFailed": "演繹播放中斷，請繼續輸入或重新開啟小劇場。",
     "tokenUsageHint": "供應商回報的輸入包含快取，輸出包含已回報的思考用量。額外呼叫已計入；此處顯示用量，不代表費用。",
     "tokenUsageCall": "{number}. {stage} · 輸入 {input} · 輸出 {output}",
     "tokenUsagePartial": "統計不完整，部分呼叫未回傳用量",

@@ -2965,6 +2965,7 @@
     "tokenStage_evaluator": "数値・進行判定",
     "tokenStage_suggestions": "候補の補完",
     "tokenStage_actor": "演者",
+    "performanceFailed": "演技の再生が中断されました。入力を続けるか、小劇場を開き直してください。",
     "tokenUsageHint": "入力はキャッシュ、出力は報告された推論トークンを含みます。追加の呼び出しも集計しています。料金の見積もりではありません。",
     "tokenUsageCall": "{number}. {stage} · 入力 {input} · 出力 {output}",
     "tokenUsagePartial": "一部の呼び出しで使用量が未報告です",

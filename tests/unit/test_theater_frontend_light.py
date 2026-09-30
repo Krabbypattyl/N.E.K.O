@@ -644,3 +644,56 @@ def test_theater_popup_entry_opens_story_selector():
     for source in (popup_config, pngtuber):
         assert "url: '/theater-home'" not in source
         assert "url: '/theater-numeric'" not in source
+
+
+_THEATER_FRONTEND_SOURCES = (
+    "static/app/app-theater-runtime.js",
+    "static/js/theater_selector.js",
+    "static/js/theater_settings.js",
+    "static/js/theater_transport.js",
+    "templates/theater.html",
+    "templates/theater_settings.html",
+)
+_SUPPORTED_LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+
+
+def _locale_has_key(node, key: str) -> bool:
+    """Mirror i18next deepFind: a dotted key may address nested or flat dotted entries."""
+
+    if not key:
+        return True
+    if not isinstance(node, dict):
+        return False
+    parts = key.split(".")
+    for size in range(1, len(parts) + 1):
+        head = ".".join(parts[:size])
+        if head in node and _locale_has_key(node[head], ".".join(parts[size:])):
+            return True
+    return False
+
+
+def test_every_theater_key_used_by_the_frontend_exists_in_every_locale():
+    """A missing key renders as a raw token in every non-default UI language."""
+
+    import re
+
+    pattern = re.compile(r"""['"`](theater\.[A-Za-z0-9_.]*[A-Za-z0-9])['"`]""")
+    used = set()
+    for path in _THEATER_FRONTEND_SOURCES:
+        used.update(pattern.findall(_source(path)))
+    # Built dynamically as 'theater.tokenStage_' + stage.
+    used.update(
+        f"theater.tokenStage_{stage}"
+        for stage in ("actor", "suggestions", "evaluator", "review", "dispute", "history_lookup")
+    )
+    assert "theater.performanceFailed" in used
+    missing = {
+        language: sorted(
+            key for key in used
+            if not _locale_has_key(
+                json.loads(_source(f"static/locales/{language}.json")), key
+            )
+        )
+        for language in _SUPPORTED_LOCALES
+    }
+    assert all(not keys for keys in missing.values()), missing
