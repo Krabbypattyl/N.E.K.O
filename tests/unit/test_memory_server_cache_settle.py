@@ -1171,6 +1171,43 @@ async def test_run_post_turn_signals_excludes_theater_from_reality_signals():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_run_post_turn_signals_off_mode_keeps_stage1_for_ai_only_ordinary_batch():
+    """OFF mode: an AI-only ordinary batch (proactive message, no user reply)
+    still runs per-turn Stage-1 like before theater existed; theater messages in
+    the same batch are filtered out of the extraction input.
+    """
+    from app import memory_server
+    from utils.llm_client import AIMessage
+
+    theater_metadata = {"source": "theater_numeric_v2", "session_id": "theater_session"}
+    ordinary = AIMessage(content="早上好呀，今天也要元气满满哦")
+    payload_messages = [
+        AIMessage(content="这是我们的剧本住处。", metadata=theater_metadata),
+        ordinary,
+    ]
+    fake_fact_store = MagicMock()
+    fake_fact_store.extract_facts = AsyncMock(return_value=[])
+    fake_persona_manager = MagicMock()
+    fake_persona_manager.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection_engine = MagicMock()
+    fake_reflection_engine.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection_engine.aload_surfaced = AsyncMock(return_value=[])
+    record_turn = MagicMock(return_value=None)
+
+    with patch.object(memory_server.runtime, "fact_store", fake_fact_store), \
+         patch.object(memory_server.runtime, "persona_manager", fake_persona_manager), \
+         patch.object(memory_server.runtime, "reflection_engine", fake_reflection_engine), \
+         patch.object(memory_server.signal_extraction, "_signal_check_record_turn", record_turn), \
+         patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
+        await memory_server._run_post_turn_signals(payload_messages, "测试角色")
+
+    fake_fact_store.extract_facts.assert_awaited_once_with([ordinary], "测试角色")
+    # No user utterance: the signal-extraction turn counter stays untouched.
+    record_turn.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cache_endpoint_empty_payload_short_circuits():
     """空 payload 直接返回，不调任何 persistence 路径——避免空 outbox op 污染。"""
     from app import memory_server
