@@ -271,6 +271,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-30-theater-voice-identity-main-merge",
         "2026-09-30-social-login-prompt-local-asr-merge",
         "2026-09-30-social-login-prompt-voice-identity-merge",
+        "2026-09-30-theater-social-settings-main-merge",
     }
 )
 
