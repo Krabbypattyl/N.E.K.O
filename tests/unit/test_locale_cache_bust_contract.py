@@ -65,6 +65,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-30-theater-performance-failed-key",
+        "2026-09-29-avatar-tool-v3-voice-identity-merge",
         "2026-09-30-theater-local-asr-main-merge",
         "2026-09-30-voice-identity-off-mode-main-merge",
         "2026-09-29-theater-voice-unavailable-main-merge",
@@ -86,6 +88,14 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-free-tts-quota-codes",
         "2026-09-28-theater-locale-key-sync-main-merge",
         "2026-09-26-theater-voice-plugin-main-merge",
+        "2026-09-29-avatar-tool-v3-faster-whisper-merge",
+        "2026-09-29-avatar-tool-v3-main-merge",
+        "2026-09-28-avatar-tool-v3-review-fixes-main-merge",
+        "2026-09-28-avatar-tool-v3-review-fixes",
+        "2026-09-28-avatar-tool-v3-glm-voice-clone-merge",
+        "2026-09-28-avatar-tool-v3-screen-share-merge",
+        "2026-09-28-avatar-tool-v3-free-tts-merge",
+        "2026-09-28-avatar-tool-v3-main-merge",
         "2026-09-29-local-asr-prepare-screen-source-merge",
         "2026-09-29-local-asr-prepare-notices",
         "2026-09-29-local-asr-model-status",
@@ -130,11 +140,13 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-12-core-image-generation",
         "2026-09-12-watch-together-history-pages",
         "2026-09-11-watch-together-next-video",
+
         "2026-09-11-voice-wake-word-activation",
         "2026-09-11-voice-wake-word-activation-main",
         "2026-09-12-voice-session-activation-main",
         "2026-09-10-drawing-guess-pngtuber-import-status",
         "2026-09-09-voice-session-activation-pngtuber",
+
         "2026-01-31-1",
         "2026-02-04-1",
         "2026-02-23-1",
@@ -200,8 +212,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-08-29-turn-image-budget-notices",
         "2026-08-29-repetition-insights",
         "2026-08-31-openfang-removal",
-        "2026-09-01-day1-avatar-zoom-hint",
         "2026-09-01-day2-tool-wheel-rotation",
+        "2026-09-01-day1-avatar-zoom-hint",
         "2026-09-01-add-guide-main-merge",
         "2026-09-01-vllm-omni-clone-preflight",
         "2026-09-02-vllm-omni-clone-preflight",
@@ -214,6 +226,23 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-11-watch-together-soccer-sdk",
         "2026-09-11-watch-together",
         "2026-09-11-watch-together-discovery",
+        "2026-09-03-avatar-tool-image-details",
+        "2026-09-03-avatar-tool-initial-connections",
+        "2026-09-03-avatar-tool-stage2-structure",
+        "2026-09-03-avatar-tool-stage3-interactions",
+        "2026-09-03-avatar-tool-delay-switch",
+        "2026-09-04-avatar-tool-initial-flow-copy",
+        "2026-09-04-avatar-tool-edge-styles",
+        "2026-09-04-avatar-tool-custom-names",
+        "2026-09-10-avatar-tool-stage3-accessibility",
+        "2026-09-10-avatar-tool-stage4-contract-fixes",
+        "2026-09-10-avatar-tool-unique-names",
+        "2026-09-10-avatar-tool-v3-management",
+        "2026-09-16-avatar-tool-preset-guides",
+        "2026-09-16-avatar-tool-preset-guides-v2",
+        "2026-09-16-avatar-tool-preset-guides-v3",
+        "2026-09-16-avatar-tool-name-uniqueness",
+        "2026-09-16-avatar-tool-domain-names",
         "2026-09-06-plugin-model-api",
         "2026-09-03-voice-identity-five-second-verification",
         "2026-09-08-voice-session-activation",
@@ -221,6 +250,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-13-plugin-html-content-proactive-community",
         "2026-09-14-plugin-html-content-main-merge",
         "2026-09-22-plugin-html-content-main-merge",
+
+
         "2026-09-27-glm-voice-clone",
         "2026-09-28-glm-voice-clone-main-merge",
         "2026-09-28-glm-voice-clone-locale-key-sync",
@@ -229,7 +260,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-29-screen-source-choose-again-main-merge",
         "2026-09-29-screen-source-generic-labels",
         "2026-09-29-voice-identity-feature-disabled",
-        "2026-09-30-local-asr-queue-timeout",
         "2026-09-30-theater-voice-identity-main-merge",
     }
 )
@@ -243,7 +273,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "a159e35903d4767ee7d18d4b4174fd592ab3c29a68a464f04f19bd964cc06ec1"
+LOCALE_KEY_SIGNATURE = "cb4a50cadab6a276be73ddd6fcdbe867ecf40057e138e817ed12de5811cb5e5d"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

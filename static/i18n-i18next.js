@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并小剧场（含剧场期间普通语音不可用提示）与主分支屏幕授权等待与来源面板、独立/本地 ASR、声纹录入与开关、插件 HTML 卡片与配置 schema、唤醒词、免费服务拒绝访问与智谱声音复刻提示，递增版本刷新网页和 Electron 的语言包缓存。
-    // 小剧场补齐 theater.performanceFailed（演绎播放中断提示）后再次递增，避免旧缓存把 key 原样渲染。
-    const LOCALE_VERSION = '2026-09-30-theater-performance-failed-key';
+    // 合并小剧场（含剧场期间普通语音不可用、演绎中断提示）与主分支头像互动流程、屏幕授权等待与来源面板、独立/本地 ASR、声纹录入与开关、插件 HTML 卡片与配置 schema、唤醒词、免费服务拒绝访问与智谱声音复刻提示，递增版本刷新网页和 Electron 的语言包缓存。
+    const LOCALE_VERSION = '2026-09-30-theater-avatar-tools-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
@@ -392,9 +391,13 @@
         }
     }
 
+    // 服务端 uiLanguage 强制覆盖；生效时本窗口不跟随其他窗口写入的 i18nextLng。
+    let serverUiLanguageOverride = null;
+
     // 获取初始语言：uiLanguage 强制覆盖 > URL 参数 > Steam 设置 > localStorage / 浏览器设置 > 默认中文
     async function getInitialLanguage() {
         const serverLanguages = await getServerLanguagePreferences();
+        serverUiLanguageOverride = serverLanguages.uiLanguage || null;
         if (serverLanguages.uiLanguage) {
             return serverLanguages.uiLanguage;
         }
@@ -898,6 +901,21 @@
     }
 
     /**
+     * 同源独立窗口（自定义道具编辑器）收不到主窗口派发的 localechange，只能靠
+     * i18nextLng 的 storage 事件跟随主窗口语言。这是编辑器页面的显式选择：其他
+     * 页面有自己的语言入口，启动时也会写 i18nextLng，若都跟随会被任意窗口带着
+     * 切换语言；服务端 uiLanguage 覆盖生效时同样不跟随。
+     */
+    function followCrossWindowLanguage(event) {
+        if (event.key !== 'i18nextLng' || !event.newValue) return;
+        if (serverUiLanguageOverride) return;
+        if (!document.body || !document.body.classList.contains('avatar-tool-editor-page')) return;
+        const language = normalizeSupportedLanguageCode(event.newValue);
+        if (!language || language === i18next.language) return;
+        void i18next.changeLanguage(language);
+    }
+
+    /**
      * 导出正常函数（初始化成功后使用）
      */
     function exportNormalFunctions() {
@@ -929,6 +947,8 @@
             updateLive2DDynamicTexts();
             window.dispatchEvent(new CustomEvent('localechange'));
         });
+
+        window.addEventListener('storage', followCrossWindowLanguage);
 
         // 导出语言切换函数
         window.changeLanguage = function (lng) {
