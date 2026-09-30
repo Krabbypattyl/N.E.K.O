@@ -526,7 +526,7 @@ stateDiagram-v2
 
 - `session/start` 与 `session/input` 只返回公开快照，不自动整段朗读。本体逐块请求 `POST /session/speak-block`，只提交 Story、Session、revision、`lifecycle_revision`、确定性片段索引和稳定播放请求 ID，不提交文本；服务端从已提交历史解析该片段，确认是括号外猫娘对白且 Session/角色/生命周期仍有效（初读与持锁入队前各复验一次）才调用 TTS。手动退出后的旧请求被拒绝，正常结局对白仍可播放；旧页面缺少生命周期参数时按文字兜底。
 - 只有猫娘对白进入 TTS；括号动作、场景旁白、固定旁白和 NPC 旁白不朗读。
-- Electron 下聊天窗口没有真实 websocket（经 Pet 窗口代理，且 `audio_chunk` 不转发），剧场对白音频只会到达 Pet 窗口。剧场窗口经 `neko_page_channel` 广播当前仍有效的播放请求（`theater:speech-allowlist`，换场、结束、退出时广播空表），未演绎的窗口只放行表内关联 ID，作废正在播放的剧场对白时清空本窗口播放队列，并把播放结束/取消/不可用事件回传（`theater:speech-event`）给剧场窗口。表项 10 分钟兜底过期。
+- Electron 下聊天窗口没有真实 websocket（经 Pet 窗口代理，且 `audio_chunk` 不转发），剧场对白音频只会到达 Pet 窗口。剧场窗口经 `neko_page_channel` 广播当前仍有效的播放请求（`theater:speech-allowlist`，换场、结束、退出时广播空表），未演绎的窗口只放行表内关联 ID，作废正在播放的剧场对白时清空本窗口播放队列，并把播放结束/取消/不可用事件回传（`theater:speech-event`）给剧场窗口。放行表随广播窗口存活：剧场窗口在仍有待播对白期间每 2 秒重发一次，收音窗口每个表项只保留 7 秒并按到期计时器删除，长句在剧场窗口存活时不会被截断；剧场窗口 `pagehide`/`beforeunload` 时立即广播空表，崩溃或重载未能广播时由 7 秒过期兜底，过期时若该表放行的对白仍在播放则一并清空播放队列。
 - 前端只接受匹配本次 `speech_id` 的结束、取消或不可播放事件；TTS 不可用或事件丢失按文字估时继续。第一句剧场语音可中断进入剧场前残留的普通音频，后续句子不互相打断。播放队列键含 `session_id + revision + block_index`，新回合、结束、角色切换、Session 被替换或页面卸载时取消旧队列。
 
 ### 8.5 结束、终局与记忆询问

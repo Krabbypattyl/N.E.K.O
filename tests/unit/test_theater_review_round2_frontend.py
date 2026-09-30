@@ -54,7 +54,8 @@ class FakeBroadcastChannel {
 }
 function flush() { while (channelQueue.length) channelQueue.shift()(); }
 function createContext(options = {}) {
-  const requests = [], listeners = {}, views = [], callbacks = {}, calls = [], storage = {};
+  const requests = [], listeners = {}, views = [], callbacks = {}, calls = [], storage = {}, timers = [];
+  const clock = options.clock || null;
   if (options.pointer) storage['neko.theater.numeric.v2.capsule-pointer.v1'] = JSON.stringify(options.pointer);
   const hostState = Object.assign({ composerHiddenRequested: false, goodbyeComposerHidden: false }, options.hostState || {});
   let surfaceMode = options.surfaceMode || 'compact';
@@ -84,8 +85,15 @@ function createContext(options = {}) {
     console: silentConsole, location: { origin: 'https://local.test' }, reactChatWindowHost: host,
     t: key => key, appState: {},
     // 打字机的短间隔立即推进；语音与阅读兜底计时（>=1100ms）永不触发，只能由播放事件结束等待。
-    setTimeout: (fn, ms) => { if (Number(ms) < 1000) setImmediate(fn); return 1; },
-    clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    // 长计时与周期计时只登记，由场景按假时钟显式触发。
+    setTimeout: (fn, ms) => {
+      if (Number(ms) < 1000) { setImmediate(fn); return 0; }
+      timers.push({ kind: 'timeout', fn, ms: Number(ms), due: (clock ? clock.now : 0) + Number(ms), active: true });
+      return timers.length;
+    },
+    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].active = false; },
+    setInterval: (fn, ms) => { timers.push({ kind: 'interval', fn, ms: Number(ms), active: true }); return timers.length; },
+    clearInterval: id => { if (timers[id - 1]) timers[id - 1].active = false; },
     addEventListener: (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); },
     removeEventListener: (name, fn) => { listeners[name] = (listeners[name] || []).filter(item => item !== fn); },
     dispatchEvent() {}, confirm: () => true,
@@ -102,13 +110,20 @@ function createContext(options = {}) {
   };
   if (options.channel) window.BroadcastChannel = FakeBroadcastChannel;
   if (options.appProactive) window.appProactive = options.appProactive;
+  if (clock) window.Date = class extends Date { static now() { return clock.now; } };
   window.window = window;
   vm.createContext(window);
   for (const path of ['static/js/theater_transport.js', 'static/app/app-theater-runtime.js']) {
     vm.runInContext(fs.readFileSync(path, 'utf8'), window, { filename: path });
   }
   function emit(name, detail) { (listeners[name] || []).slice().forEach(fn => fn({ type: name, detail })); }
-  return { window, requests, listeners, views, callbacks, calls, storage, hostState, emit,
+  function fireDueTimeouts() {
+    for (const timer of timers.slice()) {
+      if (timer.kind === 'timeout' && timer.active && timer.due <= clock.now) { timer.active = false; timer.fn(); }
+    }
+  }
+  const activeIntervals = () => timers.filter(timer => timer.kind === 'interval' && timer.active);
+  return { window, requests, listeners, views, callbacks, calls, storage, hostState, emit, fireDueTimeouts, activeIntervals,
     runtime: window.nekoTheaterRuntime, get surfaceMode() { return surfaceMode; } };
 }
 function snapshot(sessionId = 'session_a', revision = 4, status = 'active') {
@@ -326,6 +341,52 @@ RUNTIME_SCENARIOS = (
       chat.runtime.clear('test_exit'); flush();
       assert.equal(pet.runtime.allowsSpeechCorrelation(secondId), false);
       assert.equal(petQueueCleared, 1, '剧场窗口作废对白时 Pet 的播放队列必须一并清掉');
+    """),
+    ("electron_pet_drops_speech_allowlist_of_a_dead_chat_window", r"""
+      async function pendingLine() {
+        channels.length = 0; channelQueue.length = 0;
+        const clock = { now: 1000000 };
+        const chat = createContext({ channel: true, clock });
+        const pet = createContext({ channel: true, clock });
+        const cleared = { count: 0 };
+        pet.window.appAudioPlayback = { clearAudioQueueWithoutDecoderReset() { cleared.count += 1; } };
+        await launch(chat); flush();
+        const turn = await submit(chat);
+        await respond(turn, { ...snapshot('session_a', 5), performance: { performance: '你好。' } });
+        flush();
+        const speak = take(chat, /speak-block/);
+        const id = JSON.parse(speak.options.body).playback_request_id;
+        assert.equal(pet.runtime.allowsSpeechCorrelation(id), true);
+        pet.window.appState.currentPlayingSpeechCorrelationId = id;
+        return { clock, chat, pet, cleared, speak, id };
+      }
+      // 剧场窗口存活：对白请求未结束期间持续续期，长句不会被截断。
+      const alive = await pendingLine();
+      const refresh = alive.chat.activeIntervals();
+      assert.equal(refresh.length, 1, '有待播对白时剧场窗口必须周期续期放行表');
+      for (let i = 0; i < 10; i += 1) {
+        alive.clock.now += refresh[0].ms; refresh[0].fn(); flush(); alive.pet.fireDueTimeouts();
+      }
+      assert.equal(alive.pet.runtime.allowsSpeechCorrelation(alive.id), true, '续期期间长句不能被截断');
+      assert.equal(alive.cleared.count, 0);
+      await respond(alive.speak, { ok: true, speech_id: 'speech_1', audio_queued: true });
+      alive.pet.emit('neko-assistant-speech-end', { turnId: 'speech_1' }); flush();
+      for (let i = 0; i < 6; i += 1) await tick();
+      flush();
+      assert.equal(alive.chat.activeIntervals().length, 0, '对白结束后停止续期');
+      assert.equal(alive.pet.runtime.allowsSpeechCorrelation(alive.id), false);
+
+      // 剧场窗口崩溃：既不续期也不广播空表，Pet 在 TTL 后丢弃放行表并清掉正在播放的旧对白。
+      const crashed = await pendingLine();
+      crashed.clock.now += 7100; crashed.pet.fireDueTimeouts();
+      assert.equal(crashed.pet.runtime.allowsSpeechCorrelation(crashed.id), false, '广播窗口失联后迟到音频必须被拒绝');
+      assert.equal(crashed.cleared.count, 1, '失联窗口的对白正在 Pet 播放时必须清掉');
+
+      // 剧场窗口关闭或重载：立即撤回放行表，不等待 TTL。
+      const reloaded = await pendingLine();
+      reloaded.chat.emit('pagehide'); flush();
+      assert.equal(reloaded.pet.runtime.allowsSpeechCorrelation(reloaded.id), false, '页面卸载时必须立即撤回放行表');
+      assert.equal(reloaded.cleared.count, 1);
     """),
 )
 

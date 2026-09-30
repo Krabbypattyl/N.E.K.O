@@ -46,7 +46,11 @@
     // 剧场窗口把仍有效的播放请求广播给其他窗口，由收到音频的窗口据此放行。
     var runtimeInstanceId = createId('theater_runtime_');
     var peerSpeechAllowlists = Object.create(null);
-    var PEER_SPEECH_ALLOWLIST_TTL_MS = 10 * 60 * 1000;
+    // 放行表随广播窗口存活：剧场窗口在有待播对白期间按 REFRESH 周期重发，收音窗口
+    // 只在 TTL 内放行；剧场窗口崩溃或重载未能广播空表时，旧对白最多再被放行 TTL 时长。
+    var PEER_SPEECH_ALLOWLIST_REFRESH_MS = 2000;
+    var PEER_SPEECH_ALLOWLIST_TTL_MS = 7000;
+    var speechAllowlistRefreshTimer = 0;
     var speechEventRelays = [];
 
     function t(key, fallback) {
@@ -200,13 +204,43 @@
     }
     function publishSpeechAllowlist() {
         // 只广播本窗口仍会接受的播放请求；换场、结束或退出后广播空表，收音窗口随即拒绝旧音频。
-        postMessage({ action: 'theater:speech-allowlist', runtime_instance: runtimeInstanceId, request_ids: currentSpeechAllowlist() });
+        var requestIds = currentSpeechAllowlist();
+        postMessage({ action: 'theater:speech-allowlist', runtime_instance: runtimeInstanceId, request_ids: requestIds });
+        // 有待播对白期间持续续期，长句不会在收音窗口因 TTL 被截断；空表后停止续期。
+        if (requestIds.length && !speechAllowlistRefreshTimer) {
+            speechAllowlistRefreshTimer = window.setInterval(publishSpeechAllowlist, PEER_SPEECH_ALLOWLIST_REFRESH_MS);
+        } else if (!requestIds.length && speechAllowlistRefreshTimer) {
+            window.clearInterval(speechAllowlistRefreshTimer);
+            speechAllowlistRefreshTimer = 0;
+        }
+    }
+    function withdrawSpeechAllowlistOnUnload() {
+        // 页面关闭或重载时立即撤回放行表；崩溃时无法发送，由收音窗口的 TTL 兜底。
+        if (!speechAllowlistRefreshTimer && !currentSpeechAllowlist().length) return;
+        if (speechAllowlistRefreshTimer) window.clearInterval(speechAllowlistRefreshTimer);
+        speechAllowlistRefreshTimer = 0;
+        postMessage({ action: 'theater:speech-allowlist', runtime_instance: runtimeInstanceId, request_ids: [] });
+    }
+    function expirePeerSpeechAllowlist(instanceId) {
+        var entry = peerSpeechAllowlists[instanceId];
+        if (!entry) return;
+        entry.expiryTimer = 0;
+        if (entry.expiresAt > Date.now()) {
+            entry.expiryTimer = window.setTimeout(function () { expirePeerSpeechAllowlist(instanceId); }, entry.expiresAt - Date.now() + 50);
+            return;
+        }
+        // 广播窗口停止续期（崩溃或重载）：丢弃其放行表，正在播放的对应对白一并清掉。
+        var playing = String((window.appState || {}).currentPlayingSpeechCorrelationId || '');
+        var wasAllowed = playing.indexOf('theater_speech_') === 0 && entry.requestIds.indexOf(playing) >= 0;
+        delete peerSpeechAllowlists[instanceId];
+        if (wasAllowed && !peerAllowsSpeech(playing)) claimAudioPlayback();
     }
     function peerAllowsSpeech(requestId) {
         var now = Date.now();
         return Object.keys(peerSpeechAllowlists).some(function (instanceId) {
             var entry = peerSpeechAllowlists[instanceId];
-            if (!entry || entry.expiresAt <= now) { delete peerSpeechAllowlists[instanceId]; return false; }
+            // 过期条目由其到期计时器删除并清掉仍在播放的对白；这里只拒绝放行。
+            if (!entry || entry.expiresAt <= now) return false;
             return entry.requestIds.indexOf(requestId) >= 0;
         });
     }
@@ -224,8 +258,15 @@
         var requestIds = Array.isArray(message.request_ids) ? message.request_ids.map(String) : [];
         var playing = String((window.appState || {}).currentPlayingSpeechCorrelationId || '');
         var wasAllowed = playing.indexOf('theater_speech_') === 0 && peerAllowsSpeech(playing);
-        if (requestIds.length) peerSpeechAllowlists[instanceId] = { requestIds: requestIds, expiresAt: Date.now() + PEER_SPEECH_ALLOWLIST_TTL_MS };
-        else delete peerSpeechAllowlists[instanceId];
+        var previous = peerSpeechAllowlists[instanceId];
+        if (previous && previous.expiryTimer) window.clearTimeout(previous.expiryTimer);
+        if (requestIds.length) {
+            peerSpeechAllowlists[instanceId] = {
+                requestIds: requestIds,
+                expiresAt: Date.now() + PEER_SPEECH_ALLOWLIST_TTL_MS,
+                expiryTimer: window.setTimeout(function () { expirePeerSpeechAllowlist(instanceId); }, PEER_SPEECH_ALLOWLIST_TTL_MS + 50)
+            };
+        } else delete peerSpeechAllowlists[instanceId];
         // 剧场窗口已作废正在播放的对白（换场、结束或退出）时，本窗口的播放队列也必须一并清掉。
         if (wasAllowed && !peerAllowsSpeech(playing)) claimAudioPlayback();
     }
@@ -1462,6 +1503,8 @@
         try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
     }
     window.addEventListener('message', handleCrossWindowMessage);
+    window.addEventListener('pagehide', withdrawSpeechAllowlistOnUnload);
+    window.addEventListener('beforeunload', withdrawSpeechAllowlistOnUnload);
     ['neko-assistant-speech-end', 'neko-assistant-speech-unavailable', 'neko-assistant-speech-cancel'].forEach(function (name) {
         window.addEventListener(name, relaySpeechEventToPeer);
     });
