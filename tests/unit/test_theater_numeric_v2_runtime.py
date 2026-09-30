@@ -2572,7 +2572,7 @@ except NumericV2SessionExistsError:
             from types import SimpleNamespace
             snapshot = numeric_v2_store.NumericV2StoredSession(SimpleNamespace(to_dict=lambda: {'writer_id': 'retry'}), ())
             store._write(final, snapshot, exclusive=True)
-            assert json.loads(final.read_text())['session']['writer_id'] == 'retry'
+            assert json.loads(final.read_text(encoding='utf-8'))['session']['writer_id'] == 'retry'
         else:
             for process in processes:
                 process.stdin.write('publish\n')
@@ -2581,7 +2581,7 @@ except NumericV2SessionExistsError:
             assert all(process.returncode == 0 for process in processes), outputs
             assert sorted(out.strip() for out, _ in outputs) == ['created', 'exists']
             winner = next(str(i) for i, (out, _) in enumerate(outputs) if out.strip() == 'created')
-            assert json.loads(final.read_text())['session']['writer_id'] == winner
+            assert json.loads(final.read_text(encoding='utf-8'))['session']['writer_id'] == winner
     finally:
         for process in processes:
             if process.poll() is None:

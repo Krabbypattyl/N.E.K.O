@@ -76,7 +76,7 @@ async def test_accept_cannot_redirect_original_offer_after_metric_drift(
 
     from services.theater.numeric_v2_store import NumericV2StoreError
     path = tmp_path/'numeric_v2/sessions/route_drift.json'
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data['ledger_events'][-1].pop('transition_offer_invalidated')
     data['session']['performance_history'][-1].pop('transition_offer_invalidated')
     path.write_text(json.dumps(data))

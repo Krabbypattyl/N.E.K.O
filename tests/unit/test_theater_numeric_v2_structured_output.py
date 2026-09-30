@@ -86,7 +86,7 @@ async def test_actor_schema_reaches_single_call_and_preserves_usage(monkeypatch,
     assert factories[0]['max_retries'] == 0
     assert usage[0]['input_tokens'] == 12 and usage[0]['output_tokens'] == 7
     if trace_enabled:
-        rows = [json.loads(line) for path in tmp_path.glob('*.jsonl') for line in path.read_text().splitlines()]
+        rows = [json.loads(line) for path in tmp_path.glob('*.jsonl') for line in path.read_text(encoding='utf-8').splitlines()]
         request = next(row['data'] for row in rows if row['event'] == 'model.request')
         assert request['response_format'] == seen[0][1]['response_format']
 
