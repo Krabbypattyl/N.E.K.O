@@ -1697,6 +1697,7 @@ async def archive_numeric_session(request: Request):
                 # The durable "writing" receipt and staged archive make this request
                 # retryable, so the memory round trip runs without the global
                 # character lock (it may wait behind /settle compression).
+                await _drain_queued_retractions(config_manager, store, current_binding)
                 # A replaced receipt's timed-out write covers a prefix of this range;
                 # take it back first so the wider summary is not stored twice.
                 if not await _retract_carried_episodes(current_binding, receipt):
@@ -1833,6 +1834,7 @@ async def skip_numeric_session_archive(request: Request):
                         if forget_pending
                         else NumericV2ArchiveStore.pending_retractions(receipt)
                     )
+                await _drain_queued_retractions(config_manager, store, binding)
                 if retract or carried:
                     await _assert_numeric_writable(config_manager, "memory")
                     if not await _retract_carried_episodes(binding, receipt) or (
@@ -1921,6 +1923,46 @@ async def _retract_carried_episodes(
         }):
             return False
     return True
+
+
+async def _drain_queued_retractions(
+    config_manager: Any,
+    store: NumericV2ArchiveStore,
+    binding: Mapping[str, str],
+) -> None:
+    """Retract memory writes of end receipts that were deleted without a successor.
+
+    Restart replacement and startup cleanup queue them (``retract_intents``)
+    instead of calling the memory service, which may be down then. Every
+    archive, skip and forget of the character drains its queue here. Best
+    effort: a failed retraction stays queued for the next such request and does
+    not block the unrelated request that found it.
+    """
+
+    try:
+        intents = await asyncio.to_thread(
+            store.pending_retract_intents,
+            character_id=str(binding.get("character_id") or ""),
+            legacy_catgirl_name=str(binding.get("catgirl_name") or ""),
+        )
+        if not intents:
+            return
+        await _assert_numeric_writable(config_manager, "memory")
+    except (NumericV2ArchiveError, MaintenanceModeError, OSError):
+        logger.warning("Numeric v2 cannot read queued memory retractions", exc_info=True)
+        return
+    for intent in intents:
+        if not await _retract_archived_episode(binding, intent):
+            logger.warning(
+                "Numeric v2 queued memory retraction failed; kept for retry: %s",
+                intent.get("archive_request_id"),
+            )
+            continue
+        try:
+            await store.mutate(store.complete_retract_intent, intent)
+        except (NumericV2ArchiveError, MaintenanceModeError, OSError, NumericV2StoreRevisionConflictError):
+            # Retracting again later is idempotent.
+            logger.warning("Numeric v2 cannot drop a completed retraction", exc_info=True)
 
 
 @router.get("/memory/archives")
@@ -2079,6 +2121,7 @@ async def forget_numeric_story_memory(request: Request):
                         stored = await runtime.store.forget_history_through_current_revision(
                             target.session.session_id, through_revision=pending["through_revision"],
                         )
+            await _drain_queued_retractions(config_manager, archive_store, binding)
             # The durable intent above makes every later step retryable, so the
             # memory round trip runs without the global character lock (the memory
             # service may wait behind /settle compression for this character).

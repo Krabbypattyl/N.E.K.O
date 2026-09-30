@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping
 
 from .numeric_v2_archive import (
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
+    RETRACT_INTENT_DIRNAME,
     SESSION_QUARANTINE_DIRNAME,
     NumericV2ArchiveError,
     NumericV2ArchiveStore,
@@ -339,6 +340,7 @@ _CHARACTER_PURGE_TARGET_DIRS = frozenset({
     "public_archives",
     "end_receipts",
     "forget_transactions",
+    RETRACT_INTENT_DIRNAME,
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
     SESSION_QUARANTINE_DIRNAME,
 })

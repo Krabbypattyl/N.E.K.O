@@ -576,6 +576,13 @@ async def collect_numeric_v2_character_purge(
     # Collect them under the same character mutation lock used by /memory/forget.
     forget_paths = tuple(
         await asyncio.to_thread(archive_store.forget_paths_for_character, character_id)
+    ) + tuple(
+        # Queued memory retractions are moot once her memory is deleted.
+        await asyncio.to_thread(
+            archive_store.retract_intent_paths_for_character,
+            character_id,
+            legacy_catgirl_name,
+        )
     )
     # Startup maintenance moves corrupt public archives out of the strict scan
     # above; their copies may still hold this character's transcript. Erase the

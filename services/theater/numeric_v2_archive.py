@@ -42,6 +42,11 @@ _QUARANTINED_SESSION_NAME_RE = re.compile(
     r"^[a-z]+-\d+-[0-9a-f]{32}-([A-Za-z0-9._-]+)\.json$"
 )
 _QUARANTINED_SESSION_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\.json")
+# Memory writes of end receipts deleted without a successor receipt (restart
+# replacement, startup cleanup) wait here, one file per archive request, until
+# the next archive/skip/forget of that character retracts them.
+RETRACT_INTENT_DIRNAME = "retract_intents"
+RETRACT_INTENT_SCHEMA = "neko.theater.retract-intent.v1"
 
 
 def _retry_windows_permission_error(operation):
@@ -87,6 +92,7 @@ class NumericV2ArchiveStore:
         self.session_quarantine_root = (
             Path(theater_root) / "numeric_v2" / SESSION_QUARANTINE_DIRNAME
         )
+        self.retract_intent_root = Path(theater_root) / "numeric_v2" / RETRACT_INTENT_DIRNAME
 
     @staticmethod
     def _session_key(session_id: str) -> str:
@@ -380,6 +386,128 @@ class NumericV2ArchiveStore:
                 "archive_through_revision": through,
             }
         return list(carried.values())
+
+    def _retract_intent_path(self, archive_request_id: str) -> Path:
+        return self.retract_intent_root / f"{self._session_key(archive_request_id)}.json"
+
+    def queue_retractions(
+        self,
+        receipt: Mapping[str, Any] | None,
+        *,
+        skip_request_ids: Iterable[str] = (),
+    ) -> int:
+        """Durably queue the unresolved memory writes of a receipt about to be deleted.
+
+        Used where a receipt disappears without a successor that inherits its
+        ``pending_retractions`` (restart replacement, startup cleanup). Written
+        before the receipt and its staged copy are removed, so a crash in between
+        keeps the obligation. Written and skipped receipts queue nothing: the
+        player chose to keep that memory, or the skip already retracted it.
+        """
+
+        skipped = set(skip_request_ids)
+        queued = 0
+        for entry in self._carried_retractions(receipt):
+            if entry["archive_request_id"] in skipped:
+                continue
+            path = self._retract_intent_path(entry["archive_request_id"])
+            with _receipt_lock(path):
+                try:
+                    previous = self._read(path) or {}
+                except NumericV2ArchiveError as exc:
+                    if isinstance(exc.__cause__, OSError):
+                        raise
+                    previous = {}
+                previous_attempt = previous.get("archive_attempt")
+                if (
+                    previous.get("archive_request_id") != entry["archive_request_id"]
+                    or not isinstance(previous_attempt, int)
+                    or isinstance(previous_attempt, bool)
+                ):
+                    previous_attempt = 0
+                self._write(path, {
+                    "schema": RETRACT_INTENT_SCHEMA,
+                    "story_id": str((receipt or {}).get("story_id") or ""),
+                    "session_id": str((receipt or {}).get("session_id") or ""),
+                    "character_id": str((receipt or {}).get("character_id") or ""),
+                    "catgirl_name": str((receipt or {}).get("catgirl_name") or ""),
+                    **entry,
+                    "archive_attempt": max(entry["archive_attempt"], previous_attempt),
+                })
+            queued += 1
+        return queued
+
+    def _retract_intents(self) -> list[tuple[Path, dict[str, Any]]]:
+        if not self.retract_intent_root.is_dir():
+            return []
+        result = []
+        for path in sorted(self.retract_intent_root.glob("*.json")):
+            try:
+                payload = self._read(path)
+            except NumericV2ArchiveError:
+                # Unreadable now; the next drain tries again. Never guess its owner.
+                continue
+            if (
+                payload is None
+                or payload.get("schema") != RETRACT_INTENT_SCHEMA
+                or not str(payload.get("story_id") or "").strip()
+                or not str(payload.get("session_id") or "").strip()
+                or not self.pending_retractions({"pending_retractions": [payload]})
+            ):
+                continue
+            result.append((path, payload))
+        return result
+
+    def pending_retract_intents(
+        self,
+        *,
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> list[dict[str, Any]]:
+        """Return the queued retractions owed to one character's memory."""
+
+        return [
+            payload
+            for _path, payload in self._retract_intents()
+            if self._matches_character(payload, character_id, legacy_catgirl_name)
+        ]
+
+    def retract_intent_paths_for_character(
+        self,
+        character_id: str,
+        legacy_catgirl_name: str = "",
+    ) -> list[Path]:
+        """Queued retractions die with their character, whose memory is deleted too."""
+
+        if not character_id and not legacy_catgirl_name:
+            return []
+        return [
+            path
+            for path, payload in self._retract_intents()
+            if self._matches_character(payload, character_id, legacy_catgirl_name)
+        ]
+
+    def complete_retract_intent(self, intent: Mapping[str, Any]) -> bool:
+        """Drop a queued retraction once the memory service confirmed it.
+
+        A concurrent queue call may have raised the attempt number meanwhile;
+        that newer obligation stays queued.
+        """
+
+        path = self._retract_intent_path(str(intent.get("archive_request_id") or ""))
+        with _receipt_lock(path):
+            current = self._read(path)
+            if current is None:
+                return True
+            attempt = current.get("archive_attempt")
+            if (
+                isinstance(attempt, int)
+                and not isinstance(attempt, bool)
+                and attempt > int(intent.get("archive_attempt") or 0)
+            ):
+                return False
+            path.unlink(missing_ok=True)
+            return True
 
     def create_or_get(self, session: Any) -> dict[str, Any]:
         session_id = str(session.session_id)
@@ -1319,6 +1447,8 @@ class NumericV2ArchiveStore:
                 continue
             if receipt is None or str(receipt.get("session_id") or "") != normalized_session_id:
                 continue
+            # The replacement session has no successor receipt to inherit these.
+            self.queue_retractions(receipt)
             try:
                 path.unlink()
                 removed += 1
@@ -1344,6 +1474,8 @@ class NumericV2ArchiveStore:
             return {"receipts_removed": 0, "pointers_removed": 0}
         normalized_active = {str(value) for value in active_session_ids if str(value)}
         kept_receipt_ids: set[str] = set()
+        # Obligations a live receipt already inherited need no queue entry.
+        carried_request_ids: set[str] = set()
         receipts_removed = 0
         pointers_removed = 0
         for pointer_path in self.root.glob("session-*.json"):
@@ -1364,6 +1496,9 @@ class NumericV2ArchiveStore:
             session_id = str((receipt or {}).get("session_id") or "")
             if receipt is not None and session_id in normalized_active:
                 kept_receipt_ids.add(receipt_id)
+                carried_request_ids.update(
+                    entry["archive_request_id"] for entry in self.pending_retractions(receipt)
+                )
                 continue
             try:
                 pointer_path.unlink()
@@ -1371,6 +1506,8 @@ class NumericV2ArchiveStore:
             except FileNotFoundError:
                 pass
             if receipt is not None:
+                # The session is gone; its possibly landed memory write is queued.
+                self.queue_retractions(receipt)
                 try:
                     self._receipt_path(receipt_id).unlink()
                     receipts_removed += 1
@@ -1395,6 +1532,8 @@ class NumericV2ArchiveStore:
             ):
                 # 保留尚未完成升级补档的兼容回执。
                 continue
+            # Queued before the receipt (and, below, its staged copy) is removed.
+            self.queue_retractions(receipt, skip_request_ids=carried_request_ids)
             try:
                 receipt_path.unlink()
                 receipts_removed += 1

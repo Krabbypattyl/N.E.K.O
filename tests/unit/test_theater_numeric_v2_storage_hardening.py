@@ -559,3 +559,37 @@ def test_locked_temp_file_does_not_mask_replace_failure(tmp_path, monkeypatch, l
         with pytest.raises(OSError, match="No space left"):
             numeric_v2_maintenance._atomic_write_manifest(target, {"a": 1})
 
+
+
+@pytest.mark.asyncio
+async def test_character_delete_erases_her_queued_memory_retractions(tmp_path):
+    """Queued retractions target a memory that the character delete removes anyway."""
+    from main_routers.characters_router import crud
+
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+
+    def queue(character_id, request_id):
+        store.queue_retractions({
+            "story_id": "story", "session_id": f"session_{request_id}", "status": "pending",
+            "receipt_id": "theater_end_" + "0" * 40, "character_id": character_id,
+            "catgirl_name": "Lan", "archive_request_id": request_id, "archive_attempt": 1,
+            "archive_through_revision": 2,
+        })
+
+    queue(_binding()["character_id"], "own_request")
+    queue("character_" + "f" * 32, "other_request")
+    purge = await crud.collect_numeric_v2_character_purge(
+        tmp_path, character_id=_binding()["character_id"], legacy_catgirl_name="Lan",
+    )
+    intent_path = store._retract_intent_path("own_request")
+    assert intent_path in purge.purge_targets()
+    # Workshop unsubscribe persists the same list as a purge intent first.
+    numeric_v2_maintenance.write_character_purge_intent(
+        tmp_path, character_id=_binding()["character_id"], legacy_catgirl_name="Lan",
+        targets=purge.purge_targets(),
+    )
+
+    await crud.purge_numeric_v2_character_data(purge)
+
+    assert not intent_path.exists()
+    assert store._retract_intent_path("other_request").is_file()

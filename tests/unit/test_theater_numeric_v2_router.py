@@ -6475,3 +6475,167 @@ def test_resume_chain_carries_every_unretracted_attempt(tmp_path):
     third = store.update(third, status="skipped")
     session.revision = 7
     assert "pending_retractions" not in store.create_or_get(session)
+
+
+def _unresolved_receipt(store, session_id, *, revision=1, attempt=1, status="pending", staged=True):
+    session = SimpleNamespace(
+        session_id=session_id,
+        story_package_id="numeric_v2_contract",
+        revision=revision,
+        catgirl_binding={"character_id": "character_" + "1" * 32, "catgirl_name": "测试猫娘"},
+        forgotten_through_revision=-1,
+    )
+    receipt = store.create_or_get(session)
+    receipt = store.update(receipt, status=status, archive_attempt=attempt)
+    if staged:
+        store._write(store._staged_archive_path(receipt["receipt_id"]), {"session_id": session_id})
+    return receipt
+
+
+def test_restart_queues_the_retraction_of_a_timed_out_archive_and_skip_drains_it(tmp_path, monkeypatch):
+    """Restart deletes the old receipt; its possibly landed write is retracted by the next skip."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+    cache_replies = [None]
+
+    async def post(url, **kwargs):
+        calls.append((url, kwargs.get("json")))
+        if "/cache/" in url and cache_replies:
+            cache_replies.pop(0)
+            raise TimeoutError("memory service slow")
+        if url.endswith("/theater/retract"):
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        raise AssertionError(url)
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        first = _ended_archive_payload(client)
+        assert client.post("/api/theater-numeric/session/archive", json=first).status_code == 502
+        restarted = client.post("/api/theater-numeric/session/start", json={
+            "story_id": "numeric_v2_contract", "session_id": "after_restart", "replace_existing": True,
+        })
+        assert restarted.status_code == 200, restarted.text
+        assert store.load(first["end_receipt_id"]) is None
+        assert not store.has_staged_public_archive(first["end_receipt_id"])
+        # Restart never talks to the memory service; the obligation is queued on disk.
+        assert not any(url.endswith("/theater/retract") for url, _ in calls)
+        assert [intent["archive_request_id"] for intent in store.pending_retract_intents(
+            character_id="character_" + "1" * 32,
+        )] == [first["archive_request_id"]]
+
+        ended = client.post("/api/theater-numeric/session/end", json={
+            "story_id": "numeric_v2_contract", "session_id": "after_restart",
+            "base_revision": 0, "base_lifecycle_revision": 0,
+        })
+        assert ended.status_code == 200, ended.text
+        skipped = client.post("/api/theater-numeric/session/archive/skip", json={
+            "story_id": "numeric_v2_contract", "session_id": "after_restart", "revision": 0,
+            "end_receipt_id": ended.json()["end_receipt_id"],
+        })
+        assert skipped.status_code == 200, skipped.text
+
+    retracts = [body for url, body in calls if url.endswith("/theater/retract")]
+    assert retracts == [{
+        "story_id": "numeric_v2_contract",
+        "session_id": "gap_session",
+        "archive_through_revision": 0,
+        "archive_request_id": first["archive_request_id"],
+        "archive_attempt": 1,
+    }]
+    assert store.pending_retract_intents(character_id="character_" + "1" * 32) == []
+
+
+def test_failed_queued_retraction_stays_queued_without_blocking_the_request(tmp_path, monkeypatch):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+
+    async def post(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/theater/retract"):
+            return SimpleNamespace(is_success=False, content=b"{}", json=lambda: {})
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached", "count": 1})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        store.queue_retractions(_unresolved_receipt(store, "old_session"))
+        archived = client.post("/api/theater-numeric/session/archive", json=payload)
+        assert archived.status_code == 200, archived.text
+
+    assert [url.endswith("/theater/retract") for url in calls] == [True, False]
+    assert len(store.pending_retract_intents(character_id="character_" + "1" * 32)) == 1
+
+
+def test_startup_cleanup_queues_unresolved_receipts_but_not_decided_or_inherited_ones(tmp_path):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    gone = _unresolved_receipt(store, "quarantined_session", attempt=2)
+    writing = _unresolved_receipt(store, "crashed_session", attempt=1, status="writing", staged=False)
+    written = _unresolved_receipt(store, "written_session", status="written")
+    skipped = _unresolved_receipt(store, "skipped_session", status="skipped", staged=False)
+    # A live session whose older receipt was replaced: the successor inherits it.
+    superseded = _unresolved_receipt(store, "live_session", revision=1)
+    live_session = SimpleNamespace(
+        session_id="live_session", story_package_id="numeric_v2_contract", revision=3,
+        catgirl_binding={"character_id": "character_" + "1" * 32, "catgirl_name": "测试猫娘"},
+        forgotten_through_revision=-1,
+    )
+    successor = store.create_or_get(live_session)
+    assert successor["pending_retractions"][0]["archive_request_id"] == superseded["archive_request_id"]
+    # Crash before the superseded files were removed: the orphan is still on disk.
+    store._write(store._receipt_path(superseded["receipt_id"]), superseded)
+    # A live session whose pointer is corrupt leaves its receipt unreferenced.
+    orphaned = _unresolved_receipt(store, "corrupt_pointer_session")
+    store._session_path("corrupt_pointer_session").write_text("{", encoding="utf-8")
+
+    store.cleanup_receipts({"live_session", "corrupt_pointer_session"})
+
+    queued = {
+        intent["archive_request_id"]: intent
+        for intent in store.pending_retract_intents(character_id="character_" + "1" * 32)
+    }
+    assert set(queued) == {
+        gone["archive_request_id"], writing["archive_request_id"], orphaned["archive_request_id"],
+    }
+    assert queued[gone["archive_request_id"]]["archive_attempt"] == 2
+    assert queued[gone["archive_request_id"]]["session_id"] == "quarantined_session"
+    assert written["archive_request_id"] not in queued and skipped["archive_request_id"] not in queued
+    assert store.load(gone["receipt_id"]) is None
+    assert not store.has_staged_public_archive(gone["receipt_id"])
+
+
+def test_queued_retraction_keeps_the_highest_attempt_and_survives_a_stale_completion(tmp_path):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    receipt = _unresolved_receipt(store, "requeued", attempt=1)
+    store.queue_retractions(receipt)
+    stale = store.pending_retract_intents(character_id="character_" + "1" * 32)[0]
+    store.queue_retractions({**receipt, "archive_attempt": 3})
+    store.queue_retractions(receipt)
+
+    assert store.complete_retract_intent(stale) is False
+    [current] = store.pending_retract_intents(character_id="character_" + "1" * 32)
+    assert current["archive_attempt"] == 3
+    assert store.complete_retract_intent(current) is True
+    assert store.pending_retract_intents(character_id="character_" + "1" * 32) == []
+    assert store.pending_retract_intents(character_id="character_" + "2" * 32) == []
+
+
+def test_story_forget_drains_queued_retractions(tmp_path, monkeypatch):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+
+    async def post(url, **kwargs):
+        calls.append(url.rsplit("/", 1)[-1])
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        _ended_archive_payload(client)
+        store.queue_retractions(_unresolved_receipt(store, "old_session"))
+        forgot = client.post("/api/theater-numeric/memory/forget", json={
+            "story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32,
+        })
+        assert forgot.status_code == 200, forgot.text
+
+    assert calls == ["retract", "forget"]
+    assert store.pending_retract_intents(character_id="character_" + "1" * 32) == []
