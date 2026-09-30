@@ -2769,6 +2769,20 @@ async def test_corrupt_story_session_index_does_not_block_characters_without_the
 
 
 @pytest.mark.asyncio
+async def test_rename_without_theater_data_creates_no_theater_files(tmp_path):
+    """A rename by a user who never opened the theater must not create the session index."""
+
+    other = "character_22222222222222222222222222222222"
+    assert await update_numeric_v2_character_bindings(
+        tmp_path,
+        character_id=other,
+        legacy_catgirl_name="Mika",
+        catgirl_binding={**_binding(), "character_id": other, "catgirl_name": "Mika2"},
+    ) == 0
+    assert not (tmp_path / "numeric_v2").exists()
+
+
+@pytest.mark.asyncio
 async def test_settled_story_delete_rollback_is_not_replayed_after_later_delete(tmp_path, monkeypatch):
     """A rolled-back manifest that rmtree failed to remove must not resurrect a later delete."""
 

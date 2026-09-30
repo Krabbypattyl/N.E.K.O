@@ -591,6 +591,10 @@ async def update_numeric_v2_character_bindings(
             character_id=normalized_character_id,
             legacy_catgirl_name=legacy_catgirl_name,
         )
+        if not candidates and not await asyncio.to_thread(index_path.is_file):
+            # Nothing to rebind: do not create the index (a rename would then
+            # depend on theater storage, and cloudsave would see theater content).
+            return 0
         try:
             stories = await asyncio.to_thread(_read_story_session_slots, index_path)
         except NumericV2StoreError as exc:
