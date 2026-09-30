@@ -181,9 +181,9 @@ class StorageRootsMixin:
         self._workshop_config_lock = threading.RLock()
 
         self._characters_cache: dict | None = None
-        # (st_mtime_ns, st_size) of the file the cache was loaded from; see
-        # characters._characters_file_signature.
-        self._characters_cache_mtime: tuple[int, int] | None = None
+        # (mtime, st_mtime_ns, st_size) of the file the cache was loaded from;
+        # see characters._characters_file_signature.
+        self._characters_cache_mtime: tuple[float, int, int] | None = None
         self._characters_cache_path: str | None = None
         self._characters_dirty: bool = False
         self._characters_cache_lock = threading.Lock()

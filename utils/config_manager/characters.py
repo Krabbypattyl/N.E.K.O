@@ -35,10 +35,12 @@ def _characters_file_signature(path):
     (coarse on Windows), so the cache would keep serving the previous content.
     The nanosecond mtime plus the size catches every rewrite that changes the
     length and narrows same-length collisions to the filesystem's real
-    resolution. Raises OSError like ``os.path.getmtime`` when the file is gone.
+    resolution. ``os.path.getmtime`` is still consulted first so its errors (a
+    missing or unreadable source) keep driving the dirty-identity fallbacks.
     """
+    mtime = os.path.getmtime(path)
     stat_result = os.stat(path)
-    return (stat_result.st_mtime_ns, stat_result.st_size)
+    return (mtime, stat_result.st_mtime_ns, stat_result.st_size)
 from .persona_payload import (
     _append_persona_guidance_to_prompt,
     _build_effective_character_payload,
