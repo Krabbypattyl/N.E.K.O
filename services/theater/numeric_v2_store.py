@@ -15,6 +15,7 @@ from weakref import WeakValueDictionary
 
 import portalocker
 
+from .numeric_v2_archive import _retry_windows_permission_error
 from .numeric_v2_storage_transaction import run_storage_mutation
 from .numeric_v2_performance import (
     transition_source_dialogue_policy,
@@ -97,7 +98,11 @@ def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
     if not path.is_file():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Windows share violations (antivirus, indexer, cloud sync) are brief;
+        # retry them like the archive store instead of failing the request.
+        payload = json.loads(
+            _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         # 已存在但不可读的索引不能等同于全新空索引，否则任一写请求都会覆盖全部恢复槽位。
         raise NumericV2StoreError("numeric_story_session_index_read_failed") from exc
@@ -157,7 +162,7 @@ def _write_story_session_slots(
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
+        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         temporary_path = None
     finally:
         if temporary_path is not None and temporary_path.exists():
@@ -184,7 +189,7 @@ def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
+        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         temporary_path = None
     finally:
         if temporary_path is not None and temporary_path.exists():
@@ -1012,7 +1017,9 @@ class NumericV2SessionStore:
         from .numeric_v2_runtime import ScriptSessionV2, _player_address_disclosed
 
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
+            )
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise NumericV2StoreError("numeric_session_read_failed") from exc
         if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
@@ -1437,12 +1444,12 @@ class NumericV2SessionStore:
                     with portalocker.Lock(str(path.parent / ".creates.lock"), mode="a", timeout=10):
                         if os.path.lexists(path):
                             raise NumericV2SessionExistsError("numeric_session_exists")
-                        os.replace(temporary_path, path)
+                        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
                         temporary_path = None
                 except portalocker.exceptions.LockException as exc:
                     raise NumericV2StoreError("numeric_session_create_failed") from exc
             else:
-                os.replace(temporary_path, path)
+                _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
                 temporary_path = None
         finally:
             if temporary_path is not None and temporary_path.exists():
