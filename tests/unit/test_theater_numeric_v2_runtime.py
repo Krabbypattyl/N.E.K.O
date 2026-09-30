@@ -2896,6 +2896,42 @@ async def test_story_delete_recovery_does_not_overwrite_newer_state(tmp_path):
     assert index_path.read_bytes() == index_before
 
 
+@pytest.mark.asyncio
+async def test_unrecoverable_delete_transaction_blocks_only_its_story(tmp_path, monkeypatch):
+    """A failed rollback at startup is left for manual recovery; the rest of maintenance runs."""
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_MAINTAINED_ROOTS", set())
+    monkeypatch.setattr(numeric_v2_maintenance, "_RECOVERY_BLOCKED_STORIES", {})
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "blocked_story_session")
+    story_id = story["meta"]["story_id"]
+    transaction_dir, _manifest, _payload = numeric_v2_maintenance._prepare_delete_transaction(
+        tmp_path, registry, story_id,
+    )
+    # The process died right after unlinking the package; the rollback copy now fails.
+    registry.package_path(story_id).unlink()
+
+    def failing_restore(backup, target):
+        raise PermissionError(13, "access denied", str(target))
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_restore_missing_file", failing_restore)
+    result = numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, registry, character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    assert result["recovery_blocked_stories"] == [story_id]
+    assert str(tmp_path.resolve()) in numeric_v2_maintenance._MAINTAINED_ROOTS
+    assert (transaction_dir / "manifest.json").is_file()
+    # The audit leaves the blocked story's session alone instead of quarantining it.
+    assert runtime.store._path(stored.session.session_id).is_file()
+    assert not (tmp_path / "numeric_v2" / "quarantine").exists()
+    assert numeric_v2_maintenance.numeric_v2_story_recovery_pending(tmp_path, story_id)
+    assert not numeric_v2_maintenance.numeric_v2_story_recovery_pending(tmp_path, "another_story")
+    # Only a later process start retries the transaction; this one keeps failing closed for the story.
+    assert numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, registry, character_ids_by_name={},
+    ) is None
+
+
 def test_story_delete_restore_continues_after_a_failed_step(tmp_path):
     transaction_dir = tmp_path / "tx"
     (transaction_dir / "sessions").mkdir(parents=True)

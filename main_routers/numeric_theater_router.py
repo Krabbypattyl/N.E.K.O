@@ -37,6 +37,7 @@ from services.theater.numeric_v2_identity import (
 from services.theater.numeric_v2_maintenance import (
     delete_numeric_v2_story_transactionally,
     maintain_numeric_v2_storage_once,
+    numeric_v2_story_recovery_pending,
 )
 from services.theater.numeric_v2_performance import MAX_CONTENT_BLOCKS, performance_content_blocks
 from services.theater.numeric_v2_archive import (
@@ -261,8 +262,16 @@ async def _create_receipt_for_existing_ended_session(
         return await _create_ended_receipt(config_manager, current.session)
 
 
+def _assert_story_recovered(registry: NumericV2PackageRegistry, story_id: str) -> None:
+    """Fail closed for a story whose interrupted delete could not be rolled back."""
+
+    if numeric_v2_story_recovery_pending(registry.root.parent.parent, story_id):
+        raise NumericV2PackageError("numeric_story_recovery_pending")
+
+
 async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
     registry = await _registry(config_manager)
+    _assert_story_recovered(registry, story_id)
     engine = await asyncio.to_thread(registry.load_engine, story_id)
     root = registry.root.parent.parent
     return NumericV2Runtime(engine, root, write_transaction=_numeric_write_transaction(config_manager, root))
@@ -664,6 +673,7 @@ async def import_numeric_story(request: Request):
             payload,
         )
         # 导入与同 story_id 的删除事务共用生命周期锁，避免成功导入被迟到回滚覆盖。
+        _assert_story_recovered(registry, compiled.story_id)
         async with numeric_v2_story_session_guard(
             _numeric_root(config_manager),
             compiled.story_id,
@@ -729,6 +739,8 @@ async def delete_numeric_story(story_id: str, request: Request):
         registry = await _registry(config_manager)
         # 删除恢复入口只校验安全路径与文件存在性；损坏包无法编译时也必须允许原子清理。
         registry.package_path(normalized_story_id)
+        # A new delete would supersede the only backup of the failed rollback.
+        _assert_story_recovered(registry, normalized_story_id)
         # 剧本删除与角色改名/删除会读写同一批 Session、回执和归档，统一按角色锁→故事锁串行。
         async with _memory_operation_lock(
             config_manager, normalized_story_id,

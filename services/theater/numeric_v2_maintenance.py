@@ -61,6 +61,10 @@ _MANIFEST_PATH_KEYS = (
 
 _MAINTENANCE_LOCK = threading.Lock()
 _MAINTAINED_ROOTS: set[str] = set()
+# Stories whose interrupted delete could not be rolled back at startup, per root.
+# Their transaction directory is kept for manual recovery (and retried at the
+# next process start); until then only these stories fail closed.
+_RECOVERY_BLOCKED_STORIES: dict[str, frozenset[str]] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -256,10 +260,25 @@ def _read_story_session_slots_or_quarantine(index_path: Path) -> dict[str, dict[
         return {}
 
 
-def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
+def numeric_v2_story_recovery_pending(theater_root: Path, story_id: str) -> bool:
+    """True while this process could not roll back an interrupted delete of ``story_id``."""
+
+    key = str(Path(theater_root).resolve())
+    return str(story_id or "").strip() in _RECOVERY_BLOCKED_STORIES.get(key, frozenset())
+
+
+def recover_numeric_v2_delete_transactions(theater_root: Path) -> set[str]:
+    """Roll back interrupted story deletes; return the stories whose rollback failed.
+
+    A failed rollback is isolated: its transaction directory (the only backup)
+    stays in place for manual recovery and the next startup, and the other
+    transactions are still processed.
+    """
+
     root = Path(theater_root) / "numeric_v2" / "delete_transactions"
+    blocked: set[str] = set()
     if not root.is_dir():
-        return
+        return blocked
     for transaction_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         manifest_path = transaction_dir / "manifest.json"
         if not manifest_path.is_file():
@@ -285,7 +304,20 @@ def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
                     transaction_dir,
                 )
                 continue
-            _restore_delete_transaction(transaction_dir, payload, theater_root)
+            try:
+                _restore_delete_transaction(transaction_dir, payload, theater_root)
+            except Exception:
+                story_id = str(payload.get("story_id") or "").strip()
+                logger.error(
+                    "Numeric v2 could not roll back the interrupted delete %s of story %r; "
+                    "keeping it for manual recovery and blocking that story",
+                    transaction_dir,
+                    story_id,
+                    exc_info=True,
+                )
+                if story_id:
+                    blocked.add(story_id)
+                continue
         elif state not in _SETTLED_DELETE_TRANSACTION_STATES:
             # Unknown state: keep the backup rather than guess.
             logger.warning(
@@ -295,6 +327,7 @@ def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
             )
             continue
         shutil.rmtree(transaction_dir, ignore_errors=True)
+    return blocked
 
 
 CHARACTER_PURGE_INTENT_SCHEMA = "neko.theater.character-purge.v1"
@@ -691,6 +724,7 @@ def audit_numeric_v2_storage(
     registry: NumericV2PackageRegistry,
     *,
     character_ids_by_name: Mapping[str, str] | None = None,
+    skip_story_ids: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, int]:
     """启动/维护时全盘复验；日常恢复路径不扫描 Session 目录。"""  # noqa: DOCSTRING_CJK
 
@@ -711,7 +745,8 @@ def audit_numeric_v2_storage(
     valid: list[tuple[Path, dict[str, str], int, int, str]] = []
     quarantined = 0
     engine_cache: dict[str, Any] = {}
-    unloadable_stories: set[str] = set()
+    # Stories with an unfinished delete rollback are left exactly as they are.
+    unloadable_stories: set[str] = set(skip_story_ids)
     for path in sorted(session_root.glob("*.json")):
         try:
             summary = _read_numeric_v2_session_summary(
@@ -852,7 +887,8 @@ def maintain_numeric_v2_storage_once(
             # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
             if assert_writable is not None:
                 assert_writable()
-            recover_numeric_v2_delete_transactions(theater_root)
+            blocked_stories = frozenset(recover_numeric_v2_delete_transactions(theater_root))
+            _RECOVERY_BLOCKED_STORIES[key] = blocked_stories
             # Finish character purges a previous process committed but could not
             # complete, before the audit rebuilds the session index without them.
             purge_result = recover_character_purge_intents(
@@ -863,7 +899,10 @@ def maintain_numeric_v2_storage_once(
                 theater_root,
                 registry,
                 character_ids_by_name=character_ids_by_name,
+                skip_story_ids=blocked_stories,
             )
+            if blocked_stories:
+                result["recovery_blocked_stories"] = sorted(blocked_stories)
             result.update({key: value for key, value in purge_result.items() if value})
             active_session_ids = {
                 item["session_id"]
@@ -894,6 +933,7 @@ __all__ = [
     "discard_character_purge_intent",
     "delete_numeric_v2_story_transactionally",
     "maintain_numeric_v2_storage_once",
+    "numeric_v2_story_recovery_pending",
     "recover_character_purge_intents",
     "recover_numeric_v2_delete_transactions",
     "write_character_purge_intent",

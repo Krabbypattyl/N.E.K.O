@@ -426,6 +426,27 @@ def test_story_id_must_match_the_package_file_literally(tmp_path, monkeypatch):
     assert (tmp_path / "theater" / "numeric_v2" / "sessions" / "case_session.json").is_file()
 
 
+def test_story_with_failed_delete_rollback_fails_closed_alone(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_maintenance
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_RECOVERY_BLOCKED_STORIES", {})
+    with _client(tmp_path, monkeypatch) as client:
+        assert client.get("/api/theater-numeric/stories").status_code == 200
+        key = str((tmp_path / "theater").resolve())
+        numeric_v2_maintenance._RECOVERY_BLOCKED_STORIES[key] = frozenset({"numeric_v2_contract"})
+        started = client.post("/api/theater-numeric/session/start", json={
+            "story_id": "numeric_v2_contract", "session_id": "blocked_start",
+        })
+        deleted = client.delete("/api/theater-numeric/packages/numeric_v2_contract")
+        listed = client.get("/api/theater-numeric/stories")
+
+    assert started.status_code == 422 and started.json()["reason"] == "numeric_story_recovery_pending"
+    assert deleted.status_code == 422 and deleted.json()["reason"] == "numeric_story_recovery_pending"
+    assert (tmp_path / "theater" / "numeric_v2" / "packages" / "numeric_v2_contract.json").is_file()
+    # Other theater requests keep working.
+    assert listed.status_code == 200
+
+
 def test_load_engine_rejects_package_whose_story_id_differs_from_its_file(tmp_path):
     registry = NumericV2PackageRegistry(tmp_path / "packages")
     registry.root.mkdir(parents=True)
