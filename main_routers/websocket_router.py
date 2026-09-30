@@ -254,6 +254,28 @@ def _apply_session_language_message(manager, message: dict) -> str | None:
     return render_language
 
 
+async def _decline_ordinary_input_for_theater(websocket, lanlan_name: str, input_type: str) -> None:
+    """Tell the client an ordinary text/image/avatar turn was dropped because a theater is running.
+
+    Server-side backstop for the frontend guards: another window (the Electron
+    Pet window, a concurrent ``/chat_full`` window) whose own theater runtime
+    is inactive could otherwise start an ordinary turn mid-performance, mixing
+    its TTS with the theater dialogue and writing to the hidden ordinary
+    history. Theater requests use their own HTTP routes and never reach here.
+    """
+    logger.info("[%s] theater session active: declining ordinary %s input", lanlan_name, input_type)
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "status",
+            "message": json.dumps({
+                "code": "THEATER_SESSION_ACTIVE",
+                "details": {"reason": "theater_session_active", "input_type": input_type},
+            }),
+        }))
+    except Exception as exc:
+        logger.debug("[%s] theater input decline notice failed: %s", lanlan_name, exc)
+
+
 def _reserve_avatar_interaction_ingress(
     manager,
     message: dict,
@@ -1075,6 +1097,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
+                if input_type in _TEXT_SESSION_INPUT_TYPES and is_theater_active(lanlan_name):
+                    # Decline before stamping ingress so a dropped turn never
+                    # counts as user engagement.
+                    await _decline_ordinary_input_for_theater(websocket, lanlan_name, input_type)
+                    continue
                 if input_type == "audio":
                     # PCM (JSON or decoded binary frame) is a voice engagement:
                     # first audio frame on this socket claims the voice input
@@ -1134,6 +1161,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             )
 
             elif action == "avatar_interaction":
+                if is_theater_active(lanlan_name):
+                    await _decline_ordinary_input_for_theater(websocket, lanlan_name, "avatar_interaction")
+                    continue
                 message = _stamp_user_input_ingress(message)
                 avatar_mgr = session_manager[lanlan_name]
                 # Validate and expose genuine engagement synchronously, before

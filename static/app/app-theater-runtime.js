@@ -155,6 +155,7 @@
         return state.active === true || proactiveSuppressionClaimed;
     }
     function blocksOrdinaryVoice() {
+        // 普通语音、文字和头像互动共用同一判定：本窗口正在演绎，或其他窗口的剧场正在抑制。
         if (state.active === true) return true;
         // Electron 下剧场运行在紧凑聊天窗口，悬浮麦克风却在 Pet 窗口；另一窗口的剧场状态
         // 随主动搭话 leader 心跳传播，剧场窗口关闭或崩溃后按心跳 TTL 自动失效，不会永久锁住麦克风。
@@ -1267,6 +1268,7 @@
         isActive: function () { return state.active; },
         suppressesProactiveChat: suppressesProactiveChat,
         blocksOrdinaryVoice: blocksOrdinaryVoice,
+        blocksOrdinaryChat: blocksOrdinaryVoice,
         allowsSpeechCorrelation: function (requestId) {
             return state.active && activeSpeechRequests[requestId] === state.queueToken;
         },

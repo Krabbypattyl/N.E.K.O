@@ -4282,11 +4282,15 @@
                     }
 
                     if (statusCode === 'THEATER_SESSION_ACTIVE') {
-                        // 服务端兜底拒绝了普通语音启动（session_failed 已先行复位启动状态）；
-                        // 复用前端剧场守卫的同一文案，不显示原始错误码。
+                        // 服务端兜底拒绝了普通语音启动（session_failed 已先行复位启动状态），
+                        // 或拒绝了普通文字/图片/头像互动；复用前端剧场守卫的同一文案，不显示原始错误码。
+                        var declinedInput = statusDetails && statusDetails.input_type;
+                        var declinedOrdinaryChat = !!declinedInput && declinedInput !== 'audio';
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
-                                window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话',
+                                declinedOrdinaryChat
+                                    ? (window.t ? window.t('theater.chatUnavailable') : '小剧场演绎期间暂不支持普通对话')
+                                    : (window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话'),
                                 3500
                             );
                         }

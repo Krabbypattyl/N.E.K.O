@@ -95,6 +95,29 @@
         }
     }
 
+    // 小剧场演绎期间普通文字、拖放和头像互动都不能开启普通回合（否则普通 TTS 与剧场对白混播，
+    // 并写进被隐藏的普通历史）。与普通语音守卫同一判定：本窗口演绎中，或其他窗口的剧场正在抑制
+    // （Electron 下剧场在聊天窗口、拖放与头像工具在 Pet 窗口；抑制随心跳传播并按 TTL 失效）。
+    function isOrdinaryChatBlockedByTheater() {
+        var theaterRuntime = window.nekoTheaterRuntime;
+        try {
+            return !!(theaterRuntime
+                && typeof theaterRuntime.blocksOrdinaryChat === 'function'
+                && theaterRuntime.blocksOrdinaryChat() === true);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function showTheaterChatUnavailableToast() {
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('theater.chatUnavailable') : '小剧场演绎期间暂不支持普通对话',
+                3500
+            );
+        }
+    }
+
     function shouldSuppressCompactHistoryDropSendForVoiceMode() {
         try {
             if (typeof window.shouldKeepVoiceComposerHidden === 'function'
@@ -1838,6 +1861,10 @@
         if (!normalized) {
             return false;
         }
+        if (isOrdinaryChatBlockedByTheater()) {
+            showTheaterChatUnavailableToast();
+            return false;
+        }
 
         var throttleReason = getAvatarInteractionDispatchThrottleReason(Date.now());
         if (throttleReason) {
@@ -3438,6 +3465,10 @@
                 }
                 return theaterRuntime.handleComposerSubmit(text);
             }
+            if (isOrdinaryChatBlockedByTheater()) {
+                showTheaterChatUnavailableToast();
+                return false;
+            }
             if (!text && !hasScreenshots && !hasExtraImages) return;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -3473,6 +3504,11 @@
             var items = getAvatarDropItems(payload);
             var rejected = getAvatarDropRejected(payload);
             if (!items.length && !rejected.length) return false;
+            // 必须在切换文字模式之前拦截：拖放入口不经剧场输入框，不能先停掉语音再被拒绝。
+            if (isOrdinaryChatBlockedByTheater()) {
+                showTheaterChatUnavailableToast();
+                return false;
+            }
             var gameRouteBlocksImages = !!(S && S.gameRouteActive);
             if (gameRouteBlocksImages) {
                 var blockedImages = items.filter(function (item) { return item.type === 'image'; });

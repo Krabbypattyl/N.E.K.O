@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并小剧场（含剧场期间普通语音不可用、演绎中断与补推荐文案）与主分支屏幕共享来源面板、头像互动流程、社区账号设置、独立/本地 ASR、声纹、插件 HTML 卡片与配置 schema、唤醒词、免费服务拒绝访问与智谱声音复刻提示，递增版本刷新网页和 Electron 的语言包缓存。
-    const LOCALE_VERSION = '2026-10-01-theater-screen-share-avatar-tools-main-merge';
+    const LOCALE_VERSION = '2026-10-01-theater-ordinary-chat-unavailable';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

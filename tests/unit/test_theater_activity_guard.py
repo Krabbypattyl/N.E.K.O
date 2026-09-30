@@ -9,6 +9,7 @@ voice start, failing open once the signal expires.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -181,9 +182,68 @@ async def test_ordinary_voice_start_is_declined_while_theater_is_active(monkeypa
     assert websocket.sent_text == []
 
 
+class _AvatarProtocolManager(_ProtocolManager):
+    """Record avatar interactions that reach the ordinary manager."""
+
+    def note_avatar_interaction_ingress(self, message) -> bool:
+        self.calls.append(("avatar_ingress", message.get("interaction_id")))
+        return True
+
+    async def handle_avatar_interaction(self, message) -> None:
+        self.calls.append(("avatar_interaction", message.get("interaction_id")))
+
+
+_ORDINARY_INPUTS = [
+    {"action": "stream_data", "input_type": "text", "data": "你好"},
+    {"action": "stream_data", "input_type": "avatar_drop_image", "data": "data:image/png;base64,AA=="},
+    {"action": "stream_data", "input_type": "user_image", "data": "data:image/png;base64,AA=="},
+    {"action": "avatar_interaction", "interaction_id": "tap-1", "tool_id": "fist", "action_id": "poke"},
+]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_text_and_avatar_turns_are_declined_while_theater_is_active(monkeypatch):
+    """Another window cannot start an ordinary turn mid-performance; users without a theater are untouched."""
+    theater_activity.mark_theater_activity("Lan")
+    manager = _AvatarProtocolManager()
+    websocket = _EventWebSocket(list(_ORDINARY_INPUTS))
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    reached = [name for name, _ in manager.calls if name in {"stream_data", "avatar_ingress", "avatar_interaction"}]
+    assert reached == [], "no ordinary text/image/avatar turn may reach the manager"
+    sent = [json.loads(payload) for payload in websocket.sent_text]
+    statuses = [json.loads(item["message"]) for item in sent if item.get("type") == "status"]
+    assert statuses == [
+        {"code": "THEATER_SESSION_ACTIVE", "details": {"reason": "theater_session_active", "input_type": kind}}
+        for kind in ("text", "avatar_drop_image", "user_image", "avatar_interaction")
+    ]
+
+    # A character that is not performing, and the same one once released, proceed unchanged.
+    theater_activity.clear_all_theater_activity()
+    theater_activity.mark_theater_activity("另一只猫娘")
+    manager = _AvatarProtocolManager()
+    websocket = _EventWebSocket(list(_ORDINARY_INPUTS))
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert [name for name, _ in manager.calls if name == "stream_data"] == ["stream_data"] * 3
+    assert ("avatar_ingress", "tap-1") in manager.calls
+    assert ("avatar_interaction", "tap-1") in manager.calls
+    assert not [
+        payload for payload in websocket.sent_text
+        if "THEATER_SESSION_ACTIVE" in payload
+    ]
+
+
 def test_frontend_maps_the_decline_status_to_the_theater_voice_notice():
-    """The client shows the existing theater voice notice instead of a raw error token."""
+    """The client shows the theater notice matching the declined input instead of a raw error token."""
     source = (ROOT / "static" / "app" / "app-websocket.js").read_text(encoding="utf-8")
     branch = source.index("statusCode === 'THEATER_SESSION_ACTIVE'")
-    assert "theater.voiceUnavailable" in source[branch:branch + 600]
+    block = source[branch:source.index("var isGoodbyeActive", branch)]
+    assert "theater.voiceUnavailable" in block
+    assert "theater.chatUnavailable" in block
+    assert "statusDetails.input_type" in block
     assert branch < source.index("var translatedMessage = window.translateStatusMessage")
