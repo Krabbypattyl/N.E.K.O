@@ -35,8 +35,8 @@ PUBLIC_ARCHIVE_QUARANTINE_DIRNAME = "quarantine_public_archives"
 # Quarantine keeps the original ``sha256(session_id).json`` basename as the suffix.
 _QUARANTINED_ARCHIVE_KEY_RE = re.compile(r"(?:^|-)([0-9a-f]{64})\.json$")
 # Startup audit moves invalid/duplicate session files (full ledger and transcript)
-# here as ``{reason}-{ms}-{uuid hex}-{session_id}.json``; it is trimmed to the
-# newest few files, and explicit deletes/forgets erase the ones in their scope.
+# here as ``{reason}-{ms}-{uuid hex}-{session_id}.json``. It is never trimmed;
+# explicit deletes/forgets erase the ones in their scope.
 SESSION_QUARANTINE_DIRNAME = "quarantine"
 _QUARANTINED_SESSION_NAME_RE = re.compile(
     r"^[a-z]+-\d+-[0-9a-f]{32}-([A-Za-z0-9._-]+)\.json$"
@@ -1008,7 +1008,7 @@ class NumericV2ArchiveStore:
         another story or character is never returned; a file whose owner
         cannot be determined is returned only with ``include_unattributable``
         (explicit character delete or story forget). Transient read failures
-        raise so the delete fails closed. Trimming is left to maintenance.
+        raise so the delete fails closed. Nothing else removes these files.
         """
         root = self.session_quarantine_root
         if not root.is_dir():

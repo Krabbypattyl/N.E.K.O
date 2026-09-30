@@ -39,9 +39,9 @@ from .numeric_v2_store import (
 from .numeric_v2_storage_transaction import run_storage_mutation
 
 
-QUARANTINE_FILE_LIMIT = 6
-# 公开冷档案隔离区（PUBLIC_ARCHIVE_QUARANTINE_DIRNAME）独立于 Session 隔离区，
-# 不被 QUARANTINE_FILE_LIMIT 裁剪删除；只随显式删除/遗忘在可回滚事务内清理。
+# No quarantine directory is trimmed automatically. Invalid, orphaned and
+# duplicate sessions are distinct ledgers, not copies of a surviving session, so
+# only an explicit delete or forget (in its rollback-safe transaction) erases them.
 DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
 # 损坏的 story_sessions.json 是可重建的派生缓存；移入独立目录保存，不参与裁剪删除。
 INDEX_QUARANTINE_DIRNAME = "quarantine_indexes"
@@ -662,25 +662,11 @@ def _quarantine_session(path: Path, quarantine_root: Path, reason: str) -> None:
         f"{reason}-{int(time.time() * 1000)}-{uuid.uuid4().hex}-{path.name}"
     )
     os.replace(path, target)
-
-
-def _trim_quarantine(quarantine_root: Path) -> None:
-    if not quarantine_root.is_dir():
-        return
-    files = sorted(
-        (path for path in quarantine_root.iterdir() if path.is_file()),
-        key=lambda path: path.stat().st_mtime_ns,
-        reverse=True,
-    )
-    for stale in files[QUARANTINE_FILE_LIMIT:]:
-        stale.unlink()
-
-
-def _trim_quarantine_safely(quarantine_root: Path) -> None:
     try:
-        _trim_quarantine(quarantine_root)
+        # os.replace keeps the ledger's last write time; record when it was quarantined.
+        os.utime(target)
     except OSError:
-        logger.warning("Numeric v2 隔离区裁剪失败", exc_info=True)
+        logger.warning("Numeric v2 cannot refresh quarantine time of %s", target, exc_info=True)
 
 
 def _caused_by_os_error(exc: BaseException) -> bool:
@@ -721,7 +707,6 @@ def audit_numeric_v2_storage(
     if not session_root.is_dir():
         if index_path.is_file():
             _write_story_session_slots(index_path, {})
-        _trim_quarantine_safely(quarantine_root)
         return {"valid": 0, "quarantined": 0}
 
     valid: list[tuple[Path, dict[str, str], int, int, str]] = []
@@ -847,7 +832,6 @@ def audit_numeric_v2_storage(
                 )
 
     _write_story_session_slots(index_path, rebuilt)
-    _trim_quarantine_safely(quarantine_root)
     return {"valid": sum(len(slots) for story_id, slots in rebuilt.items() if story_id not in unloadable_stories), "quarantined": quarantined}
 
 
@@ -905,7 +889,6 @@ __all__ = [
     "INDEX_QUARANTINE_DIRNAME",
     "NumericV2PurgeIntentError",
     "PUBLIC_ARCHIVE_QUARANTINE_DIRNAME",
-    "QUARANTINE_FILE_LIMIT",
     "apply_character_purge_intent",
     "audit_numeric_v2_storage",
     "character_purge_intent_path",

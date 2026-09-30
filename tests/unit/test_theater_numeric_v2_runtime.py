@@ -7,14 +7,12 @@ from dataclasses import replace
 import gc
 import json
 import os
+import time
 
 import pytest
 
 from services.theater import numeric_v2_archive, numeric_v2_maintenance, numeric_v2_store
-from services.theater.numeric_v2_maintenance import (
-    QUARANTINE_FILE_LIMIT,
-    audit_numeric_v2_storage,
-)
+from services.theater.numeric_v2_maintenance import audit_numeric_v2_storage
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.numeric_v2_store import update_numeric_v2_character_bindings
 from services.theater.numeric_v2_runtime import (
@@ -1743,7 +1741,9 @@ async def test_numeric_v2_story_restore_prunes_legacy_duplicate_sessions(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_startup_audit_bounds_corrupt_quarantine(tmp_path):
+async def test_numeric_v2_startup_audit_never_deletes_quarantined_sessions(tmp_path):
+    """Quarantine is recovery storage: only an explicit delete or forget may erase it."""
+
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
     registry.import_package(story)
@@ -1753,18 +1753,40 @@ async def test_numeric_v2_startup_audit_bounds_corrupt_quarantine(tmp_path):
         catgirl_binding=_binding(),
         opening_performance=_opening(),
     )
+    quarantine_root = tmp_path / "numeric_v2" / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    earlier = {}
+    for index in range(8):
+        path = quarantine_root / f"invalid-1-{index:032x}-earlier_{index}.json"
+        path.write_text("{", encoding="utf-8")
+        os.utime(path, ns=(10**18, 10**18 + index))
+        earlier[path.name] = path.read_bytes()
     session_root = tmp_path / "numeric_v2" / "sessions"
-    for index in range(QUARANTINE_FILE_LIMIT + 3):
-        (session_root / f"corrupt_{index}.json").write_text("{", encoding="utf-8")
+    # Old ledgers (mtime far in the past) quarantined in this run keep their
+    # original mtime through os.replace unless the audit refreshes it.
+    for index in range(9):
+        path = session_root / f"corrupt_{index}.json"
+        path.write_text("{", encoding="utf-8")
+        os.utime(path, ns=(10**9, 10**9 + index))
+    before = time.time_ns()
 
     result = audit_numeric_v2_storage(
         tmp_path,
         registry,
         character_ids_by_name={"Lan": _binding()["character_id"]},
     )
+    again = audit_numeric_v2_storage(
+        tmp_path,
+        registry,
+        character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
 
-    assert result["quarantined"] == QUARANTINE_FILE_LIMIT + 3
-    assert len(list((tmp_path / "numeric_v2" / "quarantine").glob("*"))) == QUARANTINE_FILE_LIMIT
+    assert result["quarantined"] == 9 and again["quarantined"] == 0
+    files = {path.name: path for path in quarantine_root.iterdir()}
+    assert len(files) == 8 + 9
+    assert {name: files[name].read_bytes() for name in earlier} == earlier
+    fresh = [path for name, path in files.items() if name not in earlier]
+    assert all(path.stat().st_mtime_ns >= before - 10**9 for path in fresh)
     assert [path.stem for path in session_root.glob("*.json")] == [
         valid.session.session_id
     ]
@@ -2616,8 +2638,8 @@ def test_maintenance_quarantines_unparseable_public_archives_without_trimming(tm
     valid_bytes = valid_path.read_bytes()
     locked_bytes = locked_path.read_bytes()
     corrupt: dict[str, bytes] = {}
-    # 超过 Session 隔离区的裁剪上限，确认公开冷档案隔离不会删除任何文件。
-    for index in range(QUARANTINE_FILE_LIMIT + 2):
+    # More files than a bounded quarantine would keep; public archive quarantine deletes none.
+    for index in range(8):
         path = store.public_archive_root / f"{index:064x}.json"
         path.write_text(
             ("{broken", "[]", json.dumps({"schema": "other"}))[index % 3],
