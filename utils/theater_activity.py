@@ -24,7 +24,8 @@ The signal is deliberately lossy and fails open:
 
 - it is refreshed by successful theater session requests (launch, restore,
   input, resume) and cleared by end, by an ended snapshot, and by the capsule's
-  explicit release on exit;
+  explicit release on exit (which names only the character that window
+  performed with, so other characters keep their guard);
 - every entry expires ``THEATER_ACTIVITY_TTL_SECONDS`` after the last refresh,
   so a crashed or closed theater window can never block ordinary voice or
   proactive chat for longer than that;
@@ -66,7 +67,7 @@ def clear_theater_activity(lanlan_name: Any) -> None:
 
 
 def clear_all_theater_activity() -> None:
-    """Forget every character's theater activity (the capsule's explicit release)."""
+    """Forget every character's theater activity (process reset and test isolation only)."""
 
     _last_activity.clear()
 

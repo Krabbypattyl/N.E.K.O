@@ -150,6 +150,8 @@ RUNTIME_SCENARIOS = (
       const release = ctx.requests.shift();
       assert.ok(release && /\/api\/theater-numeric\/session\/release$/.test(release.url), '退出必须释放服务端剧场信号');
       assert.equal(release.options.method, 'POST');
+      // 只释放本窗口演绎的角色（服务端按响应里的原始猫娘名登记），不得清掉其他角色的兜底。
+      assert.deepEqual(JSON.parse(release.options.body), { catgirl_name: '猫娘' });
       await respond(release, { ok: true });
       ctx.runtime.clear('again');
       for (let i = 0; i < 5; i += 1) await tick();

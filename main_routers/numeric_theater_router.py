@@ -84,7 +84,7 @@ from utils.cloudsave_runtime import (
     cloudsave_writable_transaction,
 )
 from utils.character_memory import character_config_mutation_lock
-from utils.theater_activity import clear_all_theater_activity, note_theater_session_response
+from utils.theater_activity import clear_theater_activity, note_theater_session_response
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
@@ -1337,7 +1337,15 @@ async def resume_numeric_session(request: Request):
 
 @router.post("/session/release")
 async def release_numeric_session_activity(request: Request):
-    """Drop the server-side theater activity signal when the capsule exits without ending."""
+    """Drop one character's server-side theater activity signal when its capsule exits.
+
+    Only the character the exiting window performed with is released, so another
+    window's performance keeps its voice/proactive guard. The name is the
+    ``participants.catgirl_name`` this window received from its own session
+    responses, which is exactly the key those responses registered activity
+    under (a later rename does not re-key the registry). Clearing an unknown
+    name is a no-op, and the signal fails open by TTL anyway.
+    """
 
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(
@@ -1347,7 +1355,11 @@ async def release_numeric_session_activity(request: Request):
     )
     if validation_error is not None:
         return validation_error
-    clear_all_theater_activity()
+    raw_name = payload.get("catgirl_name")
+    catgirl_name = raw_name.strip() if isinstance(raw_name, str) else ""
+    if not catgirl_name or len(catgirl_name) > 256:
+        return _error("numeric_release_character_required", 400)
+    clear_theater_activity(catgirl_name)
     return {"ok": True}
 
 

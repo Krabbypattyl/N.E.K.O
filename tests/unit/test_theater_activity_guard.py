@@ -111,10 +111,19 @@ def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatc
         assert resumed.status_code == 200
         assert active() is True
 
-        released = client.post("/api/theater-numeric/session/release", json={})
+        # Another window performing with a different character keeps its guard:
+        # release names only the character this window performed with.
+        theater_activity.mark_theater_activity("另一只猫娘")
+        unnamed = client.post("/api/theater-numeric/session/release", json={})
+        assert unnamed.status_code == 400
+        assert active() is True
+        assert theater_activity.is_theater_active("另一只猫娘") is True
+
+        released = client.post("/api/theater-numeric/session/release", json={"catgirl_name": name})
         assert released.status_code == 200
         assert released.json() == {"ok": True}
         assert active() is False
+        assert theater_activity.is_theater_active("另一只猫娘") is True
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@
     var LEGACY_EMPTY_TRANSITION_BRIDGE = '时间向前流转，现场随之转换。';
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
-        playerName: '', catgirlName: '',
+        playerName: '', catgirlName: '', activityCatgirlName: '',
         sessionStatus: '', scene: null, history: [], currentBlock: null, suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, presentationSeq: 0, composerVisibilityRestore: null,
@@ -515,6 +515,8 @@
         // 玩家和猫娘署名都由服务端当前绑定提供，恢复旧记录时也不回退成通用占位名。
         state.playerName = String(participants.player_name || t('theater.player', 'Player'));
         state.catgirlName = String(participants.catgirl_name || 'Neko');
+        // 服务端剧场信号按响应里的原始猫娘名登记；退出时只释放这一个角色，不回退到展示占位名。
+        state.activityCatgirlName = String(participants.catgirl_name || '').trim();
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
@@ -949,19 +951,24 @@
         }
         return true;
     }
-    function releaseServerTheaterActivity() {
+    function releaseServerTheaterActivity(catgirlName) {
         // 服务端对主动搭话和普通语音的兜底按最近一次剧场请求计时（TTL 到期自动失效）；
-        // 退出而未结束演绎时显式释放，避免 TTL 内把已恢复的普通语音误拦。失败只等 TTL。
+        // 退出而未结束演绎时显式释放本窗口演绎的角色，避免 TTL 内把已恢复的普通语音误拦，
+        // 也不影响其他窗口正在演绎的角色。失败只等 TTL。
+        if (!catgirlName) return;
         try {
-            Promise.resolve(requestJson(api.release, { method: 'POST', body: {} })).catch(function () {});
+            Promise.resolve(requestJson(api.release, {
+                method: 'POST', body: { catgirl_name: catgirlName }
+            })).catch(function () {});
         } catch (_) {}
     }
     function clear(reason) {
         var wasActive = state.active === true;
+        var releasedCatgirlName = state.activityCatgirlName;
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.currentBlock = null; state.history = []; state.suggestedInputs = [];
-        state.playerName = ''; state.catgirlName = ''; state.windowClaimed = false;
+        state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.windowClaimed = false;
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
         committedSnapshot = null;
@@ -984,7 +991,7 @@
             });
         }
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
-        if (wasActive) releaseServerTheaterActivity();
+        if (wasActive) releaseServerTheaterActivity(releasedCatgirlName);
     }
     function openSelector(receipt) {
         state.pendingEnd = receipt || state.pendingEnd;

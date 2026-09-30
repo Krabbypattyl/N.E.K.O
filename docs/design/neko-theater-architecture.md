@@ -515,7 +515,7 @@ stateDiagram-v2
 ### 8.6 与普通聊天的隔离
 
 - 主动搭话抑制只存在于内存，不改写持久化的 `proactiveChatEnabled`：本窗口由 `nekoTheaterRuntime.suppressesProactiveChat()` 按剧场会话是否活跃（启动阶段先行登记）实时回答；其他窗口的抑制随主动搭话 leader 心跳传播，发起窗口关闭或崩溃后按心跳 TTL 自动失效。Electron 下同一心跳也让 Pet 窗口的悬浮麦克风在剧场期间让出，不会永久锁住。
-- 服务端兜底：`utils/theater_activity.py` 在内存中按角色记录最近一次成功的剧场请求（start / 读取 Session / input / end / resume），TTL 120 s；`ended` 或 `POST /session/release`（前端 `clear()` 时发出）立即清除。期间主动搭话入口直接返回 pass，普通语音 `start_session` 在领取语音租约前被拒绝（`THEATER_SESSION_ACTIVE`），文字会话不受影响。信号 fail-open：超过 TTL 或服务重启即失效，只剩前端抑制；从未使用剧场的角色不会出现在表中。
+- 服务端兜底：`utils/theater_activity.py` 在内存中按角色记录最近一次成功的剧场请求（start / 读取 Session / input / end / resume），TTL 120 s；`ended` 或 `POST /session/release`（前端 `clear()` 时发出，只携带本窗口响应里登记的 `catgirl_name`，仅清除该角色，其他窗口演绎的角色不受影响）立即清除。期间主动搭话入口直接返回 pass，普通语音 `start_session` 在领取语音租约前被拒绝（`THEATER_SESSION_ACTIVE`），文字会话不受影响。信号 fail-open：超过 TTL 或服务重启即失效，只剩前端抑制；从未使用剧场的角色不会出现在表中。
 - 剧场激活期间普通聊天回复只更新普通聊天自己的状态，不覆盖剧场历史；普通预览缓存在剧场激活时不显示。
 - 八语言 locale key 集合一致；小剧场用户文案不写仅中文 fallback。
 
