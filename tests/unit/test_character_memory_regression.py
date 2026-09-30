@@ -2039,6 +2039,13 @@ async def test_character_management_and_recent_save_regression():
                     legacy_catgirl_name='测试角色')
             numeric_archive_store.prepare_forget(story_id='already_deleted_story', character_id='other-character',
                 legacy_catgirl_name='另一角色')
+            # Storage maintenance already ran in this process, so the preflight's
+            # one repair attempt is a no-op and the corrupt file still blocks.
+            from services.theater import numeric_v2_maintenance
+
+            numeric_v2_maintenance._MAINTAINED_ROOTS.add(
+                str((Path(cm.app_docs_dir) / "theater").resolve())
+            )
             for corrupt_bytes in (b"{broken-json", b"\xff"):
                 numeric_session_path.write_bytes(corrupt_bytes)
                 # 仍然整体中止（fail-closed），但以结构化 JSON 指出阻塞的剧场文件，而不是抛出裸异常。
@@ -6867,3 +6874,132 @@ async def test_a_stale_flush_cannot_overwrite_what_the_rollback_just_restored(
         assert sidecar.read_bytes() != restored_bytes, (
             "writes never resumed after the rollback -- the fence leaked"
         )
+
+
+@contextmanager
+def _theater_preflight_crud(tmp_path):
+    """A real config manager with one extra character "Old" and a fresh crud module."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    with patch("utils.config_manager._config_manager", cm):
+        yield cm, _init_theater_preflight_crud(cm)
+
+
+def _init_theater_preflight_crud(cm):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    init_shared_state(
+        role_state={},
+        steamworks=None,
+        templates=None,
+        config_manager=cm,
+        initialize_character_data=_noop,
+        switch_current_catgirl_fast=_noop,
+        init_one_catgirl=_noop,
+        remove_one_catgirl=_noop,
+    )
+    crud = reload_module("main_routers.characters_router.crud")
+    characters = cm.load_characters()
+    characters.setdefault("猫娘", {})["Old"] = {
+        "昵称": "Old", "_reserved": {"character_id": "character_" + "0" * 32},
+    }
+    cm.save_characters(characters, bypass_write_fence=True)
+    return crud
+
+
+def _corrupt_public_archive(cm, crud):
+    root = crud.theater_root(cm)
+    path = root / "numeric_v2" / "public_archives" / f"{'e' * 64}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{broken-json")
+    return root, path
+
+
+async def _run_character_operation(crud, operation):
+    if operation == "rename":
+        return await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+    return await crud.delete_catgirl("Old")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+async def test_character_preflight_repairs_an_unrelated_corrupt_theater_file_once(tmp_path, operation):
+    """Another character's unparseable file no longer blocks rename/delete until the theater is opened."""
+    with _theater_preflight_crud(tmp_path) as (cm, crud):
+        root, corrupt = _corrupt_public_archive(cm, crud)
+        maintain = crud.maintain_numeric_v2_storage_once
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(threading.get_ident())
+            return maintain(*args, **kwargs)
+
+        # The preflight passed once the operation reaches its backup step.
+        with patch.object(crud, "maintain_numeric_v2_storage_once", side_effect=counted), patch.object(
+            crud, "_create_character_operation_backup_dir", side_effect=OSError("stop after preflight"),
+        ), patch.object(
+            crud, "release_memory_server_character", AsyncMock(return_value=True),
+        ), pytest.raises(OSError, match="stop after preflight"):
+            await _run_character_operation(crud, operation)
+
+    assert len(calls) == 1 and calls[0] != threading.get_ident()
+    assert not corrupt.exists()
+    quarantined = list((root / "numeric_v2" / "quarantine_public_archives").glob("*.json"))
+    assert [path.read_bytes() for path in quarantined] == [b"{broken-json"]
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["os_error", "wrapped_os_error"])
+async def test_character_preflight_never_repairs_a_transient_read_failure(tmp_path, failure):
+    from services.theater.numeric_v2_archive import NumericV2ArchiveError
+
+    if failure == "os_error":
+        error = PermissionError("locked by antivirus")
+    else:
+        error = NumericV2ArchiveError("numeric_end_receipt_read_failed")
+        error.__cause__ = PermissionError("locked by antivirus")
+    with _theater_preflight_crud(tmp_path) as (_cm, crud), patch.object(
+        crud, "maintain_numeric_v2_storage_once",
+    ) as maintain, patch.object(crud, "list_numeric_v2_sessions", side_effect=error), patch.object(
+        crud, "release_memory_server_character", AsyncMock(return_value=True),
+    ):
+        response = await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+
+    assert response.status_code == 500
+    maintain.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_preflight_reports_the_file_when_repair_is_unavailable(tmp_path):
+    with _theater_preflight_crud(tmp_path) as (cm, crud):
+        _root, corrupt = _corrupt_public_archive(cm, crud)
+        with patch.object(
+            crud, "numeric_v2_character_ids", side_effect=ValueError("numeric_character_config_unavailable"),
+        ), patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)):
+            response = await crud.delete_catgirl("Old")
+
+    assert response.status_code == 500
+    assert json.loads(response.body)["theater_file"] == f"numeric_v2/public_archives/{corrupt.name}"
+    assert corrupt.read_bytes() == b"{broken-json"
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_preflight_without_theater_data_skips_maintenance(tmp_path):
+    with _theater_preflight_crud(tmp_path) as (cm, crud), patch.object(
+        crud, "maintain_numeric_v2_storage_once",
+    ) as maintain, patch.object(
+        crud, "_create_character_operation_backup_dir", side_effect=OSError("stop after preflight"),
+    ), patch.object(
+        crud, "release_memory_server_character", AsyncMock(return_value=True),
+    ), pytest.raises(OSError, match="stop after preflight"):
+        await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+
+    maintain.assert_not_called()
+    assert not (crud.theater_root(cm) / "numeric_v2").exists()

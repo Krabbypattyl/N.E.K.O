@@ -37,6 +37,7 @@ from .notify import (
 )
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
+import functools
 import json
 import shutil
 import asyncio
@@ -92,6 +93,7 @@ from utils.new_character_greeting_state import (
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
     assert_cloudsave_writable,
+    cloudsave_writable_transaction,
     is_cloudsave_disabled,
     is_cloudsave_disabled_due_to_local_state_unavailable,
 )
@@ -103,11 +105,14 @@ from services.theater.numeric_v2_store import (
     update_numeric_v2_character_bindings,
 )
 from services.theater.numeric_v2_archive import NumericV2ArchiveError, NumericV2ArchiveStore
-from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding, numeric_v2_character_ids
 from services.theater.numeric_v2_maintenance import (
+    _caused_by_os_error as _numeric_v2_caused_by_os_error,
     discard_character_purge_intent,
+    maintain_numeric_v2_storage_once,
     write_character_purge_intent,
 )
+from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
 
 
@@ -551,25 +556,91 @@ def _scan_numeric_v2_character_scope(
     return session_paths, public_archive_paths, receipt_paths
 
 
+def _repair_numeric_v2_storage(config_manager, numeric_theater_root: Path):
+    """Run the theater's once-per-process storage maintenance (blocking).
+
+    It quarantines unparseable sessions and public archives, drops corrupt
+    receipts and rebuilds a corrupt session index, exactly as the first theater
+    request would. The character list it trusts is the authoritative on-disk
+    one, which a rename/delete preflight has not changed yet.
+    """
+    root = Path(numeric_theater_root)
+    return maintain_numeric_v2_storage_once(
+        root,
+        NumericV2PackageRegistry(root / "numeric_v2" / "packages"),
+        character_ids_by_name=numeric_v2_character_ids(config_manager),
+        assert_writable=lambda: assert_cloudsave_writable(
+            config_manager, operation="repair", target="theater/numeric_v2",
+        ),
+        write_transaction=lambda: cloudsave_writable_transaction(
+            config_manager, operation="repair", target="theater/numeric_v2",
+        ),
+    )
+
+
+async def _scan_numeric_v2_character_scope_repairing(
+    numeric_theater_root: Path,
+    *,
+    character_id: str,
+    legacy_catgirl_name: str,
+    config_manager=None,
+) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
+    """Strict scope scan that repairs corrupt theater files once before failing.
+
+    Ownership filtering happens after parsing, so one corrupt session, public
+    archive or receipt of any character blocks every rename/delete. When the
+    scan fails on file content (never on an OSError, which may be transient)
+    and ``config_manager`` is given, the theater storage maintenance runs once
+    and the scan is retried. Only a content error reaches the repair, so a user
+    without theater files never triggers it. The caller holds the global
+    character lock; maintenance only takes its own thread lock and the cloud
+    save write fence, neither of which is held while waiting for that lock.
+    """
+    scan = functools.partial(
+        _scan_numeric_v2_character_scope,
+        numeric_theater_root,
+        character_id=character_id,
+        legacy_catgirl_name=legacy_catgirl_name,
+    )
+    try:
+        return await asyncio.to_thread(scan)
+    except (NumericV2StoreError, NumericV2ArchiveError) as exc:
+        if config_manager is None or _numeric_v2_caused_by_os_error(exc):
+            raise
+        content_error = exc
+    try:
+        await _await_thread_mutation(
+            _repair_numeric_v2_storage, config_manager, numeric_theater_root,
+        )
+    except Exception:
+        # Unavailable character config, cloud-save maintenance, an I/O error or a
+        # failed audit step: report the original file instead (fail closed).
+        logger.warning("Numeric v2 storage repair before character preflight failed", exc_info=True)
+        raise content_error from None
+    return await asyncio.to_thread(scan)
+
+
 async def collect_numeric_v2_character_purge(
     numeric_theater_root: Path,
     *,
     character_id: str,
     legacy_catgirl_name: str,
+    config_manager=None,
 ) -> NumericV2CharacterPurge:
     """Strictly enumerate the theater data a character delete must cascade to.
 
     Raises ``OSError``, ``NumericV2StoreError`` or ``NumericV2ArchiveError``
     when ownership cannot be established; callers must then abort the delete
-    before any irreversible step (fail closed).
+    before any irreversible step (fail closed). With ``config_manager`` a
+    content error first gets one storage-maintenance repair and a retry.
     """
     # Parsing every session, archive and receipt runs on a worker: the caller
     # holds the global character lock, but the event loop must stay free.
-    session_paths, public_archive_paths, receipt_paths = await asyncio.to_thread(
-        _scan_numeric_v2_character_scope,
+    session_paths, public_archive_paths, receipt_paths = await _scan_numeric_v2_character_scope_repairing(
         numeric_theater_root,
         character_id=character_id,
         legacy_catgirl_name=legacy_catgirl_name,
+        config_manager=config_manager,
     )
     archive_store = NumericV2ArchiveStore(numeric_theater_root)
     # Forget intents outlive deleted packages, but not their owning character.
@@ -1051,11 +1122,11 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
             numeric_session_targets,
             numeric_public_archive_targets,
             numeric_receipt_targets,
-        ) = await asyncio.to_thread(
-            _scan_numeric_v2_character_scope,
+        ) = await _scan_numeric_v2_character_scope_repairing(
             numeric_theater_root,
             character_id=renamed_character_id,
             legacy_catgirl_name=old_name,
+            config_manager=_config_manager,
         )
     except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
         logger.exception("重命名角色 Numeric v2 预检失败: %s -> %s", old_name, new_name)
@@ -1925,6 +1996,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
             numeric_theater_root,
             character_id=deleted_character_id,
             legacy_catgirl_name=name,
+            config_manager=_config_manager,
         )
     except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
         # 与改名一致：无法确认归属的剧场文件使整个删除中止，并返回结构化错误而非裸 500。
