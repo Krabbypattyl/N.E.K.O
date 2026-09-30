@@ -480,6 +480,41 @@ def test_player_story_list_hides_metric_gating_hints(tmp_path, monkeypatch):
     assert summary["title"] and summary["display_intro"]
 
 
+def test_concurrent_retry_of_the_same_turn_replays_instead_of_calling_the_model_twice(
+    tmp_path, monkeypatch,
+):
+    import asyncio
+    import threading
+
+    calls = []
+
+    async def slow_turn(*args, **kwargs):
+        calls.append(1)
+        await asyncio.sleep(0.3)
+        return _performance("我在听。")
+
+    with _client(tmp_path, monkeypatch) as client:
+        monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", slow_turn)
+        scope = {"story_id": "numeric_v2_contract", "session_id": "retry_race"}
+        assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+        turn = {**scope, "client_turn_id": "same_turn", "base_revision": 0, "message": "我在。"}
+        responses = [None, None]
+
+        def submit(index):
+            responses[index] = client.post("/api/theater-numeric/session/input", json=turn)
+
+        threads = [threading.Thread(target=submit, args=(index,)) for index in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+
+    assert [response.status_code for response in responses] == [200, 200], [r.text for r in responses]
+    assert len(calls) == 1
+    assert sorted(bool(r.json().get("idempotent_replay")) for r in responses) == [False, True]
+    assert {r.json()["session"]["revision"] for r in responses} == {1}
+
+
 def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, player_address_known=False)
     with client:

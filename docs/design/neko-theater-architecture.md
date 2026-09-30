@@ -428,7 +428,7 @@ Evaluator 在近期上下文与本地检索不足以回答既往事实时返回 
 
 每个回合使用稳定 `client_turn_id` 和 `base_revision`：
 
-- 重复提交不重复调用模型或写第二条记录；已提交但响应丢失时，同一 `client_turn_id` 返回当前权威快照，胶囊据此重建历史并移除乐观气泡。
+- 重复提交不重复调用模型或写第二条记录；已提交但响应丢失时，同一 `client_turn_id` 返回当前权威快照，胶囊据此重建历史并移除乐观气泡。同一 Session 与 `client_turn_id` 的并发重试由进程内在途锁串行：后到的请求等待首个请求结束后走幂等重放，不会再次调用模型或因 revision 冲突得到 409。
 - revision 冲突返回 409，前端刷新快照并保留未提交草稿。
 - Evaluator、Actor、复核技术失败、身份变更、写栅栏或 Store 任一步失败都不提交半回合；称呼状态、事实操作与 Session、Ledger event、performance record 一起原子提交。
 - Ledger 事件与表现记录按 revision 一一对应，加载时复验节点、数值、计数器、事实账本和链尾。Store 识别 `performance_contract_version` 缺省、1、2、3 的记录；带旧目标证据链字段的 Session 拒绝继续演绎，但维护链路仍可读取其生命周期快照以结束、归档或清理。

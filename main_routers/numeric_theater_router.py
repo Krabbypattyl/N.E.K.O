@@ -95,6 +95,10 @@ _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictiona
 _speak_request_results: dict[str, dict[str, Any]] = {}
 # 归档幂等事实保存在回执文件中，进程内锁只负责并发窗口，不应永久保留每个回执 ID。
 _archive_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+# One in-flight submission per (session, client_turn_id): a concurrent retry waits
+# for the first request and then takes the idempotent replay path instead of
+# calling the model a second time and losing the commit race.
+_turn_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 # Archive and forget await the memory service without the global character lock,
 # because that lock also serialises ordinary character switch/save/rename/delete.
 # This per-story lock keeps them ordered against the theater lifecycle writes that
@@ -1071,6 +1075,21 @@ async def _submit_numeric_input(request: Request):
     session_id = str(payload.get("session_id") or "").strip()
     if not story_id or not session_id:
         return _error("story_id_and_session_id_required", 400)
+    turn_lock = _request_lock(
+        _turn_request_locks,
+        "\x1f".join((story_id, session_id, str(payload.get("client_turn_id") or ""))),
+    )
+    async with turn_lock:
+        return await _submit_numeric_input_once(payload, story_id, session_id)
+
+
+async def _submit_numeric_input_once(
+    payload: dict[str, Any],
+    story_id: str,
+    session_id: str,
+):
+    """Run one turn submission; the caller holds this client_turn_id's in-flight lock."""
+
     try:
         turn = TurnRequestV2.from_mapping(payload)
         config_manager = get_config_manager()
