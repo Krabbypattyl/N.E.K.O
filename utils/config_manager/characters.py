@@ -26,6 +26,19 @@ from copy import deepcopy
 from utils.file_utils import atomic_write_json
 
 from ._shared import logger
+
+
+def _characters_file_signature(path):
+    """Return the cache-validation signature of a characters file.
+
+    A float mtime alone misses a rewrite that lands in the same timestamp tick
+    (coarse on Windows), so the cache would keep serving the previous content.
+    The nanosecond mtime plus the size catches every rewrite that changes the
+    length and narrows same-length collisions to the filesystem's real
+    resolution. Raises OSError like ``os.path.getmtime`` when the file is gone.
+    """
+    stat_result = os.stat(path)
+    return (stat_result.st_mtime_ns, stat_result.st_size)
 from .persona_payload import (
     _append_persona_guidance_to_prompt,
     _build_effective_character_payload,
@@ -72,7 +85,7 @@ class CharactersMixin:
             cache_dirty = self._characters_dirty
         if cache is not None and cache_path == character_json_path:
             try:
-                current_mtime = os.path.getmtime(character_json_path)
+                current_mtime = _characters_file_signature(character_json_path)
             except OSError:
                 current_mtime = None
             if (
@@ -93,7 +106,7 @@ class CharactersMixin:
             if cache is not None and cache_path == character_json_path:
                 source_missing = False
                 try:
-                    current_mtime = os.path.getmtime(character_json_path)
+                    current_mtime = _characters_file_signature(character_json_path)
                 except FileNotFoundError:
                     current_mtime = None
                     source_missing = True
@@ -142,7 +155,7 @@ class CharactersMixin:
                 with open(character_json_path, 'r', encoding='utf-8') as f:
                     character_data = json.load(f)
                 try:
-                    loaded_mtime = os.path.getmtime(character_json_path)
+                    loaded_mtime = _characters_file_signature(character_json_path)
                 except OSError:
                     loaded_mtime = None
             except FileNotFoundError:
@@ -249,7 +262,7 @@ class CharactersMixin:
 
             atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
             try:
-                new_mtime = os.path.getmtime(character_json_path)
+                new_mtime = _characters_file_signature(character_json_path)
             except OSError:
                 new_mtime = None
             with self._characters_cache_lock:

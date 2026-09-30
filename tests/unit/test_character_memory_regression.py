@@ -7003,3 +7003,36 @@ async def test_character_preflight_without_theater_data_skips_maintenance(tmp_pa
 
     maintain.assert_not_called()
     assert not (crud.theater_root(cm) / "numeric_v2").exists()
+
+
+@pytest.mark.unit
+def test_characters_cache_sees_rewrite_that_keeps_the_same_mtime(tmp_path):
+    """A rewrite landing in the same timestamp tick must not be served from cache.
+
+    Windows updates mtimes coarsely, so a quick external rewrite (cloud sync,
+    another process, a test restoring bytes) can leave ``os.path.getmtime``
+    unchanged; keying the cache on the float mtime alone kept returning the
+    previous content.
+    """
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters(
+        {
+            "当前猫娘": "A",
+            "猫娘": {"A": {"_reserved": {"character_id": "character_" + "1" * 32}}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    config_path = Path(cm.get_config_path("characters.json"))
+    first = cm.load_characters()
+    assert set(first["猫娘"]) == {"A"}
+    before = os.stat(config_path)
+
+    rewritten = json.loads(config_path.read_text(encoding="utf-8"))
+    rewritten["猫娘"]["Bee"] = {"_reserved": {"character_id": "character_" + "2" * 32}}
+    config_path.write_text(json.dumps(rewritten, ensure_ascii=False), encoding="utf-8")
+    # Simulate the coarse timestamp: the new content keeps the old mtime.
+    os.utime(config_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert os.path.getmtime(config_path) == before.st_mtime
+
+    assert set(cm.load_characters()["猫娘"]) == {"A", "Bee"}
