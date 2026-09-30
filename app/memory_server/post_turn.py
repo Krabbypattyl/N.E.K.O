@@ -395,9 +395,10 @@ async def _run_post_turn_signals(
     # `if not powerful_enabled: continue` 分支），如果这里也跳过，facts.json
     # 就完全无路径更新——这是 chatgpt-codex-connector PR #1346 抓到的 regression。
     # OFF-mode 保留 legacy per-turn Stage-1，let user 仍能拿到基础 fact 累积。
-    # gate 只排除纯剧场批次；纯 AI 的普通批次（如主动搭话无回复）照旧抽取，
-    # 可能产出 ai_disclosure 事实，与引入剧场前的行为一致。
-    if not powerful_enabled and ordinary_messages:
+    # gate 只排除纯剧场批次；其余输入（含纯 AI 的普通批次，如主动搭话无回复）
+    # 照旧抽取，可能产出 ai_disclosure 事实，与引入剧场前的行为一致。
+    theater_only_batch = bool(messages) and not ordinary_messages
+    if not powerful_enabled and not theater_only_batch:
         try:
             await runtime.fact_store.extract_facts(ordinary_messages, lanlan_name)
         except Exception as e:
