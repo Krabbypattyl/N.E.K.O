@@ -36,7 +36,7 @@ from .numeric_v2_store import (
     list_numeric_v2_sessions,
 )
 
-from .numeric_v2_storage_transaction import run_storage_mutation
+from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 
 
 # No quarantine directory is trimmed automatically. Invalid, orphaned and
@@ -89,8 +89,7 @@ def _atomic_write_manifest(path: Path, payload: Mapping[str, Any]) -> None:
             finally:
                 os.close(directory_fd)
     finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+        discard_temporary_file(temporary_path)
 
 
 class _UnresolvableManifestPathError(ValueError):

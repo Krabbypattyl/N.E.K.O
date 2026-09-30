@@ -494,3 +494,68 @@ async def test_cancelled_character_binding_update_keeps_session_lock_until_write
     assert loaded is not None
     assert loaded.session.catgirl_binding["catgirl_name"] == "Lan Renamed"
 
+
+@pytest.fixture
+def locked_temporary_files(monkeypatch):
+    """Simulate Windows: a temp file another process holds open cannot be unlinked."""
+
+    original_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            raise PermissionError(13, "file is being used by another process", str(self))
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+@pytest.mark.asyncio
+async def test_locked_temp_file_does_not_mask_session_exists(tmp_path, locked_temporary_files):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_locked_temp",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    with pytest.raises(numeric_v2_store.NumericV2SessionExistsError):
+        runtime.store._write(runtime.store._path("runtime_locked_temp"), stored, exclusive=True)
+
+
+def test_locked_temp_file_does_not_mask_package_exists(tmp_path, monkeypatch, locked_temporary_files):
+    from services.theater.numeric_v2_registry import NumericV2PackageExistsError
+
+    registry = NumericV2PackageRegistry(tmp_path / "packages")
+    registry.import_package(_branch_story())
+    original_lexists = os.path.lexists
+    checks = []
+
+    def lexists(path):
+        # Another importer publishes between the fast check and the locked one.
+        checks.append(path)
+        return original_lexists(path) if len(checks) > 1 else False
+
+    monkeypatch.setattr(os.path, "lexists", lexists)
+    with pytest.raises(NumericV2PackageExistsError):
+        registry.import_package(_branch_story())
+
+
+@pytest.mark.parametrize("writer", ["archive", "index", "payload", "manifest"])
+def test_locked_temp_file_does_not_mask_replace_failure(tmp_path, monkeypatch, locked_temporary_files, writer):
+    def failing_replace(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    target = tmp_path / "target.json"
+    if writer == "archive":
+        with pytest.raises(numeric_v2_archive.NumericV2ArchiveError, match="write_failed"):
+            numeric_v2_archive.NumericV2ArchiveStore._write(target, {"a": 1})
+    elif writer == "index":
+        with pytest.raises(OSError, match="No space left"):
+            numeric_v2_store._write_story_session_slots(target, {})
+    elif writer == "payload":
+        with pytest.raises(OSError, match="No space left"):
+            numeric_v2_store._atomic_write_json_payload(target, {"a": 1})
+    else:
+        with pytest.raises(OSError, match="No space left"):
+            numeric_v2_maintenance._atomic_write_manifest(target, {"a": 1})
+

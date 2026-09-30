@@ -13,6 +13,7 @@ from typing import Any, Mapping
 import portalocker
 
 from .numeric_v2 import NumericV2CompileError, NumericV2Compiler
+from .numeric_v2_storage_transaction import discard_temporary_file
 
 
 _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -75,8 +76,7 @@ def _write_default_package_ids(marker: Path, story_ids: set[str]) -> None:
         os.replace(temporary_path, marker)
         temporary_path = None
     finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+        discard_temporary_file(temporary_path)
 
 
 class NumericV2PackageError(ValueError):
@@ -269,8 +269,7 @@ class NumericV2PackageRegistry:
         except (OSError, portalocker.exceptions.LockException) as exc:
             raise NumericV2PackageError("numeric_v2_import_failed") from exc
         finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+            discard_temporary_file(temporary_path)
         return self.validate_package(compiled.story)
 
 

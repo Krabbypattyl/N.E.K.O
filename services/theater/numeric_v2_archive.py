@@ -20,7 +20,7 @@ from weakref import WeakValueDictionary
 from utils.llm_client import THEATER_MEMORY_SOURCE
 
 from .numeric_v2_performance import content_blocks, mixed_performance_blocks
-from .numeric_v2_storage_transaction import run_storage_mutation
+from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 
 
 # 调用线程进入 with 后会强持有锁；空闲回执锁无需常驻，避免历史 Session 数量决定进程内存。
@@ -274,8 +274,7 @@ class NumericV2ArchiveStore:
         except OSError as exc:
             raise NumericV2ArchiveError("numeric_end_receipt_write_failed") from exc
         finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+            discard_temporary_file(temporary_path)
 
     @staticmethod
     def _reconciled_written_pointer(

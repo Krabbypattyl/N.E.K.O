@@ -16,7 +16,7 @@ from weakref import WeakValueDictionary
 import portalocker
 
 from .numeric_v2_archive import _retry_windows_permission_error
-from .numeric_v2_storage_transaction import run_storage_mutation
+from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 from .numeric_v2_performance import (
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
@@ -165,8 +165,7 @@ def _write_story_session_slots(
         _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         temporary_path = None
     finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+        discard_temporary_file(temporary_path)
 
 
 def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
@@ -192,8 +191,7 @@ def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
         _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         temporary_path = None
     finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+        discard_temporary_file(temporary_path)
 
 
 def _with_failed_path(error: NumericV2StoreError, path: Path) -> NumericV2StoreError:
@@ -1487,8 +1485,7 @@ class NumericV2SessionStore:
                 _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
                 temporary_path = None
         finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+            discard_temporary_file(temporary_path)
 
 
 __all__ = [
