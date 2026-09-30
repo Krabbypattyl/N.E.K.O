@@ -1848,8 +1848,16 @@ async def _execute_numeric_v2_turn(
     ] | None = None
 
     def transition_bridge_leaks(candidate: Mapping[str, Any]) -> tuple[str, ...]:
-        """Compare only the bridge and target opening in this candidate draft."""
+        """Return target-opening facts that the candidate's bridge segment already narrates.
 
+        The bridge is checked against both the target node's authored opening and the
+        target opening this draft actually delivers; clauses the authored bridge
+        contract already permits stay exempt.
+        """
+
+        target_node = runtime.engine.nodes.get(str(outcome.ledger_event["to_node_id"]))
+        target_beat = target_node.get("story_beat") if isinstance(target_node, Mapping) else None
+        authored_opening = scene_opening_text(target_beat) if isinstance(target_beat, Mapping) else ""
         transition_contract = outcome.transition_contract or {}
         candidate_segments = candidate.get("segments")
         bridge_text = "\n".join(
@@ -1866,10 +1874,16 @@ async def _execute_numeric_v2_turn(
             bridge_text = str(candidate.get("bridge_scene_narration") or "")
         if not target_opening_text:
             target_opening_text = str(candidate.get("target_scene_narration") or "")
-        return tuple(transition_bridge_leak_markers(
-            target_opening=target_opening_text,
-            bridge_text=bridge_text,
-            authored_bridge=str(transition_contract.get("bridge_scene_narration") or ""),
+        authored_bridge = str(transition_contract.get("bridge_scene_narration") or "")
+        # 作者开场与本稿实际交付的开场都算目标幕内容；两者任一被桥段逐字抢先都要拦。
+        return tuple(dict.fromkeys(
+            marker
+            for opening in (authored_opening, target_opening_text)
+            for marker in transition_bridge_leak_markers(
+                target_opening=opening,
+                bridge_text=bridge_text,
+                authored_bridge=authored_bridge,
+            )
         ))
 
     def verify_later_transition_draft(candidate: Mapping[str, Any], *, stage: str) -> None:

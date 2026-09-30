@@ -574,7 +574,8 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["missed_recovery", "review_rewrite", "contract_rewrite", "terminal_rewrite"])
+@pytest.mark.parametrize("path", ["missed_recovery", "review_rewrite", "contract_rewrite", "terminal_rewrite",
+                                  "terminal_rewrite_authored"])
 async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(tmp_path, monkeypatch, path):
     """Every later formal transition draft must pass the bridge-leak and terminal-question checks or roll back."""
     from services.theater import numeric_v2_evaluator as ev
@@ -598,9 +599,12 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
                                           opening_performance=opening)
     generations = []
     question = {**_candidate(), "target_performance": "（回头）下次你还会回来吗？"}
-    # Copies the ending's opening clause into the bridge, which the provenance check rejects.
+    # The bridge copies either the opening this draft delivers or the ending's authored
+    # opening; the provenance check must reject both.
     leak = {**_candidate(), "bridge_scene_narration": "雨后的长街恢复了安静。",
             "target_scene_narration": "雨后的长街恢复了安静。"}
+    if path == "terminal_rewrite_authored":
+        leak = {**_candidate(), "bridge_scene_narration": "雨停后的长街恢复了安静。"}
 
     async def evaluate(self, **kwargs):
         if path == "missed_recovery":
@@ -614,7 +618,7 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
             return {"performance": "（点头）我听到了。", "suggested_inputs": [], "transition_offered": False}
         first = sum(g["outcome"].ledger_event["from_node_id"] != g["outcome"].ledger_event["to_node_id"]
                     for g in generations) == 1
-        if path == "terminal_rewrite":
+        if path.startswith("terminal_rewrite"):
             candidate = question if first else leak
         elif path == "missed_recovery":
             candidate = question
@@ -650,13 +654,14 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
     monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     diagnostics: dict[str, Any] = {}
-    expected = "segment_overlap" if path == "terminal_rewrite" else "terminal_new_question"
+    terminal = path.startswith("terminal_rewrite")
+    expected = "segment_overlap" if terminal else "terminal_new_question"
     with pytest.raises(NumericV2ActorOutputError, match=expected):
         await numeric_v2_workflow.execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
             diagnostics_sink=diagnostics)
-    assert diagnostics["transition_structure_rejected" if path == "terminal_rewrite" else "terminal_structure_rejected"]
+    assert diagnostics["transition_structure_rejected" if terminal else "terminal_structure_rejected"]
     assert len(generations) == 2
     # The failed turn is atomic: nothing reached storage.
     assert await runtime.restore_session(f"later_{path}") == current
