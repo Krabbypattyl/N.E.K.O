@@ -2308,6 +2308,45 @@ async def test_session_commit_rechecks_fence_after_waiting_for_file_lock(tmp_pat
     assert await runtime.restore_session("fenced") == current
 
 
+@pytest.mark.asyncio
+async def test_session_store_disk_work_and_fence_run_off_event_loop(tmp_path, monkeypatch):
+    """Ledger replay, file I/O and the storage fence must never run on the loop thread."""
+    from contextlib import contextmanager
+    import threading
+
+    loop_thread = threading.get_ident()
+    observed = {"fence": [], "read": [], "replay": [], "write": []}
+
+    @contextmanager
+    def transaction():
+        observed["fence"].append(threading.get_ident())
+        yield
+
+    store_type = numeric_v2_store.NumericV2SessionStore
+    for key, name in (("read", "_read"), ("replay", "_validate_chain"), ("write", "_write")):
+        original = getattr(store_type, name)
+
+        def tracked(self, *args, _original=original, _key=key, **kwargs):
+            observed[_key].append(threading.get_ident())
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(store_type, name, tracked)
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path, write_transaction=transaction)
+    current = await runtime.start_session(session_id="off_loop", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = runtime.prepare_turn(current, TurnRequestV2("off_loop_turn", 0, "input"), ())
+    await runtime.commit_turn(outcome, _performance("response"))
+    assert (await runtime.restore_session("off_loop")).session.revision == 1
+    await runtime.store.load_for_lifecycle("off_loop")
+    ended = await runtime.store.end_session("off_loop", base_revision=1, base_lifecycle_revision=0, reason="user_exit")
+    await runtime.store.resume_session("off_loop", base_revision=1, base_lifecycle_revision=ended.session.lifecycle_revision)
+    await runtime.store.forget_history_through_current_revision("off_loop")
+
+    for key, threads in observed.items():
+        assert threads, key
+        assert loop_thread not in threads, key
+
+
 @pytest.mark.parametrize('writer', ['index', 'payload', 'session', 'exclusive', 'archive'])
 @pytest.mark.parametrize('failure', ['write', 'flush', 'fsync'])
 def test_failed_atomic_writes_remove_temporary_files(tmp_path, monkeypatch, writer, failure):
@@ -2548,3 +2587,363 @@ except NumericV2SessionExistsError:
             if process.poll() is None:
                 process.kill()
             process.communicate(timeout=5)
+
+
+def test_maintenance_quarantines_unparseable_public_archives_without_trimming(tmp_path, monkeypatch):
+    """Unparseable public archives are moved aside, never deleted, so strict scans recover."""
+    from types import SimpleNamespace
+
+    from services.theater.numeric_v2_archive import NumericV2ArchiveError, NumericV2ArchiveStore
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_MAINTAINED_ROOTS", set())
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    store = NumericV2ArchiveStore(tmp_path)
+
+    def archive_session(session_id: str):
+        return SimpleNamespace(
+            story_package_id="story_archive_quarantine",
+            session_id=session_id,
+            revision=0,
+            catgirl_binding={"character_id": "character-b", "catgirl_name": "B"},
+            opening_performance={"performance": "你来了。"},
+            performance_history=(),
+        )
+
+    store.write_public_archive(title="有效档案", session=archive_session("valid"), ending=None)
+    store.write_public_archive(title="暂时不可读", session=archive_session("locked"), ending=None)
+    valid_path = store._public_archive_path("valid")
+    locked_path = store._public_archive_path("locked")
+    valid_bytes = valid_path.read_bytes()
+    locked_bytes = locked_path.read_bytes()
+    corrupt: dict[str, bytes] = {}
+    # 超过 Session 隔离区的裁剪上限，确认公开冷档案隔离不会删除任何文件。
+    for index in range(QUARANTINE_FILE_LIMIT + 2):
+        path = store.public_archive_root / f"{index:064x}.json"
+        path.write_text(
+            ("{broken", "[]", json.dumps({"schema": "other"}))[index % 3],
+            encoding="utf-8",
+        )
+        corrupt[path.name] = path.read_bytes()
+    with pytest.raises(numeric_v2_store.NumericV2StoreError):
+        numeric_v2_store.list_numeric_v2_public_archives(
+            tmp_path, character_id="character-a", raise_on_io_error=True,
+        )
+
+    original_read = NumericV2ArchiveStore._read
+
+    def flaky_read(path):
+        if path == locked_path:
+            raise NumericV2ArchiveError("numeric_end_receipt_read_failed") from PermissionError("locked")
+        return original_read(path)
+
+    monkeypatch.setattr(NumericV2ArchiveStore, "_read", staticmethod(flaky_read))
+    result = numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, registry, character_ids_by_name={},
+    )
+    monkeypatch.setattr(NumericV2ArchiveStore, "_read", staticmethod(original_read))
+
+    assert result["archives_quarantined"] == len(corrupt)
+    quarantine_root = tmp_path / "numeric_v2" / numeric_v2_maintenance.PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+    moved = {path.name.split("-", 3)[3]: path.read_bytes() for path in quarantine_root.iterdir()}
+    assert moved == corrupt
+    assert valid_path.read_bytes() == valid_bytes
+    # 暂时性 I/O 失败的档案可能仍然有效，必须原地保留。
+    assert locked_path.read_bytes() == locked_bytes
+    assert not list((tmp_path / "numeric_v2" / "quarantine").glob("*"))
+    assert numeric_v2_store.list_numeric_v2_public_archives(
+        tmp_path, character_id="character-a", raise_on_io_error=True,
+    ) == []
+
+
+async def _started_story_session(tmp_path, session_id="index_heal"):
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    stored = await runtime.start_session(
+        session_id=session_id,
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    return story, registry, runtime, stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt_bytes",
+    [b"", b"{broken-json", b"\xff", json.dumps({"schema": "other", "stories": {}}).encode()],
+)
+async def test_audit_quarantines_and_rebuilds_corrupt_story_session_index(tmp_path, corrupt_bytes):
+    """A corrupt derived index is moved aside and rebuilt instead of failing every startup."""
+
+    _story, registry, runtime, stored = await _started_story_session(tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index_path.write_bytes(corrupt_bytes)
+
+    result = audit_numeric_v2_storage(
+        tmp_path, registry, character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    assert result == {"valid": 1, "quarantined": 0}
+    quarantine_root = tmp_path / "numeric_v2" / numeric_v2_maintenance.INDEX_QUARANTINE_DIRNAME
+    assert [path.read_bytes() for path in quarantine_root.iterdir()] == [corrupt_bytes]
+    restored = await runtime.restore_story_session(_binding())
+    assert restored is not None
+    assert restored.session.session_id == stored.session.session_id
+
+
+@pytest.mark.asyncio
+async def test_audit_keeps_transiently_unreadable_story_session_index(tmp_path, monkeypatch):
+    _story, registry, _runtime, _stored = await _started_story_session(tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    original_index = index_path.read_bytes()
+    path_type = type(index_path)
+    original_read_text = path_type.read_text
+
+    def flaky_read_text(path, *args, **kwargs):
+        if path == index_path:
+            raise PermissionError("locked")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", flaky_read_text)
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="index_read_failed"):
+        audit_numeric_v2_storage(tmp_path, registry)
+    monkeypatch.setattr(path_type, "read_text", original_read_text)
+
+    assert index_path.read_bytes() == original_index
+    assert not (tmp_path / "numeric_v2" / numeric_v2_maintenance.INDEX_QUARANTINE_DIRNAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_story_session_index_does_not_block_characters_without_theater_data(tmp_path):
+    _story, _registry, runtime, stored = await _started_story_session(tmp_path)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    index_path.write_bytes(b"{broken-json")
+    other = "character_22222222222222222222222222222222"
+
+    assert await numeric_v2_store.delete_numeric_v2_sessions(
+        tmp_path, character_id=other, legacy_catgirl_name="Mika",
+    ) == []
+    assert await update_numeric_v2_character_bindings(
+        tmp_path,
+        character_id=other,
+        legacy_catgirl_name="Mika",
+        catgirl_binding={**_binding(), "character_id": other, "catgirl_name": "Mika2"},
+    ) == 0
+    # Characters that do own theater data still fail closed before any mutation.
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="index_read_failed"):
+        await numeric_v2_store.delete_numeric_v2_sessions(
+            tmp_path, character_id=_binding()["character_id"], legacy_catgirl_name="Lan",
+        )
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="index_read_failed"):
+        await update_numeric_v2_character_bindings(
+            tmp_path,
+            character_id=_binding()["character_id"],
+            legacy_catgirl_name="Lan",
+            catgirl_binding=_binding(),
+        )
+    assert runtime.store._path(stored.session.session_id).is_file()
+    assert index_path.read_bytes() == b"{broken-json"
+
+
+@pytest.mark.asyncio
+async def test_settled_story_delete_rollback_is_not_replayed_after_later_delete(tmp_path, monkeypatch):
+    """A rolled-back manifest that rmtree failed to remove must not resurrect a later delete."""
+
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "rollback_leftover")
+    story_id = story["meta"]["story_id"]
+    original_delete = NumericV2PackageRegistry.delete_package
+
+    def delete_then_fail(self, target_story_id):
+        original_delete(self, target_story_id)
+        raise numeric_v2_store.NumericV2StoreError("forced_delete_failure")
+
+    monkeypatch.setattr(NumericV2PackageRegistry, "delete_package", delete_then_fail)
+    # Simulate a Windows share violation: rmtree(ignore_errors=True) removes nothing.
+    monkeypatch.setattr(numeric_v2_maintenance.shutil, "rmtree", lambda *_a, **_k: None)
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="forced_delete_failure"):
+        numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    assert registry.package_path(story_id).is_file()
+    assert runtime.store._path(stored.session.session_id).is_file()
+    monkeypatch.undo()
+
+    # Later, the story's saves are removed through another path (e.g. a character delete).
+    await numeric_v2_store.delete_numeric_v2_sessions(tmp_path, story_id=story_id)
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert not runtime.store._path(stored.session.session_id).exists()
+    assert registry.package_path(story_id).is_file()
+    assert not list((tmp_path / "numeric_v2" / "delete_transactions").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_story_delete_erases_attributable_quarantined_public_archives(tmp_path, monkeypatch):
+    """Package delete erases this story's quarantined archives in its transaction, never unknown ones."""
+    import hashlib
+
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "quarantine_story")
+    story_id = story["meta"]["story_id"]
+    quarantine_root = tmp_path / "numeric_v2" / numeric_v2_maintenance.PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+    quarantine_root.mkdir(parents=True)
+
+    def quarantined(session_id: str, content: str) -> Path:
+        key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    erased = [
+        quarantined("by_story", json.dumps({"story_id": story_id, "schema": "other"})),
+        # Unparseable, but its basename is the story session's archive key.
+        quarantined(stored.session.session_id, "{broken"),
+    ]
+    kept = [
+        quarantined("other_story", json.dumps({"story_id": "other_story"})),
+        quarantined("unknown_owner", "{broken"),
+    ]
+    snapshot = {path: path.read_bytes() for path in [*erased, *kept]}
+
+    original_delete = NumericV2PackageRegistry.delete_package
+    deleted_before_failure = []
+
+    def delete_then_fail(self, target_story_id):
+        deleted_before_failure.append([path.exists() for path in erased])
+        original_delete(self, target_story_id)
+        raise numeric_v2_store.NumericV2StoreError("forced_delete_failure")
+
+    with monkeypatch.context() as broken:
+        broken.setattr(NumericV2PackageRegistry, "delete_package", delete_then_fail)
+        with pytest.raises(numeric_v2_store.NumericV2StoreError, match="forced_delete_failure"):
+            numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    assert deleted_before_failure == [[False, False]]
+    assert {path: path.read_bytes() for path in snapshot} == snapshot
+
+    numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    assert not registry.package_path(story_id).exists()
+    assert not runtime.store._path(stored.session.session_id).exists()
+    assert not any(path.exists() for path in erased)
+    assert {path: path.read_bytes() for path in kept} == {path: snapshot[path] for path in kept}
+
+
+@pytest.mark.asyncio
+async def test_later_story_delete_supersedes_pending_failed_rollback(tmp_path):
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "rollback_pending")
+    story_id = story["meta"]["story_id"]
+    # A delete whose rollback failed leaves its prepared manifest for startup recovery.
+    numeric_v2_maintenance._prepare_delete_transaction(tmp_path, registry, story_id)
+
+    numeric_v2_maintenance._delete_story_files(tmp_path, registry, story_id)
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert not registry.package_path(story_id).exists()
+    assert not runtime.store._path(stored.session.session_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_story_delete_recovery_does_not_overwrite_newer_state(tmp_path):
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "recover_old")
+    story_id = story["meta"]["story_id"]
+    numeric_v2_maintenance._prepare_delete_transaction(tmp_path, registry, story_id)
+    # State moved on after the backup: the session file changed and a newer round owns the slot.
+    session_path = runtime.store._path(stored.session.session_id)
+    advanced_bytes = session_path.read_bytes() + b"\n"
+    session_path.write_bytes(advanced_bytes)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    stories = numeric_v2_store._read_story_session_slots(index_path)
+    stories[story_id][_binding()["character_id"]] = "recover_new"
+    numeric_v2_store._write_story_session_slots(index_path, stories)
+    index_before = index_path.read_bytes()
+
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert session_path.read_bytes() == advanced_bytes
+    assert index_path.read_bytes() == index_before
+
+
+def test_story_delete_restore_continues_after_a_failed_step(tmp_path):
+    transaction_dir = tmp_path / "tx"
+    (transaction_dir / "sessions").mkdir(parents=True)
+    (transaction_dir / "package.json").write_text("{}", encoding="utf-8")
+    (transaction_dir / "sessions" / "s1.json").write_text("session", encoding="utf-8")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    session_root = tmp_path / "sessions"
+
+    with pytest.raises(OSError):
+        numeric_v2_maintenance._restore_delete_transaction(
+            transaction_dir,
+            {
+                "package_target": str(blocker / "packages" / "story.json"),
+                "session_root": str(session_root),
+            },
+            tmp_path,
+        )
+
+    assert (session_root / "s1.json").read_text(encoding="utf-8") == "session"
+
+
+def _loop_story() -> dict:
+    """Two ordinary scenes that can bounce back and forth before an ending."""
+    story = numeric_v2_story()
+    start = story["nodes"][0]
+    room = deepcopy(start)
+    room.update(id="room", type="scene")
+    to_room = deepcopy(start["route_gates"][0])
+    to_room.update(id="to_room", target_node_id="room", priority=30)
+    to_room["conditions"]["all"][0].update(op=">=", value=0)
+    start["route_gates"].append(to_room)
+    back = deepcopy(to_room)
+    back.update(id="back_to_start", target_node_id="start")
+    room["route_gates"] = [back]
+    story["nodes"].insert(1, room)
+    return story
+
+
+def _bounce(engine, session, turns):
+    outcomes = []
+    for index in range(turns):
+        outcome = engine.resolve_turn(
+            session, TurnRequestV2(f"loop-{index}", session.revision, "走吧。"), (),
+            transition_intent="initiate",
+        )
+        assert outcome.session.current_node_id != session.current_node_id
+        outcomes.append(outcome)
+        session = outcome.session
+    return session, outcomes
+
+
+def test_loop_story_scene_events_are_pruned_before_the_fact_cap():
+    """Every scene change adds two event facts; loop stories must not hit the fact cap and soft-lock."""
+    engine = NumericV2Engine.from_mapping(_loop_story())
+    session = engine.create_session(session_id="loop", catgirl_binding=_binding(), opening_performance=_opening())
+    before_cap = project_scene_facts(session)
+    session, _ = _bounce(engine, session, 200)
+    facts = session.story_state["facts"]
+    assert len(facts) == 256
+    # The newest events (what prompts project) survive; the oldest ones were dropped first.
+    assert "event:scene.entered:start:r200" in facts and "event:scene.left:room:r200" in facts
+    assert "event:scene.entered:start:r0" not in facts and before_cap["facts"]
+    projected = project_scene_facts(session)["facts"]
+    assert projected[-1]["key"] == "event:scene.left:room:r200"
+    assert min(row["updated_revision"] for row in projected) > 180
+
+
+@pytest.mark.asyncio
+async def test_pruned_scene_events_replay_identically(tmp_path, monkeypatch):
+    """Pruning is derived from committed state only, so cold restore and forks replay it exactly."""
+    from services.theater import numeric_v2_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_STORY_STATE_MAX_FACTS", 6)
+    engine = NumericV2Engine.from_mapping(_loop_story())
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="loop-replay", catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    for index in range(5):
+        outcome = runtime.prepare_turn(current, TurnRequestV2(f"loop-{index}", current.session.revision, "走吧。"),
+                                       (), transition_intent="initiate")
+        current = await runtime.commit_turn(outcome, _transition_performance(outcome.session.current_node_id))
+    assert len(current.session.story_state["facts"]) == 6
+    assert "event:scene.entered:start:r0" not in current.session.story_state["facts"]
+    assert await NumericV2Runtime(engine, tmp_path).restore_session("loop-replay") == current
+    forked = await runtime.fork_session_for_test("loop-replay", session_id="loop-fork", through_revision=5)
+    assert forked.session.story_state == current.session.story_state

@@ -11,9 +11,10 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from weakref import WeakValueDictionary
 
 from utils.llm_client import THEATER_MEMORY_SOURCE
@@ -27,6 +28,20 @@ _RECEIPT_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
 _RECEIPT_LOCKS_GUARD = threading.Lock()
 PUBLIC_ARCHIVES_PER_STORY_CHARACTER = 5
 _RECEIPT_ID_RE = re.compile(r"^theater_end_[0-9a-f]{40}$")
+# Public cold archives that fail schema checks are moved here at startup. It is
+# never trimmed; explicit character deletes, story forgets and package deletes
+# erase the quarantined files that belong to their scope.
+PUBLIC_ARCHIVE_QUARANTINE_DIRNAME = "quarantine_public_archives"
+# Quarantine keeps the original ``sha256(session_id).json`` basename as the suffix.
+_QUARANTINED_ARCHIVE_KEY_RE = re.compile(r"(?:^|-)([0-9a-f]{64})\.json$")
+# Startup audit moves invalid/duplicate session files (full ledger and transcript)
+# here as ``{reason}-{ms}-{uuid hex}-{session_id}.json``; it is trimmed to the
+# newest few files, and explicit deletes/forgets erase the ones in their scope.
+SESSION_QUARANTINE_DIRNAME = "quarantine"
+_QUARANTINED_SESSION_NAME_RE = re.compile(
+    r"^[a-z]+-\d+-[0-9a-f]{32}-([A-Za-z0-9._-]+)\.json$"
+)
+_QUARANTINED_SESSION_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\.json")
 
 
 def _retry_windows_permission_error(operation):
@@ -66,6 +81,12 @@ class NumericV2ArchiveStore:
         self.write_transaction = write_transaction
         self.root = Path(theater_root) / "numeric_v2" / "end_receipts"
         self.public_archive_root = Path(theater_root) / "numeric_v2" / "public_archives"
+        self.public_archive_quarantine_root = (
+            Path(theater_root) / "numeric_v2" / PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+        )
+        self.session_quarantine_root = (
+            Path(theater_root) / "numeric_v2" / SESSION_QUARANTINE_DIRNAME
+        )
 
     @staticmethod
     def _session_key(session_id: str) -> str:
@@ -111,6 +132,19 @@ class NumericV2ArchiveStore:
                      legacy_catgirl_name=legacy_catgirl_name)
         archives = self.list_public_archives(**scope, raise_on_io_error=True)
         receipts = self.receipt_paths_for_scope(**scope, raise_on_io_error=True)
+        # An explicit forget also erases quarantined copies of this story's archives
+        # and every quarantined archive whose owner can no longer be determined.
+        quarantined = self.quarantined_public_archive_paths(
+            **scope,
+            session_ids=[str(session.session_id)] if session is not None else (),
+            include_unattributable=True,
+        )
+        # Quarantined session files hold the full ledger; same policy as archives.
+        quarantined_sessions = self.quarantined_session_paths(
+            **scope,
+            session_ids=[str(session.session_id)] if session is not None else (),
+            include_unattributable=True,
+        )
         pending = {
             "schema": "neko.theater.forget.v1", "story_id": story_id,
             "character_id": character_id,
@@ -118,6 +152,8 @@ class NumericV2ArchiveStore:
             "through_revision": session.revision if session is not None else -1,
             "archive_files": [Path(archive["path"]).name for archive in archives],
             "receipt_files": [path.name for path in receipts],
+            "quarantined_archive_files": [path.name for path in quarantined],
+            "quarantined_session_files": [path.name for path in quarantined_sessions],
         }
         self._write(self._forget_path(story_id, character_id), pending)
         return pending
@@ -132,11 +168,27 @@ class NumericV2ArchiveStore:
     def delete_forget_files(self, pending: Mapping[str, Any]) -> None:
         """Retry the original deletion list, including pointers orphaned by an interruption."""
         targets = []
-        for key, root in (("archive_files", self.public_archive_root), ("receipt_files", self.root)):
-            for name in pending[key]:
+        for key, root in (
+            ("archive_files", self.public_archive_root),
+            ("receipt_files", self.root),
+            ("quarantined_archive_files", self.public_archive_quarantine_root),
+        ):
+            # Intents written before quarantine purging existed carry no quarantine list.
+            names = pending.get(key, []) if key == "quarantined_archive_files" else pending[key]
+            if not isinstance(names, list):
+                raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
+            for name in names:
                 if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]+\.json", name):
                     raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
                 targets.append(root / name)
+        # Intents written before session-quarantine purging carry no such list.
+        session_names = pending.get("quarantined_session_files", [])
+        if not isinstance(session_names, list):
+            raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
+        for name in session_names:
+            if not isinstance(name, str) or not _QUARANTINED_SESSION_FILE_RE.fullmatch(name):
+                raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
+            targets.append(self.session_quarantine_root / name)
         for path in targets:
             path.unlink(missing_ok=True)
 
@@ -183,8 +235,25 @@ class NumericV2ArchiveStore:
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise NumericV2ArchiveError("numeric_end_receipt_read_failed") from exc
+            error = NumericV2ArchiveError("numeric_end_receipt_read_failed")
+            # 严格枚举失败时调用方需要指出具体文件，便于用户修复或移走它。
+            error.path = str(path)
+            raise error from exc
         return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _valid_public_archive_payload(payload: Mapping[str, Any] | None) -> bool:
+        """Return whether a public archive payload names its story, session and owner."""
+        return bool(
+            payload is not None
+            and payload.get("schema") == "neko.theater.numeric.v2.public-archive"
+            and isinstance(payload.get("story_id"), str)
+            and payload["story_id"].strip()
+            and isinstance(payload.get("session_id"), str)
+            and payload["session_id"].strip()
+            and "character_id" in payload
+            and isinstance(payload["character_id"], str)
+        )
 
     @staticmethod
     def _write(path: Path, value: Mapping[str, Any]) -> None:
@@ -367,13 +436,24 @@ class NumericV2ArchiveStore:
                 return True
         return False
 
-    def update(self, receipt: Mapping[str, Any], *, status: str, archive_request_id: str = "") -> dict[str, Any]:
+    def update(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        status: str,
+        archive_request_id: str = "",
+        archive_attempt: int | None = None,
+    ) -> dict[str, Any]:
         if status not in {"pending", "writing", "written", "skipped"}:
             raise NumericV2ArchiveError("numeric_archive_status_invalid")
         updated = dict(receipt)
         updated["status"] = status
         if archive_request_id:
             updated["archive_request_id"] = archive_request_id
+        if archive_attempt is not None:
+            # Numbered before each memory request so a later skip can fence
+            # exactly the attempts that may still be in flight.
+            updated["archive_attempt"] = int(archive_attempt)
         self._write(self._receipt_path(str(updated.get("receipt_id") or "")), updated)
         session_id = str(updated.get("session_id") or "")
         if session_id:
@@ -418,6 +498,7 @@ class NumericV2ArchiveStore:
         *,
         status: str,
         archive_request_id: str = "",
+        archive_attempt: int | None = None,
     ) -> dict[str, Any]:
         """异步原子更新归档状态。"""  # noqa: DOCSTRING_CJK
 
@@ -426,6 +507,7 @@ class NumericV2ArchiveStore:
             receipt,
             status=status,
             archive_request_id=archive_request_id,
+            archive_attempt=archive_attempt,
         )
 
     def write_public_archive(
@@ -508,6 +590,15 @@ class NumericV2ArchiveStore:
             legacy_catgirl_name=str(archive.get("catgirl_name") or ""),
         )
 
+    def has_staged_public_archive(self, receipt_id: str) -> bool:
+        """True once an archive attempt staged its copy, i.e. a memory write may exist.
+
+        Staging happens after the receipt enters ``writing`` and before the memory
+        request is sent; only a commit or an explicit skip removes the file.
+        """
+
+        return self._staged_archive_path(receipt_id).is_file()
+
     def discard_staged_public_archive(self, receipt_id: str) -> None:
         try:
             self._staged_archive_path(receipt_id).unlink()
@@ -566,19 +657,12 @@ class NumericV2ArchiveStore:
                 if raise_on_io_error:
                     raise
                 continue
-            if (
-                payload is None
-                or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
-                or not isinstance(payload.get("story_id"), str)
-                or not payload["story_id"].strip()
-                or not isinstance(payload.get("session_id"), str)
-                or not payload["session_id"].strip()
-                or "character_id" not in payload
-                or not isinstance(payload["character_id"], str)
-            ):
+            if not self._valid_public_archive_payload(payload):
                 # 严格枚举无法确认未知载荷的故事与角色归属，必须中止而不能宣称删除完整。
                 if raise_on_io_error:
-                    raise NumericV2ArchiveError("numeric_public_archive_invalid")
+                    error = NumericV2ArchiveError("numeric_public_archive_invalid")
+                    error.path = str(path)
+                    raise error
                 continue
             if normalized_story_id and str(payload.get("story_id") or "") != normalized_story_id:
                 continue
@@ -619,6 +703,284 @@ class NumericV2ArchiveStore:
             reverse=True,
         )
         return archives
+
+    def quarantine_invalid_public_archives(self, quarantine_root: Path) -> int:
+        """Move unparseable public archives aside so strict scans stop failing on them.
+
+        Only files that the normal listing already hides and the strict
+        enumeration refuses are moved; nothing is deleted, and files that fail
+        with an OS error are left in place because they may be valid.
+        """
+        if not self.public_archive_root.is_dir():
+            return 0
+        moved = 0
+        for path in sorted(self.public_archive_root.glob("*.json")):
+            try:
+                payload = self._read(path)
+            except NumericV2ArchiveError as exc:
+                if isinstance(exc.__cause__, OSError):
+                    # 暂时不可读的档案可能仍然有效，绝不能移走。
+                    continue
+                payload = None
+            if self._valid_public_archive_payload(payload) or not path.is_file():
+                continue
+            try:
+                quarantine_root.mkdir(parents=True, exist_ok=True)
+                # 只移动、不删除；该目录不参与 Session 隔离区的数量裁剪。
+                os.replace(
+                    path,
+                    quarantine_root / f"invalid-{int(time.time() * 1000)}-{uuid.uuid4().hex}-{path.name}",
+                )
+                moved += 1
+            except OSError:
+                continue
+        return moved
+
+    @staticmethod
+    def _payload_text(payload: Mapping[str, Any] | None, key: str) -> str:
+        value = payload.get(key) if payload is not None else None
+        return value.strip() if isinstance(value, str) else ""
+
+    def _scope_session_ids(
+        self,
+        *,
+        story_id: str,
+        character_id: str,
+        legacy_catgirl_name: str,
+    ) -> set[str]:
+        """Collect session ids known to belong to a scope from archives, receipts and intents.
+
+        They only widen hash matching for quarantined archives, so unreadable
+        sources are skipped here; the callers' own strict scans fail closed.
+        """
+        scope = dict(
+            story_id=story_id,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+        )
+        session_ids = {
+            str(archive.get("session_id") or "")
+            for archive in self.list_public_archives(**scope)
+        }
+        for path in self.receipt_paths_for_scope(**scope):
+            if not path.name.startswith("theater_end_"):
+                continue
+            try:
+                receipt = self._read(path)
+            except NumericV2ArchiveError:
+                continue
+            session_ids.add(self._payload_text(receipt, "session_id"))
+        forget_root = self.root.parent / "forget_transactions"
+        for path in sorted(forget_root.glob("*.json")) if forget_root.is_dir() else ():
+            try:
+                pending = self._read(path)
+            except NumericV2ArchiveError:
+                continue
+            if pending is None or (
+                story_id and self._payload_text(pending, "story_id") != story_id
+            ) or (
+                character_id and self._payload_text(pending, "character_id") != character_id
+            ):
+                continue
+            session_ids.add(self._payload_text(pending, "session_id"))
+        session_ids.discard("")
+        return session_ids
+
+    @classmethod
+    def _character_attribution(
+        cls,
+        payload: Mapping[str, Any] | None,
+        character_id: str,
+        legacy_catgirl_name: str,
+    ) -> bool | None:
+        """Mirror ``_matches_character``, returning None when the owner is unknown."""
+        stored_id = cls._payload_text(payload, "character_id")
+        stored_name = cls._payload_text(payload, "catgirl_name")
+        if character_id:
+            if stored_id:
+                return stored_id == character_id
+            if stored_name:
+                return bool(legacy_catgirl_name) and stored_name == legacy_catgirl_name
+            return None
+        if not legacy_catgirl_name:
+            return True
+        if stored_name:
+            return stored_name == legacy_catgirl_name
+        return None
+
+    def quarantined_public_archive_paths(
+        self,
+        *,
+        story_id: str = "",
+        character_id: str = "",
+        legacy_catgirl_name: str = "",
+        session_ids: Iterable[str] = (),
+        include_unattributable: bool = False,
+    ) -> list[Path]:
+        """List quarantined public archives an explicit delete of this scope must erase.
+
+        A quarantined file is attributable to the scope when its original
+        ``sha256(session_id)`` basename or its ``session_id`` names an in-scope
+        session, or when every scope dimension (story, character) it still
+        records matches. A file recording a different story or character is
+        never returned. A file whose owner cannot be determined for this scope
+        (unparseable, or missing the scoped fields) is returned only with
+        ``include_unattributable``: the app never reads it, yet it may hold a
+        private transcript, so an explicit character delete or story forget
+        erases it. Transient read failures raise so the delete fails closed.
+        """
+        root = self.public_archive_quarantine_root
+        if not root.is_dir():
+            return []
+        normalized_story_id = str(story_id or "").strip()
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        known_session_ids = {
+            str(value or "").strip() for value in session_ids
+        } | self._scope_session_ids(
+            story_id=normalized_story_id,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+        )
+        known_session_ids.discard("")
+        known_keys = {self._session_key(value) for value in known_session_ids}
+        result: list[Path] = []
+        for path in sorted(root.glob("*.json")):
+            if not path.is_file():
+                continue
+            try:
+                payload = self._read(path)
+            except NumericV2ArchiveError as exc:
+                if isinstance(exc.__cause__, OSError):
+                    # 暂时不可读时无法确认归属，破坏性操作必须整体中止并指出该文件。
+                    raise
+                payload = None
+            key_match = _QUARANTINED_ARCHIVE_KEY_RE.search(path.name)
+            if self._quarantined_in_scope(
+                payload,
+                name_matches_session=key_match is not None and key_match.group(1) in known_keys,
+                known_session_ids=known_session_ids,
+                story_id=normalized_story_id,
+                character_id=normalized_character_id,
+                legacy_catgirl_name=normalized_legacy_name,
+                include_unattributable=include_unattributable,
+            ):
+                result.append(path)
+        return result
+
+    @classmethod
+    def _quarantined_in_scope(
+        cls,
+        identity: Mapping[str, Any] | None,
+        *,
+        name_matches_session: bool,
+        known_session_ids: set[str],
+        story_id: str,
+        character_id: str,
+        legacy_catgirl_name: str,
+        include_unattributable: bool,
+    ) -> bool:
+        """Decide whether one quarantined file belongs to an explicit delete's scope.
+
+        ``identity`` carries ``session_id``, ``story_id``, ``character_id`` and
+        ``catgirl_name`` when the file was parseable enough to record them.
+        """
+        if name_matches_session or (
+            cls._payload_text(identity, "session_id") in known_session_ids
+        ):
+            return True
+        attributions: list[bool | None] = []
+        if story_id:
+            stored_story_id = cls._payload_text(identity, "story_id")
+            attributions.append(
+                stored_story_id == story_id if stored_story_id else None
+            )
+        if character_id or legacy_catgirl_name:
+            attributions.append(
+                cls._character_attribution(identity, character_id, legacy_catgirl_name)
+            )
+        if not attributions:
+            # An empty scope attributes nothing by its fields.
+            attributions.append(None)
+        if False in attributions:
+            return False
+        return None not in attributions or include_unattributable
+
+    @classmethod
+    def _quarantined_session_identity(cls, payload: Mapping[str, Any] | None) -> dict[str, str] | None:
+        """Project a (possibly damaged) stored session onto the archive identity fields."""
+        session = payload.get("session") if isinstance(payload, Mapping) else None
+        if not isinstance(session, Mapping):
+            return None
+        binding = session.get("catgirl_binding")
+        binding = binding if isinstance(binding, Mapping) else {}
+        return {
+            "session_id": cls._payload_text(session, "session_id"),
+            "story_id": cls._payload_text(session, "story_package_id"),
+            "character_id": cls._payload_text(binding, "character_id"),
+            "catgirl_name": cls._payload_text(binding, "catgirl_name"),
+        }
+
+    def quarantined_session_paths(
+        self,
+        *,
+        story_id: str = "",
+        character_id: str = "",
+        legacy_catgirl_name: str = "",
+        session_ids: Iterable[str] = (),
+        include_unattributable: bool = False,
+    ) -> list[Path]:
+        """List quarantined session files an explicit delete of this scope must erase.
+
+        Startup audit moves invalid and duplicate session files, ledger and
+        transcript included, into the session quarantine. They follow the same
+        policy as quarantined public archives: a file is attributable when the
+        ``session_id`` in its name or payload is an in-scope session, or when
+        every scope dimension its payload still records matches; a file naming
+        another story or character is never returned; a file whose owner
+        cannot be determined is returned only with ``include_unattributable``
+        (explicit character delete or story forget). Transient read failures
+        raise so the delete fails closed. Trimming is left to maintenance.
+        """
+        root = self.session_quarantine_root
+        if not root.is_dir():
+            return []
+        normalized_story_id = str(story_id or "").strip()
+        normalized_character_id = str(character_id or "").strip()
+        normalized_legacy_name = str(legacy_catgirl_name or "").strip()
+        known_session_ids = {
+            str(value or "").strip() for value in session_ids
+        } | self._scope_session_ids(
+            story_id=normalized_story_id,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+        )
+        known_session_ids.discard("")
+        result: list[Path] = []
+        for path in sorted(root.glob("*.json")):
+            if not path.is_file():
+                continue
+            try:
+                payload = self._read(path)
+            except NumericV2ArchiveError as exc:
+                if isinstance(exc.__cause__, OSError):
+                    # 暂时不可读时无法确认归属，破坏性操作必须整体中止并指出该文件。
+                    raise
+                payload = None
+            name_match = _QUARANTINED_SESSION_NAME_RE.fullmatch(path.name)
+            if self._quarantined_in_scope(
+                self._quarantined_session_identity(payload),
+                name_matches_session=(
+                    name_match is not None and name_match.group(1) in known_session_ids
+                ),
+                known_session_ids=known_session_ids,
+                story_id=normalized_story_id,
+                character_id=normalized_character_id,
+                legacy_catgirl_name=normalized_legacy_name,
+                include_unattributable=include_unattributable,
+            ):
+                result.append(path)
+        return result
 
     def load_public_archive(
         self,
@@ -1235,6 +1597,7 @@ __all__ = [
     "NumericV2ArchiveError",
     "NumericV2ArchiveStore",
     "PUBLIC_ARCHIVES_PER_STORY_CHARACTER",
+    "PUBLIC_ARCHIVE_QUARANTINE_DIRNAME",
     "THEATER_MEMORY_SOURCE",
     "build_numeric_v2_memory_messages",
     "build_numeric_v2_public_archive",

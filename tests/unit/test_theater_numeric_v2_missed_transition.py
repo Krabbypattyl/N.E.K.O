@@ -67,7 +67,7 @@ def test_numbered_evidence_excludes_player_and_candidate():
     assert "新秘密房间" not in str(recovery_check["public_destination_evidence"])
     assert evidence == tuple(recovery_check["public_destination_evidence"])
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
-    assert "保留原六字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
+    assert "保留原八字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
 
 
 def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparation():

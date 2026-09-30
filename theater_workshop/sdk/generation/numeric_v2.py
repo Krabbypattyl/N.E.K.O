@@ -1065,6 +1065,82 @@ def _pacing_diagnostics_for_outline(candidate: Mapping[str, Any]) -> dict[str, A
     }
 
 
+_FIXED_NARRATION_FIELDS = frozenset({"id", "text", "trigger", "after", "required_before_exit"})
+_FIXED_NARRATION_MAX_ITEMS = 8
+_FIXED_NARRATION_PLACEHOLDER = re.compile(r"\{\{(catgirl_name|player_name)\}\}")
+_FIXED_NARRATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _fixed_narration_issues(
+    beat: Mapping[str, Any], path: str, *, terminal: bool,
+) -> list[dict[str, str]]:
+    """Mirror the compiler's fixed-narration structure checks so continuation can repair them.
+
+    The SDK stays free of host imports, so this mirrors
+    ``services/theater/numeric_v2_fixed_narration.validate_definitions`` (plus the
+    terminal-node condition rule) instead of importing it. The per-scene token
+    budget needs the host tokenizer and remains enforced by the compiler.
+    """
+
+    if "fixed_narrations" not in beat:
+        return []
+    issues: list[dict[str, str]] = []
+
+    def add(code: str, where: str, message: str) -> None:
+        issues.append({"code": code, "path": where, "message": message})
+
+    rows_path = f"{path}.fixed_narrations"
+    rows = beat["fixed_narrations"]
+    if not isinstance(rows, list):
+        add("expected_array", rows_path, "必须是数组。")
+        return issues
+    if len(rows) > _FIXED_NARRATION_MAX_ITEMS:
+        add("too_many_fixed_narrations", rows_path, "每幕最多八个固定旁白片段。")
+    seen: dict[str, str] = {}
+    for index, item in enumerate(rows):
+        item_path = f"{rows_path}[{index}]"
+        if not isinstance(item, Mapping):
+            add("expected_object", item_path, "必须是对象。")
+            continue
+        if set(item) != _FIXED_NARRATION_FIELDS:
+            add("fixed_narration_fields_invalid", item_path, "固定旁白字段不完整或含未知字段。")
+        piece_id = item.get("id")
+        if not isinstance(piece_id, str) or not _FIXED_NARRATION_ID.fullmatch(piece_id):
+            add("invalid_id", f"{item_path}.id", "必须是安全且稳定的 ID。")
+            piece_id = ""
+        elif piece_id in seen:
+            add("duplicate_fixed_narration_id", item_path, "同一幕的固定旁白编号不能重复。")
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip() or text != text.strip():
+            add("fixed_narration_text_invalid", item_path, "原文必须非空且不含首尾空白；正文内换行原样保留。")
+        elif re.search(r"\{\{.*?\}\}", _FIXED_NARRATION_PLACEHOLDER.sub("", text)):
+            add("fixed_narration_placeholder_invalid", item_path, "仅支持 catgirl_name 和 player_name 姓名占位符。")
+        trigger = item.get("trigger") if isinstance(item.get("trigger"), Mapping) else {}
+        kind = trigger.get("type")
+        if (kind not in {"entry", "condition"}
+                or set(trigger) not in (({"type"},) if kind == "entry" else (
+                    {"type", "condition"}, {"type", "condition", "player_handoff_required"}))
+                or (kind == "condition" and not (
+                    isinstance(trigger.get("condition"), str) and trigger["condition"].strip()
+                    and ("player_handoff_required" not in trigger
+                         or isinstance(trigger["player_handoff_required"], bool))))):
+            add("fixed_narration_trigger_invalid", item_path, "触发方式必须为入幕或明确的剧情条件。")
+        elif kind == "condition" and terminal:
+            add("fixed_narration_terminal_condition", item_path, "结局节点不再接收输入，只能声明入幕固定旁白。")
+        after = item.get("after")
+        if (not isinstance(after, list)
+                or any(not isinstance(key, str) or key not in seen for key in after)
+                or len(after) != len(set(map(str, after)))):
+            add("fixed_narration_dependency_invalid", item_path, "前置片段只能引用同幕更早且不重复的编号。")
+        elif kind == "entry" and any(seen.get(key) != "entry" for key in after):
+            add("fixed_narration_entry_dependency_invalid", item_path, "入幕片段不能等待幕内条件片段。")
+        if not isinstance(item.get("required_before_exit"), bool):
+            add("fixed_narration_required_invalid", item_path, "离幕前必显标记必须是布尔值。")
+        if piece_id:
+            seen[piece_id] = str(kind)
+    return issues
+
+
 def _validate_idea_outline(
     candidate: Mapping[str, Any],
     *,
@@ -1389,6 +1465,8 @@ def _validate_idea_outline(
         fixed_narrations(chapter, path)
         for field in ("title", "narrative", "narrative_focus", "catgirl_situation"):
             text(chapter.get(field), f"{path}.{field}")
+        # 模型写出的固定旁白会原样进入剧本包；此处拦截，交给续写修复而非留到编译失败。
+        issues.extend(_fixed_narration_issues(chapter, path, terminal=False))
         stage = relationship_stages[index] if index < len(relationship_stages) else {}
         if isinstance(stage, Mapping) and str(stage.get("reset_reason") or "").strip():
             relation_path = f"relationship_arc.stages[{index}]"
@@ -1705,6 +1783,7 @@ def _validate_idea_outline(
         text(ending.get(field), f"ending.{field}")
     if ending_type and ending_type != "normal":
         issues.append({"code": "normal_ending_required", "path": "ending.type", "message": "初始生成只允许一个 normal 结局。"})
+    issues.extend(_fixed_narration_issues(ending, "ending", terminal=True))
     return issues
 
 
@@ -1908,16 +1987,31 @@ class NumericV2Generator(ModelAgent):
             if attempts >= _MAINLINE_GENERATION_MAX_ATTEMPTS:
                 break
             requested_paths = _continuation_paths(issues)
-            response = self._call_outline_continuation(
-                cast_names=cast_names,
-                normalized_idea=normalized_idea,
-                length_preset=length_preset,
-                minimum=minimum,
-                maximum=maximum,
-                candidate=candidate,
-                issues=issues,
-                requested_paths=requested_paths,
-            )
+            try:
+                response = self._call_outline_continuation(
+                    cast_names=cast_names,
+                    normalized_idea=normalized_idea,
+                    length_preset=length_preset,
+                    minimum=minimum,
+                    maximum=maximum,
+                    candidate=candidate,
+                    issues=issues,
+                    requested_paths=requested_paths,
+                )
+            except NumericV2GenerationError:
+                raise
+            except Exception as error:
+                # A host refusal (e.g. an input budget) must not discard the
+                # candidate: keep it in the checkpoint and preserve the code.
+                code = getattr(error, "code", None)
+                raise NumericV2GenerationError(
+                    code if isinstance(code, str) and code else "generation_technical_failed",
+                    issues=issues,
+                    provider_details={"exception_type": type(error).__name__},
+                    checkpoint={"candidate": candidate, "issues": issues,
+                                **({"cast_names": dict(cast_names)} if cast_names is not None else {})},
+                    attempts=attempts + 1,
+                ) from error
             attempts += 1
             if isinstance(response, LLMCallFailure):
                 last_failure = response

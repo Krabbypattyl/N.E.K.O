@@ -43,6 +43,7 @@ import asyncio
 import copy
 import tempfile
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import Request
@@ -103,6 +104,10 @@ from services.theater.numeric_v2_store import (
 )
 from services.theater.numeric_v2_archive import NumericV2ArchiveError, NumericV2ArchiveStore
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+from services.theater.numeric_v2_maintenance import (
+    discard_character_purge_intent,
+    write_character_purge_intent,
+)
 from services.theater.paths import theater_root
 
 
@@ -393,6 +398,39 @@ def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
     return records
 
 
+def _numeric_v2_preflight_failure_response(
+    exc: BaseException,
+    numeric_theater_root: Path,
+    message: str,
+) -> JSONResponse:
+    """Build the fail-closed preflight error, naming the theater file that blocked it."""
+    failed_path = ""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and not failed_path:
+        seen.add(id(current))
+        failed_path = str(
+            getattr(current, "path", "")
+            or (getattr(current, "filename", "") if isinstance(current, OSError) else "")
+            or ""
+        )
+        current = current.__cause__ or current.__context__
+    payload = {"success": False, "error": f"{message}，请稍后重试"}
+    if failed_path:
+        # 文件内容无法确认归属时只能整体中止；返回剧场根目录下的相对路径，便于用户修复或移走该文件。
+        try:
+            # 存储层路径均由同一剧场根拼接，纯字符串比较即可，无需访问文件系统。
+            relative = Path(failed_path).relative_to(Path(numeric_theater_root)).as_posix()
+        except ValueError:
+            relative = Path(failed_path).name
+        payload["error"] = (
+            f"{message}：剧场存档文件 {relative} 无法读取或已损坏，"
+            "请修复或移走该文件后重试"
+        )
+        payload["theater_file"] = relative
+    return JSONResponse(payload, status_code=500)
+
+
 def _create_character_operation_backup_dir(config_manager, prefix: str):
     backup_root = Path(getattr(config_manager, "app_docs_dir", "")) / ".rollback_tmp"
     backup_root.mkdir(parents=True, exist_ok=True)
@@ -435,6 +473,196 @@ async def _await_thread_mutation(func, *args, **kwargs):
     if cancelled:
         raise asyncio.CancelledError
     return result
+
+
+@dataclass(frozen=True)
+class NumericV2CharacterPurge:
+    """Theater files owned by one character, collected before a character delete.
+
+    Every path is snapshotted by callers that can roll back, and erased by
+    :func:`purge_numeric_v2_character_data` once the delete is committed.
+    """
+
+    theater_root: Path
+    character_id: str
+    legacy_catgirl_name: str
+    session_paths: tuple[Path, ...]
+    public_archive_paths: tuple[Path, ...]
+    receipt_paths: tuple[Path, ...]
+    forget_paths: tuple[Path, ...]
+    quarantined_archive_paths: tuple[Path, ...]
+    quarantined_session_paths: tuple[Path, ...] = ()
+
+    @property
+    def index_path(self) -> Path:
+        return self.theater_root / "numeric_v2" / "story_sessions.json"
+
+    @property
+    def archive_store(self) -> NumericV2ArchiveStore:
+        return NumericV2ArchiveStore(self.theater_root)
+
+    def purge_targets(self) -> list[Path]:
+        """Files the purge erases (the derived session index is rewritten, not listed)."""
+        return [
+            *self.session_paths,
+            *self.public_archive_paths,
+            *self.receipt_paths,
+            *self.forget_paths,
+            *self.quarantined_archive_paths,
+            *self.quarantined_session_paths,
+        ]
+
+    def snapshot_targets(self) -> list[Path]:
+        return [*self.purge_targets(), self.index_path]
+
+
+async def collect_numeric_v2_character_purge(
+    numeric_theater_root: Path,
+    *,
+    character_id: str,
+    legacy_catgirl_name: str,
+) -> NumericV2CharacterPurge:
+    """Strictly enumerate the theater data a character delete must cascade to.
+
+    Raises ``OSError``, ``NumericV2StoreError`` or ``NumericV2ArchiveError``
+    when ownership cannot be established; callers must then abort the delete
+    before any irreversible step (fail closed).
+    """
+    session_paths = tuple(
+        Path(item["path"])
+        for item in list_numeric_v2_sessions(
+            numeric_theater_root,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
+        )
+    )
+    archive_store = NumericV2ArchiveStore(numeric_theater_root)
+    public_archive_paths = tuple(
+        Path(item["path"])
+        for item in list_numeric_v2_public_archives(
+            numeric_theater_root,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
+        )
+    )
+    receipt_paths = tuple(
+        archive_store.receipt_paths_for_scope(
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
+        )
+    )
+    # Forget intents outlive deleted packages, but not their owning character.
+    # Collect them under the same character mutation lock used by /memory/forget.
+    forget_paths = tuple(
+        await asyncio.to_thread(archive_store.forget_paths_for_character, character_id)
+    )
+    # Startup maintenance moves corrupt public archives out of the strict scan
+    # above; their copies may still hold this character's transcript. Erase the
+    # ones attributable to her and every one whose owner is unknown, inside
+    # the same snapshot so a failed delete restores them.
+    quarantined_archive_paths = tuple(
+        await asyncio.to_thread(
+            archive_store.quarantined_public_archive_paths,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            session_ids=[path.stem for path in session_paths],
+            include_unattributable=True,
+        )
+    )
+    # Startup audit moves invalid/duplicate session files (full ledger) into the
+    # session quarantine; the same attribution policy applies to them.
+    quarantined_session_paths = tuple(
+        await asyncio.to_thread(
+            archive_store.quarantined_session_paths,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            session_ids=[path.stem for path in session_paths],
+            include_unattributable=True,
+        )
+    )
+    return NumericV2CharacterPurge(
+        theater_root=Path(numeric_theater_root),
+        character_id=character_id,
+        legacy_catgirl_name=legacy_catgirl_name,
+        session_paths=session_paths,
+        public_archive_paths=public_archive_paths,
+        receipt_paths=receipt_paths,
+        forget_paths=forget_paths,
+        quarantined_archive_paths=quarantined_archive_paths,
+        quarantined_session_paths=quarantined_session_paths,
+    )
+
+
+async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> None:
+    """Erase a collected character's theater data (sessions, archives, receipts, intents, quarantines)."""
+    archive_store = purge.archive_store
+    # 角色卡是剧场 Session 槽位的一部分；删除角色时必须同步删除所有剧本下的对应槽位。
+    await delete_numeric_v2_sessions(
+        purge.theater_root,
+        character_id=purge.character_id,
+        legacy_catgirl_name=purge.legacy_catgirl_name,
+    )
+    await _await_thread_mutation(
+        archive_store.delete_receipts,
+        character_id=purge.character_id,
+        legacy_catgirl_name=purge.legacy_catgirl_name,
+    )
+    # 完整公开演绎属于角色数据，必须与 Session、回执在同一删除事务内级联清理。
+    await _await_thread_mutation(
+        archive_store.delete_public_archives,
+        story_id="",
+        character_id=purge.character_id,
+        legacy_catgirl_name=purge.legacy_catgirl_name,
+    )
+    for intent_path in purge.forget_paths:
+        await _await_thread_mutation(intent_path.unlink, missing_ok=True)
+    # 隔离区冷档案已进入调用方快照；删除失败时随其它目标一并恢复。
+    for quarantined_path in (
+        *purge.quarantined_archive_paths,
+        *purge.quarantined_session_paths,
+    ):
+        await _await_thread_mutation(quarantined_path.unlink, missing_ok=True)
+
+
+async def persist_numeric_v2_character_purge_intent(
+    purge: NumericV2CharacterPurge,
+) -> Path | None:
+    """Durably list a purge's targets before a delete that has no rollback commits.
+
+    For callers (Workshop unsubscribe) that remove the character from
+    characters.json first and purge afterwards: if the purge then fails, startup
+    maintenance retries exactly the listed files. Raises when the intent cannot
+    be written; the caller must then abort before committing (fail closed).
+    Returns ``None`` when the character owns no theater files.
+    """
+    targets = purge.purge_targets()
+    if not targets:
+        return None
+    return await _await_thread_mutation(
+        write_character_purge_intent,
+        purge.theater_root,
+        character_id=purge.character_id,
+        legacy_catgirl_name=purge.legacy_catgirl_name,
+        targets=targets,
+    )
+
+
+async def discard_numeric_v2_character_purge_intent(intent_path: Path | None) -> None:
+    """Drop a purge intent whose purge finished or whose delete never committed."""
+    if intent_path is not None:
+        await _await_thread_mutation(discard_character_purge_intent, intent_path)
+
+
+async def complete_numeric_v2_character_purge(
+    purge: NumericV2CharacterPurge,
+    intent_path: Path | None,
+) -> None:
+    """Run a committed purge and drop its intent; on failure the intent stays for retry."""
+    await purge_numeric_v2_character_data(purge)
+    await discard_numeric_v2_character_purge_intent(intent_path)
 
 
 async def _resume_released_character_admission(
@@ -816,11 +1044,10 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
             legacy_catgirl_name=old_name,
             raise_on_io_error=True,
         )
-    except (OSError, NumericV2StoreError, NumericV2ArchiveError):
+    except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
         logger.exception("重命名角色 Numeric v2 预检失败: %s -> %s", old_name, new_name)
-        return JSONResponse(
-            {"success": False, "error": "重命名角色预检失败，请稍后重试"},
-            status_code=500,
+        return _numeric_v2_preflight_failure_response(
+            exc, numeric_theater_root, "重命名角色预检失败",
         )
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
@@ -1680,49 +1907,23 @@ async def _delete_catgirl_by_name_serialized(name: str):
         )
         or ""
     ).strip()
-    numeric_session_targets = [
-        Path(item["path"])
-        for item in list_numeric_v2_sessions(
+    try:
+        numeric_purge = await collect_numeric_v2_character_purge(
             numeric_theater_root,
             character_id=deleted_character_id,
             legacy_catgirl_name=name,
-            raise_on_io_error=True,
         )
-    ]
-    numeric_session_index_path = (
-        numeric_theater_root / "numeric_v2" / "story_sessions.json"
-    )
-    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
-    numeric_public_archive_targets = [
-        Path(item["path"])
-        for item in list_numeric_v2_public_archives(
-            numeric_theater_root,
-            character_id=deleted_character_id,
-            legacy_catgirl_name=name,
-            raise_on_io_error=True,
+    except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
+        # 与改名一致：无法确认归属的剧场文件使整个删除中止，并返回结构化错误而非裸 500。
+        logger.exception("删除角色 Numeric v2 预检失败: %s", name)
+        return _numeric_v2_preflight_failure_response(
+            exc, numeric_theater_root, "删除角色预检失败",
         )
-    ]
-    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
-        character_id=deleted_character_id,
-        legacy_catgirl_name=name,
-        raise_on_io_error=True,
-    )
-    # Forget intents outlive deleted packages, but not their owning character.
-    # Collect them under the same character mutation lock used by /memory/forget.
-    numeric_forget_targets = await asyncio.to_thread(
-        numeric_archive_store.forget_paths_for_character, deleted_character_id,
-    )
 
     if not safe_path_name:
         logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
         characters_snapshot = copy.deepcopy(characters)
-        unsafe_targets = [
-            *numeric_session_targets,
-            *numeric_public_archive_targets,
-            *numeric_receipt_targets,
-            *numeric_forget_targets,
-            numeric_session_index_path,
-        ]
+        unsafe_targets = numeric_purge.snapshot_targets()
         with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
             memory_snapshot_records = await asyncio.to_thread(
                 _snapshot_existing_paths,
@@ -1730,25 +1931,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 Path(temp_dir),
             )
             try:
-                await delete_numeric_v2_sessions(
-                    numeric_theater_root,
-                    character_id=deleted_character_id,
-                    legacy_catgirl_name=name,
-                )
-                await asyncio.to_thread(
-                    numeric_archive_store.delete_receipts,
-                    character_id=deleted_character_id,
-                    legacy_catgirl_name=name,
-                )
-                # 非法名称救援仍要删除按角色归属的剧场冷档案；这些文件已进入上方事务快照。
-                await asyncio.to_thread(
-                    numeric_archive_store.delete_public_archives,
-                    story_id="",
-                    character_id=deleted_character_id,
-                    legacy_catgirl_name=name,
-                )
-                for intent_path in numeric_forget_targets:
-                    await _await_thread_mutation(intent_path.unlink, missing_ok=True)
+                # 非法名称救援仍要删除按角色归属的剧场数据；这些文件已进入上方事务快照。
+                await purge_numeric_v2_character_data(numeric_purge)
                 del characters['猫娘'][name]
                 await _config_manager.asave_characters(characters)
 
@@ -1806,11 +1990,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
-    memory_targets.extend(numeric_session_targets)
-    memory_targets.extend(numeric_public_archive_targets)
-    memory_targets.extend(numeric_receipt_targets)
-    memory_targets.extend(numeric_forget_targets)
-    memory_targets.append(numeric_session_index_path)
+    memory_targets.extend(numeric_purge.snapshot_targets())
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     meta_path = _config_manager.card_face_meta_path(name)
     memory_targets.append(face_path)
@@ -1932,26 +2112,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
             if meta_path.exists():
                 await _await_thread_mutation(meta_path.unlink)
 
-            # 角色卡是剧场 Session 槽位的一部分；删除角色时必须同步删除所有剧本下的对应槽位。
-            await delete_numeric_v2_sessions(
-                numeric_theater_root,
-                character_id=deleted_character_id,
-                legacy_catgirl_name=name,
-            )
-            await asyncio.to_thread(
-                numeric_archive_store.delete_receipts,
-                character_id=deleted_character_id,
-                legacy_catgirl_name=name,
-            )
-            # 完整公开演绎属于角色数据，必须与 Session、回执在同一删除事务内级联清理。
-            await asyncio.to_thread(
-                numeric_archive_store.delete_public_archives,
-                story_id="",
-                character_id=deleted_character_id,
-                legacy_catgirl_name=name,
-            )
-            for intent_path in numeric_forget_targets:
-                await _await_thread_mutation(intent_path.unlink, missing_ok=True)
+            # 剧场 Session、回执、公开冷档案、遗忘意图与隔离区都已进入上方快照。
+            await purge_numeric_v2_character_data(numeric_purge)
 
             if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 await _await_thread_mutation(

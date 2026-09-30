@@ -122,6 +122,7 @@ def test_review_schema_keeps_authorization_separate_from_body(formal, confirmed)
             payload['acceptance_authorized'] = True
     else:
         payload['offer_quote'] = ''
+        payload['player_action_kind'] = ''
     Draft202012Validator(schema).validate(payload)
     evaluator._parse_transition_judge_output(json.dumps(payload), acceptance_review=formal, transition_delivery_review=formal)
     assert not Draft202012Validator(schema).is_valid({**payload, 'body_violations': ['unknown_code']})
@@ -131,7 +132,7 @@ def test_review_schema_keeps_authorization_separate_from_body(formal, confirmed)
 @pytest.mark.asyncio
 async def test_review_attaches_schema_without_touching_evaluator_model_parameters(monkeypatch, dispute):
     seen = []
-    payload = {'offer_present': False, 'offer_quote': '', 'valid': False, 'body_violations': [], 'unsafe_suggestion_indexes': [], 'failure_reason': ''}
+    payload = {'offer_present': False, 'offer_quote': '', 'valid': False, 'body_violations': [], 'unsafe_suggestion_indexes': [], 'failure_reason': '', 'player_action_kind': ''}
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False

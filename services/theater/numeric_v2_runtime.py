@@ -52,6 +52,10 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _STORY_FACT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _STORY_FACT_VISIBILITIES = frozenset({"public", "story"})
 _STORY_STATE_MAX_FACTS = 256
+# Runtime-owned scene enter/leave events; one pair is added per scene change.
+_RUNTIME_SCENE_EVENT_KEY_RE = re.compile(
+    r"^event:scene\.(?:entered|left):[A-Za-z0-9][A-Za-z0-9._-]{0,127}:r[0-9]+$"
+)
 _STORY_STATE_MAX_FACT_OPS = 32
 _STORY_STATE_MAX_VALUE_CHARS = 240
 _FACT_CONTRACT_VALUE_TYPES = frozenset({"bool", "int", "string"})
@@ -451,6 +455,53 @@ def _initial_story_state(start_node_id: str) -> dict[str, Any]:
     })
 
 
+def _prune_runtime_scene_events(
+    current: Mapping[str, Any],
+    *,
+    operations: list[dict[str, Any]],
+    author_keys: set[str],
+) -> Mapping[str, Any]:
+    """Drop the oldest Runtime scene events only when this turn would exceed the fact cap.
+
+    Each scene change adds two unique event keys, so loop or hub stories would
+    otherwise hit the cap and reject every later transition. Pruning is a pure
+    function of the committed state and this turn's operations, so ledger replay
+    reproduces it exactly; states that never reached the cap are left untouched,
+    which keeps existing sessions replaying byte-for-byte. Prompt projections only
+    read the newest few scene events, which always survive.
+    """
+    state = _validate_story_state(current)
+    facts = state["facts"]
+    touched: set[str] = set()
+    added = 0
+    removed = 0
+    for operation in operations:
+        if not isinstance(operation, Mapping) or not isinstance(operation.get("key"), str):
+            continue
+        key = operation["key"]
+        if key in touched:
+            continue
+        touched.add(key)
+        if operation.get("op") == "set" and key not in facts:
+            added += 1
+        elif operation.get("op") == "delete" and key in facts:
+            removed += 1
+    overflow = len(facts) + added - removed - _STORY_STATE_MAX_FACTS
+    if overflow <= 0:
+        return state
+    prunable = sorted(
+        (int(fact["updated_revision"]), key)
+        for key, fact in facts.items()
+        if _RUNTIME_SCENE_EVENT_KEY_RE.fullmatch(key)
+        and key not in author_keys
+        and key not in touched
+    )
+    kept = dict(facts)
+    for _revision, key in prunable[:overflow]:
+        kept.pop(key)
+    return {**state, "facts": kept}
+
+
 def _advance_story_state(
     current: Mapping[str, Any],
     *,
@@ -482,6 +533,11 @@ def _advance_story_state(
         contract_facts.setdefault(key, {"value_type": "bool", "visibility": "public"})
     # 候选事实也必须落在同一份已声明合同内；允许集合同时覆盖内部事件和剧本白名单。
     allowed_keys.update(contract_facts)
+    current = _prune_runtime_scene_events(
+        current,
+        operations=operations,
+        author_keys=set((fact_contract or {}).get("facts") or {}),
+    )
     return apply_fact_ops(
         current,
         revision=revision,
@@ -588,6 +644,10 @@ def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# 称呼按完整独立词匹配：两侧须为文本边界、空白或下列标点，避免“小哥哥”“我哥哥”误命中。
+PLAYER_ADDRESS_BOUNDARY_CHARS = r"\s,，。.!！;；:："
+
+
 def _player_address_disclosed(message: str, configured_address: str) -> bool:
     """只接受包含完整昵称的明确自我介绍或称呼请求。"""  # noqa: DOCSTRING_CJK
 
@@ -596,8 +656,8 @@ def _player_address_disclosed(message: str, configured_address: str) -> bool:
     if not text or not address or address in {"你", "男主"}:
         return False
     escaped = re.escape(address)
-    left = r"(?:^|[\s,，。.!！;；:：])"
-    right = r"(?=$|[\s,，。.!！;；:：])"
+    left = rf"(?:^|[{PLAYER_ADDRESS_BOUNDARY_CHARS}])"
+    right = rf"(?=$|[{PLAYER_ADDRESS_BOUNDARY_CHARS}])"
     quoted_address = rf"[\"'“‘「『]?{escaped}[\"'”’」』]?"
     patterns = (
         # 中文：限定为第一人称身份陈述或明确的称呼指令，排除“你认识小明吗”。
@@ -1051,10 +1111,13 @@ class NumericV2Engine:
         natural_ending_ready: bool = False,
         fact_operations: tuple[Mapping[str, Any], ...] = (),
         ledger_events: tuple[Mapping[str, Any], ...] = (),
+        condition_narrations_enabled: bool = True,
     ) -> TurnOutcomeV2:
         """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
 
         self.validate_session(session)
+        if not isinstance(condition_narrations_enabled, bool):
+            raise NumericV2RuntimeError("condition_narrations_enabled_invalid")
         if session.status == "ended":
             raise NumericV2RuntimeError("session_already_ended")
         if request.base_revision != session.revision:
@@ -1136,7 +1199,11 @@ class NumericV2Engine:
 
         # Only explicitly required immutable pieces gate departure; ordinary goals
         # remain optional creative material and keep their existing semantics.
-        if route is not None and required_pending(source, session):
+        # 条件片段只能由复核模块的触发声明交付；模块关闭时它们永远无法展示，
+        # 因此不能继续锁住出口。该开关随 Ledger 记录，重放沿用当时的判定。
+        if route is not None and required_pending(
+            source, session, condition_triggers_enabled=condition_narrations_enabled,
+        ):
             route, route_status = None, "playing"
         target_node_id = session.current_node_id
         next_status = "active"
@@ -1241,6 +1308,9 @@ class NumericV2Engine:
         # 只记录新信号的阳性值；旧 Ledger 缺省为 false，分叉重放不会替旧历史提前结束。
         if natural_ending_ready is True:
             event["natural_ending_ready"] = True
+        # 只记录关闭值；旧 Ledger 缺省为开启，重放保持原有离幕门槛。
+        if condition_narrations_enabled is False:
+            event["condition_narrations_enabled"] = False
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
 
     def finalize_transition_offer_state(
@@ -1572,6 +1642,7 @@ class NumericV2Runtime:
                 transition_intent=str(source_event.get("transition_intent") or "unclear"),
                 natural_ending_ready=source_event.get("natural_ending_ready") is True,
                 ledger_events=tuple(replay_events) if "accepted_offer_route_id" in source_event else (),
+                condition_narrations_enabled=source_event.get("condition_narrations_enabled") is not False,
                 fact_operations=tuple(
                     dict(operation)
                     for operation in source_event.get("fact_operations") or []
@@ -1644,6 +1715,7 @@ class NumericV2Runtime:
         transition_intent: str = "unclear",
         natural_ending_ready: bool = False,
         fact_operations: tuple[Mapping[str, Any], ...] = (),
+        condition_narrations_enabled: bool = True,
     ) -> TurnOutcomeV2:
         return self.engine.resolve_turn(
             current.session,
@@ -1654,6 +1726,7 @@ class NumericV2Runtime:
             natural_ending_ready=natural_ending_ready,
             ledger_events=current.ledger_events,
             fact_operations=fact_operations,
+            condition_narrations_enabled=condition_narrations_enabled,
         )
 
     async def commit_turn(

@@ -44,21 +44,26 @@ from utils.tokenize import count_tokens  # noqa: E402
 
 
 REPORT_SCHEMA = "neko.numeric_v2.stress_report.v1"
-# 阶段 A 的固定回归样本。这里只锁定 story_id，不把当前节点拓扑硬编码成
+# 阶段 A 的固定回归样本由调用方以清单文件传入（各人安装的剧本 story_id 不同，
+# 不能写死在脚本里）。清单只锁定 story_id 与预期标题，不把节点拓扑硬编码成
 # “线性/分支”类别；作者后续改稿后，报告中的 package revision/hash 才是可复核依据。
-BASELINE_MANIFEST = "numeric_v2_focus_scripts_v1"
-BASELINE_STORY_IDS = (
-    "story_51e71adb6ae5",
-    "story_9677d6bd25f4",
-    "story_ea2a73b46670",
-    "story_neon_rebuild_ea2e45dab7",
-)
-BASELINE_EXPECTED_TITLES = {
-    "story_51e71adb6ae5": "《毕业铃响前的半步》",
-    "story_9677d6bd25f4": "《月影森林的四叶契约》",
-    "story_ea2a73b46670": "《零号日志：星火之后》",
-    "story_neon_rebuild_ea2e45dab7": "《霓虹下的猫耳重构》",
-}
+# 清单格式：{"manifest": "<名称>", "stories": {"<story_id>": "<预期标题>", ...}}
+
+
+def _load_baseline_manifest(path: Path) -> tuple[str, dict[str, str]]:
+    """Read a baseline manifest: its name and an ordered ``story_id -> expected title`` map."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"numeric_baseline_manifest_unreadable:{path}") from exc
+    stories = payload.get("stories") if isinstance(payload, dict) else None
+    if not isinstance(stories, dict) or not stories or not all(
+        isinstance(story_id, str) and story_id and isinstance(title, str)
+        for story_id, title in stories.items()
+    ):
+        raise ValueError(f"numeric_baseline_manifest_invalid:{path}")
+    name = payload.get("manifest")
+    return (str(name) if name else Path(path).stem), dict(stories)
 FREEFORM_INPUTS = (
     "我先不替你下结论。请把眼前已经确认的事实和还没确认的部分分开。",
     "我会尊重你的边界，也愿意继续。我们先处理现在最重要的一件事。",
@@ -1453,8 +1458,9 @@ def _build_parser() -> argparse.ArgumentParser:
     selection.add_argument("--all", action="store_true", help="压测全部已安装 Numeric v2 剧本")
     selection.add_argument(
         "--baseline",
-        action="store_true",
-        help=f"压测阶段 A 固定样本（{len(BASELINE_STORY_IDS)} 个重点剧本）",
+        type=Path,
+        metavar="MANIFEST_JSON",
+        help='压测阶段 A 固定样本清单：{"manifest": 名称, "stories": {story_id: 预期标题}}',
     )
     selection.add_argument("--story-id", action="append", help="压测指定 story_id，可重复传入")
     parser.add_argument("--turns", type=int, default=8, help="每个主轨迹最多尝试回合数")
@@ -1507,9 +1513,11 @@ def _resolve_story_selection(
 ) -> tuple[list[str], dict[str, Any]]:
     """解析 CLI 选择，并为阶段 A 报告保存稳定的样本清单。"""  # noqa: DOCSTRING_CJK
 
-    baseline = bool(getattr(args, "baseline", False))
+    baseline_path = getattr(args, "baseline", None)
+    baseline = baseline_path is not None
     if baseline:
-        story_ids = list(BASELINE_STORY_IDS)
+        baseline_manifest, baseline_titles = _load_baseline_manifest(baseline_path)
+        story_ids = list(baseline_titles)
         selection_mode = "baseline"
     elif args.all:
         story_ids = sorted(installed)
@@ -1532,20 +1540,16 @@ def _resolve_story_selection(
     }
     if baseline:
         selection.update({
-            "manifest": BASELINE_MANIFEST,
-            "expected_titles": {
-                story_id: BASELINE_EXPECTED_TITLES[story_id]
-                for story_id in BASELINE_STORY_IDS
-            },
+            "manifest": baseline_manifest,
+            "expected_titles": dict(baseline_titles),
             "title_mismatches": [
                 {
                     "story_id": story_id,
-                    "expected_title": BASELINE_EXPECTED_TITLES[story_id],
+                    "expected_title": expected_title,
                     "actual_title": str(installed[story_id]["title"]),
                 }
-                for story_id in BASELINE_STORY_IDS
-                if str(installed[story_id]["title"])
-                != BASELINE_EXPECTED_TITLES[story_id]
+                for story_id, expected_title in baseline_titles.items()
+                if str(installed[story_id]["title"]) != expected_title
             ],
         })
     return story_ids, selection

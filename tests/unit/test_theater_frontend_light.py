@@ -644,3 +644,103 @@ def test_theater_popup_entry_opens_story_selector():
     for source in (popup_config, pngtuber):
         assert "url: '/theater-home'" not in source
         assert "url: '/theater-numeric'" not in source
+
+
+_THEATER_FRONTEND_SOURCES = (
+    "static/app/app-theater-runtime.js",
+    "static/js/theater_selector.js",
+    "static/js/theater_settings.js",
+    "static/js/theater_transport.js",
+    "templates/theater.html",
+    "templates/theater_settings.html",
+)
+_SUPPORTED_LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+
+
+def _locale_has_key(node, key: str) -> bool:
+    """Mirror i18next deepFind: a dotted key may address nested or flat dotted entries."""
+
+    if not key:
+        return True
+    if not isinstance(node, dict):
+        return False
+    parts = key.split(".")
+    for size in range(1, len(parts) + 1):
+        head = ".".join(parts[:size])
+        if head in node and _locale_has_key(node[head], ".".join(parts[size:])):
+            return True
+    return False
+
+
+def test_every_theater_key_used_by_the_frontend_exists_in_every_locale():
+    """A missing key renders as a raw token in every non-default UI language."""
+
+    import re
+
+    pattern = re.compile(r"""['"`](theater\.[A-Za-z0-9_.]*[A-Za-z0-9])['"`]""")
+    used = set()
+    for path in _THEATER_FRONTEND_SOURCES:
+        used.update(pattern.findall(_source(path)))
+    # Built dynamically as 'theater.tokenStage_' + stage.
+    used.update(
+        f"theater.tokenStage_{stage}"
+        for stage in ("actor", "suggestions", "evaluator", "review", "dispute", "history_lookup")
+    )
+    assert "theater.performanceFailed" in used
+    missing = {
+        language: sorted(
+            key for key in used
+            if not _locale_has_key(
+                json.loads(_source(f"static/locales/{language}.json")), key
+            )
+        )
+        for language in _SUPPORTED_LOCALES
+    }
+    assert all(not keys for keys in missing.values()), missing
+
+
+def test_actor_retry_copy_states_the_real_actor_call_budget():
+    """The actor_retry option copy must match the workflow's real attempt count."""
+
+    import asyncio
+    import re
+    from types import SimpleNamespace
+
+    from services.theater.numeric_v2_actor_output import NumericV2ActorOutputError
+    from services.theater.numeric_v2_options import disabled_effects
+    from services.theater.numeric_v2_workflow import _generate_actor_turn_with_output_retry
+
+    calls = []
+
+    class AlwaysInvalidActor:
+        async def generate_turn(self, **kwargs):
+            calls.append(kwargs.get("retry_hint"))
+            raise NumericV2ActorOutputError("numeric_v2_actor_output_invalid")
+
+    async def run():
+        try:
+            await _generate_actor_turn_with_output_retry(
+                AlwaysInvalidActor(),
+                allow_output_retry=True,
+                outcome=SimpleNamespace(ledger_event={"from_node_id": "a", "to_node_id": "a"}),
+                session=SimpleNamespace(session_id="copy", revision=1),
+            )
+        except NumericV2ActorOutputError:
+            pass
+
+    asyncio.run(run())
+    budget = str(len(calls))
+    assert budget == "4"
+
+    copies = {
+        language: json.loads(_source(f"static/locales/{language}.json"))["theater"]["moduleOptDetail.actor_retry"]
+        for language in _SUPPORTED_LOCALES
+    }
+    details_block = re.search(r"var details = \{(.*?)\};", _source("static/js/theater_settings.js"), re.S).group(1)
+    fallback = re.search(r"actor_retry: '([^']*)'", details_block).group(1)
+    copies["js-fallback"] = fallback
+    copies["server"] = disabled_effects()["actor_retry"]
+    for source, text in copies.items():
+        assert budget in text, (source, text)
+    assert "once" not in copies["en"].lower()
+    assert "一次" not in copies["zh-CN"] and "一次" not in fallback

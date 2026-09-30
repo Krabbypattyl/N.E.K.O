@@ -95,6 +95,10 @@ def review_output_schema(*, formal: bool = False, transition_intent: str = "",
     if formal:
         properties["delivery_matches_route"] = {"type": "boolean"}
     properties["failure_reason"] = {"type": "string"}
+    if not formal:
+        properties["player_action_kind"] = {
+            "type": "string", "enum": ["", "unauthorized", "requested_movement"],
+        }
     if fixed_narrations:
         properties["fixed_narration_triggers"] = _array(_object({
             "id": {"type": "string"}, "evidence": {"type": "string"},

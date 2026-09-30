@@ -8,7 +8,7 @@ import inspect
 import json
 import logging
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from config.providers import focus_extra_body
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
@@ -43,6 +43,7 @@ from .numeric_v2_context import (
 from .llm_context import truncate_prompt_value
 from .numeric_v2_performance import content_blocks, performance_content_blocks
 from .numeric_v2_fixed_narration import MAX_FIXED_NARRATIONS, review_candidates
+from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_runtime import (
     MetricChangeV2,
     NumericV2Engine,
@@ -74,6 +75,11 @@ NUMERIC_V2_CONTRACT_CHECK_MAX_OUTPUT_TOKENS = 160
 NUMERIC_V2_FIXED_NARRATION_EVIDENCE_MAX_TOKENS = 80
 logger = logging.getLogger(__name__)
 _METRIC_STRENGTHS = frozenset({"weak", "normal", "strong", "decisive"})
+# Structured Guard classification of a ``player_action`` body violation. Only
+# ``requested_movement`` lets the ordinary-turn workflow clear the veto; an absent,
+# unknown or mistyped value normalises to "" so the veto always stays (fail closed).
+PLAYER_ACTION_KIND_REQUESTED_MOVEMENT = "requested_movement"
+_PLAYER_ACTION_KINDS = frozenset({"unauthorized", PLAYER_ACTION_KIND_REQUESTED_MOVEMENT})
 _TRANSITION_REPLY_TARGETS = frozenset({
     "pending_transition",
     "latest_interaction",
@@ -152,6 +158,9 @@ class NumericV2TransitionOfferReview:
     display_dependent_suggestions: tuple[dict[str, Any], ...] = ()
     # 候选是否兑现 Runtime 选中的地点/时点/阶段；独立于玩家是否授权，旧响应缺省未知。
     delivery_matches_route: bool | None = None
+    # Structured kind of the ``player_action`` violation; "" whenever it is absent or
+    # unrecognised. Workflow corrections read this field, never ``failure_reason``.
+    player_action_kind: str = ""
 
     @property
     def player_action_preserved(self) -> bool:
@@ -598,6 +607,32 @@ def _recent_metric_awards(
     return _metric_awards(engine, ledger_events)[-8:]
 
 
+def _smallest_fitting_cut(limit: int, fits: Callable[[int], bool]) -> int:
+    """Return the first cut in ``0..limit`` whose packed prompt fits, else ``limit``.
+
+    This replaces trying cuts 0, 1, 2, ... in order, which re-serialised and
+    re-tokenised the whole payload once per removed history record (O(N^2)).
+    Every caller's cut only removes, or compacts into a shorter index entry,
+    whole leading JSON list items. Compact JSON puts the punctuation between
+    items into its own pre-tokens, so dropping an item removes its tokens
+    without re-merging the rest; the packed count therefore never grows as the
+    cut advances and the binary search picks the same cut as the linear scan
+    with O(log N) tokenizations. ``limit`` is returned unevaluated when nothing
+    smaller fits, exactly where the linear scan also stopped.
+    """
+
+    if limit <= 0 or fits(0):
+        return 0
+    low, high = 1, limit
+    while low < high:
+        middle = (low + high) // 2
+        if fits(middle):
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
 def _build_contract_check_messages(
     *,
     required: Sequence[str],
@@ -931,19 +966,31 @@ def _build_messages(
     def over_budget() -> bool:
         return count_tokens(human_message.content) + system_tokens > budget["evaluator_input_max_tokens"]
 
+    def drop_leading(key: str, keep: int) -> list[Any]:
+        """Drop the fewest leading items of ``data[key]`` that bring the prompt within budget."""
+
+        nonlocal human_message, packed_system, system_tokens
+        rows = list(data.get(key) or ())
+
+        def fits(cut: int) -> bool:
+            nonlocal human_message, packed_system, system_tokens
+            data[key] = rows[cut:]
+            human_message, packed_system, system_tokens = pack()
+            return not over_budget()
+
+        cut = _smallest_fitting_cut(max(0, len(rows) - keep), fits)
+        fits(cut)
+        return rows[:cut]
+
     # 当前幕历史按完整记录裁剪，只从更早回合开始移除，不截断当前玩家输入。
     dropped_revisions = []
-    while over_budget() and len(data.get("scene_context", [])) > 1:
-        dropped_revisions.append(data["scene_context"][0].get("revision"))
-        data["scene_context"] = data["scene_context"][1:]
-        human_message, packed_system, system_tokens = pack()
-    while over_budget() and data.get("recent_metric_awards"):
-        data["recent_metric_awards"].pop(0)
-        human_message, packed_system, system_tokens = pack()
+    if "scene_context" in data:
+        dropped_revisions = [row.get("revision") for row in drop_leading("scene_context", 1)]
+    if data.get("recent_metric_awards"):
+        drop_leading("recent_metric_awards", 0)
     # 可选检索可以让出容量；本轮输入、最近完整记录和固定合同超限时由调用层明确拒绝。
-    while over_budget() and data.get("history_evidence"):
-        evidence = data["history_evidence"][1:]
-        human_message, packed_system, system_tokens = pack()
+    if data.get("history_evidence"):
+        drop_leading("history_evidence", 0)
     messages = [SystemMessage(content=packed_system), human_message]
     if diagnostics is not None:
         diagnostics.clear()
@@ -1215,7 +1262,7 @@ def _build_transition_judge_messages(
         ('{"player_request_quote":"","missed_initiation":false,"public_destination_index":-1,'
          if check_missed_initiation and transition_outcome is None else '{')
         + '"offer_present":false,"offer_quote":"","valid":false,"body_violations":[],'
-        '"unsafe_suggestion_indexes":[],"failure_reason":""'
+        '"unsafe_suggestion_indexes":[],"failure_reason":"","player_action_kind":""'
         + (',"fixed_narration_triggers":[]' if fixed_candidates else '')
         + (',"fact_candidates":[]' if pending_completion_facts else '')
         + (',"approved_evaluator_fact_indexes":[]' if evaluator_fact_claims else '')
@@ -1226,7 +1273,7 @@ def _build_transition_judge_messages(
         review_shape = review_shape.replace('{', '{"body_issues":[],"scene_update_removal_safe":false,', 1)
     system = (
         "你是演绎输出复核器，只核对给定证据，不续写、不选路线、不评剧情完成度。"
-        + ("只输出一个完整 JSON，字段如下：" if fixed_candidates or pending_completion_facts or evaluator_fact_claims or locate_body_issues else "只输出一个完整 JSON，固定六字段：")
+        + ("只输出一个完整 JSON，字段如下：" if fixed_candidates or pending_completion_facts or evaluator_fact_claims or locate_body_issues or check_display_suggestions else "只输出一个完整 JSON，固定八字段：")
         + review_shape
         + "两个布尔量及上述数组必填、数组去重，无对应项时为空；不要输出其它字段。\n"
         + (
@@ -1299,7 +1346,12 @@ def _build_transition_judge_messages(
         "‘下周回这里再核对，好吗’是在邀请；只有正文或旁白已把时间推进到下周、或写出核对完成才是执行。"
         "当前拿出已有道具仍可发生在当前幕，不能因为目标幕也使用该道具就认定换幕；作者明令禁止的当前操作仍须拦截。"
         "next_scene_direction 的 opening_boundary 与 bridge_boundary 是接受后的入口，不是当前既成事实。"
-        "一个冲突可对应多个枚举；没有提议也须检查正文，按钮问题绝不写入此数组。\n"
+        "一个冲突可对应多个枚举；没有提议也须检查正文，按钮问题绝不写入此数组。"
+        # 结构化替代“从 failure_reason 措辞猜是否为玩家本轮要求的移动”；缺省即保留否决。
+        "player_action_kind：body_violations 不含 player_action 时填空字符串；含 player_action 时，"
+        "仅当正文写出的唯一玩家侧行动正是玩家本轮输入明确要求或已实施的同一移动／离开"
+        "（去向一致，没有额外操作、没有写回当前地点、没有替玩家新增其他决定）填 requested_movement，"
+        "其余一律填 unauthorized。\n"
         "2. offer_present：以 next_scene_direction 声明的出口作为阶段边界。正文邀请玩家执行该出口安排为 true，"
         "不按动作大小、移动距离或是否处于同一场所判断；只邀请执行出口之前的其他动作、仅完成前置条件、泛问或只有按钮提出都为 false。"
         "明确邀请进入其他地点/时段/阶段，即使方向错误也为 true，由 valid 核对去向。"
@@ -1586,7 +1638,7 @@ def _build_transition_judge_messages(
         ) + system
     if check_missed_initiation and transition_outcome is None:
         # 复用普通复核调用补查意图，开场与既有正式转场合同不扩展；候选永远不能自证已公开。
-        system = system.replace("固定六字段", "保留原六字段并增加 player_request_quote、missed_initiation 与 public_destination_index", 1)
+        system = system.replace("固定八字段", "保留原八字段并增加 player_request_quote、missed_initiation 与 public_destination_index", 1)
         system = system.replace("不要输出其它字段。", "不要输出其它字段；新增字段按下面合同填写。", 1)
         recovery_contract = (
             "本次先独立核对 JSON 开头的 missed_initiation_check，再审普通正文。"
@@ -1739,9 +1791,42 @@ def _build_transition_judge_messages(
     def packed_tokens() -> int:
         return count_tokens(human_message.content) + system_tokens
 
-    while packed_tokens() > input_budget:
+    def rebuild() -> None:
+        nonlocal human_message, packed_system, system_tokens
+        human_message, packed_system, system_tokens = pack()
+
+    if packed_tokens() > input_budget and len(data["scene_context"]) > 1:
         # 先把较早完整回合移入索引，保住跨回合前因；不再先清空索引后直接丢掉旧回合。
+        # A compact index entry drops the phase and per-block JSON wrappers and
+        # caps both texts, so it is shorter than its full record and the packed
+        # size only shrinks as more leading records are compacted.
+        full_rows = list(data["scene_context"])
+        base_index = list(data["scene_fact_index"])
+        base_complete = data["current_visit_history_complete"]
+        compacted: list[dict[str, Any]] = []
+
+        def compacted_fits(cut: int) -> bool:
+            while len(compacted) < cut:
+                compacted.append(_compact_transition_fact(full_rows[len(compacted)]))
+            data["scene_context"] = full_rows[cut:]
+            data["scene_fact_index"] = [*base_index, *compacted[:cut]]
+            # 即使索引尚在，移走完整原文后也不能再以完整覆盖为由作缺项判断。
+            data["current_visit_history_complete"] = False if cut else base_complete
+            rebuild()
+            return packed_tokens() <= input_budget
+
+        compacted_fits(_smallest_fitting_cut(len(full_rows) - 1, compacted_fits))
+    if packed_tokens() > input_budget and len(data["scene_context"]) <= 1 and data.get("scene_fact_index"):
         # 全部早期证据已压缩仍超预算时才按时间丢弃最早索引，最新完整回合不参与压缩。
+        index_rows = list(data["scene_fact_index"])
+
+        def trimmed_fits(cut: int) -> bool:
+            data["scene_fact_index"] = index_rows[cut:]
+            rebuild()
+            return packed_tokens() <= input_budget
+
+        trimmed_fits(_smallest_fitting_cut(len(index_rows), trimmed_fits))
+    while packed_tokens() > input_budget:
         # 固定作者合同与最新完整回合自身超预算时保留原文，不静默删掉安全判断依据。
         if len(data["scene_context"]) > 1:
             data["scene_fact_index"].append(_compact_transition_fact(data["scene_context"].pop(0)))
@@ -1829,9 +1914,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
     if not isinstance(content, str) or not content.strip():
         raise NumericV2EvaluatorOutputError("numeric_v2_transition_judge_empty_output")
     # 只解包完整的单个 JSON 围栏；不提取夹杂说明的片段，不修补内容或放宽安全字段。
-    lines = content.strip().splitlines()
-    if len(lines) >= 3 and lines[0].lower() in {"```json", "```"} and lines[-1] == "```":
-        content = "\n".join(lines[1:-1])
+    content = strip_single_json_fence(content)
     try:
         payload = json.loads(content)
     except (TypeError, ValueError) as exc:
@@ -1846,7 +1929,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
     if fixed_narration_review:
         required_fields.add("fixed_narration_triggers")
     allowed_fields = required_fields | {
-        "failure_reason", "offer_quote", "body_issues", "approved_evaluator_fact_indexes",
+        "failure_reason", "offer_quote", "player_action_kind", "body_issues", "approved_evaluator_fact_indexes",
         "scene_update_removal_safe",
         "unsafe_suggestion_indexes",
     }
@@ -2013,6 +2096,19 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
                 {"text": display_suggestions[item["index"]], "requires": tuple(refs[ref] for ref in item["requires"])}
                 for item in raw_dependencies if item["decision"] == "after_display"
             ]
+    raw_player_action_kind = payload.get("player_action_kind", "")
+    # Only a known enum paired with a player_action the model itself listed on an
+    # ordinary review survives; formal-transition vetoes never inherit it. Anything
+    # else keeps the veto rather than failing the whole review over an auxiliary field.
+    player_action_kind = (
+        raw_player_action_kind
+        if isinstance(raw_player_action_kind, str)
+        and raw_player_action_kind in _PLAYER_ACTION_KINDS
+        and "player_action" in raw_body_violations
+        and initiation_session is None
+        and not acceptance_review
+        else ""
+    )
     # 独立复核也核对引用真实性，争议复查不能用空泛授权覆盖缺失的公开证据。
     if initiation_session is not None and not _has_public_transition_quote(payload.get("public_destination_quote"), initiation_session):
         if "player_action" not in raw_body_violations:
@@ -2074,6 +2170,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         scene_update_removal_safe=scene_update_removal_allowed and payload.get("scene_update_removal_safe") is True,
         display_dependent_suggestions=tuple(display_dependencies),
         delivery_matches_route=payload.get("delivery_matches_route") if transition_delivery_review else None,
+        player_action_kind=player_action_kind,
     )
 
 
@@ -2156,9 +2253,7 @@ def _parse_output(
     if not isinstance(content, str) or not content.strip():
         raise NumericV2EvaluatorOutputError("numeric_v2_evaluator_empty_output")
     # 与 Guard 一致：只解包完整单个 JSON 围栏，内部仍按原字段与类型严格校验。
-    lines = content.strip().splitlines()
-    if len(lines) >= 3 and lines[0].lower() in {"```json", "```"} and lines[-1] == "```":
-        content = "\n".join(lines[1:-1])
+    content = strip_single_json_fence(content)
     try:
         payload = json.loads(content)
     except (TypeError, ValueError) as exc:
@@ -2259,6 +2354,26 @@ def _parse_output(
                 # 邀请已隔过一轮时，含糊同意优先绑定最近互动；在生成三段换场前保守留幕。
                 trace_event(
                     "evaluator.acceptance_target_rejected",
+                    reply_target=transition_reply_target,
+                    origin_revision=origin_revision,
+                    current_revision=session.revision,
+                )
+                transition_intent = "unclear"
+        elif invitation is not None and transition_intent == "accept":
+            # 已撤回邀请允许明确改主意重新接受（Runtime include_withdrawn 分支）；
+            # 与隔轮回复同一证据门槛：必须指向原邀请，并逐字指回其独有地点或动作。
+            withdrawn_reference = (
+                transition_reply_target == "pending_transition"
+                and (
+                    bool(_stale_invitation_reference(message, session, invitation))
+                    or _selected_latest_suggestion_references_invitation(
+                        message, session, invitation,
+                    )
+                )
+            )
+            if not withdrawn_reference:
+                trace_event(
+                    "evaluator.withdrawn_acceptance_rejected",
                     reply_target=transition_reply_target,
                     origin_revision=origin_revision,
                     current_revision=session.revision,
@@ -2444,17 +2559,22 @@ class NumericV2MetricEvaluator:
             )
             async with client:
                 packing_diagnostics: dict[str, Any] = {}
-                messages = _build_messages(
-                    engine,
-                    session,
-                    message,
-                    recent_ledger_events=recent_ledger_events,
-                    diagnostics=packing_diagnostics,
-                    player_action_projection=player_action_projection,
-                    allow_history_lookup=allow_history_lookup,
-                )
+                def pack() -> tuple[list[Any], int]:
+                    packed = _build_messages(
+                        engine,
+                        session,
+                        message,
+                        recent_ledger_events=recent_ledger_events,
+                        diagnostics=packing_diagnostics,
+                        player_action_projection=player_action_projection,
+                        allow_history_lookup=allow_history_lookup,
+                    )
+                    return packed, sum(count_tokens(item.content) for item in packed)
+
+                # Serialisation and tokenisation grow with the scene; keep them off the loop.
+                messages, packed_tokens = await asyncio.to_thread(pack)
                 _log_prompt_diagnostics(session, packing_diagnostics)
-                if sum(count_tokens(item.content) for item in messages) > (
+                if packed_tokens > (
                     numeric_v2_actor_budget(session.actor_budget_profile)["evaluator_input_max_tokens"]
                 ):
                     # _build_messages 只按完整记录装箱；固定合同本身超限时明确停止，
@@ -2555,27 +2675,32 @@ class NumericV2MetricEvaluator:
             output_budget += NUMERIC_V2_FORMAL_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS - NUMERIC_V2_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS
         # 消息构造不参与模型等待，先离线装配并核对预算：既不让分词时间落在时限之外，
         # 也不为一个必然被判超预算的请求先建立连接。
-        messages, recovery_evidence = _build_transition_judge_messages(
-            engine,
-            session,
-            actor_performance=actor_performance,
-            player_input=message,
-            scene_complete=scene_complete,
-            route_changed=route_changed,
-            transition_outcome=transition_outcome,
-            public_destination_quote=public_destination_quote,
-            check_missed_initiation=check_missed_initiation,
-            history_lookup=history_lookup,
-            cancelled_transition=cancelled_transition,
-            invalidated_invitation=invalidated_invitation,
-            fixed_candidates=fixed_candidates,
-            player_action_projection=player_action_projection,
-            evaluator_fact_claims=evaluator_fact_claims,
-            confirmed_acceptance=confirmed_acceptance,
-        )
+        def pack() -> tuple[list[Any], tuple[str, ...], int]:
+            packed, evidence = _build_transition_judge_messages(
+                engine,
+                session,
+                actor_performance=actor_performance,
+                player_input=message,
+                scene_complete=scene_complete,
+                route_changed=route_changed,
+                transition_outcome=transition_outcome,
+                public_destination_quote=public_destination_quote,
+                check_missed_initiation=check_missed_initiation,
+                history_lookup=history_lookup,
+                cancelled_transition=cancelled_transition,
+                invalidated_invitation=invalidated_invitation,
+                fixed_candidates=fixed_candidates,
+                player_action_projection=player_action_projection,
+                evaluator_fact_claims=evaluator_fact_claims,
+                confirmed_acceptance=confirmed_acceptance,
+            )
+            return packed, evidence, sum(count_tokens(item.content) for item in packed)
+
+        # Serialisation and tokenisation grow with the scene; keep them off the loop.
+        messages, recovery_evidence, packed_tokens = await asyncio.to_thread(pack)
         # 适配后的正文和作者边界不可截断；超预算中止调用，工作流沿用该阶段原有故障策略。
         if (
-            sum(count_tokens(item.content) for item in messages)
+            packed_tokens
             > numeric_v2_actor_budget(session.actor_budget_profile)[
                 "formal_judge_input_max_tokens" if transition_outcome is not None or check_missed_initiation else "judge_input_max_tokens"
             ]
@@ -2716,6 +2841,7 @@ class NumericV2MetricEvaluator:
 __all__ = [
     "NUMERIC_V2_EVALUATOR_MAX_OUTPUT_TOKENS",
     "NUMERIC_V2_EVALUATOR_TIMEOUT_SECONDS",
+    "PLAYER_ACTION_KIND_REQUESTED_MOVEMENT",
     "NUMERIC_V2_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS",
     "NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS",
     "NumericV2EvaluatorError",

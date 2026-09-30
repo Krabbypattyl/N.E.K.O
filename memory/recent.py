@@ -35,6 +35,7 @@ import hashlib
 import logging
 import locale
 import sys
+import time
 from contextlib import suppress
 
 from config.prompts.prompts_memory import (
@@ -52,6 +53,7 @@ from utils.tokenize import acount_tokens
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+    MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -204,7 +206,9 @@ async def review_context_token_count(messages: list) -> int:
     return await acount_tokens('\n\n'.join(rows))
 
 
-def _review_response_hit_output_limit(response) -> bool:
+def _review_response_hit_output_limit(
+    response, output_cap: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
+) -> bool:
     """Classify only strong evidence that the provider exhausted output tokens."""
     metadata = getattr(response, 'response_metadata', None) or {}
     finish_reason = str(metadata.get('finish_reason') or '').strip().lower()
@@ -219,9 +223,25 @@ def _review_response_hit_output_limit(response) -> bool:
     if output_tokens is None:
         output_tokens = usage.get('output_tokens')
     try:
-        return int(output_tokens or 0) >= LLM_OUTPUT_GUARD_MAX_TOKENS
+        return int(output_tokens or 0) >= output_cap
     except (TypeError, ValueError):
         return False
+
+
+def _review_output_cap_rejected(exc: BaseException) -> bool:
+    """True when a 400 says the requested output cap exceeds the model's limit.
+
+    Correction endpoints are user-configurable; a model whose output limit is
+    below ``MEMORY_REVIEW_OUTPUT_MAX_TOKENS`` rejects the request before
+    generating anything, so the review must retry once at the shared guard.
+    """
+    if getattr(exc, 'status_code', None) != 400:
+        return False
+    text = str(exc).lower()
+    return any(
+        key in text
+        for key in ('max_tokens', 'max_completion_tokens', 'max_output_tokens')
+    )
 
 
 def _msg_identity(m) -> tuple[str, str]:
@@ -414,6 +434,84 @@ def _positive_metadata_int(value) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return 0
+
+
+def is_retracted_theater_episode(
+    message, story_id: str, session_id: str, archive_through_revision: int,
+) -> bool:
+    """Match the capsule written by one theater archive range (story, session, through revision)."""
+
+    if not is_theater_memory_message(message):
+        return False
+    metadata = message_metadata(message)
+    through = metadata.get("archive_through_revision")
+    return (
+        str(metadata.get("story_id") or "") == story_id
+        and str(metadata.get("session_id") or "") == session_id
+        and isinstance(through, int)
+        and not isinstance(through, bool)
+        and through == archive_through_revision
+    )
+
+
+# A declined (retracted) theater archive leaves a tombstone next to recent.json so
+# a late /cache write of that same archive attempt cannot resurrect the capsule.
+# Late writes arrive within seconds to minutes; a week of history is ample.
+THEATER_RETRACTIONS_FILENAME = "theater_retractions.json"
+THEATER_RETRACTION_TTL_SECONDS = 7 * 24 * 3600
+THEATER_RETRACTIONS_MAX = 128
+
+
+class TheaterEpisodeRetracted(RuntimeError):
+    """A theater archive write matched a tombstone left by the player's decline."""
+
+
+def _load_theater_retractions_unlocked(recent_path) -> list[dict]:
+    """Read retraction tombstones; the caller holds the recent.json file lock.
+
+    A missing or structurally invalid file reads as empty (writes are atomic, so
+    invalid content only comes from outside tampering); an I/O failure raises so
+    a pending tombstone is never silently ignored.
+    """
+
+    path = recent_file.recent_sidecar_path(recent_path, THEATER_RETRACTIONS_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(f"[RecentHistory] ignoring invalid theater retraction file: {path}")
+        return []
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _theater_attempt_is_retracted(
+    entries: list[dict], archive_request_id: str, archive_attempt: int | None,
+) -> bool:
+    """True when this archive attempt was issued before a matching retraction.
+
+    Attempts are numbered per archive request; a retraction covers every attempt
+    up to the one the theater had issued when the player declined, while a later
+    explicit archive of the same request (a new attempt) stays allowed.
+    """
+
+    if not archive_request_id:
+        return False
+    for entry in entries:
+        if str(entry.get("archive_request_id") or "") != archive_request_id:
+            continue
+        through_attempt = entry.get("through_attempt")
+        if not isinstance(through_attempt, int) or isinstance(through_attempt, bool):
+            return True
+        if archive_attempt is None or archive_attempt <= through_attempt:
+            return True
+    return False
 
 
 def _theater_episode_capsule(messages: list):
@@ -850,7 +948,7 @@ class CompressedRecentHistoryManager:
             provider_type=api_config.get('provider_type'),
         )
 
-    def _get_review_llm(self):
+    def _get_review_llm(self, max_completion_tokens: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS):
         """Fetch the review LLM instance dynamically to support config hot-reload.
 
         timeout uses MEMORY_LLM_HARD_TIMEOUT_SECONDS (the upstream forwards with
@@ -869,7 +967,7 @@ class CompressedRecentHistoryManager:
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
-            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
+            max_completion_tokens=max_completion_tokens,  # thinking shares this budget with the corrected-dialogue JSON
             extra_body=None,
             provider_type=api_config.get('provider_type'),
         )
@@ -947,12 +1045,19 @@ class CompressedRecentHistoryManager:
 
     def _upsert_theater_episode_locked(
         self, file_path, lanlan_name, incoming, expected_generation=None,
+        archive_request_id="", archive_attempt=None,
     ):
         """在单个文件临界区内替换同 Session 胶囊并落盘。"""  # noqa: DOCSTRING_CJK
 
         with recent_file.recent_file_access(
             file_path, expected_generation=expected_generation,
         ) as file_path:
+            if archive_request_id and _theater_attempt_is_retracted(
+                _load_theater_retractions_unlocked(file_path),
+                archive_request_id,
+                archive_attempt,
+            ):
+                raise TheaterEpisodeRetracted(archive_request_id)
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
@@ -1000,8 +1105,13 @@ class CompressedRecentHistoryManager:
             self._cache_history_view(file_path, lanlan_name, merged)
             return stored_incoming
 
-    async def upsert_theater_episode(self, message, lanlan_name):
-        """把同一 Session 的暂停与完成状态收敛成一条近期记忆。"""  # noqa: DOCSTRING_CJK
+    async def upsert_theater_episode(
+        self, message, lanlan_name, *, archive_request_id="", archive_attempt=None,
+    ):
+        """把同一 Session 的暂停与完成状态收敛成一条近期记忆。
+
+        带 archive_request_id 的写入若命中撤回墓碑，抛 TheaterEpisodeRetracted 且不落盘。
+        """  # noqa: DOCSTRING_CJK
 
         if not is_theater_episode_summary(message):
             raise ValueError("theater_episode_summary_required")
@@ -1028,6 +1138,8 @@ class CompressedRecentHistoryManager:
             lanlan_name,
             message,
             admission_generation,
+            str(archive_request_id or ""),
+            archive_attempt,
         )
 
     def _restore_theater_cache_snapshot_locked(
@@ -1073,6 +1185,36 @@ class CompressedRecentHistoryManager:
     ):
         """在 recent.json 临界区内删除指定剧本胶囊。"""  # noqa: DOCSTRING_CJK
 
+        return self._drop_theater_messages_locked(
+            file_path,
+            lanlan_name,
+            lambda message: (
+                is_theater_memory_message(message)
+                and str(message_metadata(message).get("story_id") or "") == story_id
+            ),
+            expected_generation,
+        )
+
+    def _retract_theater_episode_locked(
+        self, file_path, lanlan_name, story_id, session_id, archive_through_revision,
+        expected_generation=None,
+    ):
+        """Drop only the episode capsule written for one archive range."""
+
+        return self._drop_theater_messages_locked(
+            file_path,
+            lanlan_name,
+            lambda message: is_retracted_theater_episode(
+                message, story_id, session_id, archive_through_revision,
+            ),
+            expected_generation,
+        )
+
+    def _drop_theater_messages_locked(
+        self, file_path, lanlan_name, should_drop, expected_generation=None,
+    ):
+        """Remove matching messages from recent.json inside its file critical section."""
+
         with recent_file.recent_file_access(
             file_path, expected_generation=expected_generation,
         ) as file_path:
@@ -1081,14 +1223,7 @@ class CompressedRecentHistoryManager:
                 raise RuntimeError("theater_recent_history_unreadable")
             pending = recent_file.get_recent_pending_unlocked(file_path)
             current = list(history) + list(pending)
-            retained = [
-                message
-                for message in current
-                if not (
-                    is_theater_memory_message(message)
-                    and str(message_metadata(message).get("story_id") or "") == story_id
-                )
-            ]
+            retained = [message for message in current if not should_drop(message)]
             removed = len(current) - len(retained)
             if not removed:
                 self._cache_history_view(file_path, lanlan_name, history, pending)
@@ -1100,6 +1235,108 @@ class CompressedRecentHistoryManager:
             self._set_pending_batches(lanlan_name, [], file_path)
             self._cache_history_view(file_path, lanlan_name, retained)
             return removed
+
+    def _record_theater_retraction_locked(
+        self, file_path, lanlan_name, entry, expected_generation=None,
+    ):
+        """Persist one retraction tombstone inside the recent.json critical section."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            now = float(entry["retracted_at"])
+            kept = []
+            through_attempt = int(entry["through_attempt"])
+            for existing in _load_theater_retractions_unlocked(file_path):
+                if existing.get("archive_request_id") == entry["archive_request_id"]:
+                    previous = existing.get("through_attempt")
+                    if isinstance(previous, int) and not isinstance(previous, bool):
+                        through_attempt = max(through_attempt, previous)
+                    continue
+                retracted_at = existing.get("retracted_at")
+                if (
+                    isinstance(retracted_at, (int, float))
+                    and not isinstance(retracted_at, bool)
+                    and now - retracted_at < THEATER_RETRACTION_TTL_SECONDS
+                ):
+                    kept.append(existing)
+            kept.append({**entry, "through_attempt": through_attempt})
+            recent_file.write_recent_sidecar_unlocked(
+                file_path,
+                THEATER_RETRACTIONS_FILENAME,
+                {
+                    "schema": "neko.theater.retractions.v1",
+                    "entries": kept[-THEATER_RETRACTIONS_MAX:],
+                },
+            )
+
+    async def record_theater_retraction(
+        self,
+        lanlan_name,
+        *,
+        story_id,
+        session_id,
+        archive_through_revision,
+        archive_request_id,
+        archive_attempt,
+    ):
+        """Durably block late writes of the archive attempts a declined archive issued."""
+
+        normalized_request_id = str(archive_request_id or "").strip()
+        if not normalized_request_id:
+            raise ValueError("theater_archive_request_id_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/{THEATER_RETRACTIONS_FILENAME}",
+        )
+        entry = {
+            "archive_request_id": normalized_request_id,
+            "through_attempt": max(0, int(archive_attempt or 0)),
+            "story_id": str(story_id or ""),
+            "session_id": str(session_id or ""),
+            "archive_through_revision": int(archive_through_revision),
+            "retracted_at": time.time(),
+        }
+        await _await_recent_mutation_to_completion(
+            self._record_theater_retraction_locked,
+            file_path,
+            lanlan_name,
+            entry,
+            admission_generation,
+        )
+
+    async def retract_theater_episode(
+        self, story_id, session_id, archive_through_revision, lanlan_name,
+    ):
+        """Idempotently drop the episode capsule a declined theater archive wrote."""
+
+        normalized_story_id = str(story_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_story_id or not normalized_session_id:
+            raise ValueError("theater_episode_identity_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="delete",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        return await _await_recent_mutation_to_completion(
+            self._retract_theater_episode_locked,
+            file_path,
+            lanlan_name,
+            normalized_story_id,
+            normalized_session_id,
+            int(archive_through_revision),
+            admission_generation,
+        )
 
     async def forget_theater_story(self, story_id, lanlan_name):
         """幂等删除一个剧本的近期剧场记忆。"""  # noqa: DOCSTRING_CJK
@@ -1220,8 +1457,24 @@ class CompressedRecentHistoryManager:
                 # 磁盘内容一起补写。
                 return
 
-            if compress and len(history) > self.compress_threshold:
-                to_compress = history[:-self.max_history_length+1]
+            # 剧场胶囊压缩时原样保留，不能计入触发门槛和尾部保留条数；否则胶囊一多，
+            # 压缩后的历史仍超门槛，每次 settle 都会重复压缩、反复摘要 memo。
+            # 无剧场消息时与 history[:-max_history_length+1] 完全等价。
+            ordinary_indices = [
+                index
+                for index, message in enumerate(history)
+                if not is_theater_memory_message(message)
+            ]
+            if compress and len(ordinary_indices) > self.compress_threshold:
+                compressed_ordinary = len(
+                    ordinary_indices[:-self.max_history_length+1]
+                )
+                cutoff = (
+                    ordinary_indices[compressed_ordinary]
+                    if compressed_ordinary < len(ordinary_indices)
+                    else len(history)
+                )
+                to_compress = history[:cutoff]
                 snapshot = list(to_compress)
                 preserved_theater = [
                     message
@@ -1233,8 +1486,12 @@ class CompressedRecentHistoryManager:
                     for message in snapshot
                     if not is_theater_memory_message(message)
                 ]
-                if not compression_input:
-                    # 当前可压缩头部全是剧场胶囊，只能交给保留胶囊的硬上限裁剪。
+                if not compression_input or (
+                    len(compression_input) == 1
+                    and isinstance(compression_input[0], SystemMessage)
+                ):
+                    # 当前可压缩头部全是剧场胶囊（或只剩已有备忘录），再调摘要模型只会
+                    # 反复改写 memo；只能交给保留胶囊的硬上限裁剪。
                     await self.enforce_hard_cap(
                         lanlan_name,
                         admission_generation,
@@ -2235,9 +2492,24 @@ class CompressedRecentHistoryManager:
                     )
                     .replace("{MASTER_NAME}", self.name_mapping['human'])
                 )
+                # 审阅额度高于共享护栏；输出上限更低的自定义纠错模型会在生成前
+                # 400，这时退回共享护栏重发一次，保持以前能跑的配置照旧能跑。
+                review_cap = MEMORY_REVIEW_OUTPUT_MAX_TOKENS
                 review_llm = self._get_review_llm()
                 try:
-                    response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
+                    try:
+                        response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
+                    except Exception as cap_error:
+                        if not _review_output_cap_rejected(cap_error):
+                            raise
+                        logger.info(
+                            f"[RecentHistory] {lanlan_name} 纠错模型拒绝 {review_cap} 输出额度，"
+                            f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
+                        )
+                        await review_llm.aclose()
+                        review_cap = LLM_OUTPUT_GUARD_MAX_TOKENS
+                        review_llm = self._get_review_llm(review_cap)
+                        response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # same capped prompt, lower output cap.
                 finally:
                     await review_llm.aclose()
 
@@ -2246,7 +2518,7 @@ class CompressedRecentHistoryManager:
                     _safe_print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return ('failed', None)
 
-                if _review_response_hit_output_limit(response):
+                if _review_response_hit_output_limit(response, review_cap):
                     _safe_print(f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析")
                     return ('output_exhausted', None)
 

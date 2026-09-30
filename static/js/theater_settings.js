@@ -15,7 +15,7 @@
     review_contract: '检查是否提前到达后续阶段或违反作者禁令。',
     suggestion_fill: '推荐不足 2—3 条时，再请求一次模型补齐推荐。',
     history_lookup: '需要回忆旧事时查找当前 Session 的历史原文。',
-    actor_retry: '演员输出不合格时自动重试一次，减少整轮回滚。'
+    actor_retry: '演员输出不合格时自动重试，每次生成最多调用演员 4 次，减少整轮回滚。'
   };
   var labelKeys = {
     evaluator: 'theater.moduleOpt.evaluator', review: 'theater.moduleOpt.review', dispute: 'theater.moduleOpt.dispute',

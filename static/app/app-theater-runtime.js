@@ -7,7 +7,8 @@
         session: '/api/theater-numeric/session',
         input: '/api/theater-numeric/session/input',
         end: '/api/theater-numeric/session/end',
-        speakBlock: '/api/theater-numeric/session/speak-block'
+        speakBlock: '/api/theater-numeric/session/speak-block',
+        release: '/api/theater-numeric/session/release'
     };
     var POINTER_KEY = 'neko.theater.numeric.v2.capsule-pointer.v1';
     // 本体运行时只消费共享传输协议；胶囊状态、回放和跨窗口目标仍由本模块负责。
@@ -20,11 +21,11 @@
     var LEGACY_EMPTY_TRANSITION_BRIDGE = '时间向前流转，现场随之转换。';
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
-        playerName: '', catgirlName: '',
+        playerName: '', catgirlName: '', activityCatgirlName: '',
         sessionStatus: '', scene: null, history: [], suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
-        chatSurfaceModeRestore: null,
+        chatSurfaceModeRestore: null, windowClaimed: false,
         errorMessage: '', tokenUsage: null
     };
     var launchRequests = Object.create(null);
@@ -36,7 +37,8 @@
     var pendingLaunch = null;
     var endConfirmationPending = false;
     var committedSnapshot = null;
-    var proactiveChatSnapshot = null;
+    // 仅在内存中登记的主动搭话临时抑制；不写用户设置，页面关闭或崩溃时随之消失。
+    var proactiveSuppressionClaimed = false;
 
     function t(key, fallback) {
         if (typeof window.t === 'function') {
@@ -148,23 +150,39 @@
             audio.clearAudioQueueWithoutDecoderReset();
         }
     }
+    function suppressesProactiveChat() {
+        // 抑制与剧场会话是否活跃绑定；启动阶段在会话激活前先行登记，避免停麦期间插入主动搭话。
+        return state.active === true || proactiveSuppressionClaimed;
+    }
+    function blocksOrdinaryVoice() {
+        if (state.active === true) return true;
+        // Electron 下剧场运行在紧凑聊天窗口，悬浮麦克风却在 Pet 窗口；另一窗口的剧场状态
+        // 随主动搭话 leader 心跳传播，剧场窗口关闭或崩溃后按心跳 TTL 自动失效，不会永久锁住麦克风。
+        var proactive = window.appProactive;
+        try {
+            return !!(proactive
+                && typeof proactive.isProactiveSuppressedByPeer === 'function'
+                && proactive.isProactiveSuppressedByPeer() === true);
+        } catch (_) {
+            return false;
+        }
+    }
+    function notifyProactiveSuppressionChanged() {
+        // 主动搭话调度器（含其他窗口中的 leader）按该查询决定是否调度；这里只通知它重新读取。
+        var proactive = window.appProactive;
+        if (!proactive || typeof proactive.refreshProactiveSuppression !== 'function') return;
+        try { proactive.refreshProactiveSuppression(); } catch (_) {}
+    }
     function lockProactiveChatForTheater() {
-        var appState = window.appState;
-        if (!appState || proactiveChatSnapshot !== null) return;
-        proactiveChatSnapshot = { enabled: appState.proactiveChatEnabled === true };
-        appState.proactiveChatEnabled = false;
-        if (typeof window.stopProactiveChatSchedule === 'function') window.stopProactiveChatSchedule();
+        // 绝不改写 appState.proactiveChatEnabled：它是会被 saveSettings 持久化并同步到其他窗口的用户设置。
+        if (proactiveSuppressionClaimed) return;
+        proactiveSuppressionClaimed = true;
+        notifyProactiveSuppressionChanged();
     }
     function restoreProactiveChatAfterTheater() {
-        if (proactiveChatSnapshot === null) return;
-        var snapshot = proactiveChatSnapshot;
-        proactiveChatSnapshot = null;
-        var appState = window.appState;
-        if (!appState) return;
-        appState.proactiveChatEnabled = snapshot.enabled;
-        if (snapshot.enabled && typeof window.resetProactiveChatBackoff === 'function') {
-            window.resetProactiveChatBackoff();
-        }
+        proactiveSuppressionClaimed = false;
+        // 无论本页是否持有登记都要通知：会话可能由被取代的启动释放过登记，只剩 state.active 在抑制。
+        notifyProactiveSuppressionChanged();
     }
     async function stopOrdinaryVoiceInput() {
         var sharedState = window.appState || {};
@@ -432,7 +450,11 @@
             compactChatState: compactState,
             composerDisabled: state.active && state.phase !== 'awaiting_player'
         });
-        if (state.active && typeof chatHost.openWindow === 'function') chatHost.openWindow();
+        // 打字机每个字都会渲染；openWindow 会重挂窗口并重新请求普通 Galgame 选项，每个 Session 只需打开一次。
+        if (state.active && !state.windowClaimed && typeof chatHost.openWindow === 'function') {
+            state.windowClaimed = true;
+            chatHost.openWindow();
+        }
         return true;
     }
     function submitFromHost(text) {
@@ -491,6 +513,8 @@
         // 玩家和猫娘署名都由服务端当前绑定提供，恢复旧记录时也不回退成通用占位名。
         state.playerName = String(participants.player_name || t('theater.player', 'Player'));
         state.catgirlName = String(participants.catgirl_name || 'Neko');
+        // 服务端剧场信号按响应里的原始猫娘名登记；退出时只释放这一个角色，不回退到展示占位名。
+        state.activityCatgirlName = String(participants.catgirl_name || '').trim();
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
@@ -677,6 +701,7 @@
         state.phase = 'loading';
         state.storyId = nextStoryId;
         state.sessionId = nextSessionId;
+        state.windowClaimed = false;
         render();
         var hostReady = await waitForHost();
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
@@ -929,11 +954,24 @@
         }
         return true;
     }
+    function releaseServerTheaterActivity(catgirlName) {
+        // 服务端对主动搭话和普通语音的兜底按最近一次剧场请求计时（TTL 到期自动失效）；
+        // 退出而未结束演绎时显式释放本窗口演绎的角色，避免 TTL 内把已恢复的普通语音误拦，
+        // 也不影响其他窗口正在演绎的角色。失败只等 TTL。
+        if (!catgirlName) return;
+        try {
+            Promise.resolve(requestJson(api.release, {
+                method: 'POST', body: { catgirl_name: catgirlName }
+            })).catch(function () {});
+        } catch (_) {}
+    }
     function clear(reason) {
+        var wasActive = state.active === true;
+        var releasedCatgirlName = state.activityCatgirlName;
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.history = []; state.suggestedInputs = [];
-        state.playerName = ''; state.catgirlName = '';
+        state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.windowClaimed = false;
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
         committedSnapshot = null;
@@ -956,6 +994,7 @@
             });
         }
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
+        if (wasActive) releaseServerTheaterActivity(releasedCatgirlName);
     }
     function openSelector(receipt) {
         state.pendingEnd = receipt || state.pendingEnd;
@@ -1150,6 +1189,8 @@
                 archive_request_id: snapshot.archive_request_id || ''
             };
             state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot);
+            // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
+            lockProactiveChatForTheater();
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {
@@ -1224,6 +1265,8 @@
 
     var runtime = {
         isActive: function () { return state.active; },
+        suppressesProactiveChat: suppressesProactiveChat,
+        blocksOrdinaryVoice: blocksOrdinaryVoice,
         allowsSpeechCorrelation: function (requestId) {
             return state.active && activeSpeechRequests[requestId] === state.queueToken;
         },

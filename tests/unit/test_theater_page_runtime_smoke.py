@@ -25,7 +25,6 @@ def _build_pages_client() -> TestClient:
         steamworks=None,
         templates=Jinja2Templates(directory=PROJECT_ROOT),
         config_manager=None,
-        logger=None,
         initialize_character_data=None,
     )
     app = FastAPI()

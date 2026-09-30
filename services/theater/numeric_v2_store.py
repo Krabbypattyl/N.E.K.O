@@ -15,6 +15,8 @@ from weakref import WeakValueDictionary
 
 import portalocker
 
+from .numeric_v2_archive import _retry_windows_permission_error
+from .numeric_v2_storage_transaction import run_storage_mutation
 from .numeric_v2_performance import (
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
@@ -96,7 +98,11 @@ def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
     if not path.is_file():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Windows share violations (antivirus, indexer, cloud sync) are brief;
+        # retry them like the archive store instead of failing the request.
+        payload = json.loads(
+            _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         # 已存在但不可读的索引不能等同于全新空索引，否则任一写请求都会覆盖全部恢复槽位。
         raise NumericV2StoreError("numeric_story_session_index_read_failed") from exc
@@ -118,6 +124,12 @@ def _read_story_session_slots(path: Path) -> dict[str, dict[str, str]]:
         if normalized_slots:
             normalized[normalized_story_id] = normalized_slots
     return normalized
+
+
+def _is_story_session_index_content_error(exc: NumericV2StoreError) -> bool:
+    """Tell a corrupt index (a rebuildable cache) apart from a temporarily unreadable one."""
+
+    return not isinstance(exc.__cause__, OSError)
 
 
 def _write_story_session_slots(
@@ -150,7 +162,7 @@ def _write_story_session_slots(
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
+        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         temporary_path = None
     finally:
         if temporary_path is not None and temporary_path.exists():
@@ -177,11 +189,17 @@ def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
+        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
         temporary_path = None
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
+
+
+def _with_failed_path(error: NumericV2StoreError, path: Path) -> NumericV2StoreError:
+    """Record which file made a strict enumeration fail so callers can report it."""
+    error.path = str(path)
+    return error
 
 
 def _numeric_v2_session_root(theater_storage_root: Path) -> Path:
@@ -221,17 +239,19 @@ def _read_numeric_v2_session_summary(
     except (UnicodeError, json.JSONDecodeError) as exc:
         # 删除前无法确认归属就必须中止；启动审计会按既有坏档隔离流程处理此错误。
         if raise_on_io_error:
-            raise NumericV2StoreError("numeric_session_read_failed") from exc
+            raise _with_failed_path(
+                NumericV2StoreError("numeric_session_read_failed"), path,
+            ) from exc
         return None
     if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
         if raise_on_io_error:
-            raise NumericV2StoreError("numeric_session_read_failed")
+            raise _with_failed_path(NumericV2StoreError("numeric_session_read_failed"), path)
         return None
     raw_session = payload.get("session")
     binding = raw_session.get("catgirl_binding") if isinstance(raw_session, dict) else None
     if not isinstance(raw_session, dict) or not isinstance(binding, dict):
         if raise_on_io_error:
-            raise NumericV2StoreError("numeric_session_read_failed")
+            raise _with_failed_path(NumericV2StoreError("numeric_session_read_failed"), path)
         return None
     return {
         "session_id": str(raw_session.get("session_id") or path.stem),
@@ -313,14 +333,18 @@ def list_numeric_v2_public_archives(
             continue
         except (UnicodeError, json.JSONDecodeError) as exc:
             if raise_on_io_error:
-                raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
+                raise _with_failed_path(
+                    NumericV2StoreError("numeric_public_archive_read_failed"), path,
+                ) from exc
             continue
         if (
             not isinstance(payload, dict)
             or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
         ):
             if raise_on_io_error:
-                raise NumericV2StoreError("numeric_public_archive_read_failed")
+                raise _with_failed_path(
+                    NumericV2StoreError("numeric_public_archive_read_failed"), path,
+                )
             continue
         summary = {
             "session_id": str(payload.get("session_id") or "").strip(),
@@ -364,8 +388,6 @@ async def numeric_v2_session_files_guard(theater_storage_root: Path):
 
 
 async def delete_numeric_v2_sessions(theater_storage_root: Path, **scope) -> list[dict[str, str]]:
-    from .numeric_v2_storage_transaction import run_storage_mutation
-
     async with numeric_v2_session_files_guard(theater_storage_root):
         # Keep file locks until the worker finishes, including caller cancellation.
         return await run_storage_mutation(
@@ -394,7 +416,13 @@ def _delete_numeric_v2_sessions_unlocked(
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
     # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
-    stories = _read_story_session_slots(index_path)
+    index_error: NumericV2StoreError | None = None
+    try:
+        stories = _read_story_session_slots(index_path)
+    except NumericV2StoreError as exc:
+        if not _is_story_session_index_content_error(exc):
+            raise
+        stories, index_error = {}, exc
     try:
         candidates = list_numeric_v2_sessions(
             theater_storage_root,
@@ -415,6 +443,12 @@ def _delete_numeric_v2_sessions_unlocked(
         )
     except OSError as exc:
         raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
+    if index_error is not None:
+        if candidates or archive_candidates:
+            raise index_error
+        # A corrupt index must not block scopes that own no theater data;
+        # the startup audit quarantines and rebuilds it.
+        return []
     deleted: list[dict[str, str]] = []
     for candidate in candidates:
         path = Path(candidate["path"])
@@ -490,6 +524,47 @@ def _delete_numeric_v2_sessions_unlocked(
     return deleted
 
 
+def _rebind_session_file(
+    path: Path,
+    stories: dict[str, dict[str, str]],
+    normalized_character_id: str,
+    legacy_catgirl_name: str,
+    catgirl_binding: Mapping[str, Any],
+) -> None:
+    """Rewrite one session's identity projection and migrate its story slot in ``stories``."""
+    try:
+        payload = json.loads(
+            _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise NumericV2StoreError("numeric_session_read_failed") from exc
+    raw_session = payload.get("session") if isinstance(payload, dict) else None
+    if not isinstance(raw_session, dict):
+        raise NumericV2StoreError("numeric_session_payload_invalid")
+    existing_binding = raw_session.get("catgirl_binding")
+    refreshed_binding = {
+        str(key): str(value)
+        for key, value in catgirl_binding.items()
+    }
+    if isinstance(existing_binding, Mapping):
+        # 历史 Ledger 按该 Session 当时的称呼事实重放；角色改名只能刷新猫娘展示字段。
+        refreshed_binding["player_address"] = str(
+            existing_binding.get("player_address") or ""
+        )
+    raw_session["catgirl_binding"] = refreshed_binding
+    _atomic_write_json_payload(path, payload)
+    story_id = str(raw_session.get("story_package_id") or "").strip()
+    session_id = str(raw_session.get("session_id") or path.stem).strip()
+    if story_id and session_id:
+        slots = stories.get(story_id, {})
+        legacy_key = str(legacy_catgirl_name or "").strip()
+        # Rename only migrates an existing slot; snapshots stay unpublished.
+        # An established character-ID slot wins over a stale legacy slot.
+        if legacy_key != normalized_character_id and slots.get(legacy_key) == session_id:
+            slots.pop(legacy_key)
+            slots.setdefault(normalized_character_id, session_id)
+
+
 async def update_numeric_v2_character_bindings(
     theater_storage_root: Path,
     *,
@@ -504,48 +579,40 @@ async def update_numeric_v2_character_bindings(
         raise NumericV2StoreError("numeric_character_id_required")
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
+    # Lock order is unchanged (index, then one session path at a time) and the
+    # asyncio locks stay on the loop; every read, write and fsync runs on a
+    # worker. run_storage_mutation keeps a lock held until its worker finishes,
+    # even if the caller is cancelled, so the rename's snapshot rollback never
+    # races a half-written file.
     async with _lock(index_path):
-        candidates = list_numeric_v2_sessions(
+        candidates = await asyncio.to_thread(
+            list_numeric_v2_sessions,
             theater_storage_root,
             character_id=normalized_character_id,
             legacy_catgirl_name=legacy_catgirl_name,
         )
-        stories = _read_story_session_slots(index_path)
+        try:
+            stories = await asyncio.to_thread(_read_story_session_slots, index_path)
+        except NumericV2StoreError as exc:
+            if candidates or not _is_story_session_index_content_error(exc):
+                raise
+            # Characters without theater data are not blocked by a corrupt index.
+            return 0
         updated = 0
         for candidate in candidates:
             path = Path(candidate["path"])
             async with _lock(path):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                    raise NumericV2StoreError("numeric_session_read_failed") from exc
-                raw_session = payload.get("session") if isinstance(payload, dict) else None
-                if not isinstance(raw_session, dict):
-                    raise NumericV2StoreError("numeric_session_payload_invalid")
-                existing_binding = raw_session.get("catgirl_binding")
-                refreshed_binding = {
-                    str(key): str(value)
-                    for key, value in catgirl_binding.items()
-                }
-                if isinstance(existing_binding, Mapping):
-                    # 历史 Ledger 按该 Session 当时的称呼事实重放；角色改名只能刷新猫娘展示字段。
-                    refreshed_binding["player_address"] = str(
-                        existing_binding.get("player_address") or ""
-                    )
-                raw_session["catgirl_binding"] = refreshed_binding
-                _atomic_write_json_payload(path, payload)
-                story_id = str(raw_session.get("story_package_id") or "").strip()
-                session_id = str(raw_session.get("session_id") or path.stem).strip()
-                if story_id and session_id:
-                    slots = stories.get(story_id, {})
-                    legacy_key = str(legacy_catgirl_name or "").strip()
-                    # Rename only migrates an existing slot; snapshots stay unpublished.
-                    # An established character-ID slot wins over a stale legacy slot.
-                    if legacy_key != normalized_character_id and slots.get(legacy_key) == session_id:
-                        slots.pop(legacy_key)
-                        slots.setdefault(normalized_character_id, session_id)
+                await run_storage_mutation(
+                    nullcontext,
+                    _rebind_session_file,
+                    path,
+                    stories,
+                    normalized_character_id,
+                    legacy_catgirl_name,
+                    catgirl_binding,
+                )
                 updated += 1
-        _write_story_session_slots(index_path, stories)
+        await run_storage_mutation(nullcontext, _write_story_session_slots, index_path, stories)
         return updated
 
 
@@ -582,7 +649,7 @@ class NumericV2SessionStore:
 
     async def get_story_session_id(self, story_id: str, character_id: str) -> str:
         async with _lock(self._story_session_index_path):
-            stories = self._read_story_session_index()
+            stories = await asyncio.to_thread(self._read_story_session_index)
             return stories.get(str(story_id or "").strip(), {}).get(
                 str(character_id or "").strip(),
                 "",
@@ -638,16 +705,28 @@ class NumericV2SessionStore:
                 return indexed
         return None
 
+    async def _mutate(self, operation):
+        """Run one synchronous session write on a worker inside the storage fence.
+
+        Callers keep the asyncio path locks on the event loop. The fence is
+        entered and left on the same worker thread (Windows mutexes are
+        thread-bound), and file I/O, fsync and ledger replay stay off the loop.
+        """
+
+        return await run_storage_mutation(self.write_transaction, operation)
+
     async def create(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def create() -> NumericV2StoredSession:
                 if path.exists():
                     raise NumericV2SessionExistsError("numeric_session_exists")
                 self.engine.validate_session(session)
                 stored = NumericV2StoredSession(session, ())
                 self._write(path, stored, exclusive=True)
                 return stored
+
+            return await self._mutate(create)
 
     async def create_isolated_snapshot(
         self,
@@ -657,13 +736,15 @@ class NumericV2SessionStore:
 
         path = self._path(stored.session.session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def create() -> NumericV2StoredSession:
                 if path.exists():
                     raise NumericV2SessionExistsError("numeric_session_exists")
                 # 先在内存中验证完整账本，再一次落盘；失败时不会留下半条分叉链。
                 self._validate_chain(stored)
                 self._write(path, stored, exclusive=True)
                 return stored
+
+            return await self._mutate(create)
 
     async def create_story_session(
         self,
@@ -678,7 +759,7 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_story_session_index_invalid")
         async with _lock(index_path):
             async with _lock(path):
-                with self.write_transaction():
+                def create() -> NumericV2StoredSession:
                     if path.exists():
                         raise NumericV2SessionExistsError("numeric_session_exists")
                     self.engine.validate_session(session)
@@ -703,6 +784,8 @@ class NumericV2SessionStore:
                         raise
                     return stored
 
+                return await self._mutate(create)
+
     async def replace_active(
         self,
         previous_session_id: str,
@@ -721,7 +804,7 @@ class NumericV2SessionStore:
         async with _lock(index_path):
             async with _lock(previous_path):
                 async with _lock(next_path):
-                    with self.write_transaction():
+                    def replace_session() -> NumericV2StoredSession:
                         if not previous_path.is_file():
                             raise NumericV2SessionNotFoundError("numeric_session_not_found")
                         previous = self._read(previous_path)
@@ -752,20 +835,27 @@ class NumericV2SessionStore:
                             raise NumericV2StoreError("numeric_session_replace_failed") from exc
                         return stored
 
+                    return await self._mutate(replace_session)
+
     async def load(self, session_id: str) -> NumericV2StoredSession | None:
         path = self._path(session_id)
         async with _lock(path):
-            try:
-                stored = self._read(path)
-            except NumericV2StoreError as exc:
-                if isinstance(exc.__cause__, FileNotFoundError):
-                    return None
-                raise
-            # 先按持久化身份拒绝跨剧本 Session，再用当前剧本引擎重放 Ledger。
-            if stored.session.story_package_id != self.engine.story_id:
+            # Reading and replaying the whole ledger grows with the session; keep
+            # it off the event loop while the path lock stays held on the loop.
+            return await asyncio.to_thread(self._load_validated, path)
+
+    def _load_validated(self, path: Path) -> NumericV2StoredSession | None:
+        try:
+            stored = self._read(path)
+        except NumericV2StoreError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
                 return None
-            self._validate_chain(stored)
-            return stored
+            raise
+        # 先按持久化身份拒绝跨剧本 Session，再用当前剧本引擎重放 Ledger。
+        if stored.session.story_package_id != self.engine.story_id:
+            return None
+        self._validate_chain(stored)
+        return stored
 
     async def load_for_lifecycle(
         self,
@@ -775,16 +865,19 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            try:
-                stored = self._read(path)
-            except NumericV2StoreError as exc:
-                if isinstance(exc.__cause__, FileNotFoundError):
-                    return None
-                raise
-            if stored.session.story_package_id != self.engine.story_id:
+            return await asyncio.to_thread(self._load_for_lifecycle_validated, path)
+
+    def _load_for_lifecycle_validated(self, path: Path) -> NumericV2StoredSession | None:
+        try:
+            stored = self._read(path)
+        except NumericV2StoreError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
                 return None
-            self._validate_lifecycle_chain(stored)
-            return stored
+            raise
+        if stored.session.story_package_id != self.engine.story_id:
+            return None
+        self._validate_lifecycle_chain(stored)
+        return stored
 
     async def commit(
         self,
@@ -793,7 +886,7 @@ class NumericV2SessionStore:
     ) -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def commit_turn() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -811,17 +904,19 @@ class NumericV2SessionStore:
                     raise NumericV2StoreError("numeric_revision_not_monotonic")
                 # Forget can advance while this turn is being generated without
                 # changing the story revision. Keep its durable boundary.
-                session = replace(
+                committed = replace(
                     session,
                     forgotten_through_revision=current.session.forgotten_through_revision,
                 )
                 stored = NumericV2StoredSession(
-                    session,
+                    committed,
                     (*current.ledger_events, deepcopy(dict(ledger_event))),
                 )
                 self._validate_chain(stored)
                 self._write(path, stored)
                 return stored
+
+            return await self._mutate(commit_turn)
 
     async def end_session(
         self,
@@ -833,7 +928,7 @@ class NumericV2SessionStore:
     ) -> NumericV2StoredSession:
         path = self._path(session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def end() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -862,6 +957,8 @@ class NumericV2SessionStore:
                 self._write(path, stored)
                 return stored
 
+            return await self._mutate(end)
+
     async def resume_session(
         self,
         session_id: str,
@@ -873,7 +970,7 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def resume() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -901,6 +998,8 @@ class NumericV2SessionStore:
                 self._write(path, resumed)
                 return resumed
 
+            return await self._mutate(resume)
+
     async def forget_history_through_current_revision(
         self,
         session_id: str,
@@ -911,7 +1010,7 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            with self.write_transaction():
+            def forget() -> NumericV2StoredSession:
                 if not path.is_file():
                     raise NumericV2SessionNotFoundError("numeric_session_not_found")
                 current = self._read(path)
@@ -938,11 +1037,16 @@ class NumericV2SessionStore:
                 self._write(path, forgotten)
                 return forgotten
 
+            return await self._mutate(forget)
+
+
     def _read(self, path: Path) -> NumericV2StoredSession:
         from .numeric_v2_runtime import ScriptSessionV2, _player_address_disclosed
 
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
+            )
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise NumericV2StoreError("numeric_session_read_failed") from exc
         if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
@@ -1131,6 +1235,10 @@ class NumericV2SessionStore:
                 natural_ending_ready = event.get("natural_ending_ready", False)
                 if not isinstance(natural_ending_ready, bool):
                     raise ValueError("natural_ending_ready_shape")
+                # 条件旁白离幕门槛随当时的复核开关记录；旧 Ledger 缺省开启。
+                condition_narrations_enabled = event.get("condition_narrations_enabled", True)
+                if not isinstance(condition_narrations_enabled, bool):
+                    raise ValueError("condition_narrations_enabled_shape")
                 request = TurnRequestV2.from_mapping(
                     {
                         "client_turn_id": turn_id,
@@ -1146,6 +1254,7 @@ class NumericV2SessionStore:
                     transition_intent=str(event.get("transition_intent") or "unclear"),
                     natural_ending_ready=natural_ending_ready,
                     ledger_events=tuple(events[:event_index]) if "accepted_offer_route_id" in event else (),
+                    condition_narrations_enabled=condition_narrations_enabled,
                     fact_operations=tuple(
                         dict(operation)
                         for operation in event.get("fact_operations") or []
@@ -1366,12 +1475,12 @@ class NumericV2SessionStore:
                     with portalocker.Lock(str(path.parent / ".creates.lock"), mode="a", timeout=10):
                         if os.path.lexists(path):
                             raise NumericV2SessionExistsError("numeric_session_exists")
-                        os.replace(temporary_path, path)
+                        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
                         temporary_path = None
                 except portalocker.exceptions.LockException as exc:
                     raise NumericV2StoreError("numeric_session_create_failed") from exc
             else:
-                os.replace(temporary_path, path)
+                _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
                 temporary_path = None
         finally:
             if temporary_path is not None and temporary_path.exists():

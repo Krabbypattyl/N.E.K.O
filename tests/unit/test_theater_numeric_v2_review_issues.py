@@ -102,9 +102,7 @@ def test_location_contract_is_requested_only_for_confirmed_departure(player_inpu
 
 def test_reason_text_cannot_override_a_verified_body_issue():
     review = replace(_review([_issue()]), failure_reason='正文承接玩家已经完成的离开动作。')
-    assert not workflow._review_mislabels_explicit_player_movement(
-        review, workflow.project_player_action_result('（推门离开）明天见。'),
-    )
+    assert not workflow._review_mislabels_explicit_player_movement(review)
 
 
 @pytest.mark.asyncio

@@ -78,6 +78,7 @@ from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
+from memory.recent import TheaterEpisodeRetracted, is_retracted_theater_episode
 from .runtime import app
 
 
@@ -86,6 +87,9 @@ class HistoryRequest(BaseModel):
     language: str | None = None
     render_language: str | None = None
     idempotency_key: str | None = None
+    # Theater archive attempt number; lets a retraction fence late writes of
+    # attempts issued before the player declined the archive.
+    theater_archive_attempt: int | None = Field(default=None, ge=0)
 
 
 class PromptLocalePreferenceRequest(BaseModel):
@@ -94,6 +98,15 @@ class PromptLocalePreferenceRequest(BaseModel):
 
 class TheaterMemoryForgetRequest(BaseModel):
     story_id: str = Field(min_length=1, max_length=256)
+
+
+class TheaterEpisodeRetractRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(min_length=1, max_length=256)
+    archive_through_revision: int = Field(ge=0)
+    # Identify the archive attempts to fence against late /cache writes.
+    archive_request_id: str = Field(default="", max_length=160)
+    archive_attempt: int = Field(default=0, ge=0)
 
 
 def _cache_event_id(lanlan_name: str, idempotency_key: str) -> str:
@@ -1067,6 +1080,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = stable_event_id or str(uuid4())
             duplicate_request = False
+            retracted_request = False
             theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
                 # 锁内再次检查才能收住两个相同请求同时通过首轮检查的竞争窗口。
@@ -1086,18 +1100,27 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                         previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
                             lanlan_name
                         )
-                        stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
-                            input_history[0],
-                            lanlan_name,
-                        )
-                        input_history = [stored_episode]
-                        updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
-                            lanlan_name
-                        )
-                        theater_index_events = _theater_index_events(
-                            lanlan_name,
-                            updated_theater_history,
-                        )
+                        try:
+                            stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
+                                input_history[0],
+                                lanlan_name,
+                                archive_request_id=idempotency_key,
+                                archive_attempt=request.theater_archive_attempt,
+                            )
+                        except TheaterEpisodeRetracted:
+                            # The player declined this archive while the request was
+                            # still in flight; the tombstone was checked under the
+                            # same settle lock the retraction holds.
+                            retracted_request = True
+                        else:
+                            input_history = [stored_episode]
+                            updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                                lanlan_name
+                            )
+                            theater_index_events = _theater_index_events(
+                                lanlan_name,
+                                updated_theater_history,
+                            )
                     elif stable_event_id:
                         for message in input_history:
                             message.metadata["cache_event_id"] = stable_event_id
@@ -1115,7 +1138,9 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                             lanlan_name,
                             compress=False,
                         )
-                    if theater_episode_batch:
+                    if retracted_request:
+                        pass
+                    elif theater_episode_batch:
                         # 以 recent 为唯一热记忆基线重建剧场时间索引：
                         # 这会同时淘汰超限周目和升级前遗留的完整正文行。
                         try:
@@ -1142,6 +1167,9 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                         )
             if duplicate_request:
                 return {"status": "already_cached", "count": len(input_history)}
+            if retracted_request:
+                logger.info(f"[MemoryServer] cache: {lanlan_name} dropped a retracted theater archive write")
+                return {"status": "retracted", "count": 0}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
@@ -1211,10 +1239,18 @@ async def forget_theater_memory(
                     lanlan_name,
                 )
             except Exception:
-                # recent 删除失败时恢复仍存在的原始摘要索引。
+                # recent 删除失败时按 recent 的实际内容恢复索引：删除可能已部分落盘，
+                # 直接用删除前快照回滚会把已删掉的剧本重新写回可召回索引。
                 try:
+                    try:
+                        actual = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name,
+                        )
+                    except Exception:
+                        logger.exception("[MemoryServer] 剧本遗忘失败后重读 recent 失败，按删除前快照回滚索引")
+                        actual = current
                     await runtime.time_manager.areconcile_theater_conversations(
-                        _theater_index_events(lanlan_name, current),
+                        _theater_index_events(lanlan_name, actual),
                         lanlan_name,
                     )
                 except Exception:
@@ -1236,6 +1272,102 @@ async def forget_theater_memory(
         raise HTTPException(
             status_code=500,
             detail="theater_memory_forget_failed",
+        ) from exc
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/retract")
+async def retract_theater_episode(
+    lanlan_name: str,
+    request: TheaterEpisodeRetractRequest,
+):
+    """Idempotently remove the episode capsule of one declined theater archive.
+
+    The theater may time out while this server still commits the archive; when
+    the player then declines the archive, the theater calls this to take back
+    exactly that range's capsule (matched by story, session and through-revision).
+    With ``archive_request_id`` it also leaves a persistent tombstone so a /cache
+    write of any attempt up to ``archive_attempt`` that is still in flight is
+    dropped instead of resurrecting the declined summary.
+    """
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    session_id = request.session_id.strip()
+    through = int(request.archive_through_revision)
+    if not story_id or not session_id:
+        raise HTTPException(status_code=422, detail="theater_episode_identity_required")
+
+    def is_target(message) -> bool:
+        return is_retracted_theater_episode(message, story_id, session_id, through)
+
+    archive_request_id = request.archive_request_id.strip()
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            if archive_request_id:
+                # The archive request may still be in flight (the theater only timed
+                # out). Record the tombstone first, under the settle lock /cache
+                # checks it under, so a late write of these attempts is dropped even
+                # when there is nothing to remove yet.
+                await runtime.recent_history_manager.record_theater_retraction(
+                    lanlan_name,
+                    story_id=story_id,
+                    session_id=session_id,
+                    archive_through_revision=through,
+                    archive_request_id=archive_request_id,
+                    archive_attempt=request.archive_attempt,
+                )
+            current = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            if not any(is_target(message) for message in current):
+                return {"ok": True, "removed_recent": 0, "removed_time_index": 0}
+            remaining = [message for message in current if not is_target(message)]
+            # Same order as story forget: drop the recallable index first, so a
+            # failed recent write still leaves the original summary in place.
+            reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
+                _theater_index_events(lanlan_name, remaining),
+                lanlan_name,
+            )
+            try:
+                removed_recent = await runtime.recent_history_manager.retract_theater_episode(
+                    story_id,
+                    session_id,
+                    through,
+                    lanlan_name,
+                )
+            except Exception:
+                try:
+                    try:
+                        actual = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name,
+                        )
+                    except Exception:
+                        logger.exception("[MemoryServer] theater episode retract: recent re-read failed; restoring index from snapshot")
+                        actual = current
+                    await runtime.time_manager.areconcile_theater_conversations(
+                        _theater_index_events(lanlan_name, actual),
+                        lanlan_name,
+                    )
+                except Exception:
+                    logger.exception("[MemoryServer] theater episode retract: time index rollback failed")
+                raise
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] retracting theater episode %s/%s for %s failed: %s",
+            story_id,
+            session_id,
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_retract_failed",
         ) from exc
 
 
@@ -1280,9 +1412,6 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 lanlan_name,
                 on_compress_done=review._on_compress_done,
             )
-            # 旧模块已禁用（性能不足）：
-            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # 异步事实提取（不阻塞返回，失败静默跳过）

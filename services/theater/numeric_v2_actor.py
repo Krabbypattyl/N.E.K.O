@@ -7,6 +7,7 @@ import difflib
 import inspect
 import json
 import logging
+import re
 import time
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -67,7 +68,12 @@ from .numeric_v2_performance import (
     performance_content_blocks,
     transition_source_dialogue_policy,
 )
-from .numeric_v2_runtime import NumericV2Engine, ScriptSessionV2, TurnOutcomeV2
+from .numeric_v2_runtime import (
+    PLAYER_ADDRESS_BOUNDARY_CHARS,
+    NumericV2Engine,
+    ScriptSessionV2,
+    TurnOutcomeV2,
+)
 
 
 NUMERIC_V2_ACTOR_TIMEOUT_SECONDS = 35.0
@@ -419,6 +425,13 @@ def _project_player_address(player_address: str, *, known: bool) -> str:
     return "你"
 
 
+_PLAYER_AUTHORED_PERFORMANCE_KEYS = frozenset({
+    "suggested_inputs",
+    "accept_input",
+    "alternative_inputs",
+})
+
+
 def _assert_no_unknown_player_address_leak(
     performance: Mapping[str, Any],
     *,
@@ -436,7 +449,27 @@ def _assert_no_unknown_player_address_leak(
         or configured_address in str(player_input or "")
     ):
         return
-    if configured_address in json.dumps(performance, ensure_ascii=False, separators=(",", ":")):
+    # 推荐输入是玩家自己的台词，不是猫娘的称呼；只检查猫娘正文与旁白。
+    # 边界沿用 Runtime 披露判定，并补上混合正文的动作括号和引号/语气标点，
+    # 使“（抬头）哥哥，”仍算直接称呼，而“小哥哥”“你哥哥”不算。
+    boundary = PLAYER_ADDRESS_BOUNDARY_CHARS + r"（）()\[\]【】\"'“”‘’「」『』？?、…～~—"
+    pattern = re.compile(
+        rf"(?:^|(?<=[{boundary}])){re.escape(configured_address)}(?=$|[{boundary}])",
+        flags=re.IGNORECASE,
+    )
+
+    def speech_texts(value: Any, key: str = "") -> list[str]:
+        if key in _PLAYER_AUTHORED_PERFORMANCE_KEYS:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, Mapping):
+            return [text for k, v in value.items() for text in speech_texts(v, str(k))]
+        if isinstance(value, (list, tuple)):
+            return [text for item in value for text in speech_texts(item)]
+        return []
+
+    if any(pattern.search(text) for text in speech_texts(performance)):
         raise NumericV2ActorOutputError("numeric_v2_actor_player_address_leak")
 
 
@@ -1384,6 +1417,19 @@ def _profile_for_acting_contract(
         else:
             selected.append(line)
     return "\n".join(selected).strip()
+
+
+def actor_visible_profile(character_profile: str) -> str:
+    """Return every persona line any Actor prompt or output check can consume.
+
+    Actor prompts only see ``_profile_for_acting_contract`` projections and the
+    output check only reads the self-reference field. An empty contract keeps
+    the widest projection, so other persona facts (for example relationship
+    notes promoted by background memory work) can change without invalidating
+    a turn that never saw them.
+    """
+
+    return _profile_for_acting_contract(character_profile, {})
 
 
 def _assert_acting_contract_output(
@@ -2335,7 +2381,10 @@ def _turn_messages(
     )
     binding = {"catgirl_name": catgirl_name, "player_address": player_address}
     for label, node in [("当前幕", source)] + ([("目标幕", target)] if route_changed else []):
-        fixed_note = actor_note(node, session, binding, player_address_known, project_condition=cast.text)
+        fixed_note = actor_note(
+            node, session, binding, player_address_known, project_condition=cast.text,
+            condition_triggers_enabled=outcome.ledger_event.get("condition_narrations_enabled") is not False,
+        )
         if fixed_note:
             system_prompt += f"\n{label}固定旁白说明：\n{fixed_note}"
     if source["story_beat"].get("fixed_narrations"):
@@ -3387,4 +3436,5 @@ __all__ = [
     "NumericV2ActorError",
     "NumericV2ActorOutputError",
     "NumericV2ActorUnavailableError",
+    "actor_visible_profile",
 ]

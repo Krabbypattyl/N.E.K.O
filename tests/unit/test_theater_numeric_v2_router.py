@@ -84,6 +84,53 @@ def test_numeric_v2_public_performance_hides_route_identifiers():
     }
 
 
+def test_numeric_v2_turn_payload_keeps_runtime_projections_server_side(tmp_path, monkeypatch):
+    """Hidden metric values and node IDs in runtime projections never reach the page."""
+
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(MetricChangeV2("trust", 1, "玩家兑现承诺", "我把毛巾递给你。"),),
+            scene_complete=False,
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "projection_leak"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "projection_leak",
+                "client_turn_id": "projection_leak_1",
+                "base_revision": 0,
+                "message": "我把毛巾递给你。",
+            },
+        )
+
+    assert submitted.status_code == 200, submitted.json()
+    body = submitted.json()
+    persisted = json.loads(
+        (tmp_path / "theater" / "numeric_v2" / "sessions" / "projection_leak.json").read_text(encoding="utf-8")
+    )
+    stored_record = persisted["session"]["performance_history"][-1]
+    # The server keeps the evidence for replay; only the browser projection drops it.
+    assert stored_record["fact_projection"]["deterministic_events"]
+    assert stored_record["timeline_projection"]["scene_scope"]["node_id"]
+    public_record = body["session"]["performance_history"][-1]
+    assert "fact_projection" not in public_record
+    assert "timeline_projection" not in public_record
+    assert "fact_projection" not in body["performance"]
+    assert "timeline_projection" not in body["performance"]
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert "deterministic_events" not in serialized
+    assert "scene_scope" not in serialized
+
+
 def test_llm_role_dict_normalization_strips_internal_metadata():
     """角色字典发送到模型供应商前必须剥离 N.E.K.O 内部元数据。"""  # noqa: DOCSTRING_CJK
     normalized = _normalize_messages([{
@@ -188,6 +235,47 @@ def test_numeric_v2_story_import_requires_v22_upgrade(tmp_path, monkeypatch):
     assert rejected.json()["reason"] == "numeric_v2_upgrade_required"
     assert accepted.status_code == 200
     assert accepted.json()["package"]["contract_version"] == "v2.2"
+
+
+def test_numeric_v2_malformed_package_is_rejected_and_skipped_structurally(tmp_path, monkeypatch):
+    """A malformed package yields a structured import error and never breaks the story list."""
+
+    client = _client(tmp_path, monkeypatch)
+    malformed = numeric_v2_story()
+    malformed["meta"]["story_id"] = "malformed_import"
+    malformed["metric_schema"]["trust"]["visibility"] = []
+    on_disk = numeric_v2_story()
+    on_disk["meta"]["story_id"] = "malformed_on_disk"
+    on_disk["nodes"][0]["type"] = []
+    packages = tmp_path / "theater" / "numeric_v2" / "packages"
+    (packages / "malformed_on_disk.json").write_text(json.dumps(on_disk), encoding="utf-8")
+
+    with client:
+        imported = client.post("/api/theater-numeric/packages/import", json=malformed)
+        listed = client.get("/api/theater-numeric/stories")
+
+    assert imported.status_code == 422
+    assert imported.json()["reason"] == "numeric_v2_contract_invalid"
+    assert listed.status_code == 200
+    assert [item["story_id"] for item in listed.json()["stories"]] == ["numeric_v2_contract"]
+
+
+def test_numeric_v2_story_import_rejects_oversized_package(tmp_path, monkeypatch):
+    """Import bodies above the package cap are refused before JSON parsing."""
+
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(numeric_theater_router, "MAX_PACKAGE_BYTES", 4096)
+    story = numeric_v2_story()
+    story["meta"]["story_id"] = "oversized_import"
+    story["characters"] = {"padding": "x" * 8192}
+
+    with client:
+        rejected = client.post("/api/theater-numeric/packages/import", json=story)
+        accepted = client.post("/api/theater-numeric/packages/import", content=b"{}")
+
+    assert rejected.status_code == 413
+    assert rejected.json()["reason"] == "numeric_story_package_too_large"
+    assert accepted.status_code != 413
 
 
 def test_numeric_v2_story_list_reuses_compiled_summary_intro():
@@ -330,7 +418,28 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         assert started.status_code == 200
         assert started.json()["session"]["lifecycle_revision"] == 0
         assert body["story_intro"]["player_identity"].startswith("你，")
-        assert body["participants"]["player_name"] == "你"
+        # Prose keeps the second-person projection; the speaker label is left
+        # empty so the page shows its localized "Player" fallback.
+        assert body["participants"] == {"player_name": "", "catgirl_name": "测试猫娘"}
+
+
+def test_numeric_v2_participant_labels_never_use_chinese_placeholders():
+    """Participant labels are the real names or empty, never the Chinese placeholders."""
+
+    participants = numeric_theater_router._participants
+    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=True) == {
+        "player_name": "哥哥",
+        "catgirl_name": "小岚",
+    }
+    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=False) == {
+        "player_name": "",
+        "catgirl_name": "小岚",
+    }
+    # No nickname configured: the binding default "你" is not a name either.
+    assert participants({"player_address": "你", "catgirl_name": ""}, known=True) == {
+        "player_name": "",
+        "catgirl_name": "",
+    }
 
 
 def test_numeric_v2_subjective_input_reaches_actor_without_classification(
@@ -2479,6 +2588,86 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         assert restored.json()["session"]["revision"] == 1
 
 
+_FORGET_SCOPE = {"story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32}
+
+
+def _prepare_forget(tmp_path):
+    NumericV2ArchiveStore(tmp_path / "theater").prepare_forget(
+        **_FORGET_SCOPE, legacy_catgirl_name="测试猫娘",
+    )
+
+
+def test_pending_forget_blocks_new_input_and_resume(tmp_path, monkeypatch):
+    """While a story forget is pending, neither new turns nor resume may reopen the story."""
+
+    client = _client(tmp_path, monkeypatch)
+    actor_calls = []
+
+    async def turn(*args, **kwargs):
+        actor_calls.append(kwargs)
+        return _performance("我在听。")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    scope = {"story_id": "numeric_v2_contract", "session_id": "forget_pending"}
+    with client:
+        assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+        exited = client.post("/api/theater-numeric/session/end", json={
+            **scope, "base_revision": 0, "base_lifecycle_revision": 0,
+        })
+        assert exited.status_code == 200
+        _prepare_forget(tmp_path)
+        resumed = client.post("/api/theater-numeric/session/resume", json={
+            **scope, "base_revision": 0, "base_lifecycle_revision": 1,
+        })
+        # Once the forget completes, resume works again; then block input with a new intent.
+        NumericV2ArchiveStore(tmp_path / "theater").complete_forget(**_FORGET_SCOPE)
+        assert client.post("/api/theater-numeric/session/resume", json={
+            **scope, "base_revision": 0, "base_lifecycle_revision": 1,
+        }).status_code == 200
+        _prepare_forget(tmp_path)
+        submitted = client.post("/api/theater-numeric/session/input", json={
+            **scope, "client_turn_id": "forget_pending_1", "base_revision": 0, "message": "我先把信收好。",
+        })
+        restored = client.get(
+            "/api/theater-numeric/session/forget_pending",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["reason"] == "numeric_theater_memory_forget_pending"
+    assert submitted.status_code == 409
+    assert submitted.json()["reason"] == "numeric_theater_memory_forget_pending"
+    assert actor_calls == []
+    assert restored.json()["session"]["revision"] == 0
+
+
+def test_forget_prepared_during_generation_blocks_the_commit(tmp_path, monkeypatch):
+    """A forget intent written while the models run is re-checked under the commit locks."""
+
+    client = _client(tmp_path, monkeypatch)
+
+    async def turn(*args, **kwargs):
+        # The player triggers "forget this story" from another window meanwhile.
+        _prepare_forget(tmp_path)
+        return _performance("我在听。")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    scope = {"story_id": "numeric_v2_contract", "session_id": "forget_race"}
+    with client:
+        assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+        submitted = client.post("/api/theater-numeric/session/input", json={
+            **scope, "client_turn_id": "forget_race_1", "base_revision": 0, "message": "我先把信收好。",
+        })
+        restored = client.get(
+            "/api/theater-numeric/session/forget_race",
+            params={"story_id": "numeric_v2_contract"},
+        )
+
+    assert submitted.status_code == 409
+    assert submitted.json()["reason"] == "numeric_theater_memory_forget_pending"
+    assert restored.json()["session"]["revision"] == 0
+
+
 def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
     """主动退出只离开演绎界面，继续时必须恢复原 Session、revision 和历史。"""  # noqa: DOCSTRING_CJK
 
@@ -4253,7 +4442,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
         tmp_path / "theater" / "numeric_v2" / "sessions" / "archive_session.json"
     ).exists()
     assert captured["calls"] == 1
-    assert captured["character_lock_held"] is True
+    assert captured["character_lock_held"] is False
     assert captured["url"].endswith("/%E6%B5%8B%E8%AF%95%E7%8C%AB%E5%A8%98")
     assert captured["payload"]["idempotency_key"] == ended["archive_request_id"]
     memory_text = captured["payload"]["input_history"]
@@ -4617,7 +4806,7 @@ def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
         "removed_receipts": 0,
     }
     assert captured["payload"] == {"story_id": "numeric_v2_contract"}
-    assert captured["character_lock_held"] is True
+    assert captured["character_lock_held"] is False
 
 
 def test_numeric_story_memory_forget_rejects_switched_character(
@@ -5646,13 +5835,53 @@ def test_deleted_story_summary_list_excludes_installed_packages(tmp_path, monkey
 
     class MemoryClient:
         async def get(self, url, **kwargs):
-            assert numeric_theater_router.character_config_mutation_lock.locked()
+            assert not numeric_theater_router.character_config_mutation_lock.locked()
             return SimpleNamespace(is_success=True, json=lambda: {'ok': True, 'stories': rows})
 
     monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
     with _client(tmp_path, monkeypatch) as client:
         listed = client.get('/api/theater-numeric/memory/stories').json()
     assert listed['stories'] == [{**rows[1], 'memory_only': True}]
+
+
+def test_forget_erases_story_and_unattributable_quarantined_public_archives(tmp_path, monkeypatch):
+    """Forget covers quarantined archives of the story/character and those whose owner is unknown."""
+    import hashlib
+
+    class MemoryClient:
+        async def post(self, url, **kwargs):
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
+    scope = {'story_id': 'numeric_v2_contract', 'character_id': 'character_' + '1' * 32}
+    store = NumericV2ArchiveStore(tmp_path / 'theater')
+    quarantine_root = store.public_archive_quarantine_root
+
+    def quarantined(session_id, content):
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(session_id.encode('utf-8')).hexdigest()
+        path = quarantine_root / f'invalid-1-{"0" * 32}-{key}.json'
+        path.write_text(content, encoding='utf-8')
+        return path
+
+    with _client(tmp_path, monkeypatch) as client:
+        assert client.post('/api/theater-numeric/session/start', json={
+            'story_id': scope['story_id'], 'session_id': 'forget_quarantine'}).status_code == 200
+        erased = [
+            quarantined('own', json.dumps({'story_id': scope['story_id'], 'character_id': scope['character_id']})),
+            # The unparseable copy of the current session's archive is found by its basename.
+            quarantined('forget_quarantine', '{broken'),
+            quarantined('unknown', '[]'),
+        ]
+        kept = [
+            quarantined('other_story', json.dumps({'story_id': 'other_story', 'character_id': scope['character_id']})),
+            quarantined('other_character', json.dumps({'story_id': scope['story_id'], 'character_id': 'character_' + '2' * 32})),
+        ]
+        kept_bytes = [path.read_bytes() for path in kept]
+        assert client.post('/api/theater-numeric/memory/forget', json=scope).status_code == 200
+    assert not any(path.exists() for path in erased)
+    assert [path.read_bytes() for path in kept] == kept_bytes
+    assert store.pending_forget(**scope) is None
 
 
 def test_forget_then_exit_without_new_turn_cannot_archive_old_content(tmp_path, monkeypatch):
@@ -5763,3 +5992,237 @@ def test_archiving_after_package_upgrade_preserves_completion(tmp_path, monkeypa
         retry = client.post('/api/theater-numeric/session/archive', json=payload)
         assert retry.json()['status'] == 'already_written'
         assert len(captured) == 1
+
+
+def _ended_archive_payload(client):
+    scope = {"story_id": "numeric_v2_contract", "session_id": "gap_session"}
+    assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+    ended = client.post("/api/theater-numeric/session/end", json={
+        **scope, "base_revision": 0, "base_lifecycle_revision": 0,
+    }).json()
+    return {**scope, "revision": 0, "end_receipt_id": ended["end_receipt_id"],
+            "archive_request_id": ended["archive_request_id"]}
+
+
+def test_archive_memory_call_releases_character_lock_and_keeps_concurrent_rename(tmp_path, monkeypatch):
+    """A rename that lands during the memory round trip must survive the final receipt write."""
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    observed = {}
+
+    async def post(url, **kwargs):
+        observed["character_lock"] = numeric_theater_router.character_config_mutation_lock.locked()
+        observed["memory_operation_lock"] = numeric_theater_router._memory_operation_lock(
+            numeric_theater_router.get_config_manager(), "numeric_v2_contract",
+        ).locked()
+        # With the global lock free, a character rename can rewrite the display name now.
+        async with numeric_theater_router.character_config_mutation_lock:
+            receipt = store.load(observed["receipt_id"])
+            store._write(store._receipt_path(observed["receipt_id"]), {**receipt, "catgirl_name": "改名猫娘"})
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached", "count": 1})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        observed["receipt_id"] = payload["end_receipt_id"]
+        response = client.post("/api/theater-numeric/session/archive", json=payload)
+    assert response.status_code == 200 and response.json()["status"] == "written"
+    assert observed["character_lock"] is False
+    assert observed["memory_operation_lock"] is True
+    receipt = store.load(payload["end_receipt_id"])
+    assert receipt["status"] == "written"
+    assert receipt["catgirl_name"] == "改名猫娘"
+
+
+def test_archive_aborts_when_character_deletion_removes_receipt_during_memory_call(tmp_path, monkeypatch):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    observed = {}
+
+    async def post(url, **kwargs):
+        store._receipt_path(observed["receipt_id"]).unlink()
+        store.discard_staged_public_archive(observed["receipt_id"])
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached", "count": 1})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        observed["receipt_id"] = payload["end_receipt_id"]
+        response = client.post("/api/theater-numeric/session/archive", json=payload)
+    assert response.status_code == 409
+    assert response.json()["reason"] == "numeric_archive_state_changed"
+    assert store.load(payload["end_receipt_id"]) is None
+    assert store.list_public_archives(story_id="numeric_v2_contract") == []
+
+
+def test_skip_after_archive_timeout_retracts_possibly_committed_summary(tmp_path, monkeypatch):
+    """The memory service may commit an archive the theater timed out on; skip takes it back."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+    retract_ok = {"value": False}
+
+    async def post(url, **kwargs):
+        calls.append((url, kwargs.get("json")))
+        if url.endswith("/cache/%E6%B5%8B%E8%AF%95%E7%8C%AB%E5%A8%98"):
+            # The memory service keeps running and commits after the client gave up.
+            raise TimeoutError("memory service slow")
+        if url.endswith("/theater/retract"):
+            observed_lock["character"] = numeric_theater_router.character_config_mutation_lock.locked()
+            if not retract_ok["value"]:
+                return SimpleNamespace(is_success=False, content=b"{}", json=lambda: {})
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        raise AssertionError(url)
+
+    observed_lock = {}
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        timed_out = client.post("/api/theater-numeric/session/archive", json=payload)
+        assert timed_out.status_code == 502
+        assert store.load(payload["end_receipt_id"])["status"] == "pending"
+        assert store.has_staged_public_archive(payload["end_receipt_id"])
+
+        skip_payload = {key: payload[key] for key in ("story_id", "session_id", "revision", "end_receipt_id")}
+        failed_skip = client.post("/api/theater-numeric/session/archive/skip", json=skip_payload)
+        # Retract failed: nothing local changes, so the player can retry or remember instead.
+        assert failed_skip.status_code == 502
+        assert store.load(payload["end_receipt_id"])["status"] == "pending"
+        assert store.has_staged_public_archive(payload["end_receipt_id"])
+
+        retract_ok["value"] = True
+        skipped = client.post("/api/theater-numeric/session/archive/skip", json=skip_payload)
+
+    assert skipped.status_code == 200, skipped.text
+    assert skipped.json() == {"ok": True, "status": "skipped"}
+    assert store.load(payload["end_receipt_id"])["status"] == "skipped"
+    assert not store.has_staged_public_archive(payload["end_receipt_id"])
+    retracts = [body for url, body in calls if url.endswith("/theater/retract")]
+    caches = [body for url, body in calls if "/cache/" in url]
+    # The timed-out write was attempt 1; the retract fences it by request id and
+    # attempt number so a late landing of that write is dropped by the memory server.
+    assert caches[-1]["idempotency_key"] == payload["archive_request_id"]
+    assert caches[-1]["theater_archive_attempt"] == 1
+    assert retracts[-1] == {
+        "story_id": "numeric_v2_contract",
+        "session_id": "gap_session",
+        "archive_through_revision": 0,
+        "archive_request_id": payload["archive_request_id"],
+        "archive_attempt": 1,
+    }
+    # The memory round trip runs without the global character lock.
+    assert observed_lock["character"] is False
+
+
+def test_archive_attempts_are_numbered_and_retracted_memory_reply_is_a_failure(tmp_path, monkeypatch):
+    """Each memory request gets a new attempt number; a "retracted" reply never commits."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    replies = [
+        {"status": "retracted", "count": 0},
+        {"status": "cached", "count": 1},
+    ]
+    attempts = []
+
+    async def post(url, **kwargs):
+        attempts.append(kwargs["json"]["theater_archive_attempt"])
+        reply = replies.pop(0)
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: reply)
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        refused = client.post("/api/theater-numeric/session/archive", json=payload)
+        assert refused.status_code == 502
+        receipt = store.load(payload["end_receipt_id"])
+        assert receipt["status"] == "pending" and receipt["archive_attempt"] == 1
+        written = client.post("/api/theater-numeric/session/archive", json=payload)
+    assert written.status_code == 200 and written.json()["status"] == "written"
+    assert attempts == [1, 2]
+    assert store.load(payload["end_receipt_id"])["archive_attempt"] == 2
+
+
+def test_skip_without_archive_attempt_does_not_call_memory_service(tmp_path, monkeypatch):
+    """A plain skip never needs the memory service (it may be offline)."""
+
+    async def post(url, **kwargs):
+        raise AssertionError(f"unexpected memory call: {url}")
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        skipped = client.post("/api/theater-numeric/session/archive/skip", json={
+            key: payload[key] for key in ("story_id", "session_id", "revision", "end_receipt_id")
+        })
+
+    assert skipped.status_code == 200, skipped.text
+    assert skipped.json()["status"] == "skipped"
+
+
+def test_forget_memory_call_releases_character_lock_and_stops_after_character_deletion(tmp_path, monkeypatch):
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    scope = {"story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32}
+    observed = {}
+
+    async def post(url, **kwargs):
+        if url.endswith("/theater/forget"):
+            observed["character_lock"] = numeric_theater_router.character_config_mutation_lock.locked()
+            # Character deletion removes the scoped forget intent with its files.
+            store.complete_forget(scope["story_id"], scope["character_id"])
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached"})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        payload = _ended_archive_payload(client)
+        response = client.post("/api/theater-numeric/memory/forget", json=scope)
+    assert observed["character_lock"] is False
+    assert response.status_code == 409
+    assert response.json()["reason"] == "catgirl_changed_requires_refresh"
+    assert store.pending_forget(**scope) is None
+    # Local cleanup stopped: the frozen receipt was neither deleted nor re-created as skipped.
+    assert store.load(payload["end_receipt_id"])["status"] == "pending"
+
+
+@pytest.mark.parametrize(("added_fact", "expected_status"), [
+    # Background reflection promotion adds free-text relationship notes the Actor never sees.
+    ("主人最近常在晚上来找她聊天。", 200),
+    # A style field is part of the Actor prompt, so a turn generated without it must retry.
+    ("口癖: 喵呜", 409),
+])
+def test_numeric_turn_only_retries_for_actor_visible_persona_changes(
+    tmp_path, monkeypatch, added_fact, expected_status,
+):
+    persona_path = tmp_path / "memory" / "测试猫娘" / "persona.json"
+    persona_path.parent.mkdir(parents=True)
+
+    def write_persona(relationship_facts):
+        persona_path.write_text(json.dumps({
+            "neko": {"facts": [{"text": "性格: 安静而认真"}, {"text": "自称: 本喵"}]},
+            "relationship": {"facts": [{"text": text} for text in relationship_facts]},
+        }, ensure_ascii=False), encoding="utf-8")
+
+    write_persona(["主人会给她带点心。"])
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+
+    async def persona_update_during_actor(*args, **kwargs):
+        captured["character_profile"] = kwargs.get("character_profile")
+        write_persona(["主人会给她带点心。", added_fact])
+        return _performance("我在听。")
+
+    with client:
+        assert client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "persona_mid_turn"},
+        ).status_code == 200
+        monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", persona_update_during_actor)
+        submitted = client.post("/api/theater-numeric/session/input", json={
+            "story_id": "numeric_v2_contract", "session_id": "persona_mid_turn",
+            "client_turn_id": "persona_mid_turn_1", "base_revision": 0, "message": "继续说吧。",
+        })
+
+    assert "主人会给她带点心。" in captured["character_profile"]
+    assert submitted.status_code == expected_status
+    if expected_status == 409:
+        assert submitted.json()["reason"] == "catgirl_profile_changed_requires_retry"
+    else:
+        assert submitted.json()["session"]["revision"] == 1

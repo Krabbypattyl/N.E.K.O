@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 import json
 from typing import Any, Mapping
 
+from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_performance import mixed_performance_blocks
 
 
@@ -333,7 +334,8 @@ def _parse_output(
     if not isinstance(content, str) or not content.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_empty_output")
     try:
-        payload = json.loads(content)
+        # 与 Evaluator 一致：只解包完整单个 JSON 围栏，不提取或修补夹杂说明的片段。
+        payload = json.loads(strip_single_json_fence(content))
     except (TypeError, ValueError) as exc:
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):
@@ -365,12 +367,9 @@ def _parse_output(
         expected_fields = {"scene_narration", "performance"}
         # 推荐或转场字段缺失时交给一次轻量补推荐；已合法的正文不会被丢弃。
         tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered"}
-        optional_legacy_fields = {
-            frozenset(expected_fields),
-            frozenset({*expected_fields, "suggested_inputs"}),
-            frozenset(tolerated_fields),
-        }
-        if set(payload) not in optional_legacy_fields:
+        # Optional fields degrade independently (missing suggestions == an invalid
+        # container, missing transition_offered == False), so any subset is safe.
+        if not expected_fields <= set(payload) <= tolerated_fields:
             raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
         result = {
             "scene_narration": _parse_scene_narration(payload.get("scene_narration")),
@@ -419,24 +418,17 @@ def _parse_output(
             diagnostics=suggestion_diagnostics,
         )
         return result
-    allowed_fields = {"performance"}
-    if "scene_update" in payload:
-        allowed_fields.add("scene_update")
+    required_fields = {"performance"}
     tolerated_fields = {
-        *allowed_fields,
+        *required_fields,
+        "scene_update",
         "suggested_inputs",
         "transition_offered",
         "fact_candidates",
     }
-    optional_legacy_fields = {
-        frozenset(allowed_fields),
-        frozenset({*allowed_fields, "suggested_inputs"}),
-        frozenset({*allowed_fields, "suggested_inputs", "transition_offered"}),
-        frozenset({*allowed_fields, "fact_candidates"}),
-        frozenset({*allowed_fields, "suggested_inputs", "fact_candidates"}),
-        frozenset(tolerated_fields),
-    }
-    if set(payload) not in optional_legacy_fields:
+    # Every optional field is parsed independently below and degrades on its own
+    # when absent, so any combination of them is a valid ordinary-turn shape.
+    if not required_fields <= set(payload) <= tolerated_fields:
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
     result = {
         "performance": _parse_mixed_performance(

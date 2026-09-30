@@ -10,15 +10,48 @@ import pytest
 from scripts import run_numeric_v2_stress
 
 
-def test_numeric_v2_stress_parser_accepts_fixed_baseline_selection():
+_BASELINE_TITLES = {
+    "story_focus_a": "《样本甲》",
+    "story_focus_b": "《样本乙》",
+    "story_focus_c": "《样本丙》",
+}
+
+
+def _write_baseline_manifest(tmp_path, stories=_BASELINE_TITLES):
+    path = tmp_path / "baseline.json"
+    path.write_text(
+        json.dumps({"manifest": "focus_v1", "stories": stories}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_numeric_v2_stress_parser_accepts_fixed_baseline_selection(tmp_path):
     # 固定入口必须能被命令行解析，避免阶段 A 依赖手工复制 story_id。
     parser = run_numeric_v2_stress._build_parser()
+    manifest = _write_baseline_manifest(tmp_path)
 
-    args = parser.parse_args(["--baseline"])
+    args = parser.parse_args(["--baseline", str(manifest)])
 
-    assert args.baseline is True
+    assert args.baseline == manifest
     assert args.all is False
     assert args.story_id is None
+
+
+def test_numeric_v2_stress_script_does_not_hardcode_local_story_ids():
+    # 样本清单因人而异，脚本不能写死某台机器上安装的 story_id。
+    assert not hasattr(run_numeric_v2_stress, "BASELINE_STORY_IDS")
+    assert "story_51e71adb6ae5" not in open(run_numeric_v2_stress.__file__, encoding="utf-8").read()
+
+
+@pytest.mark.parametrize("payload", ["not json", json.dumps({"stories": {}}), json.dumps([1])])
+def test_numeric_v2_stress_baseline_rejects_invalid_manifest(tmp_path, payload):
+    path = tmp_path / "baseline.json"
+    path.write_text(payload, encoding="utf-8")
+    args = run_numeric_v2_stress._build_parser().parse_args(["--baseline", str(path)])
+
+    with pytest.raises(ValueError, match="numeric_baseline_manifest_"):
+        run_numeric_v2_stress._resolve_story_selection(args, {})
 
 
 def test_numeric_v2_stress_parser_accepts_isolated_package_root(tmp_path):
@@ -47,35 +80,33 @@ def test_numeric_v2_stress_parser_accepts_text_trace_directory(tmp_path):
     assert args.trace_dir == tmp_path
 
 
-def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift():
+def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift(tmp_path):
     # 标题变化只记录为报告诊断，不改变固定 story_id 的执行顺序。
-    installed = {
-        story_id: {"title": run_numeric_v2_stress.BASELINE_EXPECTED_TITLES[story_id]}
-        for story_id in run_numeric_v2_stress.BASELINE_STORY_IDS
-    }
-    drifted_story_id = run_numeric_v2_stress.BASELINE_STORY_IDS[-1]
+    installed = {story_id: {"title": title} for story_id, title in _BASELINE_TITLES.items()}
+    drifted_story_id = list(_BASELINE_TITLES)[-1]
     installed[drifted_story_id] = {"title": "改稿后的标题"}
-    args = run_numeric_v2_stress._build_parser().parse_args(["--baseline"])
+    manifest = _write_baseline_manifest(tmp_path)
+    args = run_numeric_v2_stress._build_parser().parse_args(["--baseline", str(manifest)])
 
     story_ids, selection = run_numeric_v2_stress._resolve_story_selection(args, installed)
 
-    assert story_ids == list(run_numeric_v2_stress.BASELINE_STORY_IDS)
+    assert story_ids == list(_BASELINE_TITLES)
     assert selection["mode"] == "baseline"
-    assert selection["manifest"] == run_numeric_v2_stress.BASELINE_MANIFEST
+    assert selection["manifest"] == "focus_v1"
     assert selection["title_mismatches"] == [{
         "story_id": drifted_story_id,
-        "expected_title": run_numeric_v2_stress.BASELINE_EXPECTED_TITLES[drifted_story_id],
+        "expected_title": _BASELINE_TITLES[drifted_story_id],
         "actual_title": "改稿后的标题",
     }]
 
 
-def test_numeric_v2_stress_baseline_selection_reports_missing_focus_package():
+def test_numeric_v2_stress_baseline_selection_reports_missing_focus_package(tmp_path):
     # 缺少固定样本时必须明确失败，不能静默压测不完整的基线。
     installed = {
-        story_id: {"title": run_numeric_v2_stress.BASELINE_EXPECTED_TITLES[story_id]}
-        for story_id in run_numeric_v2_stress.BASELINE_STORY_IDS[:-1]
+        story_id: {"title": title} for story_id, title in list(_BASELINE_TITLES.items())[:-1]
     }
-    args = run_numeric_v2_stress._build_parser().parse_args(["--baseline"])
+    manifest = _write_baseline_manifest(tmp_path)
+    args = run_numeric_v2_stress._build_parser().parse_args(["--baseline", str(manifest)])
 
     with pytest.raises(ValueError, match="numeric_baseline_story_not_found:"):
         run_numeric_v2_stress._resolve_story_selection(args, installed)

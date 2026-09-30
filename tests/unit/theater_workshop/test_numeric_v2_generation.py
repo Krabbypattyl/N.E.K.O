@@ -2340,3 +2340,110 @@ def test_scene_enhancement_still_requires_prior_continuity():
     with pytest.raises(NumericV2GenerationError) as caught:
         generator.enhance_node(story=story, node_id="mainline_02")
     assert "character_state_items_required" in {x["code"] for x in caught.value.issues}
+
+
+def _fixed_piece(piece_id="letter", *, text="信上写着：{{player_name}}，别回来。", trigger=None, after=None):
+    return {"id": piece_id, "text": text, "trigger": trigger or {"type": "entry"},
+            "after": after or [], "required_before_exit": False}
+
+
+def test_mainline_outline_validation_flags_invalid_fixed_narrations():
+    candidate = _idea_outline()
+    candidate["mainline_chapters"][0]["fixed_narrations"] = [
+        {"id": "letter", "text": " 前导空白", "trigger": {"type": "entry"}, "after": []},
+        _fixed_piece("letter", after=["missing"]),
+    ]
+    candidate["mainline_chapters"][1]["fixed_narrations"] = [_fixed_piece(f"p{i}") for i in range(9)]
+    candidate["ending"]["fixed_narrations"] = [
+        _fixed_piece(trigger={"type": "condition", "condition": "玩家拆开信封"}),
+    ]
+
+    issues = {(issue["code"], issue["path"]) for issue in _validate_idea_outline(candidate, minimum=4, maximum=6)}
+
+    assert issues == {
+        ("fixed_narration_fields_invalid", "mainline_chapters[0].fixed_narrations[0]"),
+        ("fixed_narration_text_invalid", "mainline_chapters[0].fixed_narrations[0]"),
+        ("fixed_narration_required_invalid", "mainline_chapters[0].fixed_narrations[0]"),
+        ("duplicate_fixed_narration_id", "mainline_chapters[0].fixed_narrations[1]"),
+        ("fixed_narration_dependency_invalid", "mainline_chapters[0].fixed_narrations[1]"),
+        ("too_many_fixed_narrations", "mainline_chapters[1].fixed_narrations"),
+        ("fixed_narration_terminal_condition", "ending.fixed_narrations[0]"),
+        ("fixed_narration_shape_invalid", "mainline_chapters[0].fixed_narrations"),
+        ("fixed_narration_shape_invalid", "mainline_chapters[1].fixed_narrations"),
+        ("fixed_narration_shape_invalid", "ending.fixed_narrations"),
+    }
+
+
+def test_mainline_generation_repairs_invalid_fixed_narrations_before_success():
+    candidate = _idea_outline()
+    candidate["ending"]["fixed_narrations"] = [
+        _fixed_piece(trigger={"type": "condition", "condition": "玩家拆开信封"}),
+    ]
+    calls = []
+
+    def fake_call(messages, **kwargs):
+        calls.append(kwargs["operation"])
+        if len(calls) == 1:
+            return json.dumps(candidate, ensure_ascii=False)
+        model_input = json.loads(messages[1]["content"])
+        assert model_input["requested_paths"] == ["ending.fixed_narrations"]
+        return json.dumps({"replacements": {"ending.fixed_narrations": [_fixed_piece()]}},
+                          ensure_ascii=False)
+
+    generator = NumericV2Generator()
+    generator.call_llm = fake_call
+    story = generator.generate(title="固定旁白", setup=_generation_setup())["story"]
+
+    assert calls == ["numeric_v2_mainline_generation", "numeric_v2_mainline_continuation"]
+    assert story["nodes"][-1]["story_beat"]["fixed_narrations"] == [_fixed_piece()]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
+
+
+def test_mainline_continuation_exception_keeps_candidate_in_checkpoint():
+    from theater_workshop.sdk import WorkshopError
+
+    candidate = _idea_outline()
+    candidate["mainline_chapters"][0]["ordered_goals"][0]["owner"] = "player"
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return json.dumps(candidate, ensure_ascii=False)
+        raise WorkshopError("workshop_model_input_budget_exceeded")
+
+    generator = NumericV2Generator()
+    generator.call_llm = fake_call
+    with pytest.raises(NumericV2GenerationError) as caught:
+        generator.generate(title="续写超预算", setup=_generation_setup())
+
+    assert calls == 2
+    assert caught.value.code == "workshop_model_input_budget_exceeded"
+    assert caught.value.attempts == 2
+    assert caught.value.provider_details == {"exception_type": "WorkshopError"}
+    assert caught.value.checkpoint["candidate"] == candidate
+    assert "mainline_chapters[0].ordered_goals[0].owner" in {
+        issue["path"] for issue in caught.value.checkpoint["issues"]
+    }
+    assert isinstance(caught.value.__cause__, WorkshopError)
+
+
+def test_mainline_continuation_unexpected_exception_uses_technical_failure_code():
+    candidate = _idea_outline()
+    candidate["mainline_chapters"][0]["ordered_goals"][0]["owner"] = "player"
+    responses = iter([json.dumps(candidate, ensure_ascii=False)])
+
+    def fake_call(*_args, **_kwargs):
+        try:
+            return next(responses)
+        except StopIteration:
+            raise TypeError("workshop_model_response_invalid") from None
+
+    generator = NumericV2Generator()
+    generator.call_llm = fake_call
+    with pytest.raises(NumericV2GenerationError) as caught:
+        generator.generate(title="续写异常", setup=_generation_setup())
+
+    assert caught.value.code == "generation_technical_failed"
+    assert caught.value.checkpoint["candidate"] == candidate

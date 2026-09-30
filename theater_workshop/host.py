@@ -32,6 +32,17 @@ class NekoWorkshopModel:
     """User-selected workshop model, isolated from chat/actor configuration."""
 
     TIMEOUT = 120.0
+    CONNECT_TIMEOUT = 10.0
+    # Requests are non-streaming, so no byte arrives before the whole completion;
+    # the read timeout must cover the output budget at a conservative decode rate.
+    MIN_OUTPUT_TOKENS_PER_SECOND = 40
+
+    @classmethod
+    def request_timeout(cls, max_tokens):
+        import httpx
+
+        read = max(cls.TIMEOUT, float(max_tokens or 0) / cls.MIN_OUTPUT_TOKENS_PER_SECOND)
+        return httpx.Timeout(read, connect=cls.CONNECT_TIMEOUT)
 
     def __init__(self, model_config):
         self._settings = deepcopy(dict(model_config or {}))
@@ -74,7 +85,7 @@ class NekoWorkshopModel:
             client = create_chat_llm(model=model, base_url=settings.get("base_url"),
                 # Explicit keyless endpoints must not inherit a process-wide key.
                 api_key=settings.get("api_key") or "", provider_type=settings.get("provider_type"),
-                timeout=self.TIMEOUT, max_retries=0,
+                timeout=self.request_timeout(max_tokens), max_retries=0,
                 max_completion_tokens=max_tokens)
             # User-selected providers use the host's token/thinking/temperature
             # policy; preserve the operation budget and do not add retries.

@@ -70,7 +70,8 @@ THEATER_MODULE_OPTIONS: tuple[TheaterModuleOption, ...] = (
     TheaterModuleOption(
         key="actor_retry",
         default=False,
-        disabled_effect="演员输出不合格时不再重试，本轮原子回滚并由玩家重发。",
+        # 开启时每次 Actor 生成最多 4 次尝试（首发 + 3 次重试），见 workflow 的输出重试循环。
+        disabled_effect="演员输出不合格时不再重试（开启时每次生成最多调用演员 4 次），本轮原子回滚并由玩家重发；正式换场复用来源正文时仍保留一次窄重试。",
     ),
 )
 

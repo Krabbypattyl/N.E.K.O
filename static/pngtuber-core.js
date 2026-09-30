@@ -3210,7 +3210,9 @@
             if (!state.moved) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
-            if (this.isLayeredActive()) this.drawLayeredState();
+            // Keep motion/physics on the animation clock, even when pointer
+            // events arrive faster than the display can present frames.
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
@@ -3390,7 +3392,7 @@
             if (!state.changed) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
-            if (this.isLayeredActive()) this.drawLayeredState();
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
         }
 
         async endTouchZoom() {
@@ -4376,6 +4378,9 @@
             }
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
+            const baseButtonSize = 48;
+            const baseGap = 12;
+            const baseButtonWidth = 82;
 
             this.updateFloatingButtonsPosition = () => {
                 this.syncResponsiveButtonVisibility(buttonsContainer);
@@ -4403,6 +4408,8 @@
                 const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.flexDirection = 'column';
+                    buttonsContainer.style.transformOrigin = 'right bottom';
+                    buttonsContainer.style.transform = 'scale(1)';
                     buttonsContainer.style.bottom = '116px';
                     buttonsContainer.style.right = '16px';
                     buttonsContainer.style.left = '';
@@ -4423,14 +4430,23 @@
                     const style = window.getComputedStyle(child);
                     return style.display !== 'none' && style.visibility !== 'hidden';
                 });
-                const buttonWidth = 82;
-                const buttonHeight = Math.max(48, visibleButtons.length * 48 + Math.max(0, visibleButtons.length - 1) * 12);
+                const baseToolbarHeight = Math.max(
+                    baseButtonSize,
+                    visibleButtons.length * baseButtonSize + Math.max(0, visibleButtons.length - 1) * baseGap
+                );
+                const targetToolbarHeight = rect.height / 2;
+                const scale = Math.max(0.5, Math.min(1, targetToolbarHeight / baseToolbarHeight));
+                const actualToolbarHeight = baseToolbarHeight * scale;
+                const actualToolbarWidth = baseButtonWidth * scale;
                 const targetX = rect.right * 0.8 + rect.left * 0.2;
-                const maxX = window.innerWidth - buttonWidth - 12;
+                const maxX = Math.max(12, window.innerWidth - actualToolbarWidth - 12);
                 const left = Math.max(12, Math.min(targetX, maxX));
-                let top = rect.top + (rect.height - buttonHeight) / 2;
-                top = Math.max(12, Math.min(window.innerHeight - buttonHeight - 12, top));
+                const maxTop = Math.max(12, window.innerHeight - actualToolbarHeight - 12);
+                let top = rect.top + (rect.height - actualToolbarHeight) / 2;
+                top = Math.max(12, Math.min(maxTop, top));
                 buttonsContainer.style.flexDirection = 'column';
+                buttonsContainer.style.transformOrigin = 'left top';
+                buttonsContainer.style.transform = `scale(${scale})`;
                 buttonsContainer.style.left = `${left}px`;
                 buttonsContainer.style.top = `${top}px`;
                 buttonsContainer.style.right = '';

@@ -242,6 +242,18 @@ def _reset_icebreaker_routes(request):
 
 
 @pytest.fixture(autouse=True)
+def _reset_theater_activity():
+    """Keep the in-memory theater activity signal from leaking between tests."""
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+    yield
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+
+
+@pytest.fixture(autouse=True)
 def _reset_pending_retirements():
     """Stop a retired character name from leaking into the next test.
 
@@ -279,8 +291,15 @@ def _reset_pending_retirements():
         fenced.clear()
 
 
+def _is_theater_test_module(request) -> bool:
+    """Return whether the requesting test lives in a ``test_theater_*`` file."""
+
+    path = getattr(request.node, "path", None)
+    return path is not None and path.name.startswith("test_theater_")
+
+
 @pytest.fixture(autouse=True)
-def _enable_theater_review_modules(monkeypatch):
+def _enable_theater_review_modules(request, monkeypatch):
     """Keep every optional theater module on for regression tests.
 
     The product ships the theater module switches off by default (only the actor
@@ -289,9 +308,21 @@ def _enable_theater_review_modules(monkeypatch):
     shared rewrite budget and the output-retry contract. Enabling them here keeps
     those tests testing what they document; tests that exercise the switches
     themselves rebind ``aload_theater_module_options`` and still win.
+
+    Theater test files (``test_theater_*``) get the workflow imported here, so a
+    test that imports it inside the test body sees the same options whether or
+    not another module imported it first. Any other module is patched only when
+    the workflow is already loaded: importing it for every test pulls the whole
+    theater stack into modules that stub parts of ``utils``/``memory`` at import
+    time (e.g. test_timeindex_batched_read.py), which then fail with
+    ModuleNotFoundError when they happen to run first.
     """
 
-    import services.theater.numeric_v2_workflow as workflow
+    workflow = sys.modules.get("services.theater.numeric_v2_workflow")
+    if workflow is None:
+        if not _is_theater_test_module(request):
+            return
+        from services.theater import numeric_v2_workflow as workflow
     from services.theater.numeric_v2_options import default_options
 
     async def _all_on() -> dict[str, bool]:

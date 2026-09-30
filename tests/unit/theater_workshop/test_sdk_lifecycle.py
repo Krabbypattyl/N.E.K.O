@@ -369,9 +369,15 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
     assert reply.usage["total_tokens"] == 15
     assert calls[0]["max_retries"] == 0
     assert calls[0]["max_completion_tokens"] == 16000
-    assert calls[0]["timeout"] == 120
+    # A non-streaming 16k-token completion needs a read timeout scaled to its budget.
+    assert calls[0]["timeout"].read == 400
+    assert calls[0]["timeout"].connect == 10
     assert calls[0]["api_key"] == (api_key or "")
     assert calls[1] == {"response_format":{"type":"json_object"}}
+    calls.clear()
+    NekoWorkshopModel({"model":"selected-model", "api_key":api_key, "max_input_tokens":16000,
+                       "base_url":"https://example.invalid/v1"})([], **{**options, "max_tokens": 1000})
+    assert calls[0]["timeout"].read == 120
 
 
 @pytest.mark.parametrize("budget", [None, True, 0, -1, 1.5, "16000"])
@@ -611,17 +617,20 @@ async def test_cancelled_install_keeps_story_lock_until_worker_settles(opened, m
     assert host.sdk.get_project(project["project_id"])["install_result"] is not None
 
 
-def test_release_smoke_and_build_entries_cover_sdk(tmp_path):
+def test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds(tmp_path):
     from theater_workshop.release_smoke import run
     fixture = dict(title="旧信", setup=_generation_setup(), outline=named_outline(), names=NAMES)
     result = asyncio.run(run(fixture))
     assert result["success"] is True
     assert {"resume", "reopen", "maintenance", "load_engine"}.issubset(result["checks"])
+    # The SDK has no UI or HTTP caller yet, so it must not ship in the frozen
+    # backend. Nuitka follows static imports, so launcher.py must not import it
+    # either, or dropping --include-package would not keep it out.
     repo = Path(__file__).resolve().parents[3]
-    for filename, count in (("build-desktop.yml", 2), ("build-desktop-linux.yml", 1)):
+    for filename in ("build-desktop.yml", "build-desktop-linux.yml"):
         workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
-        assert workflow.count("--include-package=theater_workshop") == count
-        assert "scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8" in workflow
+        assert "theater_workshop" not in workflow
+    assert "theater_workshop" not in (repo / "launcher.py").read_text(encoding="utf-8")
 
 
 def test_close_waits_for_inflight_generation_before_releasing_writer(tmp_path):
