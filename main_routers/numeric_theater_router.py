@@ -353,6 +353,10 @@ _INTERNAL_PERFORMANCE_FIELDS = frozenset({
     "visible_node_id",
     "suggestion_candidates",
     "player_action_projection",
+    # Runtime evidence for replay/prompting: carries hidden metric before/after
+    # values and internal node IDs. The page renders neither, so it stays server-side.
+    "fact_projection",
+    "timeline_projection",
 })
 
 

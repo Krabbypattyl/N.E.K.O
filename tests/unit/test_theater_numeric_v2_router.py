@@ -84,6 +84,53 @@ def test_numeric_v2_public_performance_hides_route_identifiers():
     }
 
 
+def test_numeric_v2_turn_payload_keeps_runtime_projections_server_side(tmp_path, monkeypatch):
+    """Hidden metric values and node IDs in runtime projections never reach the page."""
+
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(MetricChangeV2("trust", 1, "玩家兑现承诺", "我把毛巾递给你。"),),
+            scene_complete=False,
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "projection_leak"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "projection_leak",
+                "client_turn_id": "projection_leak_1",
+                "base_revision": 0,
+                "message": "我把毛巾递给你。",
+            },
+        )
+
+    assert submitted.status_code == 200, submitted.json()
+    body = submitted.json()
+    persisted = json.loads(
+        (tmp_path / "theater" / "numeric_v2" / "sessions" / "projection_leak.json").read_text(encoding="utf-8")
+    )
+    stored_record = persisted["session"]["performance_history"][-1]
+    # The server keeps the evidence for replay; only the browser projection drops it.
+    assert stored_record["fact_projection"]["deterministic_events"]
+    assert stored_record["timeline_projection"]["scene_scope"]["node_id"]
+    public_record = body["session"]["performance_history"][-1]
+    assert "fact_projection" not in public_record
+    assert "timeline_projection" not in public_record
+    assert "fact_projection" not in body["performance"]
+    assert "timeline_projection" not in body["performance"]
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert "deterministic_events" not in serialized
+    assert "scene_scope" not in serialized
+
+
 def test_llm_role_dict_normalization_strips_internal_metadata():
     """角色字典发送到模型供应商前必须剥离 N.E.K.O 内部元数据。"""  # noqa: DOCSTRING_CJK
     normalized = _normalize_messages([{
