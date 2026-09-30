@@ -80,6 +80,12 @@ _METRIC_STRENGTHS = frozenset({"weak", "normal", "strong", "decisive"})
 # unknown or mistyped value normalises to "" so the veto always stays (fail closed).
 PLAYER_ACTION_KIND_REQUESTED_MOVEMENT = "requested_movement"
 _PLAYER_ACTION_KINDS = frozenset({"unauthorized", PLAYER_ACTION_KIND_REQUESTED_MOVEMENT})
+# Structured Guard classification of a verified ``offer_present`` quote. Only
+# ``exit_mention_only`` (the quote merely shows where the exit is; nobody invites the
+# player) lets the ordinary-turn workflow clear a narration-only offer flag; an absent,
+# unknown or mistyped value normalises to "" and the flag stays (fail closed).
+OFFER_KIND_EXIT_MENTION_ONLY = "exit_mention_only"
+_OFFER_KINDS = frozenset({"invitation", OFFER_KIND_EXIT_MENTION_ONLY})
 _TRANSITION_REPLY_TARGETS = frozenset({
     "pending_transition",
     "latest_interaction",
@@ -161,6 +167,9 @@ class NumericV2TransitionOfferReview:
     # Structured kind of the ``player_action`` violation; "" whenever it is absent or
     # unrecognised. Workflow corrections read this field, never ``failure_reason``.
     player_action_kind: str = ""
+    # Structured kind of a verified offer quote; "" when absent, unrecognised or no
+    # verified offer exists. Workflow corrections read this field, never ``failure_reason``.
+    offer_kind: str = ""
 
     @property
     def player_action_preserved(self) -> bool:
@@ -1261,7 +1270,7 @@ def _build_transition_judge_messages(
     review_shape = (
         ('{"player_request_quote":"","missed_initiation":false,"public_destination_index":-1,'
          if check_missed_initiation and transition_outcome is None else '{')
-        + '"offer_present":false,"offer_quote":"","valid":false,"body_violations":[],'
+        + '"offer_present":false,"offer_quote":"","offer_kind":"","valid":false,"body_violations":[],'
         '"unsafe_suggestion_indexes":[],"failure_reason":"","player_action_kind":""'
         + (',"fixed_narration_triggers":[]' if fixed_candidates else '')
         + (',"fact_candidates":[]' if pending_completion_facts else '')
@@ -1356,7 +1365,10 @@ def _build_transition_judge_messages(
         "不按动作大小、移动距离或是否处于同一场所判断；只邀请执行出口之前的其他动作、仅完成前置条件、泛问或只有按钮提出都为 false。"
         "明确邀请进入其他地点/时段/阶段，即使方向错误也为 true，由 valid 核对去向。"
         "offer_quote 必须逐字摘录 actor_performance 或 scene_update 中构成该邀请的完整短句；不能引用 suggested_inputs、历史或作者方向。"
-        "offer_present=false 时 offer_quote 必须为空；没有可核验引文时不能声称正文存在邀请。\n"
+        "offer_present=false 时 offer_quote 必须为空；没有可核验引文时不能声称正文存在邀请。"
+        # 结构化替代“从 failure_reason 措辞猜旁白只公开位置”；缺省即保留邀请判定。
+        "offer_kind：offer_present=false 时填空字符串；为 true 时，若 offer_quote 只公开出口地点或标识、"
+        "无人邀请玩家前往，填 exit_mention_only，其余一律填 invitation。\n"
         "3. valid：无正文提议时为 false；有提议时核对行动具体、有当前事实依据、保留玩家执行路径，"
         "且所邀请的地点、时段和阶段就是 next_scene_direction 声明的同一出口安排。"
         "仅主题或目的相似、没有直接违反禁令不足以判 true；不同去向仍须 false，不能自行补造连接路径。"
@@ -1929,7 +1941,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
     if fixed_narration_review:
         required_fields.add("fixed_narration_triggers")
     allowed_fields = required_fields | {
-        "failure_reason", "offer_quote", "player_action_kind", "body_issues", "approved_evaluator_fact_indexes",
+        "failure_reason", "offer_quote", "offer_kind", "player_action_kind", "body_issues", "approved_evaluator_fact_indexes",
         "scene_update_removal_safe",
         "unsafe_suggestion_indexes",
     }
@@ -2109,6 +2121,18 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         and not acceptance_review
         else ""
     )
+    raw_offer_kind = payload.get("offer_kind", "")
+    # Same fail-closed rule for the offer kind: it only qualifies a verified ordinary-review
+    # offer quote, so a formal review or an unverified quote never carries it.
+    offer_kind = (
+        raw_offer_kind
+        if isinstance(raw_offer_kind, str)
+        and raw_offer_kind in _OFFER_KINDS
+        and offer_quote_verified
+        and initiation_session is None
+        and not acceptance_review
+        else ""
+    )
     # 独立复核也核对引用真实性，争议复查不能用空泛授权覆盖缺失的公开证据。
     if initiation_session is not None and not _has_public_transition_quote(payload.get("public_destination_quote"), initiation_session):
         if "player_action" not in raw_body_violations:
@@ -2171,6 +2195,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         display_dependent_suggestions=tuple(display_dependencies),
         delivery_matches_route=payload.get("delivery_matches_route") if transition_delivery_review else None,
         player_action_kind=player_action_kind,
+        offer_kind=offer_kind,
     )
 
 
@@ -2841,6 +2866,7 @@ class NumericV2MetricEvaluator:
 __all__ = [
     "NUMERIC_V2_EVALUATOR_MAX_OUTPUT_TOKENS",
     "NUMERIC_V2_EVALUATOR_TIMEOUT_SECONDS",
+    "OFFER_KIND_EXIT_MENTION_ONLY",
     "PLAYER_ACTION_KIND_REQUESTED_MOVEMENT",
     "NUMERIC_V2_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS",
     "NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS",

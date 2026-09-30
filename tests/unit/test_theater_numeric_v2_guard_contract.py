@@ -188,9 +188,11 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     example, _ = json.JSONDecoder().raw_decode(system[system.index("{"):])
     assert set(example) == {
-        "offer_present", "offer_quote", "valid", "body_violations", "unsafe_suggestion_indexes", "failure_reason",
-        "player_action_kind",
+        "offer_present", "offer_quote", "offer_kind", "valid", "body_violations", "unsafe_suggestion_indexes",
+        "failure_reason", "player_action_kind",
     }
+    # 固定字段数与实际示例一致，模型不会被错误计数引导去补造或删减字段。
+    assert "固定八字段" in system and len(example) == 8
     assert not _parse_transition_judge_output(json.dumps(example)).body_violations
     assert "_preserved" not in system
     assert "玩家已明确实施的同一动作可以被正文承接，不是 Actor 代做" in system

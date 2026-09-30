@@ -713,8 +713,16 @@ async def test_fact_candidates_keep_valid_siblings_when_one_candidate_is_stale_o
 
 
 @pytest.mark.asyncio
-async def test_narration_location_is_not_rewritten_when_review_denies_its_own_offer(tmp_path, monkeypatch):
-    """旁白只公开出口标识时，复核不能一边否认邀请、一边用邀请标志触发改写。"""  # noqa: DOCSTRING_CJK
+@pytest.mark.parametrize('offer_kind,cleared', [
+    ('exit_mention_only', True),
+    # Prose alone ("正文仅…未发出…邀请") must not clear the flag: absent or other kinds fail closed.
+    ('', False),
+    ('invitation', False),
+])
+async def test_narration_location_is_not_rewritten_when_review_denies_its_own_offer(
+    tmp_path, monkeypatch, offer_kind, cleared,
+):
+    """旁白只公开出口标识时，只凭结构化 offer_kind 清除邀请标志，不解析失败理由。"""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
@@ -738,12 +746,14 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
         unsafe_suggestion_indexes=(),
         failure_reason='正文仅公开了信标室入口位置，未发出前往下一地点的明确邀请。',
         offer_quote=quote,
+        offer_kind=offer_kind,
     )
-    # 同一句若由角色对白说出，不能依靠理由文案直接清除，仍须交给原复核链处理。
+    # 同一句若由角色对白说出，即使结构化码声称只是位置，也仍须交给原复核链处理。
     assert workflow._review_denies_narration_only_offer(
         {'performance': quote, 'suggested_inputs': []},
         review_result,
     ) is False
+    assert workflow._review_denies_narration_only_offer(candidate, review_result) is cleared
     generations = []
     reviews = []
 
@@ -775,6 +785,12 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
         ensure_current_binding=lambda _: _binding(),
     )
 
+    if not cleared:
+        # 缺少结构化码时保留邀请判定：无效邀请照常进入改稿链，理由文案不能让它跳过。
+        assert result.diagnostics['narration_offer_flags_cleared'] == 0
+        assert result.diagnostics['semantic_rewrite_attempts'] == 1
+        assert len(generations) == 2
+        return
     assert len(generations) == 1
     assert len(reviews) == 1
     assert result.diagnostics['narration_offer_flags_cleared'] == 1

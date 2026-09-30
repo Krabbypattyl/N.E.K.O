@@ -83,6 +83,7 @@ def review_output_schema(*, formal: bool = False, transition_intent: str = "",
     properties["offer_present"] = {"type": "boolean"}
     if not formal:
         properties["offer_quote"] = {"type": "string"}
+        properties["offer_kind"] = {"type": "string", "enum": ["", "invitation", "exit_mention_only"]}
     properties.update(valid={"type": "boolean"}, body_violations=violations)
     if display_suggestions:
         properties["suggestion_checks"] = _array(_object({

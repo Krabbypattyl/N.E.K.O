@@ -420,6 +420,31 @@ def test_guard_parser_reads_player_action_kind_fail_closed():
     assert orphan.player_action_kind == ''
 
 
+def test_guard_parser_reads_offer_kind_fail_closed():
+    """Parse the structured offer kind; absent, unknown, mistyped, unverified or formal values default to empty."""
+    parse = evaluator._parse_transition_judge_output
+    quote = '走廊尽头的红灯标识显示“地下信标室·检修入口”。'
+
+    def payload(**changes):
+        return json.dumps({'offer_present': True, 'offer_quote': quote, 'valid': False, 'body_violations': [],
+                           'unsafe_suggestion_indexes': [], 'failure_reason': '', **changes}, ensure_ascii=False)
+
+    assert parse(payload(offer_kind='exit_mention_only'), offer_evidence_text=quote).offer_kind == 'exit_mention_only'
+    assert parse(payload(offer_kind='invitation'), offer_evidence_text=quote).offer_kind == 'invitation'
+    assert parse(payload(), offer_evidence_text=quote).offer_kind == ''
+    for bad in ('EXIT_MENTION_ONLY', 'location_only', 1, True, None, ['exit_mention_only']):
+        review = parse(payload(offer_kind=bad), offer_evidence_text=quote)
+        assert review.offer_kind == ''
+        assert review.offer_present is True
+    # 引文无法在正文中核验时邀请本身被撤销，结构化码也不能单独存活。
+    assert parse(payload(offer_kind='exit_mention_only'), offer_evidence_text='别的正文').offer_kind == ''
+    assert parse(payload(offer_present=False, offer_quote='', offer_kind='exit_mention_only')).offer_kind == ''
+    formal = parse(payload(offer_kind='exit_mention_only', delivery_matches_route=True, pending_invitation_invalid=False,
+                           acceptance_authorized=True),
+                   acceptance_review=True, transition_delivery_review=True, offer_evidence_text=quote)
+    assert formal.offer_kind == ''
+
+
 def test_guard_prompt_asks_for_structured_player_action_kind():
     """The ordinary Guard output contract names the structured field that replaces reason-keyword matching."""
     engine = _engine()
@@ -429,6 +454,8 @@ def test_guard_prompt_asks_for_structured_player_action_kind():
         player_input='带路吧。')[0]
     assert '"player_action_kind":""' in messages[0].content
     assert 'requested_movement' in messages[0].content
+    assert '"offer_kind":""' in messages[0].content
+    assert 'exit_mention_only' in messages[0].content
 
 
 @pytest.mark.asyncio

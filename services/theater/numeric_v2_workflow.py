@@ -39,6 +39,7 @@ from .numeric_v2_evaluator import (
     NumericV2EvaluatorError,
     NumericV2MetricEvaluator,
     NumericV2TransitionOfferReview,
+    OFFER_KIND_EXIT_MENTION_ONLY,
     PLAYER_ACTION_KIND_REQUESTED_MOVEMENT,
 )
 from .numeric_v2_options import aload_theater_module_options
@@ -153,17 +154,21 @@ def _review_denies_narration_only_offer(
     candidate: Mapping[str, Any],
     review: NumericV2TransitionOfferReview,
 ) -> bool:
-    """复核若明确说明旁白只公开了位置、没有发出邀请，不能又保留邀请标志。"""  # noqa: DOCSTRING_CJK
+    """Clear a narration-only offer flag only on the Guard's structured exit-mention code.
+
+    The Guard reports ``offer_kind=exit_mention_only`` when its verified offer quote
+    merely shows where the exit is and nobody invites the player. ``failure_reason``
+    is diagnostic prose and is never parsed here: an absent or unknown kind keeps the
+    offer flag (fail closed), and a quote the catgirl speaks in dialogue never clears.
+    """
 
     if (
         not review.offer_present
         or review.valid
         or review.body_violations
         or not review.offer_quote
+        or review.offer_kind != OFFER_KIND_EXIT_MENTION_ONLY
     ):
-        return False
-    reason = str(review.failure_reason or "")
-    if not ("正文仅" in reason and "未发出" in reason and "邀请" in reason):
         return False
     quote_sources = {
         str(block.get("type") or "")
@@ -1498,12 +1503,13 @@ async def _execute_numeric_v2_turn(
                 """
 
                 if not changed and _review_denies_narration_only_offer(candidate, result):
-                    # 旁白只展示出口标识不等于角色邀请玩家换幕。复核理由已明确否认
-                    # 邀请时，只清除自相矛盾的布尔标志，保留旁白和同轮事实候选。
+                    # 旁白只展示出口标识不等于角色邀请玩家换幕。复核以结构化 offer_kind
+                    # 否认邀请时，只清除自相矛盾的布尔标志，保留旁白和同轮事实候选。
                     diagnostics["narration_offer_flags_cleared"] += 1
                     trace_event(
                         "review.narration_offer_cleared",
                         offer_quote=result.offer_quote,
+                        offer_kind=result.offer_kind,
                         failure_reason=result.failure_reason,
                     )
                     result = replace(
