@@ -4,9 +4,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import json
-import os
 from pathlib import Path
-import sys
 import tempfile
 
 from .host import open_workshop
@@ -43,13 +41,6 @@ class _IsolatedConfig:
 async def run(fixture):
     from services.theater.numeric_v2_registry import NumericV2PackageRegistry
     from utils.cloudsave_runtime import MaintenanceModeError
-
-    if os.environ.get("NEKO_THEATER_WORKSHOP_REQUIRE_FROZEN") == "1":
-        for name in ("theater_workshop.sdk", "theater_workshop.host",
-                     "theater_workshop.sdk.generation.numeric_v2",
-                     "theater_workshop.sdk.generation.quality",
-                     "services.theater.numeric_v2", "services.theater.numeric_v2_registry"):
-            _require(hasattr(sys.modules[name], "__compiled__"), f"module_not_compiled:{name}")
 
     calls = []
     resuming = False

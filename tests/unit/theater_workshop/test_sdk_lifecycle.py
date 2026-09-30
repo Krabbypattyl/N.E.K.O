@@ -631,6 +631,10 @@ def test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds(tmp_p
         workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
         assert "theater_workshop" not in workflow
     assert "theater_workshop" not in (repo / "launcher.py").read_text(encoding="utf-8")
+    # With no frozen entry point, a frozen-only gate in the smoke would be dead code.
+    smoke_source = (repo / "theater_workshop/release_smoke.py").read_text(encoding="utf-8")
+    assert "__compiled__" not in smoke_source
+    assert "NEKO_THEATER_WORKSHOP_REQUIRE_FROZEN" not in smoke_source
 
 
 def test_close_waits_for_inflight_generation_before_releasing_writer(tmp_path):
