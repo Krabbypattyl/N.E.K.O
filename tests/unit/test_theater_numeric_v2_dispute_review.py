@@ -185,6 +185,7 @@ async def test_review_cannot_call_the_same_explicit_movement_unauthorized(monkey
             body_violations=('player_action',),
             unsafe_suggestion_indexes=(),
             failure_reason='正文scene_update直接执行了玩家本轮明确表达的移动动作，构成player_action。',
+            player_action_kind='requested_movement',
         )
 
     assert workflow._review_mislabels_explicit_player_movement(
@@ -193,17 +194,16 @@ async def test_review_cannot_call_the_same_explicit_movement_unauthorized(monkey
             False,
             ('player_action',),
             (),
-            '正文在scene_update中直接执行了玩家本轮才明确要求的转移动作，构成新增未授权的玩家行动。',
+            '正文存在问题。',
+            player_action_kind='requested_movement',
         )
     ) is True
-    # 真正的额外操作和目的地错配不能借相似措辞清除。
-    for reason in (
-        '玩家本轮明确要求移动，但正文却前往不同地点。',
-        '正文替玩家执行了未授权的同时按下密钥动作。',
-    ):
+    # 真正的额外操作和目的地错配由结构化 unauthorized 或缺省值保留否决。
+    for kind in ('unauthorized', ''):
         assert workflow._review_mislabels_explicit_player_movement(
             evaluator.NumericV2TransitionOfferReview(
-                False, False, ('player_action',), (), reason)) is False
+                False, False, ('player_action',), (), '正文存在问题。',
+                player_action_kind=kind)) is False
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
@@ -326,30 +326,84 @@ def test_confirmed_departure_does_not_trim_conflict_outside_scene_update():
     ) is None
 
 
-def test_projection_can_clear_only_a_review_that_acknowledges_the_same_departure():
-    """结构化离场证据可补足复核理由，但不能覆盖返回当前幕的冲突。"""  # noqa: DOCSTRING_CJK
+def test_free_text_reason_alone_never_clears_a_player_action_veto():
+    """Keep the veto when only failure_reason prose claims the movement was requested; the Guard must say so in a structured field."""
+    for reason in (
+        '正文scene_update直接执行了玩家本轮明确表达的移动动作，构成player_action。',
+        '正文在scene_update中直接执行了玩家本轮才明确要求的转移动作，构成新增未授权的玩家行动。',
+        '正文承接玩家已经完成的离开动作，仍被标成player_action。',
+    ):
+        review = evaluator.NumericV2TransitionOfferReview(False, False, ('player_action',), (), reason)
+        assert workflow._review_mislabels_explicit_player_movement(review) is False
+    # The structured code only clears the sole player_action veto without a body offer.
+    for review in (
+        evaluator.NumericV2TransitionOfferReview(
+            False, False, ('player_action', 'author_boundary'), (), '', player_action_kind='requested_movement'),
+        evaluator.NumericV2TransitionOfferReview(
+            True, False, ('player_action',), (), '', offer_quote='走吧', player_action_kind='requested_movement'),
+    ):
+        assert workflow._review_mislabels_explicit_player_movement(review) is False
 
-    projection = workflow.project_player_action_result('（推门离开）明天见。')
-    assert workflow._review_mislabels_explicit_player_movement(
-        evaluator.NumericV2TransitionOfferReview(
-            False,
-            False,
-            ('player_action',),
-            (),
-            '正文承接玩家已经完成的离开动作，仍被标成player_action。',
-        ),
-        projection,
-    ) is True
-    assert workflow._review_mislabels_explicit_player_movement(
-        evaluator.NumericV2TransitionOfferReview(
-            False,
-            False,
-            ('player_action',),
-            (),
-            '正文把玩家离开后重新回到当前地点写成了player_action。',
-        ),
-        projection,
-    ) is False
+
+@pytest.mark.asyncio
+async def test_prose_only_movement_reason_keeps_veto_in_workflow(monkeypatch, tmp_path):
+    """A Guard reply that admits the requested movement only in prose is not cleared by the workflow."""
+    engine = _engine()
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='prose_movement', catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult(
+            (), False, transition_intent='unclear', interaction_intent='scene_action')
+
+    async def generate(self, **kwargs):
+        return {'performance': '（扶稳你的手臂）好，我们沿着墙边慢慢走。', 'scene_narration': '两人开始向左侧走廊移动。',
+                'suggested_inputs': ['（跟上她）继续走。', '（停下脚步）先等等。'], 'transition_offered': False}
+
+    async def review(self, **kwargs):
+        return evaluator.NumericV2TransitionOfferReview(
+            False, False, ('player_action',), (),
+            '正文scene_update直接执行了玩家本轮明确表达的移动动作，构成player_action。')
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('move_now', 0, '那带路吧，我们现在过去。'), ensure_current_binding=lambda _: _binding())
+    assert result.diagnostics['explicit_player_movement_flags_cleared'] == 0
+
+
+def test_guard_parser_reads_player_action_kind_fail_closed():
+    """Parse the structured player_action kind; absent, unknown, mistyped or orphaned values default to empty."""
+    parse = evaluator._parse_transition_judge_output
+
+    def payload(**changes):
+        return json.dumps({'offer_present': False, 'valid': False, 'body_violations': ['player_action'],
+                           'unsafe_suggestion_indexes': [], 'failure_reason': '', **changes}, ensure_ascii=False)
+
+    assert parse(payload(player_action_kind='requested_movement')).player_action_kind == 'requested_movement'
+    assert parse(payload(player_action_kind='unauthorized')).player_action_kind == 'unauthorized'
+    assert parse(payload()).player_action_kind == ''
+    for bad in ('REQUESTED_MOVEMENT', 'allowed', 1, True, None, ['requested_movement']):
+        review = parse(payload(player_action_kind=bad))
+        assert review.player_action_kind == ''
+        assert review.body_violations == ('player_action',)
+    orphan = parse(payload(body_violations=[], player_action_kind='requested_movement'))
+    assert orphan.player_action_kind == ''
+
+
+def test_guard_prompt_asks_for_structured_player_action_kind():
+    """The ordinary Guard output contract names the structured field that replaces reason-keyword matching."""
+    engine = _engine()
+    session = engine.create_session(session_id='prompt_kind', catgirl_binding=_binding(), opening_performance=_opening())
+    messages = evaluator._build_transition_judge_messages(
+        engine, session, actor_performance={'performance': '（点头）好。', 'suggested_inputs': []},
+        player_input='带路吧。')[0]
+    assert '"player_action_kind":""' in messages[0].content
+    assert 'requested_movement' in messages[0].content
 
 
 @pytest.mark.asyncio
@@ -454,7 +508,9 @@ async def test_dispute_verdict_gets_the_same_explicit_movement_correction(monkey
         # The fast verdict is vague enough to earn a dispute; the dispute then blames the requested movement.
         reason = ('正文scene_update直接执行了玩家本轮明确表达的移动动作，构成player_action。'
                   if kwargs.get('dispute_review') else '正文存在问题。')
-        return evaluator.NumericV2TransitionOfferReview(False, False, ('player_action',), (), reason)
+        return evaluator.NumericV2TransitionOfferReview(
+            False, False, ('player_action',), (), reason,
+            player_action_kind='requested_movement' if kwargs.get('dispute_review') else 'unauthorized')
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)

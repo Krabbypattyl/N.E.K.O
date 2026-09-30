@@ -65,7 +65,7 @@ def test_numbered_evidence_excludes_player_and_candidate():
     assert "新秘密房间" not in str(recovery_check["public_destination_evidence"])
     assert evidence == tuple(recovery_check["public_destination_evidence"])
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
-    assert "保留原六字段并增加 missed_initiation 与 public_destination_index" in messages[0].content
+    assert "保留原七字段并增加 missed_initiation 与 public_destination_index" in messages[0].content
 
 
 @pytest.mark.asyncio

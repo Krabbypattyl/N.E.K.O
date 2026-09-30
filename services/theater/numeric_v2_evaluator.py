@@ -73,6 +73,11 @@ NUMERIC_V2_CONTRACT_CHECK_MAX_OUTPUT_TOKENS = 160
 NUMERIC_V2_FIXED_NARRATION_EVIDENCE_MAX_TOKENS = 80
 logger = logging.getLogger(__name__)
 _METRIC_STRENGTHS = frozenset({"weak", "normal", "strong", "decisive"})
+# Structured Guard classification of a ``player_action`` body violation. Only
+# ``requested_movement`` lets the ordinary-turn workflow clear the veto; an absent,
+# unknown or mistyped value normalises to "" so the veto always stays (fail closed).
+PLAYER_ACTION_KIND_REQUESTED_MOVEMENT = "requested_movement"
+_PLAYER_ACTION_KINDS = frozenset({"unauthorized", PLAYER_ACTION_KIND_REQUESTED_MOVEMENT})
 _INTERACTION_INTENTS = frozenset({"chat", "scene_action", "mixed_or_unclear"})
 _TRANSITION_REPLY_TARGETS = frozenset({
     "pending_transition",
@@ -144,6 +149,9 @@ class NumericV2TransitionOfferReview:
     fixed_narration_triggers: tuple[dict[str, str], ...] = ()
     # 复用同一次正文复核返回的紧凑完成事实；Runtime 仍负责白名单、类型和逐字证据裁定。
     fact_candidates: tuple[dict[str, Any], ...] = ()
+    # Structured kind of the ``player_action`` violation; "" whenever it is absent or
+    # unrecognised. Workflow corrections read this field, never ``failure_reason``.
+    player_action_kind: str = ""
 
     @property
     def player_action_preserved(self) -> bool:
@@ -1176,13 +1184,13 @@ def _build_transition_judge_messages(
         fixed_candidates = review_candidates(node, session)
     review_shape = (
         '{"offer_present":false,"offer_quote":"","valid":false,"body_violations":[],'
-        '"unsafe_suggestion_indexes":[],"failure_reason":""'
+        '"unsafe_suggestion_indexes":[],"failure_reason":"","player_action_kind":""'
         + (',"fixed_narration_triggers":[]' if fixed_candidates else '')
         + (',"fact_candidates":[]' if pending_completion_facts else '') + '}。'
     )
     system = (
         "你是演绎输出复核器，只核对给定证据，不续写、不选路线、不评剧情完成度。"
-        + ("只输出一个完整 JSON，字段如下：" if fixed_candidates or pending_completion_facts else "只输出一个完整 JSON，固定六字段：")
+        + ("只输出一个完整 JSON，字段如下：" if fixed_candidates or pending_completion_facts else "只输出一个完整 JSON，固定七字段：")
         + review_shape
         + "两个布尔量及上述数组必填、数组去重，无对应项时为空；不要输出其它字段。\n"
         + (
@@ -1254,7 +1262,12 @@ def _build_transition_judge_messages(
         "‘下周回这里再核对，好吗’是在邀请；只有正文或旁白已把时间推进到下周、或写出核对完成才是执行。"
         "当前拿出已有道具仍可发生在当前幕，不能因为目标幕也使用该道具就认定换幕；作者明令禁止的当前操作仍须拦截。"
         "next_scene_direction 的 opening_boundary 与 bridge_boundary 是接受后的入口，不是当前既成事实。"
-        "一个冲突可对应多个枚举；没有提议也须检查正文，按钮问题绝不写入此数组。\n"
+        "一个冲突可对应多个枚举；没有提议也须检查正文，按钮问题绝不写入此数组。"
+        # 结构化替代“从 failure_reason 措辞猜是否为玩家本轮要求的移动”；缺省即保留否决。
+        "player_action_kind：body_violations 不含 player_action 时填空字符串；含 player_action 时，"
+        "仅当正文写出的唯一玩家侧行动正是玩家本轮输入明确要求或已实施的同一移动／离开"
+        "（去向一致，没有额外操作、没有写回当前地点、没有替玩家新增其他决定）填 requested_movement，"
+        "其余一律填 unauthorized。\n"
         "2. offer_present：以 next_scene_direction 声明的出口作为阶段边界。正文邀请玩家执行该出口安排为 true，"
         "不按动作大小、移动距离或是否处于同一场所判断；只邀请执行出口之前的其他动作、仅完成前置条件、泛问或只有按钮提出都为 false。"
         "明确邀请进入其他地点/时段/阶段，即使方向错误也为 true，由 valid 核对去向。"
@@ -1502,7 +1515,7 @@ def _build_transition_judge_messages(
         ) + system
     if check_missed_initiation and transition_outcome is None:
         # 复用普通复核调用补查意图，开场与既有正式转场合同不扩展；候选永远不能自证已公开。
-        system = system.replace("固定六字段", "保留原六字段并增加 missed_initiation 与 public_destination_index", 1)
+        system = system.replace("固定七字段", "保留原七字段并增加 missed_initiation 与 public_destination_index", 1)
         system = system.replace("不要输出其它字段。", "不要输出其它字段；新增字段按下面合同填写。", 1)
         recovery_contract = (
             "本次先独立核对 JSON 开头的 missed_initiation_check，再审普通正文。"
@@ -1689,7 +1702,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
     # 模型省略邀请引文时按空证据处理；清除邀请判断，但不因辅助字段缺失回滚合法正文。
     if fixed_narration_review:
         required_fields.add("fixed_narration_triggers")
-    allowed_fields = required_fields | {"failure_reason", "offer_quote"}
+    allowed_fields = required_fields | {"failure_reason", "offer_quote", "player_action_kind"}
     if completion_fact_review:
         # 缺字段时保留原复核结论并按空候选降级；事实辅助字段不能拖垮正文安全判断。
         allowed_fields.add("fact_candidates")
@@ -1781,6 +1794,19 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         or len(raw_unsafe_indexes) != len(set(raw_unsafe_indexes))
     ):
         raise NumericV2EvaluatorOutputError("numeric_v2_transition_judge_fields_invalid")
+    raw_player_action_kind = payload.get("player_action_kind", "")
+    # Only a known enum paired with a player_action the model itself listed on an
+    # ordinary review survives; formal-transition vetoes never inherit it. Anything
+    # else keeps the veto rather than failing the whole review over an auxiliary field.
+    player_action_kind = (
+        raw_player_action_kind
+        if isinstance(raw_player_action_kind, str)
+        and raw_player_action_kind in _PLAYER_ACTION_KINDS
+        and "player_action" in raw_body_violations
+        and initiation_session is None
+        and not acceptance_review
+        else ""
+    )
     # 独立复核也核对引用真实性，争议复查不能用空泛授权覆盖缺失的公开证据。
     if initiation_session is not None and not _has_public_transition_quote(payload.get("public_destination_quote"), initiation_session):
         if "player_action" not in raw_body_violations:
@@ -1828,6 +1854,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         pending_invitation_invalid=payload.get("pending_invitation_invalid") if acceptance_review else None,
         fixed_narration_triggers=tuple(triggers),
         fact_candidates=tuple(dict(item) for item in raw_fact_candidates),
+        player_action_kind=player_action_kind,
     )
 
 
@@ -2393,6 +2420,7 @@ class NumericV2MetricEvaluator:
 __all__ = [
     "NUMERIC_V2_EVALUATOR_MAX_OUTPUT_TOKENS",
     "NUMERIC_V2_EVALUATOR_TIMEOUT_SECONDS",
+    "PLAYER_ACTION_KIND_REQUESTED_MOVEMENT",
     "NUMERIC_V2_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS",
     "NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS",
     "NumericV2EvaluatorError",

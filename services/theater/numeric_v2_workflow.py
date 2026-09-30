@@ -37,6 +37,7 @@ from .numeric_v2_evaluator import (
     NumericV2EvaluatorError,
     NumericV2MetricEvaluator,
     NumericV2TransitionOfferReview,
+    PLAYER_ACTION_KIND_REQUESTED_MOVEMENT,
 )
 from .numeric_v2_options import aload_theater_module_options
 from .numeric_v2_performance import (
@@ -172,40 +173,22 @@ def _review_denies_narration_only_offer(
 
 def _review_mislabels_explicit_player_movement(
     review: NumericV2TransitionOfferReview,
-    player_action_projection: Mapping[str, Any] | None = None,
 ) -> bool:
-    """复核若承认移动正是玩家本轮明确要求，就不能又把同一动作判成代做。"""  # noqa: DOCSTRING_CJK
+    """Clear a ``player_action`` veto only on the Guard's structured requested-movement code.
+
+    The Guard reports ``player_action_kind=requested_movement`` when the sole
+    player-side action it flagged is the movement the player explicitly asked for
+    this turn. ``failure_reason`` is diagnostic prose and is never parsed here: an
+    absent or unknown kind keeps the veto (fail closed).
+    """
 
     if (
         review.offer_present
         or tuple(review.body_violations) != ("player_action",)
     ):
         return False
-    reason = str(review.failure_reason or "")
-    explicitly_requested = (
-        "玩家本轮明确要求" in reason
-        or "玩家本轮才明确要求" in reason
-        or "玩家本轮明确表达的移动动作" in reason
-    )
-    projected_departure = bool(
-        isinstance(player_action_projection, Mapping)
-        and normalize_player_action_projection(player_action_projection).get(
-            "player_left_current_scene"
-        )
-        and any(marker in reason for marker in ("离开", "离场", "移动", "转移", "走向", "走出"))
-    )
-    if not (explicitly_requested or projected_departure):
-        return False
-    if not any(marker in reason for marker in ("移动", "转移", "离开", "离场", "走向", "走出")):
-        return False
-    # 只清除“执行的就是本轮要求”这一种自相矛盾；目的地错配、额外操作仍交给原链路拦截。
-    return not any(
-        marker in reason
-        for marker in (
-            "但", "却", "不一致", "不相符", "不同", "额外", "除此", "超出",
-            "返回", "回到", "重新进入", "重新回", "折返", "回来",
-        )
-    )
+    # 只清除“执行的就是本轮要求”这一种自相矛盾；不推断目的地、不创建换幕，也不放行额外操作。
+    return review.player_action_kind == PLAYER_ACTION_KIND_REQUESTED_MOVEMENT
 
 
 _PLAYER_DEPARTURE_RETURN_MARKERS = (
@@ -1435,10 +1418,7 @@ async def _execute_numeric_v2_turn(
                         offer_quote="",
                         failure_reason="",
                     )
-                if not changed and _review_mislabels_explicit_player_movement(
-                    result,
-                    player_action_projection,
-                ):
+                if not changed and _review_mislabels_explicit_player_movement(result):
                     # 玩家明确要求移动只授权该次移动；此处不推断目的地、不创建换幕，也不放行额外操作。
                     diagnostics["explicit_player_movement_flags_cleared"] += 1
                     trace_event(
