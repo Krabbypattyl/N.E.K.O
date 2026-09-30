@@ -352,7 +352,7 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 ### 5.2 Guard 复核（`review` 开启）
 
 - 普通复核在未换幕且有可见正文/场景更新或提议信号时进入，包括已有待确认邀请的追问与澄清。正式换幕合并复核三段正文与首批按钮，终局没有按钮也复核。
-- 基础输出：`offer_present / offer_quote / valid / body_violations / unsafe_suggestion_indexes / failure_reason`；正式主动转场另含 `initiation_authorized`，接受邀请的正式复核另含 `acceptance_authorized / pending_invitation_invalid`，普通漏判补查另含 `missed_initiation / public_destination_index`。`offer_present=true` 只有在 `offer_quote` 能在本轮正文中逐字找到时才可信。`failure_reason` 只供改写与诊断，程序不从中反推安全。
+- 基础输出：`offer_present / offer_quote / valid / body_violations / unsafe_suggestion_indexes / failure_reason`，普通复核另含可选的 `player_action_kind`（`requested_movement / unauthorized`；缺失、非法或未同时列出 `player_action` 时按空值处理，fail-closed）；正式主动转场另含 `initiation_authorized`，接受邀请的正式复核另含 `acceptance_authorized / pending_invitation_invalid`，普通漏判补查另含 `missed_initiation / public_destination_index`。`offer_present=true` 只有在 `offer_quote` 能在本轮正文中逐字找到时才可信。`failure_reason` 只供改写与诊断，程序不从中反推安全：唯一违规是 `player_action`、正文无邀请且 `player_action_kind = requested_movement` 时，才解除这项否决。
 - 正文、提议和按钮独立核对：按钮不能首提、补足或否决正文提议；不安全按钮按索引删除（索引越界只清空按钮），删除后不重审正文。
 - 首次正文违规或无效正文邀请可发起一次同证据的思考复查（`dispute`）；超时、协议异常或模型未注册思考能力时保留初判。高置信的单一违规（明确未授权 `player_action`、高置信 `scene_boundary`、命中作者硬边界的 `author_boundary`）不再争议，直接进入改稿。普通首稿仅“邀请无效”时先用改稿额度，改稿仍无效才争议。
 - 仍违规时全回合共用一次语义改稿：普通留幕从原输入、历史与具体原因重新生成（不带被拒全文）；开场与正式三段携带候选改写。第二稿不再争议；语义否定仍在时采用最后一版格式完整的候选（`semantic_review_fallback` 记录，不计作通过）。
@@ -515,6 +515,7 @@ stateDiagram-v2
 ### 8.6 与普通聊天的隔离
 
 - 主动搭话抑制只存在于内存，不改写持久化的 `proactiveChatEnabled`：本窗口由 `nekoTheaterRuntime.suppressesProactiveChat()` 按剧场会话是否活跃（启动阶段先行登记）实时回答；其他窗口的抑制随主动搭话 leader 心跳传播，发起窗口关闭或崩溃后按心跳 TTL 自动失效。Electron 下同一心跳也让 Pet 窗口的悬浮麦克风在剧场期间让出，不会永久锁住。
+- 服务端兜底：`utils/theater_activity.py` 在内存中按角色记录最近一次成功的剧场请求（start / 读取 Session / input / end / resume），TTL 120 s；`ended` 或 `POST /session/release`（前端 `clear()` 时发出）立即清除。期间主动搭话入口直接返回 pass，普通语音 `start_session` 在领取语音租约前被拒绝（`THEATER_SESSION_ACTIVE`），文字会话不受影响。信号 fail-open：超过 TTL 或服务重启即失效，只剩前端抑制；从未使用剧场的角色不会出现在表中。
 - 剧场激活期间普通聊天回复只更新普通聊天自己的状态，不覆盖剧场历史；普通预览缓存在剧场激活时不显示。
 - 八语言 locale key 集合一致；小剧场用户文案不写仅中文 fallback。
 
