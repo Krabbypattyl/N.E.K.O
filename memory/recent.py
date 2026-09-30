@@ -466,8 +466,8 @@ class TheaterEpisodeRetracted(RuntimeError):
     """A theater archive write matched a tombstone left by the player's decline."""
 
 
-def _load_theater_retractions_unlocked(recent_path) -> list[dict]:
-    """Read retraction tombstones; the caller holds the recent.json file lock.
+def _load_theater_retraction_state_unlocked(recent_path) -> tuple[list[dict], list[dict]]:
+    """Read (attempt tombstones, story forget tombstones); the caller holds the file lock.
 
     A missing or structurally invalid file reads as empty (writes are atomic, so
     invalid content only comes from outside tampering); an I/O failure raises so
@@ -479,16 +479,79 @@ def _load_theater_retractions_unlocked(recent_path) -> list[dict]:
         with open(path, encoding="utf-8") as handle:
             raw = handle.read()
     except FileNotFoundError:
-        return []
+        return [], []
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         logger.warning(f"[RecentHistory] ignoring invalid theater retraction file: {path}")
-        return []
-    entries = payload.get("entries") if isinstance(payload, dict) else None
-    if not isinstance(entries, list):
-        return []
-    return [entry for entry in entries if isinstance(entry, dict)]
+        return [], []
+    if not isinstance(payload, dict):
+        return [], []
+    lists = []
+    for key in ("entries", "forgotten_stories"):
+        values = payload.get(key)
+        lists.append(
+            [entry for entry in values if isinstance(entry, dict)]
+            if isinstance(values, list)
+            else []
+        )
+    return lists[0], lists[1]
+
+
+def _load_theater_retractions_unlocked(recent_path) -> list[dict]:
+    """Read the per-attempt retraction tombstones; the caller holds the file lock."""
+
+    return _load_theater_retraction_state_unlocked(recent_path)[0]
+
+
+def _write_theater_retraction_state_unlocked(
+    recent_path, entries: list[dict], forgotten: list[dict],
+) -> None:
+    """Atomically persist both tombstone lists; the caller holds the file lock."""
+
+    recent_file.write_recent_sidecar_unlocked(
+        recent_path,
+        THEATER_RETRACTIONS_FILENAME,
+        {
+            "schema": "neko.theater.retractions.v1",
+            "entries": entries[-THEATER_RETRACTIONS_MAX:],
+            "forgotten_stories": forgotten[-THEATER_RETRACTIONS_MAX:],
+        },
+    )
+
+
+def _is_fresh_tombstone(stamp, now: float) -> bool:
+    return (
+        isinstance(stamp, (int, float))
+        and not isinstance(stamp, bool)
+        and now - stamp < THEATER_RETRACTION_TTL_SECONDS
+    )
+
+
+def _theater_story_write_is_forgotten(
+    forgotten: list[dict], story_id: str, archive_issued_at: float | None,
+) -> bool:
+    """True when a write for this story was issued before the story was forgotten.
+
+    The theater stamps every archive request with the wall-clock time it issued
+    it while holding the story's memory lock, which forget also takes; the
+    memory server stamps the forget with its own clock on the same host. A write
+    issued before the forget therefore carries an older stamp and is dropped,
+    while an archive the player starts after the forget carries a newer one and
+    lands. A write without a stamp cannot prove it came later and is dropped.
+    """
+
+    if not story_id:
+        return False
+    for entry in forgotten:
+        if str(entry.get("story_id") or "") != story_id:
+            continue
+        forgotten_at = entry.get("forgotten_at")
+        if not isinstance(forgotten_at, (int, float)) or isinstance(forgotten_at, bool):
+            return True
+        if archive_issued_at is None or archive_issued_at <= forgotten_at:
+            return True
+    return False
 
 
 def _theater_attempt_is_retracted(
@@ -1045,17 +1108,26 @@ class CompressedRecentHistoryManager:
 
     def _upsert_theater_episode_locked(
         self, file_path, lanlan_name, incoming, expected_generation=None,
-        archive_request_id="", archive_attempt=None,
+        archive_request_id="", archive_attempt=None, archive_issued_at=None,
     ):
         """在单个文件临界区内替换同 Session 胶囊并落盘。"""  # noqa: DOCSTRING_CJK
 
         with recent_file.recent_file_access(
             file_path, expected_generation=expected_generation,
         ) as file_path:
+            retracted_attempts, forgotten_stories = (
+                _load_theater_retraction_state_unlocked(file_path)
+            )
             if archive_request_id and _theater_attempt_is_retracted(
-                _load_theater_retractions_unlocked(file_path),
+                retracted_attempts,
                 archive_request_id,
                 archive_attempt,
+            ):
+                raise TheaterEpisodeRetracted(archive_request_id)
+            if _theater_story_write_is_forgotten(
+                forgotten_stories,
+                str(message_metadata(incoming).get("story_id") or ""),
+                archive_issued_at,
             ):
                 raise TheaterEpisodeRetracted(archive_request_id)
             status, history = self._load_history_unlocked(file_path, lanlan_name)
@@ -1107,10 +1179,12 @@ class CompressedRecentHistoryManager:
 
     async def upsert_theater_episode(
         self, message, lanlan_name, *, archive_request_id="", archive_attempt=None,
+        archive_issued_at=None,
     ):
         """把同一 Session 的暂停与完成状态收敛成一条近期记忆。
 
-        带 archive_request_id 的写入若命中撤回墓碑，抛 TheaterEpisodeRetracted 且不落盘。
+        带 archive_request_id 的写入若命中撤回墓碑，或在该剧本被遗忘之前发出
+        （archive_issued_at 不晚于遗忘墓碑），抛 TheaterEpisodeRetracted 且不落盘。
         """  # noqa: DOCSTRING_CJK
 
         if not is_theater_episode_summary(message):
@@ -1140,6 +1214,7 @@ class CompressedRecentHistoryManager:
             admission_generation,
             str(archive_request_id or ""),
             archive_attempt,
+            archive_issued_at,
         )
 
     def _restore_theater_cache_snapshot_locked(
@@ -1247,28 +1322,70 @@ class CompressedRecentHistoryManager:
             now = float(entry["retracted_at"])
             kept = []
             through_attempt = int(entry["through_attempt"])
-            for existing in _load_theater_retractions_unlocked(file_path):
+            entries, forgotten = _load_theater_retraction_state_unlocked(file_path)
+            for existing in entries:
                 if existing.get("archive_request_id") == entry["archive_request_id"]:
                     previous = existing.get("through_attempt")
                     if isinstance(previous, int) and not isinstance(previous, bool):
                         through_attempt = max(through_attempt, previous)
                     continue
-                retracted_at = existing.get("retracted_at")
-                if (
-                    isinstance(retracted_at, (int, float))
-                    and not isinstance(retracted_at, bool)
-                    and now - retracted_at < THEATER_RETRACTION_TTL_SECONDS
-                ):
+                if _is_fresh_tombstone(existing.get("retracted_at"), now):
                     kept.append(existing)
             kept.append({**entry, "through_attempt": through_attempt})
-            recent_file.write_recent_sidecar_unlocked(
-                file_path,
-                THEATER_RETRACTIONS_FILENAME,
-                {
-                    "schema": "neko.theater.retractions.v1",
-                    "entries": kept[-THEATER_RETRACTIONS_MAX:],
-                },
-            )
+            _write_theater_retraction_state_unlocked(file_path, kept, forgotten)
+
+    def _record_theater_story_forget_locked(
+        self, file_path, lanlan_name, story_id, forgotten_at, expected_generation=None,
+    ):
+        """Persist a story-level forget tombstone inside the recent.json critical section."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            entries, forgotten = _load_theater_retraction_state_unlocked(file_path)
+            kept = []
+            for existing in forgotten:
+                previous = existing.get("forgotten_at")
+                if existing.get("story_id") == story_id:
+                    if isinstance(previous, (int, float)) and not isinstance(previous, bool):
+                        forgotten_at = max(forgotten_at, float(previous))
+                    continue
+                if _is_fresh_tombstone(previous, forgotten_at):
+                    kept.append(existing)
+            kept.append({"story_id": story_id, "forgotten_at": forgotten_at})
+            _write_theater_retraction_state_unlocked(file_path, entries, kept)
+
+    async def record_theater_story_forget(self, lanlan_name, story_id) -> float:
+        """Durably drop every later-arriving write of this story issued before now.
+
+        Story forget removes the story's capsules, but an archive request the
+        theater timed out on may still be in flight and land afterwards. The
+        tombstone is keyed by story rather than by archive attempt, so it also
+        covers writes whose receipts the forget has already deleted.
+        """
+
+        normalized_story_id = str(story_id or "").strip()
+        if not normalized_story_id:
+            raise ValueError("theater_story_id_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/{THEATER_RETRACTIONS_FILENAME}",
+        )
+        forgotten_at = time.time()
+        await _await_recent_mutation_to_completion(
+            self._record_theater_story_forget_locked,
+            file_path,
+            lanlan_name,
+            normalized_story_id,
+            forgotten_at,
+            admission_generation,
+        )
+        return forgotten_at
 
     async def record_theater_retraction(
         self,

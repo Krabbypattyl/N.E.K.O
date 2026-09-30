@@ -6637,5 +6637,7 @@ def test_story_forget_drains_queued_retractions(tmp_path, monkeypatch):
         })
         assert forgot.status_code == 200, forgot.text
 
-    assert calls == ["retract", "forget"]
+    # The queued intent is drained first; the synthetic receipt it came from is
+    # still on disk and unresolved, so forget fences it once more (idempotent).
+    assert calls == ["retract", "retract", "forget"]
     assert store.pending_retract_intents(character_id="character_" + "1" * 32) == []

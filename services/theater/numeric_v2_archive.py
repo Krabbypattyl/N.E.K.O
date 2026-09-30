@@ -387,6 +387,34 @@ class NumericV2ArchiveStore:
             }
         return list(carried.values())
 
+    def forget_retraction_obligations(self, pending: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Return the unresolved archive attempts of the receipts a forget deletes.
+
+        Covers each receipt's own issued attempts and the ones it inherited from
+        replaced receipts (``pending_retractions``). Unreadable receipts are
+        skipped: this list is a best-effort second fence behind the memory
+        server's story tombstone.
+        """
+
+        names = pending.get("receipt_files")
+        obligations: dict[str, dict[str, Any]] = {}
+        for name in names if isinstance(names, list) else ():
+            if not isinstance(name, str) or not re.fullmatch(r"theater_end_[a-z0-9_-]+\.json", name):
+                continue
+            try:
+                receipt = self._read(self.root / name)
+            except NumericV2ArchiveError:
+                continue
+            if receipt is None:
+                continue
+            for entry in self._carried_retractions(receipt):
+                obligations[entry["archive_request_id"]] = {
+                    "story_id": str(receipt.get("story_id") or ""),
+                    "session_id": str(receipt.get("session_id") or ""),
+                    **entry,
+                }
+        return list(obligations.values())
+
     def _retract_intent_path(self, archive_request_id: str) -> Path:
         return self.retract_intent_root / f"{self._session_key(archive_request_id)}.json"
 

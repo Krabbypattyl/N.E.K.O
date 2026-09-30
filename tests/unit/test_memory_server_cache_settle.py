@@ -326,6 +326,7 @@ async def test_forget_theater_memory_rebuilds_remaining_story_index():
         }),
     ]
     fake_recent = MagicMock()
+    fake_recent.record_theater_story_forget = AsyncMock(return_value=1.0)
     fake_recent.forget_theater_story = AsyncMock(return_value=2)
     fake_recent.aget_recent_history = AsyncMock(
         return_value=[remaining, *legacy_remaining]
@@ -367,6 +368,7 @@ async def test_forget_theater_memory_keeps_recent_when_index_update_fails():
         "session_id": "session_forget",
     })
     fake_recent = MagicMock()
+    fake_recent.record_theater_story_forget = AsyncMock(return_value=1.0)
     fake_recent.aget_recent_history = AsyncMock(return_value=[current])
     fake_recent.forget_theater_story = AsyncMock()
     fake_time = MagicMock()
@@ -393,6 +395,7 @@ async def test_forget_theater_memory_reports_original_error_when_rollback_fails(
 
     recent_error = OSError("recent delete failed")
     fake_recent = MagicMock()
+    fake_recent.record_theater_story_forget = AsyncMock(return_value=1.0)
     fake_recent.aget_recent_history = AsyncMock(return_value=[])
     fake_recent.forget_theater_story = AsyncMock(side_effect=recent_error)
     fake_time = MagicMock()
@@ -438,6 +441,7 @@ async def test_forget_rollback_reindexes_what_recent_actually_holds():
     forgotten = _theater_summary("story_forget")
     kept = _theater_summary("story_keep")
     fake_recent = MagicMock()
+    fake_recent.record_theater_story_forget = AsyncMock(return_value=1.0)
     # Before: both stories. After the partially persisted delete: only the kept one.
     fake_recent.aget_recent_history = AsyncMock(side_effect=[[forgotten, kept], [kept]])
     fake_recent.forget_theater_story = AsyncMock(side_effect=OSError("pending write failed"))
@@ -468,6 +472,7 @@ async def test_forget_rollback_falls_back_to_snapshot_when_reread_fails():
     kept = _theater_summary("story_keep")
     recent_error = OSError("recent delete failed")
     fake_recent = MagicMock()
+    fake_recent.record_theater_story_forget = AsyncMock(return_value=1.0)
     fake_recent.aget_recent_history = AsyncMock(side_effect=[
         [forgotten, kept], OSError("recent unreadable"),
     ])

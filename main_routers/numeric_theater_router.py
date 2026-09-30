@@ -8,6 +8,7 @@ import functools
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Any, Mapping
 from urllib.parse import quote
 from weakref import WeakValueDictionary
@@ -1713,6 +1714,10 @@ async def archive_numeric_session(request: Request):
                         # A skip retracts every attempt up to the recorded number; an
                         # attempt that times out and lands later is then dropped.
                         "theater_archive_attempt": archive_attempt,
+                        # Stamped while this story's memory lock is held, which a
+                        # story forget also takes: a forget completed later drops
+                        # this write even when it lands after the forget.
+                        "theater_archive_issued_at": time.time(),
                     },
                     timeout=8.0,
                 )
@@ -1965,6 +1970,25 @@ async def _drain_queued_retractions(
             logger.warning("Numeric v2 cannot drop a completed retraction", exc_info=True)
 
 
+async def _retract_forgotten_attempts(
+    binding: Mapping[str, str],
+    obligations: list[Mapping[str, Any]],
+) -> None:
+    """Best-effort retract of the unresolved archive attempts a forget deletes.
+
+    The story forget itself leaves a story-level tombstone on the memory server;
+    this per-request fence is a second line of defence. Failures only log: the
+    forget still proceeds, and nothing is lost by retrying the forget later.
+    """
+
+    for obligation in obligations:
+        if not await _retract_archived_episode(binding, obligation):
+            logger.warning(
+                "Numeric v2 forget could not retract an in-flight archive attempt: %s",
+                obligation.get("archive_request_id"),
+            )
+
+
 @router.get("/memory/archives")
 async def list_numeric_memory_archives(story_id: str):
     """列出当前猫娘在指定剧本中的冷档案摘要。"""  # noqa: DOCSTRING_CJK
@@ -2113,6 +2137,12 @@ async def forget_numeric_story_memory(request: Request):
                     archive_store.prepare_forget, **archive_scope,
                     session=stored.session if stored is not None else None,
                 )
+                # Archive writes of this story that timed out may still land; the
+                # memory server's story tombstone drops them, and retracting each
+                # known attempt as well also fences them by request id.
+                in_flight = await asyncio.to_thread(
+                    archive_store.forget_retraction_obligations, pending,
+                )
                 if runtime is not None and pending["session_id"]:
                     target = await runtime.restore_session_for_lifecycle(pending["session_id"])
                     if target is not None:
@@ -2122,6 +2152,7 @@ async def forget_numeric_story_memory(request: Request):
                             target.session.session_id, through_revision=pending["through_revision"],
                         )
             await _drain_queued_retractions(config_manager, archive_store, binding)
+            await _retract_forgotten_attempts(binding, in_flight)
             # The durable intent above makes every later step retryable, so the
             # memory round trip runs without the global character lock (the memory
             # service may wait behind /settle compression for this character).

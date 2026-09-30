@@ -90,6 +90,9 @@ class HistoryRequest(BaseModel):
     # Theater archive attempt number; lets a retraction fence late writes of
     # attempts issued before the player declined the archive.
     theater_archive_attempt: int | None = Field(default=None, ge=0)
+    # Wall-clock time the theater issued this archive request; a story forget
+    # drops every write of that story issued at or before the forget.
+    theater_archive_issued_at: float | None = Field(default=None, ge=0)
 
 
 class PromptLocalePreferenceRequest(BaseModel):
@@ -1106,11 +1109,12 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                                 lanlan_name,
                                 archive_request_id=idempotency_key,
                                 archive_attempt=request.theater_archive_attempt,
+                                archive_issued_at=request.theater_archive_issued_at,
                             )
                         except TheaterEpisodeRetracted:
-                            # The player declined this archive while the request was
-                            # still in flight; the tombstone was checked under the
-                            # same settle lock the retraction holds.
+                            # The player declined this archive (or forgot the story)
+                            # while the request was still in flight; the tombstone was
+                            # checked under the same settle lock the retraction holds.
                             retracted_request = True
                         else:
                             input_history = [stored_episode]
@@ -1218,6 +1222,14 @@ async def forget_theater_memory(
         raise HTTPException(status_code=422, detail="story_id_required")
     try:
         async with runtime._get_settle_lock(lanlan_name):
+            # An archive request the theater timed out on may still land after
+            # this forget. Record the story tombstone first, under the settle lock
+            # /cache checks it under, so such a late write is dropped even when
+            # the rest of this forget fails and is retried.
+            await runtime.recent_history_manager.record_theater_story_forget(
+                lanlan_name,
+                story_id,
+            )
             current = await runtime.recent_history_manager.aget_recent_history(
                 lanlan_name,
             )
