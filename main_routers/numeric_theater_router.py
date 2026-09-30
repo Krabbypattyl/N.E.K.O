@@ -496,6 +496,9 @@ def _numeric_payload(
     return payload
 
 
+_AUTHOR_ONLY_SUMMARY_KEYS = frozenset({"warnings", "metric_count"})
+
+
 def _list_story_summaries(
     registry: NumericV2PackageRegistry,
     binding: Mapping[str, str],
@@ -511,7 +514,14 @@ def _list_story_summaries(
             player_name=_surface_player_name(binding, known=False),
             catgirl_name=binding.get("catgirl_name") or "当前猫娘",
         )
-        stories.append({**summary, "display_intro": cast.intro(projection_story)})
+        # Unused-metric warnings and the metric count hint at which hidden metrics
+        # gate routes; they belong to import/author responses, not the player list.
+        player_summary = {
+            key: value
+            for key, value in summary.items()
+            if key not in _AUTHOR_ONLY_SUMMARY_KEYS
+        }
+        stories.append({**player_summary, "display_intro": cast.intro(projection_story)})
     return stories
 
 
@@ -1150,7 +1160,8 @@ async def _submit_numeric_input(request: Request):
     return {
         "ok": True,
         "resolved_turn": {
-            "route_status": outcome.route_status,
+            # route_status is not returned: "conditions_blocked" and friends
+            # would let a player probe hidden route thresholds by repeating input.
             "route_changed": outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"],
         },
         "performance": _public_performance(performance),

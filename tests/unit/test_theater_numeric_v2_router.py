@@ -27,7 +27,7 @@ from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluatorError,
     NumericV2TransitionOfferReview,
 )
-from services.theater.numeric_v2_registry import NumericV2PackageError
+from services.theater.numeric_v2_registry import NumericV2PackageError, NumericV2PackageRegistry
 from services.theater.numeric_v2_runtime import MetricChangeV2
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from utils.cloudsave_runtime import MaintenanceModeError
@@ -401,6 +401,29 @@ def _client(
             return super().post(url, *args, **kwargs)
 
     return _NumericV2TestClient(app)
+
+
+def test_player_story_list_hides_metric_gating_hints(tmp_path, monkeypatch):
+    """Unused-metric warnings and the metric count stay on author-facing responses only."""
+
+    story = numeric_v2_story()
+    unused = json.loads(json.dumps(story["metric_schema"]["trust"]))
+    story["metric_schema"]["unused_probe_metric"] = {**unused, "name": "好奇度"}
+    story["initial_state"]["metrics"]["unused_probe_metric"] = 20
+    with _client(tmp_path, monkeypatch) as client:
+        registry = NumericV2PackageRegistry(tmp_path / "theater" / "numeric_v2" / "packages")
+        author_view = registry.validate_package(story)
+        registry.package_path("numeric_v2_contract").write_text(
+            json.dumps(story, ensure_ascii=False), encoding="utf-8",
+        )
+        listed = client.get("/api/theater-numeric/stories")
+
+    assert any("unused_probe_metric" in json.dumps(item) for item in author_view["warnings"])
+    assert author_view["metric_count"] == len(story["metric_schema"])
+    assert listed.status_code == 200
+    summary = listed.json()["stories"][0]
+    assert "warnings" not in summary and "metric_count" not in summary
+    assert summary["title"] and summary["display_intro"]
 
 
 def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, monkeypatch):
@@ -2574,7 +2597,8 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         result = submitted.json()
         assert submitted.status_code == 200
         # 新状态机不再以 min_turns 阻断普通演绎；没有可见转场提议时保持 playing。
-        assert result["resolved_turn"] == {"route_status": "playing", "route_changed": False}
+        # route_status ("conditions_blocked" etc.) would reveal hidden route gating.
+        assert result["resolved_turn"] == {"route_changed": False}
         assert result["session"]["performance_history"][0]["input_text"] == "我先听你说。"
         assert "from_node_id" not in result["session"]["performance_history"][0]
         assert "to_node_id" not in result["session"]["performance_history"][0]
