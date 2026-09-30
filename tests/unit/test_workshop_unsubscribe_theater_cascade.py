@@ -228,3 +228,151 @@ async def test_workshop_unsubscribe_commits_nothing_when_one_candidate_preflight
     assert config.saved == []
     assert set(config.characters["猫娘"]) == {"Lan", "Mia"}
     assert steam_calls == []
+
+
+def _purge_intents(theater: Path) -> list[Path]:
+    return sorted((theater / "numeric_v2" / "purge_intents").glob("purge_*.json"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_purge_failure_is_retried_by_startup_maintenance(
+    tmp_path, monkeypatch,
+):
+    """characters.json is committed first; a failed purge must not orphan transcripts."""
+    from main_routers.characters_router import crud
+    from services.theater import numeric_v2_maintenance
+
+    theater = tmp_path / "theater"
+    binding = _binding()
+    other_binding = {
+        **binding,
+        "character_id": "character_22222222222222222222222222222222",
+        "catgirl_id": "catgirl:character_22222222222222222222222222222222",
+        "catgirl_name": "Other",
+    }
+    session_path, archive_store = await _seed_theater(theater, binding)
+    other_session_path, _ = await _seed_theater(theater, other_binding)
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character(binding["character_id"]),
+            "Other": {"_reserved": {"character_id": other_binding["character_id"]}},
+        },
+    })
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+
+    async def failing_purge(_purge):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(crud, "purge_numeric_v2_character_data", failing_purge)
+
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert result["success"] is True, result
+    assert [err["stage"] for err in result["cleanup_summary"]["errors"]] == ["delete_theater"]
+    assert "Lan" not in config.characters["猫娘"]
+    assert steam_calls == [ITEM_ID]
+    # The transcripts are still on disk, but a durable intent lists them.
+    assert session_path.is_file()
+    assert archive_store.list_public_archives(character_id=binding["character_id"])
+    assert len(_purge_intents(theater)) == 1
+
+    # Next process start: maintenance retries the committed purge from its intent.
+    recovered = numeric_v2_maintenance.recover_character_purge_intents(
+        theater, {"Other": other_binding["character_id"]},
+    )
+
+    assert recovered == {"purge_intents_applied": 1, "purge_intents_discarded": 0}
+    assert _purge_intents(theater) == []
+    assert not session_path.exists()
+    assert archive_store.list_public_archives(character_id=binding["character_id"]) == []
+    assert archive_store.receipt_paths_for_scope(character_id=binding["character_id"]) == []
+    # Nothing outside the intent is touched.
+    assert other_session_path.is_file()
+    assert archive_store.list_public_archives(character_id=other_binding["character_id"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_drops_the_intent_once_the_purge_succeeds(tmp_path, monkeypatch):
+    theater = tmp_path / "theater"
+    binding = _binding()
+    session_path, _ = await _seed_theater(theater, binding)
+    config = _Config(tmp_path, {
+        "当前猫娘": "",
+        "猫娘": {"Lan": _workshop_character(binding["character_id"])},
+    })
+    unsubscribe, _ = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert result["success"] is True, result
+    assert not session_path.exists()
+    assert _purge_intents(theater) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_aborts_before_commit_when_purge_intent_cannot_be_written(
+    tmp_path, monkeypatch,
+):
+    from main_routers.characters_router import crud
+
+    theater = tmp_path / "theater"
+    binding = _binding()
+    session_path, _ = await _seed_theater(theater, binding)
+    config = _Config(tmp_path, {
+        "当前猫娘": "",
+        "猫娘": {"Lan": _workshop_character(binding["character_id"])},
+    })
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+
+    def failing_write(*_args, **_kwargs):
+        raise OSError("read-only theater root")
+
+    monkeypatch.setattr(crud, "write_character_purge_intent", failing_write)
+
+    response = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert response.status_code == 500
+    payload = json.loads(response.body)
+    assert [err["stage"] for err in payload["cleanup_summary"]["errors"]] == ["theater_preflight"]
+    assert config.saved == []
+    assert "Lan" in config.characters["猫娘"]
+    assert steam_calls == []
+    assert session_path.is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_discards_the_intent_when_the_commit_fails(tmp_path, monkeypatch):
+    """A character that stays configured must never be purged later from a stale intent."""
+    theater = tmp_path / "theater"
+    binding = _binding()
+    session_path, _ = await _seed_theater(theater, binding)
+    config = _Config(tmp_path, {
+        "当前猫娘": "",
+        "猫娘": {"Lan": _workshop_character(binding["character_id"])},
+    })
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+
+    async def failing_save(_characters):
+        raise OSError("characters.json not writable")
+
+    config.asave_characters = failing_save
+
+    response = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert response.status_code == 500
+    assert steam_calls == []
+    assert session_path.is_file()
+    assert _purge_intents(theater) == []

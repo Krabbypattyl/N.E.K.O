@@ -96,7 +96,7 @@ flowchart TD
 | `numeric_v2_store.py` | 原子保存/读取 Session、Ledger、演出历史、恢复槽和索引；拒绝重复回合与 stale revision。 |
 | `numeric_v2_storage_transaction.py` | 把最终磁盘变更放进云存档写栅栏；不包住模型等待。 |
 | `numeric_v2_archive.py` | 结束回执、公开单集记忆胶囊、公开冷档案、遗忘事务与冷档案隔离区。 |
-| `numeric_v2_maintenance.py` | 冷启动存储审计、删除事务恢复、隔离区与可恢复剧本删除。 |
+| `numeric_v2_maintenance.py` | 冷启动存储审计、删除事务恢复、角色清理意图重试、隔离区与可恢复剧本删除。 |
 | `numeric_v2_options.py` | 8 个可选模块开关的唯一清单：键、默认值、存储键、关闭代价。 |
 | `numeric_v2_usage.py` | 请求作用域的模型用量观测；缺失供应商用量保持未知。 |
 | `numeric_v2_trace.py` | 由 `NEKO_THEATER_TRACE_DIR` 显式开启的演绎文案 JSONL 诊断。 |
@@ -433,7 +433,7 @@ Evaluator 在近期上下文与本地检索不足以回答既往事实时返回 
 - 正常恢复只读索引；冷启动初始化或显式维护才全盘复验并重建索引。
 - 审计前必须取得权威角色配置；读取失败、结构异常、规范化名称重复或角色 ID 迁移未落盘时中止，不移动存档、不标记维护完成。普通聊天仍保留原有配置回退。
 - 隔离区分三类：损坏、无主或重复的 Session 移入 `numeric_v2/quarantine/`，最多保留 6 份；损坏的 `story_sessions.json` 是可重建派生缓存，移入 `quarantine_indexes/`，不参与裁剪；无效公开冷档案移入 `quarantine_public_archives/`，不被自动裁剪，只随显式删除剧本或遗忘在可回滚事务内清理（含归属已无法判定的档案）。
-- 删除剧本使用可恢复事务，级联删除 Story Package、该剧本全部 Session、索引、公开冷档案、结束回执和待提交档案；任一步失败恢复快照。存在 `active` Session 时前端列出受影响猫娘并要求确认。删除角色卡按 `character_id` 清理其 Session、冷档案、回执和待完成遗忘记录，并纳入角色删除回滚快照；无 ID 时不猜测归属。
+- 删除剧本使用可恢复事务，级联删除 Story Package、该剧本全部 Session、索引、公开冷档案、结束回执和待提交档案；任一步失败恢复快照。存在 `active` Session 时前端列出受影响猫娘并要求确认。删除角色卡按 `character_id` 清理其 Session、冷档案、回执和待完成遗忘记录，并纳入角色删除回滚快照；无 ID 时不猜测归属。创意工坊取消订阅先提交 `characters.json` 再清理剧场数据、没有回滚快照：提交前在 `numeric_v2/purge_intents/` 原子写入清理意图（按角色身份命名，只列剧场根内 Session、冷档案、回执、遗忘记录与隔离区目录下的文件），写入失败即在提交前中止；提交失败删除意图；清理成功删除意图，失败则保留，由冷启动维护在审计前重试——只删清单内文件（缺失视为已删），角色仍在配置中时丢弃意图而不删除，格式或路径不合法的意图原样保留。
 
 ### 7.2 演绎记忆归档
 

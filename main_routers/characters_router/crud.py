@@ -104,6 +104,10 @@ from services.theater.numeric_v2_store import (
 )
 from services.theater.numeric_v2_archive import NumericV2ArchiveError, NumericV2ArchiveStore
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+from services.theater.numeric_v2_maintenance import (
+    discard_character_purge_intent,
+    write_character_purge_intent,
+)
 from services.theater.paths import theater_root
 
 
@@ -497,7 +501,8 @@ class NumericV2CharacterPurge:
     def archive_store(self) -> NumericV2ArchiveStore:
         return NumericV2ArchiveStore(self.theater_root)
 
-    def snapshot_targets(self) -> list[Path]:
+    def purge_targets(self) -> list[Path]:
+        """Files the purge erases (the derived session index is rewritten, not listed)."""
         return [
             *self.session_paths,
             *self.public_archive_paths,
@@ -505,8 +510,10 @@ class NumericV2CharacterPurge:
             *self.forget_paths,
             *self.quarantined_archive_paths,
             *self.quarantined_session_paths,
-            self.index_path,
         ]
+
+    def snapshot_targets(self) -> list[Path]:
+        return [*self.purge_targets(), self.index_path]
 
 
 async def collect_numeric_v2_character_purge(
@@ -618,6 +625,44 @@ async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> Non
         *purge.quarantined_session_paths,
     ):
         await _await_thread_mutation(quarantined_path.unlink, missing_ok=True)
+
+
+async def persist_numeric_v2_character_purge_intent(
+    purge: NumericV2CharacterPurge,
+) -> Path | None:
+    """Durably list a purge's targets before a delete that has no rollback commits.
+
+    For callers (Workshop unsubscribe) that remove the character from
+    characters.json first and purge afterwards: if the purge then fails, startup
+    maintenance retries exactly the listed files. Raises when the intent cannot
+    be written; the caller must then abort before committing (fail closed).
+    Returns ``None`` when the character owns no theater files.
+    """
+    targets = purge.purge_targets()
+    if not targets:
+        return None
+    return await _await_thread_mutation(
+        write_character_purge_intent,
+        purge.theater_root,
+        character_id=purge.character_id,
+        legacy_catgirl_name=purge.legacy_catgirl_name,
+        targets=targets,
+    )
+
+
+async def discard_numeric_v2_character_purge_intent(intent_path: Path | None) -> None:
+    """Drop a purge intent whose purge finished or whose delete never committed."""
+    if intent_path is not None:
+        await _await_thread_mutation(discard_character_purge_intent, intent_path)
+
+
+async def complete_numeric_v2_character_purge(
+    purge: NumericV2CharacterPurge,
+    intent_path: Path | None,
+) -> None:
+    """Run a committed purge and drop its intent; on failure the intent stays for retry."""
+    await purge_numeric_v2_character_data(purge)
+    await discard_numeric_v2_character_purge_intent(intent_path)
 
 
 async def _resume_released_character_admission(

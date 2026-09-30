@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import hashlib
 import json
 import logging
 import os
@@ -295,6 +296,182 @@ def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
             )
             continue
         shutil.rmtree(transaction_dir, ignore_errors=True)
+
+
+CHARACTER_PURGE_INTENT_SCHEMA = "neko.theater.character-purge.v1"
+CHARACTER_PURGE_INTENT_DIRNAME = "purge_intents"
+# Only files in these numeric_v2 directories can belong to a deleted character;
+# a purge intent naming anything else is never acted on.
+_CHARACTER_PURGE_TARGET_DIRS = frozenset({
+    "sessions",
+    "public_archives",
+    "end_receipts",
+    "forget_transactions",
+    PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
+    SESSION_QUARANTINE_DIRNAME,
+})
+
+
+class NumericV2PurgeIntentError(ValueError):
+    """A character purge intent is malformed or names a path it may not delete."""
+
+
+def character_purge_intent_path(
+    theater_root: Path, character_id: str, legacy_catgirl_name: str,
+) -> Path:
+    """Return the intent file for one deleted character identity."""
+
+    key = json.dumps(
+        [str(character_id or "").strip(), str(legacy_catgirl_name or "").strip()],
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:40]
+    return (
+        Path(theater_root) / "numeric_v2" / CHARACTER_PURGE_INTENT_DIRNAME
+        / f"purge_{digest}.json"
+    )
+
+
+def _character_purge_target(theater_root: Path, relative: Any) -> Path:
+    """Map one intent target onto the theater root, refusing anything outside the purge dirs."""
+
+    if not isinstance(relative, str) or not relative or "\\" in relative:
+        raise NumericV2PurgeIntentError("numeric_purge_intent_target_invalid")
+    parts = PurePosixPath(relative).parts
+    if (
+        PurePosixPath(relative).is_absolute()
+        or PureWindowsPath(relative).is_absolute()
+        or len(parts) != 3
+        or parts[0] != "numeric_v2"
+        or parts[1] not in _CHARACTER_PURGE_TARGET_DIRS
+        or parts[2] in {".", ".."}
+        or not parts[2].endswith(".json")
+    ):
+        raise NumericV2PurgeIntentError("numeric_purge_intent_target_invalid")
+    root = Path(theater_root)
+    target = root.joinpath(*parts)
+    allowed_dir = root.resolve().joinpath(*parts[:2])
+    if target.resolve().parent != allowed_dir:
+        # A symlinked file or directory must not redirect the delete elsewhere.
+        raise NumericV2PurgeIntentError("numeric_purge_intent_target_invalid")
+    return target
+
+
+def write_character_purge_intent(
+    theater_root: Path,
+    *,
+    character_id: str,
+    legacy_catgirl_name: str,
+    targets: list[Path] | tuple[Path, ...],
+) -> Path:
+    """Durably record the theater files a character delete is about to erase.
+
+    Written before the character leaves characters.json. Every target must lie in
+    a purge directory of this theater root, or this raises before anything is
+    committed (the caller then aborts the delete).
+    """
+
+    root = Path(theater_root)
+    relative_targets = []
+    for target in targets:
+        try:
+            relative = Path(target).relative_to(root).as_posix()
+        except ValueError as exc:
+            raise NumericV2PurgeIntentError("numeric_purge_intent_target_invalid") from exc
+        _character_purge_target(root, relative)
+        if relative not in relative_targets:
+            relative_targets.append(relative)
+    path = character_purge_intent_path(root, character_id, legacy_catgirl_name)
+    _atomic_write_manifest(path, {
+        "schema": CHARACTER_PURGE_INTENT_SCHEMA,
+        "character_id": str(character_id or "").strip(),
+        "legacy_catgirl_name": str(legacy_catgirl_name or "").strip(),
+        "targets": relative_targets,
+        "created_at": time.time(),
+    })
+    return path
+
+
+def discard_character_purge_intent(path: Path) -> None:
+    """Remove an intent once its targets are gone (or its delete never committed)."""
+
+    Path(path).unlink(missing_ok=True)
+
+
+def _load_character_purge_intent(theater_root: Path, path: Path) -> dict[str, Any]:
+    """Read and validate an intent the same way forget intents are scoped."""
+
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise NumericV2PurgeIntentError("numeric_purge_intent_invalid") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != CHARACTER_PURGE_INTENT_SCHEMA
+        or not isinstance(payload.get("character_id"), str)
+        or not isinstance(payload.get("legacy_catgirl_name"), str)
+        or not isinstance(payload.get("targets"), list)
+        or character_purge_intent_path(
+            theater_root, payload["character_id"], payload["legacy_catgirl_name"],
+        ).name != Path(path).name
+    ):
+        raise NumericV2PurgeIntentError("numeric_purge_intent_invalid")
+    return payload
+
+
+def apply_character_purge_intent(theater_root: Path, path: Path) -> int:
+    """Delete exactly the files an intent lists (missing ones are fine), then drop it."""
+
+    payload = _load_character_purge_intent(theater_root, path)
+    targets = [_character_purge_target(theater_root, item) for item in payload["targets"]]
+    removed = 0
+    for target in targets:
+        try:
+            target.unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+    discard_character_purge_intent(path)
+    return removed
+
+
+def recover_character_purge_intents(
+    theater_root: Path,
+    character_ids_by_name: Mapping[str, str],
+) -> dict[str, int]:
+    """Retry character purges a previous process committed but could not finish.
+
+    An intent whose character is still configured belongs to a delete that never
+    committed (a crash between the intent write and characters.json), so it is
+    discarded without deleting anything. Malformed intents are kept for manual
+    inspection and never acted on.
+    """
+
+    root = Path(theater_root) / "numeric_v2" / CHARACTER_PURGE_INTENT_DIRNAME
+    result = {"purge_intents_applied": 0, "purge_intents_discarded": 0}
+    if not root.is_dir():
+        return result
+    live_ids = {str(value or "").strip() for value in character_ids_by_name.values()}
+    live_names = {str(name or "").strip() for name in character_ids_by_name}
+    for path in sorted(root.glob("purge_*.json")):
+        try:
+            payload = _load_character_purge_intent(theater_root, path)
+            character_id = payload["character_id"].strip()
+            legacy_name = payload["legacy_catgirl_name"].strip()
+            still_configured = (
+                character_id in live_ids if character_id else legacy_name in live_names
+            )
+            if still_configured:
+                discard_character_purge_intent(path)
+                result["purge_intents_discarded"] += 1
+                continue
+            apply_character_purge_intent(theater_root, path)
+            result["purge_intents_applied"] += 1
+        except NumericV2PurgeIntentError:
+            logger.warning("Numeric v2 purge intent %s is invalid; leaving it in place", path)
+        except OSError:
+            logger.warning("Numeric v2 purge intent %s could not be completed; will retry", path, exc_info=True)
+    return result
 
 
 def _supersede_pending_delete_transactions(
@@ -693,12 +870,18 @@ def maintain_numeric_v2_storage_once(
             if assert_writable is not None:
                 assert_writable()
             recover_numeric_v2_delete_transactions(theater_root)
+            # Finish character purges a previous process committed but could not
+            # complete, before the audit rebuilds the session index without them.
+            purge_result = recover_character_purge_intents(
+                theater_root, character_ids_by_name,
+            )
             registry.ensure_default_packages()
             result = audit_numeric_v2_storage(
                 theater_root,
                 registry,
                 character_ids_by_name=character_ids_by_name,
             )
+            result.update({key: value for key, value in purge_result.items() if value})
             active_session_ids = {
                 item["session_id"]
                 for item in list_numeric_v2_sessions(theater_root)
@@ -718,11 +901,18 @@ def maintain_numeric_v2_storage_once(
 
 
 __all__ = [
+    "CHARACTER_PURGE_INTENT_SCHEMA",
     "INDEX_QUARANTINE_DIRNAME",
+    "NumericV2PurgeIntentError",
     "PUBLIC_ARCHIVE_QUARANTINE_DIRNAME",
     "QUARANTINE_FILE_LIMIT",
+    "apply_character_purge_intent",
     "audit_numeric_v2_storage",
+    "character_purge_intent_path",
+    "discard_character_purge_intent",
     "delete_numeric_v2_story_transactionally",
     "maintain_numeric_v2_storage_once",
+    "recover_character_purge_intents",
     "recover_numeric_v2_delete_transactions",
+    "write_character_purge_intent",
 ]

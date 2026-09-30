@@ -628,7 +628,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 from ..shared_state import get_remove_one_catgirl
                 from ..characters_router.crud import (
                     collect_numeric_v2_character_purge,
-                    purge_numeric_v2_character_data,
+                    complete_numeric_v2_character_purge,
+                    discard_numeric_v2_character_purge_intent,
+                    persist_numeric_v2_character_purge_intent,
                 )
                 from services.theater.numeric_v2_archive import NumericV2ArchiveError
                 from services.theater.numeric_v2_store import NumericV2StoreError
@@ -826,6 +828,49 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 for err in cleanup_summary.get("errors") or []
             )
 
+            # The theater purge runs only after characters.json is committed and
+            # has no rollback, so list its targets durably first: a purge that
+            # then fails is retried from this intent by startup maintenance. An
+            # intent that cannot be written aborts before anything is committed.
+            numeric_purge_intents: dict[str, object] = {}
+            if pending_del_names and not theater_preflight_failed:
+                for name in pending_del_names:
+                    numeric_purge = numeric_purges.get(name)
+                    if numeric_purge is None:
+                        continue
+                    try:
+                        numeric_purge_intents[name] = (
+                            await persist_numeric_v2_character_purge_intent(numeric_purge)
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            f"取消订阅同步清理: 剧场清理意图写入失败 {name}: {exc}",
+                            exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "theater_preflight",
+                            "error": str(exc),
+                        })
+                        theater_preflight_failed = True
+                        break
+
+            async def _discard_uncommitted_purge_intents() -> None:
+                # The characters stay configured, so their intents must not
+                # survive; startup maintenance also discards an intent whose
+                # character is still configured, should this cleanup fail.
+                for intent_name, intent_path in numeric_purge_intents.items():
+                    try:
+                        await discard_numeric_v2_character_purge_intent(intent_path)
+                    except Exception as exc:
+                        logger.warning(
+                            f"取消订阅同步清理: 未提交的剧场清理意图删除失败 {intent_name}: {exc}"
+                        )
+                numeric_purge_intents.clear()
+
+            if theater_preflight_failed:
+                await _discard_uncommitted_purge_intents()
+
             # 批量写 characters.json（N 个 del → 1 次 atomic write）
             if pending_del_names and not theater_preflight_failed:
                 try:
@@ -841,6 +886,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         f"取消订阅同步清理: 批量 asave_characters 失败: {exc}",
                         exc_info=True,
                     )
+                    await _discard_uncommitted_purge_intents()
                     cleanup_summary["errors"].append({
                         "character": "<batch>",
                         "stage": "delete_config",
@@ -922,11 +968,15 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 # Same cascade as DELETE /catgirl/{name}: sessions, receipts,
                 # public archives, forget intents and quarantined copies. The
                 # character is already gone from characters.json, so this is
-                # an irreversible post-commit cleanup like the memory delete.
+                # an irreversible post-commit cleanup like the memory delete;
+                # a failure keeps the durable intent for startup retry.
                 numeric_purge = numeric_purges.get(name)
                 if numeric_purge is not None:
                     try:
-                        await purge_numeric_v2_character_data(numeric_purge)
+                        await complete_numeric_v2_character_purge(
+                            numeric_purge,
+                            numeric_purge_intents.get(name),
+                        )
                     except Exception as exc:
                         logger.error(
                             f"取消订阅同步清理: 剧场数据清理失败 {name}: {exc}",
