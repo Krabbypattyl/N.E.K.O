@@ -516,6 +516,41 @@ class NumericV2CharacterPurge:
         return [*self.purge_targets(), self.index_path]
 
 
+def _scan_numeric_v2_character_scope(
+    numeric_theater_root: Path,
+    *,
+    character_id: str,
+    legacy_catgirl_name: str,
+) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
+    """Strictly list one character's session, public archive and receipt files (blocking)."""
+    session_paths = tuple(
+        Path(item["path"])
+        for item in list_numeric_v2_sessions(
+            numeric_theater_root,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
+        )
+    )
+    public_archive_paths = tuple(
+        Path(item["path"])
+        for item in list_numeric_v2_public_archives(
+            numeric_theater_root,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
+        )
+    )
+    receipt_paths = tuple(
+        NumericV2ArchiveStore(numeric_theater_root).receipt_paths_for_scope(
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            raise_on_io_error=True,
+        )
+    )
+    return session_paths, public_archive_paths, receipt_paths
+
+
 async def collect_numeric_v2_character_purge(
     numeric_theater_root: Path,
     *,
@@ -528,32 +563,15 @@ async def collect_numeric_v2_character_purge(
     when ownership cannot be established; callers must then abort the delete
     before any irreversible step (fail closed).
     """
-    session_paths = tuple(
-        Path(item["path"])
-        for item in list_numeric_v2_sessions(
-            numeric_theater_root,
-            character_id=character_id,
-            legacy_catgirl_name=legacy_catgirl_name,
-            raise_on_io_error=True,
-        )
+    # Parsing every session, archive and receipt runs on a worker: the caller
+    # holds the global character lock, but the event loop must stay free.
+    session_paths, public_archive_paths, receipt_paths = await asyncio.to_thread(
+        _scan_numeric_v2_character_scope,
+        numeric_theater_root,
+        character_id=character_id,
+        legacy_catgirl_name=legacy_catgirl_name,
     )
     archive_store = NumericV2ArchiveStore(numeric_theater_root)
-    public_archive_paths = tuple(
-        Path(item["path"])
-        for item in list_numeric_v2_public_archives(
-            numeric_theater_root,
-            character_id=character_id,
-            legacy_catgirl_name=legacy_catgirl_name,
-            raise_on_io_error=True,
-        )
-    )
-    receipt_paths = tuple(
-        archive_store.receipt_paths_for_scope(
-            character_id=character_id,
-            legacy_catgirl_name=legacy_catgirl_name,
-            raise_on_io_error=True,
-        )
-    )
     # Forget intents outlive deleted packages, but not their owning character.
     # Collect them under the same character mutation lock used by /memory/forget.
     forget_paths = tuple(
@@ -1016,33 +1034,21 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
         or ""
     ).strip()
     numeric_theater_root = theater_root(_config_manager)
+    numeric_session_index_path = (
+        numeric_theater_root / "numeric_v2" / "story_sessions.json"
+    )
+    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
     try:
-        numeric_session_targets = [
-            Path(item["path"])
-            for item in list_numeric_v2_sessions(
-                numeric_theater_root,
-                character_id=renamed_character_id,
-                legacy_catgirl_name=old_name,
-                raise_on_io_error=True,
-            )
-        ]
-        numeric_session_index_path = (
-            numeric_theater_root / "numeric_v2" / "story_sessions.json"
-        )
-        numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
-        numeric_public_archive_targets = [
-            Path(item["path"])
-            for item in list_numeric_v2_public_archives(
-                numeric_theater_root,
-                character_id=renamed_character_id,
-                legacy_catgirl_name=old_name,
-                raise_on_io_error=True,
-            )
-        ]
-        numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
+        # Off the event loop: the global character lock is held here.
+        (
+            numeric_session_targets,
+            numeric_public_archive_targets,
+            numeric_receipt_targets,
+        ) = await asyncio.to_thread(
+            _scan_numeric_v2_character_scope,
+            numeric_theater_root,
             character_id=renamed_character_id,
             legacy_catgirl_name=old_name,
-            raise_on_io_error=True,
         )
     except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
         logger.exception("重命名角色 Numeric v2 预检失败: %s -> %s", old_name, new_name)

@@ -616,6 +616,49 @@ async def test_rename_backup_setup_failure_happens_before_release(tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_theater_preflight_scans_off_the_event_loop(tmp_path):
+    """The strict theater scan parses every file; it must not block the loop under the character lock."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        loop_thread = threading.get_ident()
+        scanned_on = []
+
+        def _scan(*_args, **_kwargs):
+            scanned_on.append(threading.get_ident())
+            raise OSError("probe stops the rename here")
+
+        release_memory = AsyncMock(return_value=True)
+        with patch.object(crud, "list_numeric_v2_sessions", side_effect=_scan), patch.object(
+            crud, "release_memory_server_character", release_memory,
+        ):
+            response = await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+
+    assert response.status_code >= 400
+    assert scanned_on and all(ident != loop_thread for ident in scanned_on)
+    release_memory.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_path):
     """A late config publish must not overwrite the cancellation rollback."""
     cm = _make_config_manager(tmp_path)

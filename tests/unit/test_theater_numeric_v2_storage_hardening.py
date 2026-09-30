@@ -375,6 +375,37 @@ async def test_character_delete_snapshots_and_erases_quarantined_sessions(tmp_pa
     assert files["same_name_other"].is_file()
 
 
+@pytest.mark.asyncio
+async def test_character_delete_scan_runs_off_event_loop(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    await _quarantine_fixture(tmp_path)
+    loop_thread = threading.get_ident()
+    observed: dict[str, list[int]] = {}
+
+    def record(owner, name):
+        original = getattr(owner, name)
+
+        def wrapper(*args, **kwargs):
+            observed.setdefault(name, []).append(threading.get_ident())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapper)
+
+    record(crud, "list_numeric_v2_sessions")
+    record(crud, "list_numeric_v2_public_archives")
+    record(numeric_v2_archive.NumericV2ArchiveStore, "receipt_paths_for_scope")
+    purge = await crud.collect_numeric_v2_character_purge(
+        tmp_path, character_id=_binding()["character_id"], legacy_catgirl_name="Lan",
+    )
+
+    assert purge.session_paths
+    assert set(observed) == {
+        "list_numeric_v2_sessions", "list_numeric_v2_public_archives", "receipt_paths_for_scope",
+    }
+    assert all(ident != loop_thread for idents in observed.values() for ident in idents)
+
+
 _OFF_LOOP_IO = (
     "list_numeric_v2_sessions",
     "_read_story_session_slots",
