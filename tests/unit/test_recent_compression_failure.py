@@ -230,6 +230,31 @@ def test_split_messages_by_budget(tmp_path, monkeypatch):
     assert [m.content for m in flat] == [m.content for m in msgs]  # 顺序保持
 
 
+def test_render_without_theater_skips_locale_pass_and_matches_legacy(tmp_path, monkeypatch):
+    """Ordinary batches must not pay for theater locale detection and must
+    render byte-identically to the pre-theater implementation."""
+    mgr, name = _make_manager(tmp_path)
+    msgs = [
+        HumanMessage(content="早上好，今天想吃草莓蛋糕" * 40),
+        AIMessage(content="好呀，我也想吃~"),
+        SystemMessage(content="system note"),
+    ]
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("locale pass must not run without theater messages")
+
+    monkeypatch.setattr(mgr, "_summary_prompt_locale_text", _forbidden)
+
+    name_mapping = mgr.name_mapping.copy()
+    name_mapping["ai"] = name
+    legacy = "\n".join(
+        f"{name_mapping.get(m.type, m.type)} | {mgr._render_message_content(m)}"
+        for m in msgs
+    )
+    assert mgr._render_messages_to_text(msgs, name) == legacy
+    assert mgr._split_messages_by_budget(msgs, name) == [msgs]
+
+
 def test_compress_history_uses_segmented_path_for_large_input(tmp_path, monkeypatch):
     mgr, name = _make_manager(tmp_path)
     monkeypatch.setattr("memory.recent.RECENT_COMPRESS_INPUT_BUDGET_TOKENS", 5)

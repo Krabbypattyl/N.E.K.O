@@ -1685,8 +1685,12 @@ class CompressedRecentHistoryManager:
             if rank >= latest_rank_by_story.get(episode_key[0], (-1, -1)):
                 latest_rank_by_story[episode_key[0]] = rank
                 latest_episode_by_story[episode_key[0]] = episode_key
-        theater_lang = _detect_recent_prompt_language(
-            self._summary_prompt_locale_text(messages)
+        # Locale detection truncates and tokenizes every message; only theater
+        # capsules need it, and _split_messages_by_budget renders per message.
+        theater_lang = (
+            _detect_recent_prompt_language(self._summary_prompt_locale_text(messages))
+            if latest_theater_metadata
+            else None
         )
         for msg in messages:
             if is_theater_memory_message(msg):
