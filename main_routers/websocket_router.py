@@ -52,6 +52,7 @@ from .shared_state import (
     get_session_id,
 )
 from .game_router import is_game_route_active, route_external_stream_message
+from utils.theater_activity import is_theater_active
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -999,6 +1000,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                    if mode == "audio" and is_theater_active(lanlan_name):
+                        # Server-side backstop for the frontend theater voice guard:
+                        # decline before claiming the voice lease, then fail the
+                        # pending start on this socket so the client does not wait
+                        # for its start timeout.
+                        logger.info("[%s] theater session active: declining ordinary voice start", lanlan_name)
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "session_failed",
+                                "input_mode": "audio",
+                            }))
+                            await websocket.send_text(json.dumps({
+                                "type": "status",
+                                "message": json.dumps({
+                                    "code": "THEATER_SESSION_ACTIVE",
+                                    "details": {"reason": "theater_session_active"},
+                                }),
+                            }))
+                        except Exception as exc:
+                            logger.debug("[%s] theater voice decline notice failed: %s", lanlan_name, exc)
+                        continue
                     if mode == "audio":
                         _claim_voice_input_connection()
                         ensure_voice_input_authorized = getattr(

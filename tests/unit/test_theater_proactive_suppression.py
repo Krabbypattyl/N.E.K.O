@@ -141,6 +141,20 @@ RUNTIME_SCENARIOS = (
       assert.equal(ctx.runtime.suppressesProactiveChat(), false);
       assert.equal(ctx.refreshes.at(-1), false);
     """),
+    ("exit_releases_server_theater_activity_only_when_active", r"""
+      // 服务端兜底按最近剧场请求计时；退出未结束的演绎必须显式释放，未激活的 clear 不得发请求。
+      const ctx = createRuntime(); await launch(ctx);
+      assert.equal(ctx.requests.length, 0);
+      ctx.runtime.clear('test_exit');
+      for (let i = 0; i < 5; i += 1) await tick();
+      const release = ctx.requests.shift();
+      assert.ok(release && /\/api\/theater-numeric\/session\/release$/.test(release.url), '退出必须释放服务端剧场信号');
+      assert.equal(release.options.method, 'POST');
+      await respond(release, { ok: true });
+      ctx.runtime.clear('again');
+      for (let i = 0; i < 5; i += 1) await tick();
+      assert.equal(ctx.requests.length, 0, '未激活时 clear 不得请求服务端');
+    """),
 )
 
 PROACTIVE_HARNESS = r"""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager, nullcontext
+import functools
 import json
 import logging
 from pathlib import Path
@@ -82,6 +83,7 @@ from utils.cloudsave_runtime import (
     cloudsave_writable_transaction,
 )
 from utils.character_memory import character_config_mutation_lock
+from utils.theater_activity import clear_all_theater_activity, note_theater_session_response
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
@@ -97,6 +99,22 @@ _archive_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictio
 # used to rely on the global lock (restart replacement, resume, package deletion).
 # Lock order: memory operation lock -> character lock -> story guard.
 _memory_operation_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _track_theater_activity(handler):
+    """Feed successful session payloads to the server-side theater activity signal.
+
+    Defined here (not in ``utils``) so FastAPI resolves the wrapped handler's
+    postponed annotations against this module's globals.
+    """
+
+    @functools.wraps(handler)
+    async def wrapper(*args, **kwargs):
+        response = await handler(*args, **kwargs)
+        note_theater_session_response(response)
+        return response
+
+    return wrapper
 
 
 def _request_lock(
@@ -691,6 +709,7 @@ async def delete_numeric_story(story_id: str, request: Request):
 
 
 @router.post("/session/start")
+@_track_theater_activity
 async def start_numeric_session(request: Request):
     # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
     with numeric_v2_usage_scope() as calls, text_trace_scope("opening"):
@@ -916,6 +935,7 @@ async def get_active_numeric_session(story_id: str):
 
 
 @router.get("/session/{session_id}")
+@_track_theater_activity
 async def get_numeric_session(session_id: str, story_id: str):
     config_manager = get_config_manager()
     try:
@@ -953,6 +973,7 @@ async def get_numeric_session(session_id: str, story_id: str):
 
 
 @router.post("/session/input")
+@_track_theater_activity
 async def submit_numeric_input(request: Request):
     # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
     with numeric_v2_usage_scope() as calls:
@@ -1078,6 +1099,7 @@ async def _submit_numeric_input(request: Request):
 
 
 @router.post("/session/end")
+@_track_theater_activity
 async def end_numeric_session(request: Request):
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload, error_defaults={"ok": False, "reason": "csrf_validation_failed"})
@@ -1179,6 +1201,7 @@ async def end_numeric_session(request: Request):
 
 
 @router.post("/session/resume")
+@_track_theater_activity
 async def resume_numeric_session(request: Request):
     """继续玩家主动退出的演绎；剧情自然结局不能从该入口恢复。"""  # noqa: DOCSTRING_CJK
 
@@ -1238,6 +1261,22 @@ async def resume_numeric_session(request: Request):
         "resumed": True,
         **_numeric_payload(runtime, stored, display_binding=current_binding),
     }
+
+
+@router.post("/session/release")
+async def release_numeric_session_activity(request: Request):
+    """Drop the server-side theater activity signal when the capsule exits without ending."""
+
+    payload = await _json_object(request)
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=payload,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+    clear_all_theater_activity()
+    return {"ok": True}
 
 
 @router.post("/session/speak-block")

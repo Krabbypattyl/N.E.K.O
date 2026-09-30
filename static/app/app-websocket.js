@@ -4281,6 +4281,18 @@
                         return;
                     }
 
+                    if (statusCode === 'THEATER_SESSION_ACTIVE') {
+                        // 服务端兜底拒绝了普通语音启动（session_failed 已先行复位启动状态）；
+                        // 复用前端剧场守卫的同一文案，不显示原始错误码。
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话',
+                                3500
+                            );
+                        }
+                        return;
+                    }
+
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
                     if (statusCode === 'CHARACTER_LEFT') {
                         window.dispatchEvent(new CustomEvent('neko:character-left', { detail: response }));

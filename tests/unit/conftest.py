@@ -242,6 +242,18 @@ def _reset_icebreaker_routes(request):
 
 
 @pytest.fixture(autouse=True)
+def _reset_theater_activity():
+    """Keep the in-memory theater activity signal from leaking between tests."""
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+    yield
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+
+
+@pytest.fixture(autouse=True)
 def _reset_pending_retirements():
     """Stop a retired character name from leaking into the next test.
 

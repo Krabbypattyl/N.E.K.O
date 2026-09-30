@@ -7,7 +7,8 @@
         session: '/api/theater-numeric/session',
         input: '/api/theater-numeric/session/input',
         end: '/api/theater-numeric/session/end',
-        speakBlock: '/api/theater-numeric/session/speak-block'
+        speakBlock: '/api/theater-numeric/session/speak-block',
+        release: '/api/theater-numeric/session/release'
     };
     var POINTER_KEY = 'neko.theater.numeric.v2.capsule-pointer.v1';
     // 本体运行时只消费共享传输协议；胶囊状态、回放和跨窗口目标仍由本模块负责。
@@ -948,7 +949,15 @@
         }
         return true;
     }
+    function releaseServerTheaterActivity() {
+        // 服务端对主动搭话和普通语音的兜底按最近一次剧场请求计时（TTL 到期自动失效）；
+        // 退出而未结束演绎时显式释放，避免 TTL 内把已恢复的普通语音误拦。失败只等 TTL。
+        try {
+            Promise.resolve(requestJson(api.release, { method: 'POST', body: {} })).catch(function () {});
+        } catch (_) {}
+    }
     function clear(reason) {
+        var wasActive = state.active === true;
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.currentBlock = null; state.history = []; state.suggestedInputs = [];
@@ -975,6 +984,7 @@
             });
         }
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
+        if (wasActive) releaseServerTheaterActivity();
     }
     function openSelector(receipt) {
         state.pendingEnd = receipt || state.pendingEnd;
