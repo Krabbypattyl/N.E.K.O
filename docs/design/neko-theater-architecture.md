@@ -355,7 +355,7 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 - 基础输出：`offer_present / offer_quote / valid / body_violations / unsafe_suggestion_indexes / failure_reason / player_action_kind`；`player_action_kind` 为 `requested_movement / unauthorized / 空串`，旧响应缺失、非法或未同时列出 `player_action` 时按空值处理（fail-closed）。正式主动转场另含 `initiation_authorized`，接受邀请的正式复核另含 `acceptance_authorized / pending_invitation_invalid`，普通漏判补查另含 `player_request_quote / missed_initiation / public_destination_index`。`offer_present=true` 只有在 `offer_quote` 能在本轮正文中逐字找到时才可信。`failure_reason` 只供改写与诊断，程序不从中反推安全：唯一违规是 `player_action`、正文无邀请且 `player_action_kind = requested_movement` 时，才解除这项否决。
 - 正文、提议和按钮独立核对：按钮不能首提、补足或否决正文提议；不安全按钮按索引删除（索引越界只清空按钮），删除后不重审正文。
 - 首次正文违规或无效正文邀请可发起一次同证据的思考复查（`dispute`）；超时、协议异常或模型未注册思考能力时保留初判。高置信的单一违规（明确未授权 `player_action`、高置信 `scene_boundary`、命中作者硬边界的 `author_boundary`）不再争议，直接进入改稿。普通首稿仅“邀请无效”时先用改稿额度，改稿仍无效才争议。
-- 仍违规时全回合共用一次语义改稿：普通留幕从原输入、历史与具体原因重新生成（不带被拒全文）；开场与正式三段携带候选改写。第二稿不再争议；语义否定仍在时采用最后一版格式完整的候选（`semantic_review_fallback` 记录，不计作通过）。
+- 仍违规时全回合共用一次语义改稿：普通留幕从原输入、历史与具体原因重新生成（不带被拒全文）；开场与正式三段携带候选改写。第二稿不再争议；语义否定仍在时采用最后一版格式完整的候选（`semantic_review_fallback` 记录，不计作通过）；兜底提交时 Evaluator 事实提议仍按末次复核批准的编号入账（证据只来自玩家原话或已提交事实，与正文违规分别判断），正文派生的事实候选与条件固定旁白不入账。
 - 正式主动转场 `initiation_authorized=false` 或接受邀请 `acceptance_authorized=false` 是首轮独立闸门：撤销未提交换幕，从原始 Session 与同一次数值变化重新准备留幕候选，只取消一次，不重复计分；改稿后的复检不重新取消已获准的路线。
 - 零调用归一：幕内完成动作被误报为节点出口时，按完成合同事实、玩家输入与引文的共同非通用片段清除误报邀请标志；旁白位置被同时判成邀请与非邀请、玩家明确要求的移动被判代做（理由自证）时按窄条件清除；已确认离场而 `scene_update` 把玩家写回当前地点时删除该场景更新并关闭本轮转场标志。
 - 失败边界：普通快检请求或解析异常降级为保留正文、清除新提议信号；正式快检异常、未完成复核或复核预算耗尽的正式转场回滚；争议超时且预算基本耗尽时不再追加 Actor 改写，普通回合可重试回滚，正式转场回滚。

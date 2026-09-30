@@ -2418,7 +2418,9 @@ async def _execute_numeric_v2_turn(
 
     # 只接纳最终已复核稿的确认；故障、预算跳过或未确认都不能晋升候选。
     # 操作引用原 Evaluator 已校验值，Review 只能选择，不能改写值或伪造证据。
-    if evaluator_fact_claims and final_fixed_review is not None and not final_fixed_review.body_violations:
+    # 审批只凭玩家原话/已提交事实，与正文违规分别判断；末稿兜底提交时玩家已完成的动作照常入账，
+    # 否则正文已承接动作而完成合同仍未满足，玩家会被迫重做。正文派生的候选仍按下方规则拦截。
+    if evaluator_fact_claims and final_fixed_review is not None:
         approved_indexes = set(final_fixed_review.approved_evaluator_fact_indexes)
         approved_operations = tuple(
             {key: claim[key] for key in ("op", "key", "value", "visibility")}

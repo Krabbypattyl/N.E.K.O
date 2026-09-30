@@ -15,7 +15,7 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", [
     "veto", "approve", "timeout", "review_off", "global", "formal", "formal_timeout",
-    "rewrite", "budget_skip", "missing_audit",
+    "rewrite", "budget_skip", "missing_audit", "fallback", "fallback_veto",
 ])
 async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_path, monkeypatch, scenario):
     story = numeric_v2_story()
@@ -76,12 +76,16 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
             assert claims[0]["description"] == "角色操作装置且装置已启动。"
         if scenario in {"timeout", "formal_timeout"}:
             raise evaluator.NumericV2EvaluatorError("numeric_v2_transition_judge_timeout")
-        needs_rewrite = scenario in {"rewrite", "budget_skip"} and calls["review"] == 1
+        first_rewrite = scenario in {"rewrite", "budget_skip"} and calls["review"] == 1
+        # 末稿兜底：两稿都被判正文违规，事实审批只看玩家原话，与正文违规分别判断。
+        needs_rewrite = first_rewrite or scenario in {"fallback", "fallback_veto"}
         return evaluator.NumericV2TransitionOfferReview(
             False, False, ("author_boundary",) if needs_rewrite else (), (),
             failure_reason="当前稿违反作者边界。" if needs_rewrite else "",
             acceptance_authorized=True if formal else None,
-            approved_evaluator_fact_indexes=(0,) if scenario in {"approve", "global", "formal"} or needs_rewrite else (),
+            approved_evaluator_fact_indexes=(
+                (0,) if scenario in {"approve", "global", "formal", "fallback"} or first_rewrite else ()
+            ),
         )
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", options)
@@ -102,7 +106,10 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
         config_manager=object(), runtime=runtime, current=current, turn=turn,
         ensure_current_binding=lambda _: _binding(),
     )
-    accepted = scenario in {"approve", "review_off", "global", "formal"}
+    accepted = scenario in {"approve", "review_off", "global", "formal", "fallback"}
+    assert result.diagnostics["semantic_review_fallback"] is (
+        scenario in {"budget_skip", "fallback", "fallback_veto"}
+    )
     assert (key in result.stored.session.story_state["facts"]) == accepted
     assert result.stored.ledger_events[-1].get("fact_operations", []) == ([operation] if accepted else [])
     assert result.stored.session.metrics["trust"] == current.session.metrics["trust"] + 2
@@ -116,8 +123,10 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
     assert forked.ledger_events[-1]["player_action_projection"] == projection
     assert forked.session.story_state == result.stored.session.story_state
     assert calls["evaluator"] == 1
-    assert calls["actor"] == (2 if scenario in {"rewrite", "budget_skip"} else 1)
-    assert calls["review"] == (0 if scenario == "review_off" else 2 if scenario == "rewrite" else 1)
+    assert calls["actor"] == (2 if scenario in {"rewrite", "budget_skip", "fallback", "fallback_veto"} else 1)
+    assert calls["review"] == (
+        0 if scenario == "review_off" else 2 if scenario in {"rewrite", "fallback", "fallback_veto"} else 1
+    )
     if formal:
         assert result.stored.session.current_node_id != current.session.current_node_id
 
