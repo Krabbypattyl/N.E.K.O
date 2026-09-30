@@ -136,6 +136,32 @@ def _runtime_config_dir_has_user_content(config_manager) -> bool:
     return False
 
 
+def _theater_dir_has_user_content(theater_dir: Path) -> bool:
+    """Return whether ``theater/`` holds any user file, not just scaffolding.
+
+    Theater storage maintenance runs lazily on the first theater request and
+    creates empty directories (``numeric_v2/packages`` and friends) plus hidden
+    lock/marker files, so a device that only opened the theater page must not
+    count as having user content. Every theater record (packages, sessions,
+    archives, receipts, delete transactions, quarantined files, workshop
+    projects) is a regular non-hidden file, while atomic-write temporaries,
+    locks and markers are dot-prefixed and never the only copy of anything. So
+    any non-hidden regular file anywhere in the tree counts; unreadable trees
+    count too, because under-reporting would let a cloud import replace them.
+    """
+
+    def _raise(error: OSError) -> None:
+        raise error
+
+    try:
+        for _dirpath, _dirnames, filenames in os.walk(theater_dir, onerror=_raise):
+            if any(not name.startswith(".") for name in filenames):
+                return True
+    except OSError:
+        return True
+    return False
+
+
 def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     if not root.exists():
         return False
@@ -154,6 +180,10 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
         if candidate.is_dir():
             if config_dir is not None and candidate == config_dir:
                 if _runtime_config_dir_has_user_content(config_manager):
+                    return True
+                continue
+            if name == "theater":
+                if _theater_dir_has_user_content(candidate):
                     return True
                 continue
             transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(name)

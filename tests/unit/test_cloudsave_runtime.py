@@ -820,6 +820,81 @@ def test_runtime_root_detects_user_created_avatar_tools(tmp_path):
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
 
 
+def _make_theater_scaffolding(theater_root: Path) -> None:
+    """Recreate what lazy theater maintenance leaves behind without user data."""
+
+    for relative in (
+        "numeric_v2/packages",
+        "numeric_v2/sessions",
+        "numeric_v2/public_archives",
+        "numeric_v2/end_receipts",
+        "numeric_v2/delete_transactions",
+        "workshop/projects",
+    ):
+        (theater_root / relative).mkdir(parents=True, exist_ok=True)
+    (theater_root / "numeric_v2" / "packages" / ".imports.lock").write_text("", encoding="utf-8")
+    (theater_root / "numeric_v2" / "packages" / ".defaults_initialized").write_text("{}", encoding="utf-8")
+    (theater_root / "numeric_v2" / "sessions" / ".creates.lock").write_text("", encoding="utf-8")
+    (theater_root / "numeric_v2" / ".story_sessions-abc.tmp").write_text("{", encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_theater_scaffolding_alone_is_not_user_content(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    root = Path(cm.app_docs_dir)
+    _make_theater_scaffolding(root / "theater")
+
+    assert runtime_root_has_user_content(root, config_manager=cm) is False
+
+
+@pytest.mark.unit
+def test_theater_scaffolding_after_real_maintenance_is_not_user_content(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from services.theater.numeric_v2_maintenance import maintain_numeric_v2_storage_once
+    from services.theater.numeric_v2_registry import NumericV2PackageRegistry
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    root = Path(cm.app_docs_dir)
+    theater_root = root / "theater"
+    maintain_numeric_v2_storage_once(
+        theater_root,
+        NumericV2PackageRegistry(theater_root / "numeric_v2" / "packages"),
+        character_ids_by_name={},
+    )
+
+    assert theater_root.is_dir()
+    assert runtime_root_has_user_content(root, config_manager=cm) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative", [
+    "numeric_v2/packages/story_a.json",
+    "numeric_v2/sessions/session_a.json",
+    "numeric_v2/story_sessions.json",
+    "numeric_v2/public_archives/archive_a.json",
+    "numeric_v2/end_receipts/receipt_a.json",
+    "numeric_v2/delete_transactions/tx/manifest.json",
+    "numeric_v2/quarantine/session_b.json",
+    "workshop/projects/project_a.json",
+])
+def test_one_theater_record_counts_as_user_content(tmp_path, relative):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    root = Path(cm.app_docs_dir)
+    _make_theater_scaffolding(root / "theater")
+    record = root / "theater" / relative
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{}", encoding="utf-8")
+
+    assert runtime_root_has_user_content(root, config_manager=cm) is True
+
+
 @pytest.mark.unit
 def test_fresh_install_has_no_user_content_after_plain_character_load(tmp_path):
     cm = _make_config_manager(tmp_path)
