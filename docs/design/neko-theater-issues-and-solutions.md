@@ -14,7 +14,7 @@
 - 保留失败实验的否决理由，不保留已被覆盖的实施指令。删除旧问题编号 1—30 和旧 7.1—7.46 的逐轮流水，其长期经验归并到第 3、4 节；7.47—7.58 保留编号供历史检索，但已经压缩，不是待执行清单。
 - 第2节按原编号保存版本化问题与实验证据；其中“本轮、下一步、待确认”仅指该条目的历史上下文。当前机制看第3节和架构文档，当前任务边界看第6节；7.47—7.58是更早实验，不作待办。
 - 原始模型报告、失败快照和实验脚本保存在仓库外；对应链接是本机证据位置，不保证随仓库分发。文件失效时须重新取证，不能用本文摘要冒充原始轨迹。
-- 历史条目提到的 `guard_evidence`、`guard_offer_scope`、`guard_history`、`difficulty` 四份实验材料测试已从常驻测试集移除，原文件见[清理备份与覆盖说明](/Users/mac/.codex/experiments/neko-theater-tests-prune-6y_hdo9s/report.md)。它们只验证材料投影、配对与预写期望；现行协议、召回、权限和提交检查仍由专项回归承担。另移除两项纯布局断言，不改变生产代码。
+- 历史条目提到的 `guard_evidence`、`guard_offer_scope`、`guard_history`、`difficulty` 四份实验材料测试已从常驻测试集移除，原文件见清理备份与覆盖说明（`/Users/mac/.codex/experiments/neko-theater-tests-prune-6y_hdo9s/report.md`）。它们只验证材料投影、配对与预写期望；现行协议、召回、权限和提交检查仍由专项回归承担。另移除两项纯布局断言，不改变生产代码。
 
 ### 当前结论速查
 
@@ -1437,7 +1437,7 @@ draft_7仍在第四幕失败：新档首幕12回合进入第二幕，第二幕�
 
 急躁模拟玩家在第二轮自造未公开委托人“老K”，后续内容受污染，主动停止时保留 21 条提交，排除出干净低值路线证据。最初 tokenizer 缓存隔离导致的环境准备中断另留下 4、3 条记录，分别保存。没有注入判定结果、改动正式继续槽或调用 TTS。
 
-当前结论为“SDK 生成与安装链路通过，剧本真实演绎未通过人工体验准入”。优先整理本包开场可用事实、怀表归属和终局状态，再从混合 revision 41／纯推荐 revision 48 做定点对照并验证正常路线；本轮没有增加通用输入预算、改运行权限或扩展框架。未调用文学评分，普通／低值路线、跨题材、重新改名和按需历史查找保留待验范围。[完整报告](/Users/mac/.codex/experiments/neko-sdk-qwen-story-2gid5l69/report.md)、[持久化全文](/Users/mac/.codex/experiments/neko-sdk-qwen-story-2gid5l69/final-transcript.md)、[结构及生命周期结果](/Users/mac/.codex/experiments/neko-sdk-qwen-story-2gid5l69/final-verification.json)与原始调用均保存在仓库外。
+当前结论为“SDK 生成与安装链路通过，剧本真实演绎未通过人工体验准入”。优先整理本包开场可用事实、怀表归属和终局状态，再从混合 revision 41／纯推荐 revision 48 做定点对照并验证正常路线；本轮没有增加通用输入预算、改运行权限或扩展框架。未调用文学评分，普通／低值路线、跨题材、重新改名和按需历史查找保留待验范围。完整报告（`/Users/mac/.codex/experiments/neko-sdk-qwen-story-2gid5l69/report.md`）、持久化全文（`/Users/mac/.codex/experiments/neko-sdk-qwen-story-2gid5l69/final-transcript.md`）、结构及生命周期结果（`/Users/mac/.codex/experiments/neko-sdk-qwen-story-2gid5l69/final-verification.json`）与原始调用均保存在仓库外。
 
 ### 2.84 电车剧本修复、工坊规则同步与验证边界
 
@@ -1491,7 +1491,7 @@ draft_7仍在第四幕失败：新档首幕12回合进入第二幕，第二幕�
 
 本轮作者项目 `project_3f6d0d9cc170` revision 8→9，正式包 `story_86e3ce49c465` 更新为 **draft_9**，hash 为 `sha256:0f429a948898f09f1a71bf7e35f49a87e9393b0cb0ca99acedf8d29d5eaca1dd`。SDK 更新、编译、运行校验及导出成功；通用安装接口仅允许新增，首次同 ID 安装按既有合同拒绝。确认本剧本无正式 Session、保留旧包和作者备份后，在现有项目操作锁、剧本 Session 保护和 Store 事务下原子替换本次生成包，再用公开 `recover_receipt` 核对回执。没有新增 SDK 覆盖安装能力。作者 story、导出文件与正式安装包一致，setup／画布、数值、路由和回合预算保留，另外 58 份正式 theater JSON 未变化。编译保留一条第五幕不同路线共用桥段的软警告，不隐藏为零警告通过。
 
-最新包仅完成档案和高值结局定点验证；普通结局的已验证第六至八幕及 ending_normal 与 draft_8 完全一致，但 **draft_9 未从头贯通，低值结局未原生完成**。本轮未改运行框架、模型设置、容量、复查额度或玩家权限，未触发新的按需历史查找，未验证 HTTP、桌面或 TTS，也未重启服务。完整[报告](/Users/mac/.codex/experiments/neko-tram-repair-4at54xar/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-tram-repair-4at54xar/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-tram-repair-4at54xar/final-verification.json)保留停止轨迹、失败请求和发布证据；SDK 迁移验收状态见迁移文档 9.6。
+最新包仅完成档案和高值结局定点验证；普通结局的已验证第六至八幕及 ending_normal 与 draft_8 完全一致，但 **draft_9 未从头贯通，低值结局未原生完成**。本轮未改运行框架、模型设置、容量、复查额度或玩家权限，未触发新的按需历史查找，未验证 HTTP、桌面或 TTS，也未重启服务。完整报告（`/Users/mac/.codex/experiments/neko-tram-repair-4at54xar/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-tram-repair-4at54xar/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-tram-repair-4at54xar/final-verification.json`）保留停止轨迹、失败请求和发布证据；SDK 迁移验收状态见迁移文档 9.6。
 
 
 ### 2.85 删除电车后重新生成风筝节：原稿演绎与收束失败
@@ -1524,7 +1524,7 @@ draft_7仍在第四幕失败：新档首幕12回合进入第二幕，第二幕�
 
 **验收未通过。** 三条有效轨迹都走尝新支线，普通和稳妥结局只有静态可达证明。普通结局未安排来源的赠物前提、作者状态地点冲突等预审问题未在相应路线实测，不把它们写成已经复现的运行错误。本轮未触发按需历史查找，未验证 HTTP、桌面、TTS 或发行物，未重启服务。后续优先固定重放推荐 rev51→52、尝新试飞完成后的历史及稳妥 rev60→61，分别定位公开去向、阶段边界与持物回退，不再继续无上限随机演绎。
 
-完整[报告](/Users/mac/.codex/experiments/neko-sdk-kite-ql5bgh83/report.md)、[实际演绎全文](/Users/mac/.codex/experiments/neko-sdk-kite-ql5bgh83/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-sdk-kite-ql5bgh83/final-verification.json)保留生成修订、调用准备缺项、受污染轨迹、全部失败请求及发布／删除证据。
+完整报告（`/Users/mac/.codex/experiments/neko-sdk-kite-ql5bgh83/report.md`）、实际演绎全文（`/Users/mac/.codex/experiments/neko-sdk-kite-ql5bgh83/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-sdk-kite-ql5bgh83/final-verification.json`）保留生成修订、调用准备缺项、受污染轨迹、全部失败请求及发布／删除证据。
 
 
 ### 2.86 风筝节固定反例修复、阶段边界和邀请分类
@@ -1569,7 +1569,7 @@ SDK 与 InkAI 同步共享创作、事实／证据／文学及修订规则：阶
 
 正式作者 project_b2942fdc9274 revision **6→7**，包 story_2f0873c3efa6 更新为 **draft_6**，hash `sha256:f72b925acd14365d739df142832d49c4ad1b3dcbbfc6d50a1ad85bde163de106`。SDK 更新、编译（无警告）、复验及导出成功。确认本剧本无正式 Session、保存旧包和作者备份后，在现有项目操作锁、Session 保护及 Store 事务下原子替换单包，再经公开 recover_receipt 核对；没有新增通用覆盖安装功能。作者 story、导出与正式包一致，setup／画布保留，另外 58 份正式 JSON 不变，旧电车仍保持删除。
 
-最新 draft_6 只有跨时段正反例及普通结尾的直接实测，尝新末段与 draft_5 相同、稳妥末段与 draft_4 相同；未把这些分段轨迹包装成最新版从头一次贯通。未验证 HTTP、桌面、真实 TTS、改名矩阵或发行物，未重启正式服务；按需历史查找未形成新的验证结论。完整[报告](/Users/mac/.codex/experiments/neko-kite-repair-7281t7zg/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-kite-repair-7281t7zg/final-transcript.md)、[验证结果](/Users/mac/.codex/experiments/neko-kite-repair-7281t7zg/final-verification.json)保存全部失败尝试与统计边界。
+最新 draft_6 只有跨时段正反例及普通结尾的直接实测，尝新末段与 draft_5 相同、稳妥末段与 draft_4 相同；未把这些分段轨迹包装成最新版从头一次贯通。未验证 HTTP、桌面、真实 TTS、改名矩阵或发行物，未重启正式服务；按需历史查找未形成新的验证结论。完整报告（`/Users/mac/.codex/experiments/neko-kite-repair-7281t7zg/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-kite-repair-7281t7zg/final-transcript.md`）、验证结果（`/Users/mac/.codex/experiments/neko-kite-repair-7281t7zg/final-verification.json`）保存全部失败尝试与统计边界。
 
 ### 2.87 风筝节继续迭代：错误邀请留幕与推荐资料污染
 
@@ -1589,7 +1589,7 @@ Workflow 在现有主动转场取消分支明确：留幕不等于改去另一�
 
 **仍未通过整本体验验收。** 本节迭代结束时，将取消保护从主动转场扩展到“接受演员先前说错的邀请”尚待用户答复；后续已获确认并实施，见2.88。推荐事实漏报、登记门槛漂移、复核误报和局部状态仍需处理。本轮只修改 N.E.K.O 演绎侧及直接测试，没有新增工坊生成规则需同步 InkAI。未验证最新代码的干净从头全路线、HTTP、桌面、TTS、发行物或新的长程历史查找，不以重复随机抽样追求百分之百无错。
 
-原始模型请求、失败尝试、最终代码快照及统计见[本轮报告](/Users/mac/.codex/experiments/neko-kite-iteration-561w3763/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-kite-iteration-561w3763/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-kite-iteration-561w3763/final-verification.json)。
+原始模型请求、失败尝试、最终代码快照及统计见本轮报告（`/Users/mac/.codex/experiments/neko-kite-iteration-561w3763/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-kite-iteration-561w3763/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-kite-iteration-561w3763/final-verification.json`）。
 
 ### 2.88 接受错误邀请的取消保护与澄清复核
 
@@ -1607,7 +1607,7 @@ Workflow 在现有主动转场取消分支明确：留幕不等于改去另一�
 
 运行侧相关回归**679项通过**，包含取消后不重复计分／提交、快检与争议、争议超时、技术失败回滚、已用改稿额度不追加取消、正常路线保持及严格字段解析。5份实际快照的冷恢复、历史账本一致、计分范围、重复请求拒绝、分叉及适用的退出继续／结局关闭检查通过；含失败与同源分叉，不是5条独立完整演绎。60份正式theater JSON未变。未修改工坊生成源码或作者包，无新增规则需同步InkAI；未验证HTTP、桌面、真实TTS、发行物、改名矩阵或新的长程历史查找。**本次取消保护完成定点验证，整本体验验收仍未通过。**
 
-原始模型请求、完整失败记录、注入来源、最终代码与检查结果见[本轮报告](/Users/mac/.codex/experiments/neko-accepted-invite-mzb8g0lw/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-accepted-invite-mzb8g0lw/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-accepted-invite-mzb8g0lw/final-verification.json)。
+原始模型请求、完整失败记录、注入来源、最终代码与检查结果见本轮报告（`/Users/mac/.codex/experiments/neko-accepted-invite-mzb8g0lw/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-accepted-invite-mzb8g0lw/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-accepted-invite-mzb8g0lw/final-verification.json`）。
 
 ### 2.89 待确认邀请的留幕复核与旧安排纠正
 
@@ -1627,7 +1627,7 @@ Workflow 在现有主动转场取消分支明确：留幕不等于改去另一�
 
 相关确定性回归**686项通过**。新增用例先证实旧代码不调用Guard，再验证正常追问／按钮过滤保留邀请、错误邀请共用一次改稿、争议超时、普通快检降级、Actor技术失败回滚、随后接受、单次计分与提交。9份实际快照冷恢复、历史账本对应、计分范围、重复请求、分叉及适用的退出继续／结局关闭通过；含中间状态与同源分叉，排除单层复核夹具，不是9次完整演绎。60份正式theater JSON未变，作者仍revision 7、包draft_6。此次未修改工坊或InkAI，无生成规则需同步；未验证HTTP、桌面、真实TTS、发行物、改名矩阵或新的长程召回。**复核入口和提示冲突已修复，整本体验仍未通过。**
 
-完整证据见[本轮报告](/Users/mac/.codex/experiments/neko-pending-invite-tei9m5uu/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-pending-invite-tei9m5uu/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-pending-invite-tei9m5uu/final-verification.json)。
+完整证据见本轮报告（`/Users/mac/.codex/experiments/neko-pending-invite-tei9m5uu/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-pending-invite-tei9m5uu/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-pending-invite-tei9m5uu/final-verification.json`）。
 
 ### 2.90 普通改稿不再沿用被拒全文
 
@@ -1643,7 +1643,7 @@ Workflow 在现有主动转场取消分支明确：留幕不等于改去另一�
 
 **686项回归通过**。新增断言先在旧实现失败，再验证普通改稿保留原输入和历史而不携带被拒全文；6项Router旧候选传递断言按新输入方式更新，原有单次计分、同次提交、持续语义否定与技术回滚要求保留。9份实际快照的冷恢复、历史账本对应、计分范围、重复请求拒绝、分叉及退出继续检查通过，含恢复夹具与中间状态，不是9条完整原生演绎；本轮快照均未结束，结局关闭仅由确定性回归覆盖。60份正式theater JSON不变，作者仍revision 7、包draft_6。本轮最终仅改Workflow、两份直接测试和三份文档；无工坊生成代码或规则改动需同步InkAI。未验证真实HTTP服务、桌面、TTS、发行物、改名矩阵或新的按需历史查找。**错误正文去向得到定点改善，整本体验仍未通过。**
 
-完整失败、注入来源、最终差异和演绎记录见[本轮报告](/Users/mac/.codex/experiments/neko-rewrite-context-_jq0byhs/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-rewrite-context-_jq0byhs/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-rewrite-context-_jq0byhs/final-verification.json)。
+完整失败、注入来源、最终差异和演绎记录见本轮报告（`/Users/mac/.codex/experiments/neko-rewrite-context-_jq0byhs/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-rewrite-context-_jq0byhs/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-rewrite-context-_jq0byhs/final-verification.json`）。
 
 ### 2.91 推荐复核反例与隔离模型对照
 
@@ -1671,7 +1671,7 @@ qwen3.7-plus原普通Guard仅2/8例预设字段匹配，单看按钮索引为5/8
 
 最终**686项回归通过**，4份隔离实际快照的冷恢复、历史账本对应、计分范围、重复请求／退出继续或结局关闭检查通过；包含不同模型与恢复夹具，不是4条完整原生轨迹。60份正式theater JSON集合及hash不变。运行源码、测试和正式模型设置保持本轮开始状态，最终只更新三份文档；无工坊代码或生成规则需同步InkAI。未验证独立模型配置入口、发行物、真实HTTP服务、桌面、TTS、改名矩阵、新的按需历史查找或最新版从头全路线。**本轮取得复核模型差异的证据，没有宣告推荐问题修复或整本体验通过。**
 
-完整比较、无效尝试和提交证据见[本轮报告](/Users/mac/.codex/experiments/neko-suggestion-scope-wkqxcxut/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-suggestion-scope-wkqxcxut/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-suggestion-scope-wkqxcxut/final-verification.json)。
+完整比较、无效尝试和提交证据见本轮报告（`/Users/mac/.codex/experiments/neko-suggestion-scope-wkqxcxut/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-suggestion-scope-wkqxcxut/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-suggestion-scope-wkqxcxut/final-verification.json`）。
 
 ### 2.92 游客体验的完成主体与结局范围
 
@@ -1689,7 +1689,7 @@ N.E.K.O相关回归**1047项通过**，InkAI后端**338项通过**。扩大检�
 
 正式作者`project_b2942fdc9274` revision **7→8**，包`story_2f0873c3efa6` **draft_6→draft_7**，hash `sha256:72353a8541e3476ea8d7741d0417e38501e327681b2c0ec7e5a985960a3a19d5`。发布前60份正式theater JSON不变；备份并确认本剧本无正式Session后，经SDK更新、编译、复验、导出，在现有项目锁、Session保护与Store事务下原子替换单包，再用公开recover_receipt核对。正式字节等于导出，作者story一致，setup与画布保留，另外58份正式JSON不变；没有新增覆盖安装功能或迁移旧Session。
 
-**完成主体与结局范围得到定点改善，整本体验验收仍未通过。** 复核误报、争议超时、局部道具状态与2.91的错误推荐仍需处理；未切换复核模型，未验证最新版本从头全路线、真实HTTP服务、桌面、TTS、发行物、改名矩阵或新的按需历史查找。实验准备的tokenizer加载中断、负向边界格式编译失败及误启动旧包调用均分别保存，不归入模型原生错误。完整[报告](/Users/mac/.codex/experiments/neko-visitor-ending-kbbeftlu/report.md)、[实际持久化全文](/Users/mac/.codex/experiments/neko-visitor-ending-kbbeftlu/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-visitor-ending-kbbeftlu/final-verification.json)保留全部证据。
+**完成主体与结局范围得到定点改善，整本体验验收仍未通过。** 复核误报、争议超时、局部道具状态与2.91的错误推荐仍需处理；未切换复核模型，未验证最新版本从头全路线、真实HTTP服务、桌面、TTS、发行物、改名矩阵或新的按需历史查找。实验准备的tokenizer加载中断、负向边界格式编译失败及误启动旧包调用均分别保存，不归入模型原生错误。完整报告（`/Users/mac/.codex/experiments/neko-visitor-ending-kbbeftlu/report.md`）、实际持久化全文（`/Users/mac/.codex/experiments/neko-visitor-ending-kbbeftlu/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-visitor-ending-kbbeftlu/final-verification.json`）保留全部证据。
 
 ### 2.93 工坊角色说明重复累积与运行反例续测
 
@@ -1709,7 +1709,7 @@ N.E.K.O SDK与InkAI同步修正`generation/numeric_v2.py`和`numeric_v2_branch.p
 
 N.E.K.O SDK及运行侧相关回归**1054项通过**，InkAI后端**345项通过**；此前的InkAI前端文案断言失败本轮未重测。3份实际快照通过冷恢复、账本历史对应、计分范围、重复请求、分叉、退出继续幂等检查；本轮均未到结局，不能算终局新证据。正式作者仍revision **8**、包仍**draft_7**及2.92的hash，60份正式theater JSON路径和字节均未变。
 
-**说明重复累积已修复，整本体验验收仍未通过。** 风筝只接续两个新增回合，未验证最新版从头多路线、真实HTTP／桌面／TTS、发行物、改名矩阵或新的按需历史查找。下一步优先定位错误邀请回合的重复输出、推荐格式补全和争议超时，同时保留正常接受对照。完整[报告](/Users/mac/.codex/experiments/neko-workshop-context-8eonhrd3/report.md)、[持久化演出全文](/Users/mac/.codex/experiments/neko-workshop-context-8eonhrd3/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-workshop-context-8eonhrd3/final-verification.json)保留各层证据。
+**说明重复累积已修复，整本体验验收仍未通过。** 风筝只接续两个新增回合，未验证最新版从头多路线、真实HTTP／桌面／TTS、发行物、改名矩阵或新的按需历史查找。下一步优先定位错误邀请回合的重复输出、推荐格式补全和争议超时，同时保留正常接受对照。完整报告（`/Users/mac/.codex/experiments/neko-workshop-context-8eonhrd3/report.md`）、持久化演出全文（`/Users/mac/.codex/experiments/neko-workshop-context-8eonhrd3/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-workshop-context-8eonhrd3/final-verification.json`）保留各层证据。
 
 ### 2.94 正式换幕推荐格式与终局漏答
 
@@ -1725,7 +1725,7 @@ N.E.K.O SDK及运行侧相关回归**1054项通过**，InkAI后端**345项通过
 
 全部8次Workflow请求／8提交包含2次已撤回提示实验：3次争议、1次共享改稿、0争议超时、0末稿兜底、0推荐补全；中位14.243秒、最长55.417秒。最终保留代码对应6次请求、2次争议，其他口径见报告；耗时不含固定Actor对照、动态玩家和TTS。所有本轮模型阶段都未注入判定、演员或复核结果。N.E.K.O相关回归最终**1055项通过**，8份实际快照通过冷恢复、账本历史对应、计分范围、重复请求、分叉及适用的退出继续／终局关闭。4份ended快照包含内容失败，不能算4次干净结局。
 
-正式作者仍revision **8**、包仍**draft_7**及2.92的hash，60份theater JSON路径和字节均未变。仅保留Actor提示和直接测试改动，Parser、Evaluator、Workflow不变；本轮未改工坊生成代码或规则，无需同步InkAI源码，也未重跑InkAI。**格式缺口得到定点改善，终局漏答、道具状态及整本体验仍未通过。** 后续先厘清正式复核对终局必要答复的核对方式，保留无新问题结局及正常转场对照；普通与正式复核的遗漏检查区别已在2.95补充。未验证最新版从头全路线、HTTP／桌面／TTS或新的按需历史查找。完整[报告](/Users/mac/.codex/experiments/neko-transition-suggestions-chfq1pbt/report.md)、[持久化演出全文](/Users/mac/.codex/experiments/neko-transition-suggestions-chfq1pbt/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-transition-suggestions-chfq1pbt/final-verification.json)保留失败与撤回记录。
+正式作者仍revision **8**、包仍**draft_7**及2.92的hash，60份theater JSON路径和字节均未变。仅保留Actor提示和直接测试改动，Parser、Evaluator、Workflow不变；本轮未改工坊生成代码或规则，无需同步InkAI源码，也未重跑InkAI。**格式缺口得到定点改善，终局漏答、道具状态及整本体验仍未通过。** 后续先厘清正式复核对终局必要答复的核对方式，保留无新问题结局及正常转场对照；普通与正式复核的遗漏检查区别已在2.95补充。未验证最新版从头全路线、HTTP／桌面／TTS或新的按需历史查找。完整报告（`/Users/mac/.codex/experiments/neko-transition-suggestions-chfq1pbt/report.md`）、持久化演出全文（`/Users/mac/.codex/experiments/neko-transition-suggestions-chfq1pbt/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-transition-suggestions-chfq1pbt/final-verification.json`）保留失败与撤回记录。
 
 ### 2.95 终局答复复核与来源旁白的协议缺口
 
@@ -1739,7 +1739,7 @@ N.E.K.O SDK及运行侧相关回归**1054项通过**，InkAI后端**345项通过
 
 78项针对性回归、3份实际快照的冷恢复、账本历史对应、计分范围、分叉及终局禁止输入／恢复检查通过。正式作者仍revision **8**、包仍**draft_7**，60份正式theater JSON集合与字节不变；本轮最终仅更新三份文档，运行源码、测试、SDK、InkAI及模型配置未改。
 
-**整本体验仍未通过。** 下一方案已提交用户确认：在现有`source_response`中增加可选当前场景旁白，同次生成NPC答复与猫娘回应，再进入桥段和目标段；保持三段结构、一次提交和旧记录兼容。需要连同Actor解析、Runtime、Store及下游消费一起验证。通用内容展开与前端已能显示容器旁白是静态代码证据，不能当作新协议已通过；该框架调整尚未实施。未验证最新版从头全路线、HTTP／桌面／TTS或新的按需历史查找。完整[报告](/Users/mac/.codex/experiments/neko-ending-answer-3itkb2an/report.md)、[持久化演出全文](/Users/mac/.codex/experiments/neko-ending-answer-3itkb2an/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-ending-answer-3itkb2an/final-verification.json)保留所有未采用方案与失败。
+**整本体验仍未通过。** 下一方案已提交用户确认：在现有`source_response`中增加可选当前场景旁白，同次生成NPC答复与猫娘回应，再进入桥段和目标段；保持三段结构、一次提交和旧记录兼容。需要连同Actor解析、Runtime、Store及下游消费一起验证。通用内容展开与前端已能显示容器旁白是静态代码证据，不能当作新协议已通过；该框架调整尚未实施。未验证最新版从头全路线、HTTP／桌面／TTS或新的按需历史查找。完整报告（`/Users/mac/.codex/experiments/neko-ending-answer-3itkb2an/report.md`）、持久化演出全文（`/Users/mac/.codex/experiments/neko-ending-answer-3itkb2an/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-ending-answer-3itkb2an/final-verification.json`）保留所有未采用方案与失败。
 
 ### 2.96 来源旁白交付NPC答复
 
@@ -1753,7 +1753,7 @@ N.E.K.O SDK及运行侧相关回归**1054项通过**，InkAI后端**345项通过
 
 新增来源旁白回归旧代码下14失败、7通过，实现后21项通过；N.E.K.O SDK及运行侧相关回归最终**1076项通过**。旧首句身份测试曾因转场职责扩展失败，已更新直接断言，仍检查动态猫娘身份。**1项真实Chromium回归通过**，使用真实应用UI及受控接口验证旁白先显示、猫娘对白随后显示、TTS请求索引不包含NPC旁白，以及刷新恢复且不重读历史；未调用真实TTS。9份实际快照通过冷恢复、历史账本对应、分叉、计分及适用生命周期检查，含失败后原样快照，不等于9次成功演出。正式作者仍revision **8**、包仍**draft_7**及2.92的hash，60份theater JSON集合和字节不变。
 
-**来源旁白协议已落地，整本体验仍未通过。** Workflow、SDK、InkAI、作者项目与正式模型配置未改，没有工坊生成规则需回同步；本轮只有运行侧五个源文件、直接测试及三份开发文档调整。接下来优先处理结局道具回退与复核误报；未验证最新版从头全路线、真实HTTP模型链路、桌面／真实TTS、改名矩阵或新的按需历史查找。完整[报告](/Users/mac/.codex/experiments/neko-source-narration-aat43d_s/report.md)、[持久化演出全文](/Users/mac/.codex/experiments/neko-source-narration-aat43d_s/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-source-narration-aat43d_s/final-verification.json)保留中间失败、最终样例与超时重试证据。
+**来源旁白协议已落地，整本体验仍未通过。** Workflow、SDK、InkAI、作者项目与正式模型配置未改，没有工坊生成规则需回同步；本轮只有运行侧五个源文件、直接测试及三份开发文档调整。接下来优先处理结局道具回退与复核误报；未验证最新版从头全路线、真实HTTP模型链路、桌面／真实TTS、改名矩阵或新的按需历史查找。完整报告（`/Users/mac/.codex/experiments/neko-source-narration-aat43d_s/report.md`）、持久化演出全文（`/Users/mac/.codex/experiments/neko-source-narration-aat43d_s/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-source-narration-aat43d_s/final-verification.json`）保留中间失败、最终样例与超时重试证据。
 ### 2.97 结局实体状态的失败对照与撤回
 
 固定2.96的实际revision 59：青年持线轴、风筝仍在低空，玩家询问手感。Actor与Guard的原始输入都完整包含这些事实，作者目标合同也要求保留实际状态；本反例不能归因为最新历史缺失或剧本要求回收。来源旁白已交付NPC答复，但后段仍可能把线轴写回猫娘手中或把风筝写成收好。
@@ -1766,7 +1766,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 最终原代码相关回归1076项通过，3份实际快照的冷恢复、账本历史对应、计分范围、分叉与终局关闭检查通过。正式draft_7、作者revision 8和60份theater JSON路径集合与字节不变。最大实际输入为Actor8309、Evaluator6880、正式Guard7155，均未扩容。本轮仅同步三份开发文档；没有工坊规则改动或InkAI源码同步项，也没有重新验证真实TTS、从头全路线或新长程召回。
 
-**整本体验仍未通过。** 下一步建议先隔离验证独立的实体状态复核：只核对持有者、位置和操作进度，给出历史与候选两端原文，验证引用后才将具体冲突交给现有一次改稿。保留合法交接、明确授权操作、NPC自主动作及省略未变物品的对照，不让该检查重判路线或要求额外结束确认。它可能增加一次模型调用，属于需要用户确认的框架试验，尚未实施。方案、失败尝试及边界详见[报告](/Users/mac/.codex/experiments/neko-ending-property-vqewp8yz/report.md)、[演出全文](/Users/mac/.codex/experiments/neko-ending-property-vqewp8yz/final-transcript.md)和[验证结果](/Users/mac/.codex/experiments/neko-ending-property-vqewp8yz/final-verification.json)。
+**整本体验仍未通过。** 下一步建议先隔离验证独立的实体状态复核：只核对持有者、位置和操作进度，给出历史与候选两端原文，验证引用后才将具体冲突交给现有一次改稿。保留合法交接、明确授权操作、NPC自主动作及省略未变物品的对照，不让该检查重判路线或要求额外结束确认。它可能增加一次模型调用，属于需要用户确认的框架试验，尚未实施。方案、失败尝试及边界详见报告（`/Users/mac/.codex/experiments/neko-ending-property-vqewp8yz/report.md`）、演出全文（`/Users/mac/.codex/experiments/neko-ending-property-vqewp8yz/final-transcript.md`）和验证结果（`/Users/mac/.codex/experiments/neko-ending-property-vqewp8yz/final-verification.json`）。
 ### 2.98 独立实体状态复核的隔离结果
 
 用户批准2.97提出的隔离试验后，在仓库外实现专门状态检查，只比较实际历史、本轮输入及三段候选中的持有者、位置和操作进度。初版由模型返回编号及引文；第三版改为模型只选编号，程序提取原文，拒绝不存在的编号和逆向引用。它不重判路线、自然结束、情绪或必要答复；未接入Workflow或正式模型设置。
@@ -1777,7 +1777,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 合计54次实体检查、4次Actor改稿和4次现行Guard调用。第三版14次独立检查中位1.271秒、最长5.020秒；这是新增检查本身的耗时，不是正式演绎总耗时。最大实际输入为实体检查2403、Actor8977、正式Guard7097，未扩容。两版实验协议9项、7项本地校验通过；生产代码未变，沿用本轮已完成的1076项相关回归，不把它们算作新检查器的集成测试。正式draft_7、作者revision 8和60份theater JSON不变，SDK及InkAI无源码同步项。
 
-**暂不接入独立检查，整本体验仍未通过。** 它能帮助定位部分冲突，但会误拦合法动作，且不能保证后续改稿真正删除错误。下一步应定点核对失败证据如何被现有改稿消费，以及正式Guard对来源NPC回应的误解；不据此增加正式模型调用或纠错次数。未验证新检查的正式接入、生命周期、端到端等待、从头全路线、HTTP／桌面／真实TTS或新的按需历史查找。完整[报告](/Users/mac/.codex/experiments/neko-entity-review-qjqdgj5q/report.md)、[受控修订全文](/Users/mac/.codex/experiments/neko-entity-review-qjqdgj5q/repair-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-entity-review-qjqdgj5q/final-verification.json)保留各阶段证据。
+**暂不接入独立检查，整本体验仍未通过。** 它能帮助定位部分冲突，但会误拦合法动作，且不能保证后续改稿真正删除错误。下一步应定点核对失败证据如何被现有改稿消费，以及正式Guard对来源NPC回应的误解；不据此增加正式模型调用或纠错次数。未验证新检查的正式接入、生命周期、端到端等待、从头全路线、HTTP／桌面／真实TTS或新的按需历史查找。完整报告（`/Users/mac/.codex/experiments/neko-entity-review-qjqdgj5q/report.md`）、受控修订全文（`/Users/mac/.codex/experiments/neko-entity-review-qjqdgj5q/repair-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-entity-review-qjqdgj5q/final-verification.json`）保留各阶段证据。
 
 ### 2.99 同源改稿与思考模式的效果、超时边界
 
@@ -1791,7 +1791,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 正式时限下4次思考改稿仅2次返回，2次超时；延时诊断单列。合计36次真实模型请求均用qwen3.7-plus，包括上下文4、NPC复核12、改稿11及对应Guard9。最大本地输入Actor9081、正式Guard7097，未扩输入；超时调用无完成用量，不按零token计。原始请求相等、单次Actor调用、响应／错误记录及文件保护检查通过。没有原生Evaluator、Workflow或Session提交，不把旧1076项回归、旧生命周期或终局记录计入本轮新证据。
 
-**暂不采用思考改稿，整本体验仍未通过。** 局部纠错收益还不足以满足现有等待时限，也不能补足前置漏检。三份运行源码及直接测试与本轮前一致，正式draft_7／作者revision 8和60份theater JSON路径集合与字节未变；仅更新三份开发文档，无SDK生成规则或InkAI源码同步项。未验证原生检出—改稿—提交链、实验模式生命周期、跨题材思考改稿、最新版从头全路线、HTTP／桌面／真实TTS或新的按需历史查找。完整[报告](/Users/mac/.codex/experiments/neko-rewrite-context-enhit2z8/report.md)、[受控演出全文](/Users/mac/.codex/experiments/neko-rewrite-context-enhit2z8/repair-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-rewrite-context-enhit2z8/final-verification.json)保留成功和失败样例。
+**暂不采用思考改稿，整本体验仍未通过。** 局部纠错收益还不足以满足现有等待时限，也不能补足前置漏检。三份运行源码及直接测试与本轮前一致，正式draft_7／作者revision 8和60份theater JSON路径集合与字节未变；仅更新三份开发文档，无SDK生成规则或InkAI源码同步项。未验证原生检出—改稿—提交链、实验模式生命周期、跨题材思考改稿、最新版从头全路线、HTTP／桌面／真实TTS或新的按需历史查找。完整报告（`/Users/mac/.codex/experiments/neko-rewrite-context-enhit2z8/report.md`）、受控演出全文（`/Users/mac/.codex/experiments/neko-rewrite-context-enhit2z8/repair-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-rewrite-context-enhit2z8/final-verification.json`）保留成功和失败样例。
 
 ### 2.100 短摘要、max普通改稿与末次复核的隔离结果
 
@@ -1807,7 +1807,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 共62次真实供应商请求（plus53、max9），实际Workflow 10请求／10提交＝2原生＋8受控。受控部分8次共享改稿、4次末稿兜底，首次争议均注入，无真实争议调用或技术超时；耗时不能与原生全链直接比较。最大本地输入Actor9143、判定6880、普通复核3312、正式复核7109，均未扩容。10份实际快照通过冷恢复、历史账本对应、计分范围、分叉及适用的幂等／退出继续／终局关闭检查；没有新的技术失败回滚证据，也未重跑旧1076项生产回归。
 
-**本轮无候选进入正式代码，整本体验仍未通过。** 4份运行源码及直接测试与本轮前一致，正式draft_7／作者revision 8和60份theater JSON集合及字节不变。仅更新三份开发文档，无SDK或InkAI规则同步项。未验证无注入的max修复触发、新版从头全路线、HTTP／桌面／真实TTS或新的按需历史查找。完整[报告](/Users/mac/.codex/experiments/neko-repair-summary-giwkel12/report.md)、[演出与持久化全文](/Users/mac/.codex/experiments/neko-repair-summary-giwkel12/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-repair-summary-giwkel12/final-verification.json)分别保留改稿成功、复核通过、兜底和失败证据。
+**本轮无候选进入正式代码，整本体验仍未通过。** 4份运行源码及直接测试与本轮前一致，正式draft_7／作者revision 8和60份theater JSON集合及字节不变。仅更新三份开发文档，无SDK或InkAI规则同步项。未验证无注入的max修复触发、新版从头全路线、HTTP／桌面／真实TTS或新的按需历史查找。完整报告（`/Users/mac/.codex/experiments/neko-repair-summary-giwkel12/report.md`）、演出与持久化全文（`/Users/mac/.codex/experiments/neko-repair-summary-giwkel12/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-repair-summary-giwkel12/final-verification.json`）分别保留改稿成功、复核通过、兜底和失败证据。
 
 ### 2.101 生成顺序、复核证据与局部编辑的否决边界
 
@@ -1819,7 +1819,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 共103次供应商调用，全部qwen3.7-plus普通模式（Actor40、正式Guard63），均返回且无模型超时；内容与协议失败均保留。最大本地输入Actor8339、正式Guard7498，维持10000／8000输入、1200／512输出和35／8秒时限，没有增加调用或改稿额度。正式60份theater JSON路径集合与字节、五份运行源码及两份直接测试与本轮前一致，仅更新三份开发文档；无SDK或InkAI生成规则同步项。
 
-**三项均未采用，整本体验仍未通过。** 本轮仅建立四份合成开场快照，没有Workflow回合提交、原生Evaluator、争议调用、兜底提交或新生命周期证据；没有重跑旧1076项回归，也未验证最新版从头全路线、其他已安装题材的原生长程接续、HTTP／桌面／真实TTS或新按需历史查找。局部编辑证明了修改能够落实，也证明了错误指控仍会精确破坏合法内容；不能将原文引用存在、编辑成功或末次放行当作内容通过。完整[报告](/Users/mac/.codex/experiments/neko-evidence-edit-hwpmgy9z/report.md)、[候选与复核全文](/Users/mac/.codex/experiments/neko-evidence-edit-hwpmgy9z/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-evidence-edit-hwpmgy9z/final-verification.json)保留各项否决依据。
+**三项均未采用，整本体验仍未通过。** 本轮仅建立四份合成开场快照，没有Workflow回合提交、原生Evaluator、争议调用、兜底提交或新生命周期证据；没有重跑旧1076项回归，也未验证最新版从头全路线、其他已安装题材的原生长程接续、HTTP／桌面／真实TTS或新按需历史查找。局部编辑证明了修改能够落实，也证明了错误指控仍会精确破坏合法内容；不能将原文引用存在、编辑成功或末次放行当作内容通过。完整报告（`/Users/mac/.codex/experiments/neko-evidence-edit-hwpmgy9z/report.md`）、候选与复核全文（`/Users/mac/.codex/experiments/neko-evidence-edit-hwpmgy9z/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-evidence-edit-hwpmgy9z/final-verification.json`）保留各项否决依据。
 
 ### 2.102 实验策略更正、短复核合同与入幕状态删除
 
@@ -1833,7 +1833,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 共**56次新真实调用**，Actor8／正式Guard48，均正常返回；40份策略重放及159份本地发送参数重放都是离线检查，不计新增调用。最大本地输入Actor7674、正式Guard7097，保持原10000／7000／6000／8000输入上限、1200／512输出与35／8秒时限，以及现有纠错次数。五份运行源码、两份直接测试逐字等于本轮前快照；正式draft_7／作者revision 8和60份theater JSON路径集合及hash不变，仅更正和更新三份开发文档，无SDK或InkAI生成规则同步项。
 
-**两项均未采用，整本体验仍未通过。** 本轮没有Workflow回合、Session提交、原生Evaluator、争议与兜底、新生命周期、完整回归或TTS证据，也未做最新版从头全路线、跨题材长程及新的按需历史查找。候选未通过单层门槛，未扩大整链测试。演员状态延续与Guard对实际答复的识别仍待解决，不能将“规则太长”或“旧准备态干扰”写成已证实根因。完整[报告](/Users/mac/.codex/experiments/neko-guard-contract-2yyi5x1p/report.md)、[候选与复核全文](/Users/mac/.codex/experiments/neko-guard-contract-2yyi5x1p/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-guard-contract-2yyi5x1p/final-verification.json)保留逐项核对与口径更正。
+**两项均未采用，整本体验仍未通过。** 本轮没有Workflow回合、Session提交、原生Evaluator、争议与兜底、新生命周期、完整回归或TTS证据，也未做最新版从头全路线、跨题材长程及新的按需历史查找。候选未通过单层门槛，未扩大整链测试。演员状态延续与Guard对实际答复的识别仍待解决，不能将“规则太长”或“旧准备态干扰”写成已证实根因。完整报告（`/Users/mac/.codex/experiments/neko-guard-contract-2yyi5x1p/report.md`）、候选与复核全文（`/Users/mac/.codex/experiments/neko-guard-contract-2yyi5x1p/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-guard-contract-2yyi5x1p/final-verification.json`）保留逐项核对与口径更正。
 
 ### 2.103 工坊生成减少对配角的关键依赖
 
@@ -1843,7 +1843,7 @@ Guard五个固定计分例含两个真实坏稿、一个真实正常稿和两个
 
 六个创作／节点写稿入口与五个评审／修订入口共用规则（节点优化重叠），两端10份实际生效Prompt完全一致。更新的7项合同检查先在旧Prompt下失败；修改后N.E.K.O工坊368项通过，InkAI后端345项通过。InkAI首次为342通过、3项固定夹具CLI校验相关失败，其中两项明确30秒超时；指定已有分词缓存复跑后全部通过，独立CLI复测也成功，未确定初次超时根因、未修改校验代码。旧前端文案断言未重测。
 
-本轮只改两端各两份Prompt源文件及两份直接测试，并同步开发文档；运行源码、正式draft_7／作者revision 8及60份theater JSON不变。没有真实模型生成新稿、演绎、生命周期或TTS验证，不能将写作取向调整当作已有NPC误报修复或整本体验通过。验证与首次失败日志见[本轮记录](/Users/mac/.codex/experiments/neko-npc-authoring-xkovusjz/report.md)及[核对结果](/Users/mac/.codex/experiments/neko-npc-authoring-xkovusjz/verification.json)。
+本轮只改两端各两份Prompt源文件及两份直接测试，并同步开发文档；运行源码、正式draft_7／作者revision 8及60份theater JSON不变。没有真实模型生成新稿、演绎、生命周期或TTS验证，不能将写作取向调整当作已有NPC误报修复或整本体验通过。验证与首次失败日志见本轮记录（`/Users/mac/.codex/experiments/neko-npc-authoring-xkovusjz/report.md`）及核对结果（`/Users/mac/.codex/experiments/neko-npc-authoring-xkovusjz/verification.json`）。
 
 
 ### 2.104 可选过场协议对齐与简化结局隔离验证
@@ -1866,7 +1866,7 @@ Actor基线／候选中位4.555／3.658秒，最长6.958／5.909秒，输入最�
 
 **本轮保留可选桥段修复，简化结局候选未采用，整本体验仍未通过。** 共27次qwen3.7-plus请求＝20次Actor对照＋7次Workflow内部调用；2次真实提交、1次争议、0改稿／兜底。三份运行代码和两份直接测试修改，四份开发文档同步；生成器源码、正式模型、容量及纠错次数保持，正式draft_7／作者revision 8和60份theater JSON路径集合与字节不变。没有新的真实技术失败回滚、全路线长程、HTTP模型整链、桌面、真实TTS或按需历史查找证据。
 
-原始快照、固定合同、请求响应、逐稿核对、实际持久化演出和精确补丁见[实验报告](/Users/mac/.codex/experiments/neko-framework-closure-lpd85oaj/report.md)、[演出全文](/Users/mac/.codex/experiments/neko-framework-closure-lpd85oaj/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-framework-closure-lpd85oaj/verification.json)。
+原始快照、固定合同、请求响应、逐稿核对、实际持久化演出和精确补丁见实验报告（`/Users/mac/.codex/experiments/neko-framework-closure-lpd85oaj/report.md`）、演出全文（`/Users/mac/.codex/experiments/neko-framework-closure-lpd85oaj/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-framework-closure-lpd85oaj/verification.json`）。
 
 
 ### 2.105 当前回应任务与程序结束权的隔离对照
@@ -1881,7 +1881,7 @@ Actor基线／候选中位4.555／3.658秒，最长6.958／5.909秒，输入最�
 
 **新候选未采用，保留2.104协议修复，整体体验仍未通过。** 本轮所有调用仅在Actor层，没有Guard、Workflow、争议、改稿、Session提交或新生命周期／TTS证据；没有重复运行上一轮720项回归。受保护运行／SDK／前端源码和60份正式theater JSON集合及字节不变，正式模型、容量、纠错次数与语义末稿提交策略均保持，只同步四份文档。
 
-后续暂停继续改写“收尾”措辞追分；更深框架实验应先明确可外部核验的状态或必要交付、原文来源及更新边界。不能只增加布尔量、重命名字段或重新压缩摘要就宣称可靠，也不自动启用状态模块。改变语义纠错耗尽后的结束／留幕策略是另一项产品取舍，需要单独确认，本轮未改变。完整[报告](/Users/mac/.codex/experiments/neko-final-reply-dtfose5a/report.md)、[逐稿演出](/Users/mac/.codex/experiments/neko-final-reply-dtfose5a/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-final-reply-dtfose5a/verification.json)保留原始请求、响应、固定门槛与人工核对范围。
+后续暂停继续改写“收尾”措辞追分；更深框架实验应先明确可外部核验的状态或必要交付、原文来源及更新边界。不能只增加布尔量、重命名字段或重新压缩摘要就宣称可靠，也不自动启用状态模块。改变语义纠错耗尽后的结束／留幕策略是另一项产品取舍，需要单独确认，本轮未改变。完整报告（`/Users/mac/.codex/experiments/neko-final-reply-dtfose5a/report.md`）、逐稿演出（`/Users/mac/.codex/experiments/neko-final-reply-dtfose5a/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-final-reply-dtfose5a/verification.json`）保留原始请求、响应、固定门槛与人工核对范围。
 
 ### 2.106 原文关联的回合前状态参考
 
@@ -1897,7 +1897,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **保留为框架研究证据，尚不接入正式流程，整本体验仍未通过。** 46份受保护运行／SDK／theater前端源码及60份正式theater JSON集合与字节不变；正式模型、容量、纠错次数、作者项目和包保持。只同步相关文档，没有重复此前720项运行回归，没有新的状态更新／存储、冷恢复、分叉、HTTP、桌面、长程、按需历史查找或真实TTS证据。下一步验证现有Actor与Guard对同一出处参考的消费，并区分只读参考、状态更新提案和已提交事实；未经正文和生命周期验证，不把状态自动落盘或改变语义末稿结束策略。
 
-完整[实验报告](/Users/mac/.codex/experiments/neko-grounded-state-dii6firk/report.md)、[逐稿记录](/Users/mac/.codex/experiments/neko-grounded-state-dii6firk/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-grounded-state-dii6firk/verification.json)保留固定输入、模型原始提取与响应、逐项核对及本轮精确文档补丁。
+完整实验报告（`/Users/mac/.codex/experiments/neko-grounded-state-dii6firk/report.md`）、逐稿记录（`/Users/mac/.codex/experiments/neko-grounded-state-dii6firk/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-grounded-state-dii6firk/verification.json`）保留固定输入、模型原始提取与响应、逐项核对及本轮精确文档补丁。
 
 ### 2.107 共享回合前状态与现有纠错链的隔离对照
 
@@ -1916,7 +1916,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **共享候选未采用，整本体验仍未通过。** 现行Workflow只在快检报告违规或无效邀请时触发首次争议与改稿；本批漏报没有自然进入纠错，不通过人工注入正确拦截将它们包装成修复。新增同一状态字段未稳定改善这个入口，因此不接入正式调用、状态协议、持久化或生成规则，不改变快检触发条件、模型分工、纠错额度或语义末稿提交。
 
-总计32次请求、30次返回、2次超时，另1份已返回Actor内容解析失败；无Session提交。46份运行／SDK／theater前端源码与60份正式theater JSON集合及字节保持，正式包和作者项目不变；只同步对应文档，没有重复此前720项回归。没有新的完整Workflow、格式重试后结果、状态更新、冷恢复／分叉、技术回滚、全路线长程、HTTP／桌面或真实TTS证据。完整[报告](/Users/mac/.codex/experiments/neko-shared-state-review-3ihswzk9/report.md)、[逐稿记录](/Users/mac/.codex/experiments/neko-shared-state-review-3ihswzk9/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-shared-state-review-3ihswzk9/verification.json)保留原始请求响应、超时、预设判断和全部失败范围。
+总计32次请求、30次返回、2次超时，另1份已返回Actor内容解析失败；无Session提交。46份运行／SDK／theater前端源码与60份正式theater JSON集合及字节保持，正式包和作者项目不变；只同步对应文档，没有重复此前720项回归。没有新的完整Workflow、格式重试后结果、状态更新、冷恢复／分叉、技术回滚、全路线长程、HTTP／桌面或真实TTS证据。完整报告（`/Users/mac/.codex/experiments/neko-shared-state-review-3ihswzk9/report.md`）、逐稿记录（`/Users/mac/.codex/experiments/neko-shared-state-review-3ihswzk9/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-shared-state-review-3ihswzk9/verification.json`）保留原始请求响应、超时、预设判断和全部失败范围。
 
 ### 2.108 结局快检放行后复查的隔离对照
 
@@ -1941,7 +1941,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 邀请候选后续执行5.843秒，不含回放阶段；与本轮该例复查29.861秒相加约35.704秒，只是分段新增成本，不能当作完整HTTP请求耗时。现有格式重试链保留，但实际第一份改稿已解析，没有发生格式重试。4份快照均通过冷恢复、分叉历史一致、一次revision／事件／计分提交、重复提交拒绝且文件不变、终局关闭输入检查。未测试技术失败回滚；复查超时保留初判与语义改稿耗尽兜底继续分开统计。修复稿中的游客散去、此前担心风大等细节仍作观察，不能称全文无误。
 
-**候选暂不接入正式流程，整本体验仍未通过。** 本轮证明现有改稿在一次真实正确拦截后能修好结局新邀约并完整提交；未证明普遍追加复查能稳定修复状态与权限错误，等待及超时成本也未收敛。总计10次新请求、7次返回、3次超时。46份运行／SDK／theater前端源码与60份正式JSON集合和字节未变，正式draft_7／作者revision 8保持；仅同步四份开发文档，不修改工坊Prompt或生成协议，不重复此前720项回归。没有最新版从头全路线、HTTP／桌面或真实TTS新证据。完整[报告](/Users/mac/.codex/experiments/neko-terminal-review-l7g055z0/report.md)、[逐稿与最终存档](/Users/mac/.codex/experiments/neko-terminal-review-l7g055z0/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-terminal-review-l7g055z0/verification.json)保留授权、条件差异、原始调用、回放来源和剩余失败。
+**候选暂不接入正式流程，整本体验仍未通过。** 本轮证明现有改稿在一次真实正确拦截后能修好结局新邀约并完整提交；未证明普遍追加复查能稳定修复状态与权限错误，等待及超时成本也未收敛。总计10次新请求、7次返回、3次超时。46份运行／SDK／theater前端源码与60份正式JSON集合和字节未变，正式draft_7／作者revision 8保持；仅同步四份开发文档，不修改工坊Prompt或生成协议，不重复此前720项回归。没有最新版从头全路线、HTTP／桌面或真实TTS新证据。完整报告（`/Users/mac/.codex/experiments/neko-terminal-review-l7g055z0/report.md`）、逐稿与最终存档（`/Users/mac/.codex/experiments/neko-terminal-review-l7g055z0/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-terminal-review-l7g055z0/verification.json`）保留授权、条件差异、原始调用、回放来源和剩余失败。
 
 ### 2.109 暂停优化后的新稿单轮节奏压测
 
@@ -1961,7 +1961,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 请求耗时中位8.383秒、最长49.849秒，3次超过30秒；包含失败请求，不含动态玩家及TTS。总压测墙钟512.573秒含动态玩家。3次争议、1次争议超时、2次共享改稿、2次取消错误换幕、0次语义末稿兜底。另有1次Actor APIConnectionError，用户回合报numeric_v2_actor_model_call_failed，17.515秒；失败请求未写入历史或Ledger，之后继续成功。睡眠段另有4条推荐缺失／不足记录。0兜底与存档成功均不能当作节奏通过。
 
-**本次轨迹未达到“不拖沓”，按用户要求到此停止，不继续修稿、优化框架或补跑。** 实际快照的冷恢复、历史／Ledger逐条一致、分叉不改继续槽、重复请求拒绝、幂等退出继续检查通过。原60份正式JSON及43份运行／SDK源码不变，只新增这一个正式作者项目和包；压测Session与原始调用均隔离。未调用文学评分、未验证全路线、结局关闭、HTTP／桌面或真实TTS；没有新增源码改动，未重复整套回归。生成结构合格不代表自动生成质量整体通过，也不证明此前NPC降权规则已经解决拖长。完整[报告](/Users/mac/.codex/experiments/neko-fresh-pacing-4sy8nda6/report.md)、[实际演绎全文](/Users/mac/.codex/experiments/neko-fresh-pacing-4sy8nda6/final-transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-fresh-pacing-4sy8nda6/final-verification.json)保留全部失败与停止边界。
+**本次轨迹未达到“不拖沓”，按用户要求到此停止，不继续修稿、优化框架或补跑。** 实际快照的冷恢复、历史／Ledger逐条一致、分叉不改继续槽、重复请求拒绝、幂等退出继续检查通过。原60份正式JSON及43份运行／SDK源码不变，只新增这一个正式作者项目和包；压测Session与原始调用均隔离。未调用文学评分、未验证全路线、结局关闭、HTTP／桌面或真实TTS；没有新增源码改动，未重复整套回归。生成结构合格不代表自动生成质量整体通过，也不证明此前NPC降权规则已经解决拖长。完整报告（`/Users/mac/.codex/experiments/neko-fresh-pacing-4sy8nda6/report.md`）、实际演绎全文（`/Users/mac/.codex/experiments/neko-fresh-pacing-4sy8nda6/final-transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-fresh-pacing-4sy8nda6/final-verification.json`）保留全部失败与停止边界。
 
 ### 2.110 候选换幕去向与错误邀请重复触发的定点修复
 
@@ -1977,7 +1977,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 公开SDK验证并导出的包为`story_2fa2c3823a41／draft_2`，作者`project_5f21a89713c9` revision 6，hash `sha256:ba8905e64b1a52aa7a8218ee0131e46f2ba1648b3490300a09d91bdb902e6581`。SDK安装首次按禁止同ID覆盖规则拒绝；用户明确选择“替换旧版，彻底删除旧包”后，确认没有本故事正式存档／继续槽，删除正式旧包、导入修正版并核验回执，未留下安装备份。只有作者项目和安装包两份正式JSON变化，其余60份不变；原始实验记录继续作为证据保存。
 
-**确定性继承问题及局部推进已验证，模型纠错仍有残留，整本尚未通过。** 首次纠错等待仍长，旧安排混入与复核漏判仍可能发生；没有全分支结局、HTTP／桌面或真实TTS新证据，不恢复无边界长程压测。完整[报告](/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/report.md)、[实际提交全文](/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/transcript.md)、[验证结果](/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/verification.json)及[替换结果](/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/publish-verification.json)区分各次失败、最终变化及验证范围。
+**确定性继承问题及局部推进已验证，模型纠错仍有残留，整本尚未通过。** 首次纠错等待仍长，旧安排混入与复核漏判仍可能发生；没有全分支结局、HTTP／桌面或真实TTS新证据，不恢复无边界长程压测。完整报告（`/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/report.md`）、实际提交全文（`/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/transcript.md`）、验证结果（`/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/verification.json`）及替换结果（`/Users/mac/.codex/experiments/neko-offer-destination-kzp45gqs/publish-verification.json`）区分各次失败、最终变化及验证范围。
 
 ### 2.111 候选换幕争议提速的隔离对照与否决边界
 
@@ -1991,7 +1991,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 原revision 32／10隔离分叉共5次原生输入、5次提交，没有注入Evaluator、Actor或Guard输出。原流程纠错26.767秒，但思考争议连接失败、保留初判；摘录版第一次25.068秒，也因将候选桥段误作作者入口引文而核验失败、保留初判。继续原便利店输入10.106秒，未再次生成错误小巷候选；独立重测有效复查后23.841秒完成纠错；正常去河边11.115秒直接换幕，无争议或改稿。23.841秒是局部实测，不是普遍从49秒稳定降到24秒：旧49.323秒属另一轮输出，同批基线又发生故障，不能隐去这些差异。改稿仍有未经核验的地点否定、顺路解释或旧选项残留，0次语义兜底不代表正文全对。
 
-总计69次模型请求、63次返回、6次连接失败，另有1次返回后的引文核验失败；固定材料45次调用，完整Workflow24次。4份实际快照的冷恢复、分叉历史／数值、历史与Ledger撤下标记、过期revision拒绝及拒绝后存档不变通过。62份正式JSON及文件集合不变，Evaluator／Workflow与本轮开始前快照逐字相同；没有新增运行、SDK／InkAI代码或生成规则，未重复整套单测，也没有HTTP／桌面、TTS、全路线或结局证据。本轮停止这组替代实验，保留现行快检、首次思考争议和共享一次改稿；不因提速替用户接受误取消或漏放行。完整[报告](/Users/mac/.codex/experiments/neko-destination-fast-review-c058baeb/report.md)、[实际提交全文](/Users/mac/.codex/experiments/neko-destination-fast-review-c058baeb/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-destination-fast-review-c058baeb/verification.json)保留全部失败和口径。
+总计69次模型请求、63次返回、6次连接失败，另有1次返回后的引文核验失败；固定材料45次调用，完整Workflow24次。4份实际快照的冷恢复、分叉历史／数值、历史与Ledger撤下标记、过期revision拒绝及拒绝后存档不变通过。62份正式JSON及文件集合不变，Evaluator／Workflow与本轮开始前快照逐字相同；没有新增运行、SDK／InkAI代码或生成规则，未重复整套单测，也没有HTTP／桌面、TTS、全路线或结局证据。本轮停止这组替代实验，保留现行快检、首次思考争议和共享一次改稿；不因提速替用户接受误取消或漏放行。完整报告（`/Users/mac/.codex/experiments/neko-destination-fast-review-c058baeb/report.md`）、实际提交全文（`/Users/mac/.codex/experiments/neko-destination-fast-review-c058baeb/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-destination-fast-review-c058baeb/verification.json`）保留全部失败和口径。
 
 ### 2.112 争议预算、当前提示复测与自定义模型边界
 
@@ -2010,7 +2010,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **本轮没有采用生产优化，49秒纠错问题尚未收敛。** 适配继续复用本体配置及统一客户端，不固定Qwen或向所有自定义接口下发思考预算。当前Guard使用summary槽；工坊SDK仍由调用方指定模型。未登记争议参数的自定义模型保留快检结果，不计复查通过；已登记也不保证转发接口支持或实际开启思考。后续通用优化优先处理调用流程，专用参数只作确认支持后的可选能力；不能另建小剧场模型名单、按名字猜能力、暗换模型或新增连环尝试。本轮没有新增未知模型的思考支持或改其降级语义。
 
-共32次真实请求／32次响应，固定材料24次、原生Workflow8次；2次模型协议错误与8次已恢复的实验统计错误单列。23项既有争议、参数隔离、多家参数映射及客户端协议回归通过，不代表其他自定义端点已实测。两次原生提交的冷恢复、逐轮revision／Ledger只增加一次、最终历史分叉及源文件不变通过；语义失败仍完整留档。62份正式JSON集合与字节、Evaluator／Workflow均与本轮前相同，只更新两份开发文档，不修改SDK／InkAI、正式配置或draft_2。未新增正常原生对照、技术回滚注入、全路线、HTTP／桌面或TTS证据。完整[报告](/Users/mac/.codex/experiments/neko-dispute-thinking-budget-6owp2mur/report.md)、[实际提交全文](/Users/mac/.codex/experiments/neko-dispute-thinking-budget-6owp2mur/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-dispute-thinking-budget-6owp2mur/verification.json)保存复现方式、版本审计和全部失败。
+共32次真实请求／32次响应，固定材料24次、原生Workflow8次；2次模型协议错误与8次已恢复的实验统计错误单列。23项既有争议、参数隔离、多家参数映射及客户端协议回归通过，不代表其他自定义端点已实测。两次原生提交的冷恢复、逐轮revision／Ledger只增加一次、最终历史分叉及源文件不变通过；语义失败仍完整留档。62份正式JSON集合与字节、Evaluator／Workflow均与本轮前相同，只更新两份开发文档，不修改SDK／InkAI、正式配置或draft_2。未新增正常原生对照、技术回滚注入、全路线、HTTP／桌面或TTS证据。完整报告（`/Users/mac/.codex/experiments/neko-dispute-thinking-budget-6owp2mur/report.md`）、实际提交全文（`/Users/mac/.codex/experiments/neko-dispute-thinking-budget-6owp2mur/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-dispute-thinking-budget-6owp2mur/verification.json`）保存复现方式、版本审计和全部失败。
 
 ### 2.113 最新版路线覆盖、自然结束与节奏验证
 
@@ -2034,7 +2034,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 五份最终快照的冷恢复、历史／Ledger／正文一致、分叉与硬分值范围通过；活跃中间分叉的重复拒绝、幂等退出继续通过，三份自然结局快照均关闭输入且不能恢复续演。两个派生分叉的继承前缀逐条一致。62份正式JSON集合与字节、24份预先保护的运行／压测入口／SDK宿主源码hash不变，只更新两份开发文档；无SDK／InkAI改动，不重复整套单测，也没有HTTP／桌面、真实TTS或其他模型新证据。
 
-**两条支线可进入并收尾已有真实证据；标准主线仍未验证完成，整体流畅度未通过。** 完整[报告](/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/report.md)、[演绎与复核全文](/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/transcript.md)、[核对清单](/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/manual-review.json)及[验证结果](/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/verification.json)保留所有中断、未覆盖路线与失败。
+**两条支线可进入并收尾已有真实证据；标准主线仍未验证完成，整体流畅度未通过。** 完整报告（`/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/report.md`）、演绎与复核全文（`/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/transcript.md`）、核对清单（`/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/manual-review.json`）及验证结果（`/Users/mac/.codex/experiments/neko-three-routes-u6yu67aj/verification.json`）保留所有中断、未覆盖路线与失败。
 
 ### 2.114 七成推荐输入的单次节奏验证
 
@@ -2052,7 +2052,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 实际历史／Ledger／输入／最终正文一致，冷恢复、分叉不改继续槽、重复拒绝、幂等退出继续与自然结局关闭输入验证通过。62份正式JSON集合及字节、44份运行／SDK／压测源码hash不变。本轮只更新本文档，未新增回滚失败样本、HTTP／桌面、真实TTS、其他模型或全部路线证据，不重复整套单测。
 
-**本条节奏可接受，已知复核长等待仍未解决；按本轮范围到此停止，不追加优化或补跑。** 完整[报告](/Users/mac/.codex/experiments/neko-70recommended-wdqt9gh7/report.md)、[演绎与复核全文](/Users/mac/.codex/experiments/neko-70recommended-wdqt9gh7/transcript.md)及[验证结果](/Users/mac/.codex/experiments/neko-70recommended-wdqt9gh7/verification.json)保存输入比例、兜底、轻微问题与验证边界，不能以本次结果覆盖此前反例。
+**本条节奏可接受，已知复核长等待仍未解决；按本轮范围到此停止，不追加优化或补跑。** 完整报告（`/Users/mac/.codex/experiments/neko-70recommended-wdqt9gh7/report.md`）、演绎与复核全文（`/Users/mac/.codex/experiments/neko-70recommended-wdqt9gh7/transcript.md`）及验证结果（`/Users/mac/.codex/experiments/neko-70recommended-wdqt9gh7/verification.json`）保存输入比例、兜底、轻微问题与验证边界，不能以本次结果覆盖此前反例。
 
 ### 2.115 作者固定旁白：原文直接展示与剧情触发
 
@@ -2070,7 +2070,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **安装状态**：《零号日志：星火之后》已从 `draft_53` 更新为 `draft_54`，hash 为 `sha256:76eab78d822f8bcb2034db027b7d9cd9e6274fbf413541265ad94c27e2654efe`。末幕恢复报告入幕显示，完整0042/0089/0090日志在新载体实际触碰铭牌的当轮正文后显示。仅迁出报告/日志及相关编排说明，保留先前芯片来源、时间与腿部状态修正；咖啡互动细节固定标为损坏，不补写玩家未做的递水和微笑。旧包已在仓库外备份，旧Session、归档和结局回执未改动；未批量覆盖InkAI作者项目。
 
-证据：[功能与实验报告](/Users/mac/.codex/experiments/neko-fixed-narration-hmau3rg0/report.md)、[原生末幕结果](/Users/mac/.codex/experiments/neko-fixed-narration-hmau3rg0/round2-real-workflow.json)、[安装校验](/Users/mac/.codex/experiments/neko-fixed-narration-hmau3rg0/installation-verification.json)。
+证据：功能与实验报告（`/Users/mac/.codex/experiments/neko-fixed-narration-hmau3rg0/report.md`）、原生末幕结果（`/Users/mac/.codex/experiments/neko-fixed-narration-hmau3rg0/round2-real-workflow.json`）、安装校验（`/Users/mac/.codex/experiments/neko-fixed-narration-hmau3rg0/installation-verification.json`）。
 
 ### 2.116 Review 收口：恢复槽、固定旁白与遗忘后的管理入口
 
@@ -2086,7 +2086,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 同时删除没有读取点的 `allows_empty_api_key` 元数据，相关文件相对上游恢复一致；不改自定义 TTS 或模型 URL 规则。不采用“异常括号全文当对白”的可选加固：Actor 输出解析器拒绝该形式，未提供合法已提交反例；把未知动作交给 TTS 缺少可复现需要。语义纠错耗尽继续提交完整末稿。没有真实模型再压测、真实 TTS 或跨平台设备验收；本轮不能作为转场准确率、剧情节奏或复核等待的新证据。
 
-证据：[本轮核查与验证记录](/Users/mac/.codex/experiments/neko-pr3084-review-px_bc3a3/report.md)。
+证据：本轮核查与验证记录（`/Users/mac/.codex/experiments/neko-pr3084-review-px_bc3a3/report.md`）。
 
 ### 2.117 Review 收口：记忆持久化、遗忘并发与作者报告失效
 
@@ -2098,7 +2098,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **验证与边界**：本体、SDK、记忆持久化和压缩、角色生命周期联合回归1478项通过、3项既有跳过；浏览器52项通过；InkAI项目存储23项通过。新增反例先失败后通过；扩展记忆回归发现上一轮新增只读摘要列表未登记路由分类，已补入只读合同，不改变发布栅栏。首轮验证曾因分词器尝试联网下载而中止，改用本地现成词表缓存后重跑；未修改分词算法。没有真实模型演绎、设备TTS或跨平台发行验证，不作为转场准确率或等待时间的新证据。
 
-证据：[本轮核查与验证记录](/Users/mac/.codex/experiments/neko-pr3084-review-wvqju2jo/report.md)。
+证据：本轮核查与验证记录（`/Users/mac/.codex/experiments/neko-pr3084-review-wvqju2jo/report.md`）。
 
 ### 2.118 Review 与上游合并：选择代次和通用记忆整理
 
@@ -2108,7 +2108,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **合并与界面边界**：合并上游 `d6f49ff5c`，解决 App 提交分流、语言包版本和签名三处冲突。普通聊天保留上游 Enter／输入法及 `submitMethod`，小剧场自由输入仍使用同一个胶囊 textarea，推荐复用同一组 Galgame 按钮及交互，只适配演绎状态与提交；未新增独立输入框或选项组件。两端语言 key 合并后启用新缓存版本，完整前端构建通过，实际服务的产物已重建。
 
-证据与最终测试结果见[本轮核查报告](/Users/mac/.codex/experiments/neko-pr3084-review-bfvyhu8k/report.md)。未重新调用真实演绎模型、设备 TTS 或测试冻结发行物，不改变自由输入长复核及转场问题的既有结论。此前用户拒绝的“纠错耗尽后转场回滚”和“仅允许 HTTPS／本机 HTTP 模型地址”仍不采用。
+证据与最终测试结果见本轮核查报告（`/Users/mac/.codex/experiments/neko-pr3084-review-bfvyhu8k/report.md`）。未重新调用真实演绎模型、设备 TTS 或测试冻结发行物，不改变自由输入长复核及转场问题的既有结论。此前用户拒绝的“纠错耗尽后转场回滚”和“仅允许 HTTPS／本机 HTTP 模型地址”仍不采用。
 
 ### 2.119 Review：输入锁、语音关联与剧本原子安装
 
@@ -2120,7 +2120,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **验证与范围**：四个 React 输入反例、五个语音／旧记录浏览器反例，以及半文件读取和临时同步失败反例均先失败后通过。选择代次测试改为等待指定旧请求的完成／失败事件，再等待页面渲染，避免只等动画帧造成误通过；首轮尝试的 `expect_request_failed` 不在当前 Playwright API 中，改用真实 `requestfailed` 事件。最终运行侧与 SDK 回归 1229 项、浏览器 57 项、React 531 项通过，完整前端构建通过。原生旧输入框 Enter 元数据问题在上游主分支已存在，本轮跳过。没有修改工坊生成代码或 Prompt，无需同步 InkAI；没有真实模型或设备 TTS、Windows／Linux／网络文件系统和冻结发行物的新验证，不改变长复核及候选转场的既有结论。
 
-证据：[本轮核查与验证报告](/Users/mac/.codex/experiments/neko-pr3084-review-seb77jfd/report.md)。
+证据：本轮核查与验证报告（`/Users/mac/.codex/experiments/neko-pr3084-review-seb77jfd/report.md`）。
 
 ### 2.120 Review：异步启动归属与角色遗忘记录清理
 
@@ -2132,7 +2132,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **推荐与测试**：真实提交回调缺失时不显示剧场 Galgame 推荐；宿主注册／注销回调同步更新，桥接层不再传无操作包装函数。包发布测试改在 `os.replace` 前断言最终文件不存在、发布后实际调用 `load_engine` 并确认观测发生，避免原测试分支未执行仍通过。
 
-最终验证与证据见[本轮报告](/Users/mac/.codex/experiments/neko-pr3084-review-i9u9iy9o/report.md)。复用胶囊输入和 Galgame，不修改生成 Prompt 或工坊 SDK，无需同步 InkAI。本轮不以真实模型或设备 TTS 验收，不改变自由输入长复核、候选转场及语义末稿提交的既有结论。
+最终验证与证据见本轮报告（`/Users/mac/.codex/experiments/neko-pr3084-review-i9u9iy9o/report.md`）。复用胶囊输入和 Galgame，不修改生成 Prompt 或工坊 SDK，无需同步 InkAI。本轮不以真实模型或设备 TTS 验收，不改变自由输入长复核、候选转场及语义末稿提交的既有结论。
 
 ### 2.121 本地审查与 Review：迟到语音、刷新恢复和角色配置回退
 
@@ -2144,7 +2144,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 **胶囊草稿**：自由输入的适配层原先在回调缺失时仍传入空包装函数，组件会把它当作提交成功而清空草稿。现仅传已注册回调，注册／注销同步更新；缺失时原文保留，恢复回调后可以提交，继续复用胶囊输入和 Galgame 推荐。
 
-验证与反例见[本轮报告](/Users/mac/.codex/experiments/neko-pr3084-review-j3_ec6l1/report.md)。浏览器草稿夹具首次未等待真实宿主挂载、展开完成，修正后用旧桥接脚本再次复现草稿丢失；未因此修改普通聊天交互。没有改生成 Prompt 或 SDK，无需同步 InkAI；未调用真实模型或设备 TTS，不改变自由输入长复核、候选转场和语义末稿提交的既有边界。
+验证与反例见本轮报告（`/Users/mac/.codex/experiments/neko-pr3084-review-j3_ec6l1/report.md`）。浏览器草稿夹具首次未等待真实宿主挂载、展开完成，修正后用旧桥接脚本再次复现草稿丢失；未因此修改普通聊天交互。没有改生成 Prompt 或 SDK，无需同步 InkAI；未调用真实模型或设备 TTS，不改变自由输入长复核、候选转场和语义末稿提交的既有边界。
 
 ### 2.122 Review：角色身份审计、首次写入恢复与两类草稿失效
 
@@ -2153,7 +2153,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 - **工坊画布编辑**：仅保存坐标原先也让支线草稿过期，版本与指纹检查同时阻止继续应用。现在同步更新原本有效的结局草稿／路径预览版本与指纹；正文、设定、标题编辑保持失效规则，旧版本、错误指纹和已过期草稿不复活。SDK 与 InkAI 项目存储同步，不改 Prompt 或既有作者包。
 - **跨 Session 输入**：新演绎直接接管激活中的胶囊，原先保留前一演绎的未发送输入或失败恢复原文。现通过已有 `draftRestore` 投影清空旧草稿，同 Session 重放和被拒绝的启动继续保留原文，不新增输入组件。
 
-后端反例在旧实现下5失败、1正常对照通过；浏览器夹具首次误用窗口消息监听同窗口启动回执，改用真实 BroadcastChannel 后，旧代码四项均在新 Session 残留输入处失败，同 Session 和拒绝启动对照通过。最终后端1374项、真实浏览器72项、InkAI存储与支线69项通过，相关静态门禁通过。完整证据见[本轮报告](/Users/mac/.codex/experiments/neko-pr3084-review-41rbfibj/report.md)。未调用真实模型或设备 TTS，未新增跨平台发行验证，不改变自由输入长复核、候选转场及语义末稿提交的既有边界。
+后端反例在旧实现下5失败、1正常对照通过；浏览器夹具首次误用窗口消息监听同窗口启动回执，改用真实 BroadcastChannel 后，旧代码四项均在新 Session 残留输入处失败，同 Session 和拒绝启动对照通过。最终后端1374项、真实浏览器72项、InkAI存储与支线69项通过，相关静态门禁通过。完整证据见本轮报告（`/Users/mac/.codex/experiments/neko-pr3084-review-41rbfibj/report.md`）。未调用真实模型或设备 TTS，未新增跨平台发行验证，不改变自由输入长复核、候选转场及语义末稿提交的既有边界。
 
 ### 2.123 Review：重复保存主线与无硬链接存档发布
 
@@ -2163,7 +2163,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 另外补齐两项 review 指出的断言：审计失败后比较完整 JSON 路径及字节集合，防止漏掉新增文件；启动被拒绝时明确检查仍为原 Session，且未发送启动成功回执。
 
-主线新反例在旧代码下3失败、5正常对照通过；独立写入进程终止反例失败，并发创建对照通过。修复后相关定点16项、后端完整1380项、涉及的浏览器4项、InkAI存储与支线71项通过。证据见[本轮报告](/Users/mac/.codex/experiments/neko-pr3084-review-e6cnx7c3/report.md)。本轮没有修改前端产品代码，没有真实模型、TTS 或其他操作系统验证；自由输入长复核与候选转场的既有边界保持。
+主线新反例在旧代码下3失败、5正常对照通过；独立写入进程终止反例失败，并发创建对照通过。修复后相关定点16项、后端完整1380项、涉及的浏览器4项、InkAI存储与支线71项通过。证据见本轮报告（`/Users/mac/.codex/experiments/neko-pr3084-review-e6cnx7c3/report.md`）。本轮没有修改前端产品代码，没有真实模型、TTS 或其他操作系统验证；自由输入长复核与候选转场的既有边界保持。
 
 ### 2.124 Review：阶段保存与升级后的通关归档
 
@@ -2171,13 +2171,13 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 
 自然通关后、归档前若剧本 revision/hash 变化，生命周期恢复不会投影新包结局，原先因此把冷档案和记忆胶囊误记为暂停。现从已持久化 Session 补足完成状态：现行自然通关为 `ended` 且 `ended_reason=None`，也识别显式 `natural_ending`；`user_exit` 仍记为暂停。不能独立恢复的旧结局标题／摘要留空，单集摘要沿用已提交正文，不挪用新版结局。未迁移或重写已归档记录。
 
-工坊阶段保存的五个新增反例在旧实现下失败；归档夹具改用实际选剧页的 active 恢复入口后，旧实现两种升级通关反例失败，四个未升级／中途退出对照通过。修复后后端1396项、InkAI存储及支线74项通过，Ruff及13项静态门禁通过。证据见[本轮报告](/Users/mac/.codex/experiments/neko-pr3084-review-1qrr38pb/report.md)。本轮无前端产品改动，没有真实模型、TTS或其他平台验收；不改变自由输入长复核、错误候选转场及语义末稿提交的既有边界。
+工坊阶段保存的五个新增反例在旧实现下失败；归档夹具改用实际选剧页的 active 恢复入口后，旧实现两种升级通关反例失败，四个未升级／中途退出对照通过。修复后后端1396项、InkAI存储及支线74项通过，Ruff及13项静态门禁通过。证据见本轮报告（`/Users/mac/.codex/experiments/neko-pr3084-review-1qrr38pb/report.md`）。本轮无前端产品改动，没有真实模型、TTS或其他平台验收；不改变自由输入长复核、错误候选转场及语义末稿提交的既有边界。
 
 ### 2.125 框架、后台与公共数据结构审查优化
 
 状态：**11 项已按限定范围处理，匹配确定性回归通过**。本条统一记录问题、实际处理和验证结果。实现基于 N.E.K.O `theater_chat_window` / `201e4fc4a` 与 InkAI `main` / `475f470` 之上的当前工作区，保留原有修改。未处理 PR、提交或推送，未修改正式作者项目、已安装包、模型设置或玩家存档。
 
-原始审查入口：[运行端](./neko-theater-framework-review.md)、[SDK](./neko-theater-workshop-framework-review.md)、[公共数据结构](./neko-theater-shared-data-structures-review.md)、[本地后台](/Users/mac/Code/InkAI-/docs/superpowers/specs/neko-theater-generator-framework-review.md)。同源问题沿用同一编号，不重复计数。
+原始审查入口：[运行端](./neko-theater-framework-review.md)、[SDK](./neko-theater-workshop-framework-review.md)、[公共数据结构](./neko-theater-shared-data-structures-review.md)、本地后台（`/Users/mac/Code/InkAI-/docs/superpowers/specs/neko-theater-generator-framework-review.md`）。同源问题沿用同一编号，不重复计数。
 
 | 编号 | 原始问题 | 实际优化 |
 | --- | --- | --- |
@@ -2211,13 +2211,13 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 4. 原始快照对比的主线、回主线支线、新结局支线三个完整样本，story、canonical bytes 和 hash 均相同；两仓目标投影函数、交付映射、共享运行说明及 JSON 修复方法 AST 对齐。此项验证结构投影等价，不证明调整后的作者 Prompt 生成质量。
 5. 本轮修改的 49 个 Python 文件语法解析通过；两仓按 N.E.K.O 现行 Ruff 规则检查通过，N.E.K.O Prompt、模型预算、异步阻塞、模块分层和文档链接检查通过，两仓 `git diff --check` 通过。快照对照未发现本轮删除文件；源码变更限定于上述实现及直接回归，既有其他改动保留。
 
-本轮前快照、准确测试范围及验证记录见[仓库外证据目录](/Users/mac/.codex/experiments/neko-framework-optimization-yrzc7h8h/)，样本等价结果见[投影对照](/Users/mac/.codex/experiments/neko-framework-optimization-yrzc7h8h/sdk-projection-equivalence.json)。运行端及工坊组的完整测试输出未独立保存，记录保留当时工具结果摘录；后台及下游组有原始输出，不混称全部为完整日志。未运行真实模型、真实网页/桌面体验、设备 TTS、正式包安装、跨平台或长时间压力测试；不据此宣称剧情效果、耗时或全部路线验收通过。
+本轮前快照、准确测试范围及验证记录见仓库外证据目录（`/Users/mac/.codex/experiments/neko-framework-optimization-yrzc7h8h/`），样本等价结果见投影对照（`/Users/mac/.codex/experiments/neko-framework-optimization-yrzc7h8h/sdk-projection-equivalence.json`）。运行端及工坊组的完整测试输出未独立保存，记录保留当时工具结果摘录；后台及下游组有原始输出，不混称全部为完整日志。未运行真实模型、真实网页/桌面体验、设备 TTS、正式包安装、跨平台或长时间压力测试；不据此宣称剧情效果、耗时或全部路线验收通过。
 
 ### 2.126 小剧场与剧本工坊 Prompt 审查、修复与压测
 
 状态：**原审查12项的最小代码修复已落实，相关确定性回归通过；真实模型压测仍有未通过项，不能标为体验验收完成。** 两仓保留原有工作区修改，未处理PR、提交、安装、迁移或正式数据改写。原审查为11项P2、1项P3；GEN-04是沿调用链发现的次数上限问题。
 
-审查对象包括实际System/Human消息、输入投影、输出校验及其消费者。修复前完整证据见[运行端审查](/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/runtime/findings.md)、[创作审查](/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/generation/review.json)、[评改审查](/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/assessment/results.json)和[固定旁白容量反例](/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/fixed-narration-capacity.json)。以下保留该批修复与压测结果；长ID复核、固定原文、评估及转场的后续处理见2.128，不用后批结果覆盖原失败记录。
+审查对象包括实际System/Human消息、输入投影、输出校验及其消费者。修复前完整证据见运行端审查（`/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/runtime/findings.md`）、创作审查（`/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/generation/review.json`）、评改审查（`/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/assessment/results.json`）和固定旁白容量反例（`/Users/mac/.codex/experiments/neko-prompt-review-ixjpsa8t/fixed-narration-capacity.json`）。以下保留该批修复与压测结果；长ID复核、固定原文、评估及转场的后续处理见2.128，不用后批结果覆盖原失败记录。
 
 #### 运行端
 
@@ -2229,7 +2229,7 @@ Actor两组均9/9解析。候选在风筝、拍照和未知答复对照中减少
 | RP-04 / P3 | 开场专用System尾段仍引用不存在的target_scene、target_performance、next、scene_horizon.transition.intent及runtime_unresolved。 | 只移除这些无消费者条款，保留玩家归属、因果、认知、称呼、发声和固定旁白约束。不以删字宣称模型效果改善。 |
 | RP-05 / P2 | 固定旁白快速复核固定512输出Token；8个合法128字符ID仅编号已591Token，完整极短响应685Token，无法返回所有匹配项。 | 输出额度按实际候选ID/JSON包络、每项最多80Token引文及JSON转义余量，加基础复核字段额度计算，至少512；争议取既有4096与所需容量的较大值。最终引文余量为3倍，覆盖已测控制字符序列化；无候选额度、输入上限、8/30秒时限与调用次数不变。包ID与引用复验协议不变。 |
 
-RP-05先用8长ID恢复完整响应，再补控制字符引文边界：初版2倍余量下，合法引文的完整JSON2596Token超过2145额度，红测复现后改为3倍。最终37项固定旁白测试通过；不能把本地容量通过等同供应商按时返回。代码与逐项红绿证据见[运行端验证](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/runtime/verification.json)、[容量最终回归](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/capacity/final-green.log)。
+RP-05先用8长ID恢复完整响应，再补控制字符引文边界：初版2倍余量下，合法引文的完整JSON2596Token超过2145额度，红测复现后改为3倍。最终37项固定旁白测试通过；不能把本地容量通过等同供应商按时返回。代码与逐项红绿证据见运行端验证（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/runtime/verification.json`）、容量最终回归（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/capacity/final-green.log`）。
 
 #### 工坊创作与评改（SDK、InkAI同步）
 
@@ -2243,14 +2243,14 @@ RP-05先用8长ID恢复完整响应，再补控制字符引文边界：初版2�
 | AP-02 / P2 | 评改要求核对正式背景公开前提，却丢失intro.background，事实引用表也无法引用它。 | 完整背景作为只读background送达，并沿用既有ref→path/quote机制提供来源。事实、证据、文学、方案和修订共用该材料；没有扩大修订白名单，也不将隐藏world.rules当公开事实。 |
 | AP-03 / P2 | Prompt没有说明recommended_count范围，校验器却只收0—4整数。 | 实际Prompt明确0—4整数，保留5、负数、小数和bool的严格拒绝，不静默截值。 |
 
-GEN-02额外检查296个畸形候选产生的273个实际validator路径，避免新合同查找把旧错误变成KeyError；只有禁止的ending_stage.chapter_index没有首轮示例，使用上述无示例提示。证据见[创作验证](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/generation/verification.json)及[评改验证](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/assessment/verification.json)。不恢复goals执行器、动态状态、旧segments生成协议或更宽修订权限。
+GEN-02额外检查296个畸形候选产生的273个实际validator路径，避免新合同查找把旧错误变成KeyError；只有禁止的ending_stage.chapter_index没有首轮示例，使用上述无示例提示。证据见创作验证（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/generation/verification.json`）及评改验证（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/assessment/verification.json`）。不恢复goals执行器、动态状态、旧segments生成协议或更宽修订权限。
 
 #### 确定性验证与工作区
 
 - Neko运行端817项通过（780项运行回归＋37项固定旁白），SDK完整531项通过，压测器/TTS桥38项通过；相交的定点测试不再累加。Prompt卫生、LLM预算、异步阻塞、模块分层和Ruff检查通过。
-- InkAI原生环境完整`tests/theater_generator`为504通过、1失败、3跳过。唯一失败是已有前端测试要求`story-inspector.js`包含“此方案涉及节点或路线结构”，该测试和前端不属于本轮改动；见[失败定位](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/inkai-unrelated-frontend-failure.json)。没有为使全套变绿修改用户前端。
+- InkAI原生环境完整`tests/theater_generator`为504通过、1失败、3跳过。唯一失败是已有前端测试要求`story-inspector.js`包含“此方案涉及节点或路线结构”，该测试和前端不属于本轮改动；见失败定位（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/inkai-unrelated-frontend-failure.json`）。没有为使全套变绿修改用户前端。
 - InkAI原生环境不带tiktoken，新测试最初顶层导入造成收集失败，已改为仅三个容量用例内部可选依赖；其余测试正常收集。这三项另用Neko现有分词环境全部通过，未新增业务依赖。上述504项包含原先定点回归排除的11个真实编译CLI用例。
-- 原工作区修改保留；正式Neko剧本包、作者项目、存档及配置文件与压测前哈希一致。InkAI真实评估未创建项目根，设置及样本前后相同。完整差异、命令、哈希与文档检查见[最终核对](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/final-verification.json)。
+- 原工作区修改保留；正式Neko剧本包、作者项目、存档及配置文件与压测前哈希一致。InkAI真实评估未创建项目根，设置及样本前后相同。完整差异、命令、哈希与文档检查见最终核对（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/final-verification.json`）。
 
 #### 真实模型压测结果
 
@@ -2275,7 +2275,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 两次分叉均成功且隔离根内原active slot不变；重复输出失败后revision未前进，这是脚本实际检查范围，完整事务回滚仍由确定性测试覆盖。P50/P95使用成功和失败的正式回合墙钟，P95取最近秩；不含开场、动态玩家生成和TTS。模型调用数则含开场、动态玩家及其净化、演员、判定、复核和失败请求；两条记录到的已知用量分别为838736、374228Token，3个超时请求没有usage，不估算补齐。
 
-定点真实请求共11次，其中两个Guard超时；探针的配置路径警告已核对，实际模型/端点/凭据/参数及角色上下文均与真实配置相等，修正版先读取配置再启用写保护。运行完整记录见[定点验证](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/runtime/real-probes/runtime-real-verification.json)，各模型原文、真实评估和轨迹结果见[压测汇总](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/stress-summary.json)、[InkAI评估](/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/assessment/real/result.json)。SDK探针曾在模型调用前漏加载夹具依赖，修正后执行；这些探针错误不计模型成功率，失败记录与用量保留。
+定点真实请求共11次，其中两个Guard超时；探针的配置路径警告已核对，实际模型/端点/凭据/参数及角色上下文均与真实配置相等，修正版先读取配置再启用写保护。运行完整记录见定点验证（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/runtime/real-probes/runtime-real-verification.json`），各模型原文、真实评估和轨迹结果见压测汇总（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/stress-summary.json`）、InkAI评估（`/Users/mac/.codex/experiments/neko-prompt-fixes-z0koy83f/assessment/real/result.json`）。SDK探针曾在模型调用前漏加载夹具依赖，修正后执行；这些探针错误不计模型成功率，失败记录与用量保留。
 
 **剩余问题**：长ID复核时限、工坊固定原文保真、评估越界报告、演绎重复与停留仍需各自取证处理；本批不把它们直接归因为同一Prompt缺陷，也不通过加重试、强制推进或放宽校验掩盖。未做浏览器/桌面人工体验、设备TTS、跨模型、全路线和新包正式安装验收。终局规则的确定性组合检查通过，本批两条完整轨迹都未到结局，不能宣称自然结束体验已验证。
 
@@ -2299,7 +2299,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | ST-04 | 正文邀请完成作者声明的桌边交接，被“普通幕内行动不算出口”压成无邀请；去屋顶观测的另一安排却被判有效。 | Guard以作者实际出口划分阶段，不按移动距离或房间大小区分；`valid`要求地点、时间和阶段相符，主题相近或没有明文禁止均不足。原候选定点回放恢复正确交接邀请，并拒绝错去屋顶。原轨迹中另一条明确桌边移动仍被Evaluator判为`unclear`，该漏判未全部消除。 |
 | ST-05 | 新《零号日志》轨迹第20轮“这里就是生命舱发射区？”被判主动转场；Guard把候选已经位于该地误作本轮请求成立。 | Evaluator与正式Guard明确区分本轮主动请求和确认当前位置/既成结果，历史先前写成抵达也不能补造授权。保留实际公开引文的定点回放中，该问句授权为false，明确休息请求对照仍为true；从原第19轮分叉运行真实Workflow，问句留在原幕。原历史的提前抵达未被自动修复，见下述剩余问题。 |
 
-定点证据：[长ID前后对照](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/guard-after/summary.json)、[InkAI完整报告结果](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/assessment/real/result.json)、[重复原文](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/real-sdk/branch-source/report.json)、[编号日志](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/real-sdk/branch-diverse-source/report.json)、[出口对照](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/transition-after2/results.json)、[当前位置问句与正常请求对照](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/query-after-quoted/results.json)。这些是固定样本测试，不能换算成模型总体准确率。
+定点证据：长ID前后对照（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/guard-after/summary.json`）、InkAI完整报告结果（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/assessment/real/result.json`）、重复原文（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/real-sdk/branch-source/report.json`）、编号日志（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/real-sdk/branch-diverse-source/report.json`）、出口对照（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/transition-after2/results.json`）、当前位置问句与正常请求对照（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/query-after-quoted/results.json`）。这些是固定样本测试，不能换算成模型总体准确率。
 
 #### 完整轨迹压测
 
@@ -2312,17 +2312,17 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | 最终代码《雨后的观测站》 | 9/9提交；6推荐＋3自由 | 第9轮`ending_normal`结束，无质量错误或停留告警。P50/P95为8.154/28.271秒；含分叉共11提交、42次模型请求，1次争议复核、无争议失败或语义改稿。 |
 | 最终代码《零号日志：星火之后》 | 40/40提交；28推荐＋12自由 | 仍在`mainline_06`、active，未交付固定日志和结局，压测器因质量问题退出1。P50/P95为9.300/47.160秒，最长56.759秒；含分叉共42提交、182次请求，8次争议中6次超时、7次语义改稿、5次末稿兜底。 |
 
-四条主轨迹没有提交技术错误，分叉各2/2成功且隔离根原active slot不变。首批观测站主线、零号日志分叉，以及最终零号日志主线各一次Guard删推荐后只剩一项，报告仍记作`quality_error: insufficient_player_suggestions`；这是运行时允许的按钮删减，不能计作提交失败。首批零号日志第7轮停留告警后第9轮推进；最终零号日志主线第10轮及分叉有转场停留告警，主线第25轮出现第六幕停留告警，此后未推进。表中顺序的已知用量为189716／582464／162861／862516Token，共七次超时无usage，不补估。耗时口径与2.126相同。完整请求、原文、报告及版本边界见[本轮汇总](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/iteration-summary.json)与[固定原文核对](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/runtime-literal-verification.json)。
+四条主轨迹没有提交技术错误，分叉各2/2成功且隔离根原active slot不变。首批观测站主线、零号日志分叉，以及最终零号日志主线各一次Guard删推荐后只剩一项，报告仍记作`quality_error: insufficient_player_suggestions`；这是运行时允许的按钮删减，不能计作提交失败。首批零号日志第7轮停留告警后第9轮推进；最终零号日志主线第10轮及分叉有转场停留告警，主线第25轮出现第六幕停留告警，此后未推进。表中顺序的已知用量为189716／582464／162861／862516Token，共七次超时无usage，不补估。耗时口径与2.126相同。完整请求、原文、报告及版本边界见本轮汇总（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/iteration-summary.json`）与固定原文核对（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/runtime-literal-verification.json`）。
 
 #### 回归、未采用尝试与剩余问题
 
 - 最终N.E.K.O运行端、恢复、压测器和工坊合并回归1416项通过。InkAI原生相关创作/评估/支线回归228项通过、3项因缺可选分词依赖跳过；边界文件另在Neko分词环境39项全部通过，包含这3项，不重复累加测试数。没有重跑InkAI无关前端全套。
-- 两仓目标文件Ruff、Neko Prompt卫生/模型预算/异步阻塞/模块分层检查通过；两端共享Prompt与此次生成/评估逻辑一致。正式包、项目、存档与配置的150个保护文件哈希不变；原工作区修改保留。最终命令、文档检查与范围见[最终核对](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/final-verification.json)。
+- 两仓目标文件Ruff、Neko Prompt卫生/模型预算/异步阻塞/模块分层检查通过；两端共享Prompt与此次生成/评估逻辑一致。正式包、项目、存档与配置的150个保护文件哈希不变；原工作区修改保留。最终命令、文档检查与范围见最终核对（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/final-verification.json`）。
 - 未采用尝试：只加强“逐字复制”仍使重复原文耗尽8192输出且JSON不闭合，改为源文本提取；第一版出口补句增加询问误判，及将Evaluator输入移至末尾的无收益尝试均已撤回。InkAI首次编译测试因未设分词缓存路径超时，补齐隔离环境后通过，未据此修改业务代码。
 - **仍需处理：** 观测站推荐补造志愿者预约/证件背景，演出承接后又增补仪器与校准细节；两剧仍有提前演下一幕、重复抵达、角色状态或物体数量漂移。零号日志自由玩家的末轮也补造此前称呼事实。这些记录保留，不能用“全部提交并结束”覆盖。
 - ST-05分叉中的问句反例已通过，但随后“走向生命舱检查”仍留原节点；探针原先将其设为必换幕正例，断言失败。原历史早已抢演到发射区，该输入是在现场检查，不能冒充“越过防爆门进入发射区”的干净正例，也未证明历史与节点错位已修复。Guard对问句的否定理由另把角色邀请误作玩家行动，理由归类仍有误。
 - **最终复测确认的阶段错位：** 零号日志第20轮的05→06转场桥段直接演完护盾过载、越门和抵达，实际节点只进入追逐幕；后续在生命舱现场操作与拒绝离开，仍停06。原包05→06合同要求进入滑道并保留11%余能，但06的`character_state.catgirl_state`已写成全盾过载后的0.8%；开场文本、开场后状态和整幕过程时点不一致，这是已确认的作者材料冲突。其是否为模型抢演的唯一原因尚未证实，不把它归为单一Prompt根因。
-- **未保留的桥段实验：** 给Actor限定桥段止于入口、给正式Guard补充桥段越界分类，固定坏候选复测仍被放行，观测站正常对照保持通过。从原第19轮续跑时，桥段虽收窄，目标开场仍直接抵达发射区并出现先抵达后越门的倒序。确认首轮已失败后停止该计划24轮的实验，实际提交7轮、31次请求/30次响应，末次请求随实验取消；不算完整压测或技术通过。两句新增提示已精确撤回，Actor恢复本轮前内容，Evaluator恢复上述最终代码。证据见[定点复核](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/bridge-after/results.json)、[失败续跑](/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/bridge-workflow/summary.json)。
+- **未保留的桥段实验：** 给Actor限定桥段止于入口、给正式Guard补充桥段越界分类，固定坏候选复测仍被放行，观测站正常对照保持通过。从原第19轮续跑时，桥段虽收窄，目标开场仍直接抵达发射区并出现先抵达后越门的倒序。确认首轮已失败后停止该计划24轮的实验，实际提交7轮、31次请求/30次响应，末次请求随实验取消；不算完整压测或技术通过。两句新增提示已精确撤回，Actor恢复本轮前内容，Evaluator恢复上述最终代码。证据见定点复核（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/bridge-after/results.json`）、失败续跑（`/Users/mac/.codex/experiments/neko-stress-iteration-061lw0tp/bridge-workflow/summary.json`）。
 - 下一步优先按既有“开场演完后状态”合同核对作者稿，在隔离副本中验证状态与过程时点一致后的效果，再决定是否仍需运行端改动；本轮没有改写正式作者稿/剧本包，也没有让当前位置提问强制推进节点。评估建议语义、转场漏判、接近一分钟的长等待与上述事实漂移仍开放；未做桌面/浏览器人工体验、设备TTS、跨模型、全路线或新包安装验证。
 
 ### 2.129 目标开场上下文收窄与零号日志状态对照
@@ -2332,9 +2332,9 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 #### 已核实问题与处理
 
 - **ST-06：普通转场接收目标幕整幕方向。** 首次开场已经不接收整幕叙事，普通目标开场却同时拿到后续完整过程；这是已确认的上下文冗余，是否导致某次抢演需分别验证。现仅保留来源叙事、目标开场、状态、硬边界和转场合同，进入目标幕后的普通回合再提供其完整方向。终局没有后续输入，仍保留结局方向。删除不再适用的整幕方向提示，不增加模型调用、判定状态或新兜底。
-- **确定性验证：** 新回归先在原代码失败，再验证普通转场不含后续星图修复/发现素材，开场约束、状态和桥段完整；真实Runtime提交后下一普通回合取得完整方向，开场专属限制到期。另保留来源回应与终局完整方向断言。原零号日志第19轮相同输入/历史对照，消息内容Token由7487降至7304，减少183；除删除的目标方向外，人类消息其余结构完全一致。证据见[装箱对照](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/context-comparison.json)。
-- **ST-07：第六幕作者状态提前到幕末。** 05→06合同要求进入滑道、保留11%余能；06开场仍在防爆门前，角色状态却已写到全盾过载后0.8%。隔离候选仅修正`character_state.catgirl_state`与兼容字段`catgirl_situation`，写清入通道时11%、护盾过程尚未发生；保留右腿离线、全部剧情方向、出口、原文日志及其余作者字段。既有工坊生成/评估Prompt已要求比较开场与开场后状态，本轮未重复叠加同义提示，也未改写正式作者稿或安装候选包。候选是新的包哈希，不能直接续接正式旧存档。精确两处差异见[作者状态候选](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/candidate-edits.json)。
-- **定点对照的限制：** 原状态/修正状态分别搭配有/无目标整幕方向，共四次独立Actor调用，都停在防爆门前，原版对照也未重现越门。因此不能声称某一变量已证明解决抢演。该探针使用原第19轮历史及已知转场授权，候选仅在内存替换包绑定，不是完整Workflow或原生Evaluator准确率。见[四组结果](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/entry-probes/results.json)。
+- **确定性验证：** 新回归先在原代码失败，再验证普通转场不含后续星图修复/发现素材，开场约束、状态和桥段完整；真实Runtime提交后下一普通回合取得完整方向，开场专属限制到期。另保留来源回应与终局完整方向断言。原零号日志第19轮相同输入/历史对照，消息内容Token由7487降至7304，减少183；除删除的目标方向外，人类消息其余结构完全一致。证据见装箱对照（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/context-comparison.json`）。
+- **ST-07：第六幕作者状态提前到幕末。** 05→06合同要求进入滑道、保留11%余能；06开场仍在防爆门前，角色状态却已写到全盾过载后0.8%。隔离候选仅修正`character_state.catgirl_state`与兼容字段`catgirl_situation`，写清入通道时11%、护盾过程尚未发生；保留右腿离线、全部剧情方向、出口、原文日志及其余作者字段。既有工坊生成/评估Prompt已要求比较开场与开场后状态，本轮未重复叠加同义提示，也未改写正式作者稿或安装候选包。候选是新的包哈希，不能直接续接正式旧存档。精确两处差异见作者状态候选（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/candidate-edits.json`）。
+- **定点对照的限制：** 原状态/修正状态分别搭配有/无目标整幕方向，共四次独立Actor调用，都停在防爆门前，原版对照也未重现越门。因此不能声称某一变量已证明解决抢演。该探针使用原第19轮历史及已知转场授权，候选仅在内存替换包绑定，不是完整Workflow或原生Evaluator准确率。见四组结果（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/entry-probes/results.json`）。
 
 #### 真实模型压测
 
@@ -2347,7 +2347,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | 收窄上下文＋零号日志原包 | 38／38；25推荐、12自由、1次无推荐时接受兜底 | 第20轮停在防爆门前，26轮进入07，38轮结束；多次推荐缺失 | 12.109／58.317 |
 | 收窄上下文＋同一状态候选 | 33／33；23／10 | 第25轮进入06，27轮进入07，33轮结束；第五幕一条停留警告 | 11.345／50.963 |
 
-状态候选的修改前代码轨迹在第27/28轮分别交付296字符恢复报告与830字符日志，逐字匹配作者原文；新代码原包在32/37轮、候选包在30/32轮也逐字交付。前两行分别121/34次请求全部返回；新代码零号原包184次请求、10次异常，12次争议中10次降级、10次语义改稿、7次末稿兜底；状态候选144次请求、3次异常，5次争议中3次降级、3次语义改稿、无末稿兜底。原包最长60.488秒，不能声称已改善整体等待。调用包含开场、动态玩家、快检/争议和分叉，表中耗时为主线提交工作流，不含动态玩家生成或TTS。完整统计见[本轮汇总](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/iteration-summary.json)。
+状态候选的修改前代码轨迹在第27/28轮分别交付296字符恢复报告与830字符日志，逐字匹配作者原文；新代码原包在32/37轮、候选包在30/32轮也逐字交付。前两行分别121/34次请求全部返回；新代码零号原包184次请求、10次异常，12次争议中10次降级、10次语义改稿、7次末稿兜底；状态候选144次请求、3次异常，5次争议中3次降级、3次语义改稿、无末稿兜底。原包最长60.488秒，不能声称已改善整体等待。调用包含开场、动态玩家、快检/争议和分叉，表中耗时为主线提交工作流，不含动态玩家生成或TTS。完整统计见本轮汇总（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/iteration-summary.json`）。
 
 **体验问题仍开放：** 状态候选虽已结束，第22轮仍把玩家按广播写成猫娘再次按下，第23/24轮重复越门；实际追逐没有完整交代固定日志中的护盾过载过程。观测站仍从推荐补造检修身份、设备和观测数值，第2轮来源与目标重复问同一问题，终局仍把玩家写到出口。自动报告无告警不代表这些语义已通过；本轮收窄输入不能替代作者事实一致性及玩家动作归属复核。
 
@@ -2361,22 +2361,22 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 - 第三幕状态提前写入双人接口启动后的15%，第五幕提前写入隔离后的11%与右腿离线，第六幕提前写入护盾过载后的0.8%。分别对照实际入边、开场和幕内过程后，修正三幕`character_state.catgirl_state`及`catgirl_situation`，让能耗与动作完成发生在对应实际过程之后。第二幕开场本身已经展开力场、从21.4%降到18.2%，该合法开场结果保持原样。
 - 正式包从`draft_54`升为`draft_55`：相对正在使用的包只有六处状态文本与版本号共七处JSON差异，未改开场、剧情过程、固定原文、路由、数值或权限。原InkAI项目`project_c15ca2fae16c`仍是较旧的`draft_51`，以实际运行稿为准同步至55，项目revision从97升至98；通过既有Store更新、编译和复验，保留setup、画布与作者信息，旧评分随修稿失效。作者story与已安装包逐字段一致，哈希为`sha256:435fc39ae8464be62d1a4664d78a2b41f7e534994c27aaf820c8376c0629cad0`。
-- 两份旧文件已备份。执行记录与精确差异见[发布记录](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/author-publish/applied.json)、[七处运行包差异](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/author-publish/package-diff.json)。旧Session保留，不迁移其包绑定；新版本需新开演绎，测试用历史注入不适用于正式存档。
+- 两份旧文件已备份。执行记录与精确差异见发布记录（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/author-publish/applied.json`）、七处运行包差异（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/author-publish/package-diff.json`）。旧Session保留，不迁移其包绑定；新版本需新开演绎，测试用历史注入不适用于正式存档。
 
 #### 共性代码问题及保留的修复
 
 - **ST-08：证据复核前先判“不可修复”。** `assess()`在事实初检后立即调用`classify_repair()`；后者要求已有肯定的证据复核，因此此时一律得到`repairable=false`及“事实复核未确认可执行的修改”。这些派生结论又随`proposed_issues`送给证据模型。真实回复引用了这个尚未成立的否定理由，构成评估输入污染；问题不限于零号日志或状态类审查。
 - Neko SDK与InkAI同步删除提前分类；初检解析器的临时`repairable`也不送入证据请求。模型仍收到原问题、真实引文、修改方案及字段定位；证据复核后继续统一核算修复权限，拒绝/不确定的问题仍不能自动修订，最终方案复核保持原样。没有增加调用、改动数据协议或放宽执行白名单。
-- 花店入口矛盾的完整评估→复核→修订回归先在原代码失败，修后确认复核输入没有预设修复结论，肯定复核后的真实文本修订仍能完成且无关节点保留。真实零号第三幕固定问题对照中，清洁输入后输出格式有效，但仍被判`unsupported`；修正稿上的同一旧指控也被否定。**代码污染已消除，不等于语义漏判已修好。** 见[定点复核](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/evidence-controls-final/results.json)。
+- 花店入口矛盾的完整评估→复核→修订回归先在原代码失败，修后确认复核输入没有预设修复结论，肯定复核后的真实文本修订仍能完成且无关节点保留。真实零号第三幕固定问题对照中，清洁输入后输出格式有效，但仍被判`unsupported`；修正稿上的同一旧指控也被否定。**代码污染已消除，不等于语义漏判已修好。** 见定点复核（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/evidence-controls-final/results.json`）。
 - 未保留的尝试：只补反向时点规则、把同义规则移到共用Prompt、调整初检字段顺序，均未稳定消除完整稿漏报；另出现枚举与布尔结论自相矛盾的复核输出，仍按既有校验拒绝。以上Prompt/顺序补丁已精确撤回，`facts.py`和`runtime_rules.py`与本轮开始内容一致。完整稿初检原先连06都未报出；一次补句报出03后又被证据复核否定。因此不宣称工坊现在能自动找到或修好所有时点问题，也未依据未确认的模型建议批量改稿。
 
 #### 最终包压测与边界
 
 - **`draft_55`从头主线40／40提交，27推荐／13自由，停在`mainline_07`。** 计划仍是每10次7推荐／3自由；第14次因没有可用推荐回退自由输入，实际比例67.5%／32.5%。第三幕第8轮进入、11轮离开；第四幕从11轮拖到31轮，随后37轮进入06、39轮进入07。没有复现“刚进06已经在发射区”，但第四幕长时间守候与部分状态/动作漂移仍存在，40轮尚未交付末幕日志和结局。
-- 另有2轮隔离分叉。共177次模型请求、173次响应、4次异常；10次争议中4次降级，4次语义改稿、2次末稿兜底；主线无提交失败，一项推荐缺失错误与一项第四幕停留警告。主线P50/P95为11.670/45.019秒，最大46.080秒；不将结构提交成功当作体验通过。包哈希与正式55一致，报告见[最终包完整轨迹](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/real-runtime/final-author-state/report.json)。
-- **隔离接续：21／22提交、正常结束，不能算55版从头通关。** 从2.129状态副本的revision 16重放建立夹具，显式替换为55的包绑定，保持同一Workflow及7／3排程；计划最多24次，第22次自然结束，实际16推荐／6自由。一次“晚安”推荐因缺少必需对白失败并原子回滚；106次模型请求、100次响应，8次争议中6次降级，6次语义改稿、3次末稿兜底。含失败工作流的P50/P95为15.457/57.038秒，最大66.986秒；第四幕有一条停留错误。此夹具不是正式存档迁移，源继续槽保持不变。见[接续统计与范围](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/final-author-continuation/summary.json)。
+- 另有2轮隔离分叉。共177次模型请求、173次响应、4次异常；10次争议中4次降级，4次语义改稿、2次末稿兜底；主线无提交失败，一项推荐缺失错误与一项第四幕停留警告。主线P50/P95为11.670/45.019秒，最大46.080秒；不将结构提交成功当作体验通过。包哈希与正式55一致，报告见最终包完整轨迹（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/real-runtime/final-author-state/report.json`）。
+- **隔离接续：21／22提交、正常结束，不能算55版从头通关。** 从2.129状态副本的revision 16重放建立夹具，显式替换为55的包绑定，保持同一Workflow及7／3排程；计划最多24次，第22次自然结束，实际16推荐／6自由。一次“晚安”推荐因缺少必需对白失败并原子回滚；106次模型请求、100次响应，8次争议中6次降级，6次语义改稿、3次末稿兜底。含失败工作流的P50/P95为15.457/57.038秒，最大66.986秒；第四幕有一条停留错误。此夹具不是正式存档迁移，源继续槽保持不变。见接续统计与范围（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/final-author-continuation/summary.json`）。
 - 接续第20轮进入05时接口尚未隔离，25轮进入06时仍在防爆门前；第33/36轮的296字符恢复报告、830字符日志逐字匹配原文，37轮结局收住。但21轮把“扑向断路闸”直接写成已拉闸；25轮先背着跟随、随后又默认放下，主体与姿势衔接仍错；06用新增生物锁破解消耗能量，未演出固定日志中的护盾阻击过程。**修订入幕时点消除了作者材料中的矛盾，不能保证模型完整演出后续因果。**
-- 回归：Neko1417项通过；InkAI相关117项通过、3项缺可选分词依赖跳过，对应边界文件在Neko分词环境39项全部通过，包含这3项，不重复累加。最终静态检查、保护文件及本轮范围见[最终核对](/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/final-verification.json)。150份受保护文件中仅授权运行包改变，8份作者项目中仅对应项目改变；原包与作者文件均有备份。未做桌面/浏览器人工体验、TTS、跨模型或全路线验收。下一轮重点仍是第四幕重复守候、推荐被过滤后的空选项、事实复核漏报、护盾过程缺失及超过一分钟的等待。
+- 回归：Neko1417项通过；InkAI相关117项通过、3项缺可选分词依赖跳过，对应边界文件在Neko分词环境39项全部通过，包含这3项，不重复累加。最终静态检查、保护文件及本轮范围见最终核对（`/Users/mac/.codex/experiments/neko-phase-iteration-0re9qzof/final-verification.json`）。150份受保护文件中仅授权运行包改变，8份作者项目中仅对应项目改变；原包与作者文件均有备份。未做桌面/浏览器人工体验、TTS、跨模型或全路线验收。下一轮重点仍是第四幕重复守候、推荐被过滤后的空选项、事实复核漏报、护盾过程缺失及超过一分钟的等待。
 
 ### 2.131 休整发声合同与护盾过程修订
 
@@ -2387,18 +2387,18 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 - **ST-09：休整允许休眠，但实际要求每轮说话。** 55版第四幕没有显式发声合同，实际继承`required`；上一轮接续的“晚安”失败，前三次回复逐字复读旧对白，第四次仅有动作，被`numeric_v2_actor_dialogue_required`拒绝。不能把最后的错误码当成四次相同失败，原始请求/回复仍有完整历史，并非缺了近期证据。
 - 候选第四幕使用已有`optional`，允许自然对白或仅动作；第五幕显式声明`required`，避免旧稿未声明时继续继承静默权限。没有从“睡眠”关键词自动切状态、恢复目标执行器或放宽全剧解析。其余新增认知枚举沿用普通连续剧情的正常记忆与人格权限。
 - **ST-10：护盾因果被临时开锁替换。** 55版第六幕开场仅写前方有防爆门；实际回复把门写成生物锁，随后以破解消耗能源，固定日志却仍声称护盾阻击。候选在开场及环境中明确门可通行，威胁来自原剧情的塌落物和追击破片；重心与硬边界要求护盾消耗、反冲承接实际演出，不用设备检修替代。保留既有护盾过程、路线、能量值、固定原文与玩家登舱选择，不新增程序任务门槛。这是作者细化场景，不能称为旧稿已经写明门敞开。
-- 首个候选真实开场提前跨过敞开的门槛，因此再补仅作用于06开场的门前边界；普通回合到期，不阻止玩家明确要求越门后的护盾防护与反冲。最终相对55版共九处JSON差异：两个发声合同、06六处场景/边界字段及版本号。原项目revision从98升至99，作者story与正式包完全一致，哈希`sha256:583f1584853f1ab0c0c5e0c052d0d31d870d10f944e5076a34f64915d832a3e3`；旧稿与旧包已备份，保留setup、画布和作者信息，旧评分失效。通过既有Store更新、编译及原生复验，旧Session不迁移，新版需新开演绎。见[作者差异](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-publish/package-diff.json)、[应用记录](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-publish/applied.json)。
+- 首个候选真实开场提前跨过敞开的门槛，因此再补仅作用于06开场的门前边界；普通回合到期，不阻止玩家明确要求越门后的护盾防护与反冲。最终相对55版共九处JSON差异：两个发声合同、06六处场景/边界字段及版本号。原项目revision从98升至99，作者story与正式包完全一致，哈希`sha256:583f1584853f1ab0c0c5e0c052d0d31d870d10f944e5076a34f64915d832a3e3`；旧稿与旧包已备份，保留setup、画布和作者信息，旧评分失效。通过既有Store更新、编译及原生复验，旧Session不迁移，新版需新开演绎。见作者差异（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-publish/package-diff.json`）、应用记录（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-publish/applied.json`）。
 
 #### 共性分析与未采用实验
 
 - 这类问题需要联合核对作者正文、实际发声合同和下游固定日志，不能仅看`goals`或缺少某个关键词就判错。现有框架已支持静默权限与作者硬边界，工坊共同规则已说明目标状态不执行、固定原文需匹配实际事件；本轮先用现有能力修稿，没有增加模型裁判或共享运行规则。
-- 只读核对八份作者稿：另一稿在幕末写休眠，但可同轮收束到结局，不足以认定出现相同普通回合失败；两处“沉睡巨鹿”是其他主体，不能当猫娘禁言。未据关键词批量改其他稿。见[候选扫描与限定范围](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-speech-candidates.json)。
-- 重复输出的克制重试提示未采用。两份固定上下文各跑原提示/候选三次，共12次实际Actor调用；现有逐字重复检查命中4／6→2／6，但候选仍反复关闭已关闭的警戒、重新进入已进入的休眠，多次没有有效推荐。该检查不识别全部语义复读，不能把数值改善视为体验通过。只改实验请求，未改生产代码，未增加重试额度。见[原始候选及结果](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/retry-probe/results.json)。
-- **ST-11（未解决）：公开去向引用了未演出的作者开场。** 最终候选第22/24轮的原始Evaluator输出都判`initiate`，却把06作者开场首句放进`public_destination_quote`；按真实存档分别回放到21/23轮后，现行解析器确认它不是当前幕已演出原文，正确降为`unclear`。这句话在55版和最终56版中相同，不能归因为新增门前边界。后续正文仍进入滑道、虚构三具生命舱，却暂时留在05，说明引用失败与正文跨阶段漏判共同造成结构/叙事分离。不能靠放宽出处校验或自动换幕掩盖；修稿不解决这项模型与复核问题。原始回复及可复现校验见[引用失败核对](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/quote-failure-check.json)。
+- 只读核对八份作者稿：另一稿在幕末写休眠，但可同轮收束到结局，不足以认定出现相同普通回合失败；两处“沉睡巨鹿”是其他主体，不能当猫娘禁言。未据关键词批量改其他稿。见候选扫描与限定范围（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-speech-candidates.json`）。
+- 重复输出的克制重试提示未采用。两份固定上下文各跑原提示/候选三次，共12次实际Actor调用；现有逐字重复检查命中4／6→2／6，但候选仍反复关闭已关闭的警戒、重新进入已进入的休眠，多次没有有效推荐。该检查不识别全部语义复读，不能把数值改善视为体验通过。只改实验请求，未改生产代码，未增加重试额度。见原始候选及结果（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/retry-probe/results.json`）。
+- **ST-11（未解决）：公开去向引用了未演出的作者开场。** 最终候选第22/24轮的原始Evaluator输出都判`initiate`，却把06作者开场首句放进`public_destination_quote`；按真实存档分别回放到21/23轮后，现行解析器确认它不是当前幕已演出原文，正确降为`unclear`。这句话在55版和最终56版中相同，不能归因为新增门前边界。后续正文仍进入滑道、虚构三具生命舱，却暂时留在05，说明引用失败与正文跨阶段漏判共同造成结构/叙事分离。不能靠放宽出处校验或自动换幕掩盖；修稿不解决这项模型与复核问题。原始回复及可复现校验见引用失败核对（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/quote-failure-check.json`）。
 
 #### 验证
 
-- Neko发声权限、Workflow、固定旁白与工坊编译/生成相关218项回归通过。另用真实Runtime、Store和相同原始无对白回复作确定性检查：55版在04拒绝且不写入，56版在04提交并完整恢复，进入05恢复`required`；06开场限定在转场请求中可见，开场提交后的普通请求不再携带，持续硬边界仍保留。这条使用合成路由输入，只证明合同、提交和恢复，不计真实语义准确率；全部路线和固定原文保持一致。见[合同检查](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-contract-check.json)。
+- Neko发声权限、Workflow、固定旁白与工坊编译/生成相关218项回归通过。另用真实Runtime、Store和相同原始无对白回复作确定性检查：55版在04拒绝且不写入，56版在04提交并完整恢复，进入05恢复`required`；06开场限定在转场请求中可见，开场提交后的普通请求不再携带，持续硬边界仍保留。这条使用合成路由输入，只证明合同、提交和恢复，不计真实语义准确率；全部路线和固定原文保持一致。见合同检查（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/author-contract-check.json`）。
 - 两条从头轨迹各计划最多40次尝试，另从revision 2分叉两轮；最终正常结束截短，实际比例单列。初稿与最终稿同为待发布56版、包哈希不同，只有最终稿安装，不能混作同一包验收：
 
 | 包与轨迹 | 主线提交／尝试；推荐／自由 | 结果 | 主线P50／P95；最大秒 |
@@ -2406,10 +2406,10 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | 未加门前开场限定的初稿 | 29／29；20／9 | 29轮正常结束；26次输入时一项推荐缺失错误，18轮提前越门 | 11.201／48.949；57.280 |
 | 最终56版 | 34／34；24／10 | 34轮正常结束；05一项停滞错误；27轮进入06、29轮进入07 | 9.839／48.106；54.975 |
 
-- 初稿134次请求、129次响应，6次争议中5次降级、5次语义改稿、4次末稿兜底；最终152次请求、148次响应，7次争议中4次降级、4次语义改稿、3次末稿兜底。两次从头测试均无提交失败，不能把供应商异常或降级算作全部成功。调用包含开场、动态玩家和分叉；耗时为主线工作流，含失败尝试、不含动态玩家生成或TTS。最终实际70.6%推荐／29.4%自由，无缺推荐回退；耗时和长度不是同路径因果对照。见[完整汇总](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/iteration-summary.json)。
-- 另从初稿真实revision 17建立重放验证的隔离副本，显式替换为最终包绑定，仅新增06开场限定；8／8提交、6推荐／2自由，停在08而未结束，源继续槽不变。40次请求、37次响应，4次争议中3次降级、3次语义改稿、2次末稿兜底；P50/P95为23.644/58.906秒。18轮停在门前，19轮玩家明确要求冲过门后交付护盾、11%→0.8%消耗及尾推反冲。此为定点夹具，不是正式迁移或另一条最终包从头轨迹。见[接续报告](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/scene6-continuation/summary.json)。
+- 初稿134次请求、129次响应，6次争议中5次降级、5次语义改稿、4次末稿兜底；最终152次请求、148次响应，7次争议中4次降级、4次语义改稿、3次末稿兜底。两次从头测试均无提交失败，不能把供应商异常或降级算作全部成功。调用包含开场、动态玩家和分叉；耗时为主线工作流，含失败尝试、不含动态玩家生成或TTS。最终实际70.6%推荐／29.4%自由，无缺推荐回退；耗时和长度不是同路径因果对照。见完整汇总（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/iteration-summary.json`）。
+- 另从初稿真实revision 17建立重放验证的隔离副本，显式替换为最终包绑定，仅新增06开场限定；8／8提交、6推荐／2自由，停在08而未结束，源继续槽不变。40次请求、37次响应，4次争议中3次降级、3次语义改稿、2次末稿兜底；P50/P95为23.644/58.906秒。18轮停在门前，19轮玩家明确要求冲过门后交付护盾、11%→0.8%消耗及尾推反冲。此为定点夹具，不是正式迁移或另一条最终包从头轨迹。见接续报告（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/scene6-continuation/summary.json`）。
 - 296字符恢复报告与830字符日志均逐字匹配：初稿26/27轮、最终31/33轮、接续21/24轮。但最终稿先在05虚构三具生命舱，进入06又回到门前，之后07只剩一具；06仍在开场提前展开护盾，能耗阶段未完整呈现；34轮把“来带你回家”写成“今天有人带我回家了”。门前限定不等于全部开场规则可靠，原文一致也不等于前因一致；这些问题继续开放。
-- 最终核对137份正式剧本/存档及作者项目等既有文件，仅获授权的零号日志包与对应作者项目改变；Neko只改两份文档，两端生产源码与原有工作区状态保留。见[最终核对](/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/final-verification.json)。未做桌面/浏览器人工体验、TTS、其他模型和全路线验收。下一轮优先处理ST-11的引用误用及正文跨阶段漏判，再评估剩余状态与长等待问题。
+- 最终核对137份正式剧本/存档及作者项目等既有文件，仅获授权的零号日志包与对应作者项目改变；Neko只改两份文档，两端生产源码与原有工作区状态保留。见最终核对（`/Users/mac/.codex/experiments/neko-followup-zxdo_zr7/final-verification.json`）。未做桌面/浏览器人工体验、TTS、其他模型和全路线验收。下一轮优先处理ST-11的引用误用及正文跨阶段漏判，再评估剩余状态与长等待问题。
 
 ### 2.132 公开引用反例、诊断修正与新一轮7:3压测
 
@@ -2419,7 +2419,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 - **ST-12：历史裁剪被报告成未裁剪。** `_build_messages`按完整记录移除旧历史，但`recent_dropped_revisions`固定为空，日志级别也因此保持DEBUG。现按实际移除顺序记录revision，沿用既有日志与压测报告入口；没有改变裁剪顺序、容量或送模内容。有效长历史夹具实际移除0—16轮，旧诊断仍为空，新诊断与实际请求一致；未裁剪情形仍为空。
 - **ST-13：引用拒绝缺少专门诊断。** `initiate`引用缺失或无法从当前访问的实际演出核实出处时，原先静默降为`unclear`。现记录session、判定前revision和降级结果，不记录玩家正文或引用正文；出处校验与留幕行为完全保留。这只报告“出处未核实”，不能自动判断是应当换幕的漏判，或把作者句子提升为公共事实。
-- 五项失败断言先复现，修复后相关311项回归通过。另以15个跨题材输入、两份真实旧失败上下文及两组长短历史，共19组逐条比较修复前后System/Human内容，全部相同；两份原始失败回复的解析结果也相同。见[上下文与解析等价检查](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/context-equivalence.json)、[回归输出](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/regressions.log)。生产代码只修改Evaluator诊断，不增加模型调用、协议字段或Session状态。
+- 五项失败断言先复现，修复后相关311项回归通过。另以15个跨题材输入、两份真实旧失败上下文及两组长短历史，共19组逐条比较修复前后System/Human内容，全部相同；两份原始失败回复的解析结果也相同。见上下文与解析等价检查（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/context-equivalence.json`）、回归输出（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/regressions.log`）。生产代码只修改Evaluator诊断，不增加模型调用、协议字段或Session状态。
 
 #### 未采用的语义实验
 
@@ -2435,7 +2435,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | 先输出意图、仅主动请求填引用 | 0／6 | 2／15 | 未采用；简单邀请对照改善，真实长上下文反而全部引用失败 |
 | 显式标注作者材料来源 | 3／6 | 3／15 | 未采用；来源标签没有稳定阻止误引 |
 
-这些有限样本不构成盲评或泛化准确率，不能据17／24→19／24的字段命中就确认整体优化。完整请求、回复、失败项及候选脚本均在[实验汇总](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/probe-summary.json)所在目录；未把候选Prompt写入生产代码。
+这些有限样本不构成盲评或泛化准确率，不能据17／24→19／24的字段命中就确认整体优化。完整请求、回复、失败项及候选脚本均在实验汇总（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/probe-summary.json`）所在目录；未把候选Prompt写入生产代码。
 
 #### 原生压测与实际问题
 
@@ -2446,17 +2446,17 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | 上一轮正式56版revision 21接续 | 10／10；7／3 | 停在06，未结束，继续槽不变 | 9.542／15.061；15.061 |
 
 - 从头与分叉合计167次请求、163次响应、4次调用异常；5次争议复查中3次降级、3次语义改稿、1次末稿兜底。分叉的正式快检超时正确阻止提交。接续37次请求全部响应，无争议、改稿或末稿兜底，仍发生严重剧情偏离。两条主要轨迹均实际执行7:3，无缺推荐回退；分叉只做两次推荐尝试。耗时包含工作流成功与失败尝试，不含动态玩家生成或TTS；本轮部分调用并行运行，不作同条件提速对照。
-- 从头主线有推荐不足、最终推荐缺失和待确认停滞三项质量错误，另有长幕停滞警告。报告中的`attempt=41`是40轮输出后检查下一次可用推荐的编号，未执行第41轮；执行器因质量错误/分叉失败返回非零，不是40次主线提交失败。接续有一项停滞错误。见[从头及分叉汇总](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/iteration-summary.json)、[接续汇总](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/replay-21/summary.json)。
-- **ST-11继续复现。** 对本轮全部52次Evaluator响应按实际上一revision原生重放复验，无未匹配调用：从头14轮抄05作者开场，21/35轮缺少引用；接续22轮再次抄06作者开场。均被现有出处校验降为`unclear`。空引用的“分析数据”“去冷却层”等请求也可能本就不是合法出口，不能将四次拒绝全部算成错误拦截。见[逐请求、逐revision核对](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/quote-audit/summary.json)。
+- 从头主线有推荐不足、最终推荐缺失和待确认停滞三项质量错误，另有长幕停滞警告。报告中的`attempt=41`是40轮输出后检查下一次可用推荐的编号，未执行第41轮；执行器因质量错误/分叉失败返回非零，不是40次主线提交失败。接续有一项停滞错误。见从头及分叉汇总（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/iteration-summary.json`）、接续汇总（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/replay-21/summary.json`）。
+- **ST-11继续复现。** 对本轮全部52次Evaluator响应按实际上一revision原生重放复验，无未匹配调用：从头14轮抄05作者开场，21/35轮缺少引用；接续22轮再次抄06作者开场。均被现有出处校验降为`unclear`。空引用的“分析数据”“去冷却层”等请求也可能本就不是合法出口，不能将四次拒绝全部算成错误拦截。见逐请求、逐revision核对（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/quote-audit/summary.json`）。
 - 从头16轮正文已经离开休整区进入信标室，节点仍为04；之后演出不断新增三年前记录、秘密实验、冷却层模块等调查内容，直到37轮才进入05。接续24轮正文已跨门进入发射区，节点仍为06，后续又新增多台生命舱、检修和重启任务。复核零报错或语义兜底会把候选继续写入历史；留幕与物理位置不一致不能只归因为引用问题。
-- **ST-14：推荐选项首揭未知结果。** 接续27轮玩家实际去看生命舱面板，正文只让玩家念出报错，两个推荐却首揭“主系统离线，需要手动重启”“接口损坏”；28轮选择第一项后开始虚构机械阀检修链。这一项来自Actor推荐，不是动态自由玩家编造，复核未删除。22轮还把玩家按下广播按钮再次写成猫娘按键。问题仍开放，不能通过自动把推荐当作已知事实来处理。见[27轮原始正文与推荐](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/replay-21/turns/27.json)。
+- **ST-14：推荐选项首揭未知结果。** 接续27轮玩家实际去看生命舱面板，正文只让玩家念出报错，两个推荐却首揭“主系统离线，需要手动重启”“接口损坏”；28轮选择第一项后开始虚构机械阀检修链。这一项来自Actor推荐，不是动态自由玩家编造，复核未删除。22轮还把玩家按下广播按钮再次写成猫娘按键。问题仍开放，不能通过自动把推荐当作已知事实来处理。见27轮原始正文与推荐（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/replay-21/turns/27.json`）。
 - 两条主要轨迹都没到08，本轮未触发恢复报告/固定日志，不能复用上一轮逐字匹配结果声称本轮验证通过。从头进程在诊断修复前启动；修复后另跑接续，并用上述内容等价检查确认没有改变送模语义。接续从同包原生分叉，无包绑定替换、判定注入或正式迁移。
 
 #### 日志范围与后续边界
 
 本轮外部实验保存原始模型请求/响应、上下文版本、每轮输入/正文/诊断、Session/Ledger及回放索引；常规新增日志只含定位字段。当时尚未实现统一追踪。后续用户将范围收敛为演绎文案，相关实现见2.133；前端和TTS不纳入该日志模块。
 
-最终核对137份既有正式剧本、存档和作者项目均未改变；仅修改Evaluator、两份直接测试及两份设计文档，InkAI源码与作者稿保留，见[工作区与正式数据核对](/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/final-verification.json)。后续优先利用原始链路区分误引用、错邀约、正文越幕和推荐污染，不能为让压测结束而放松玩家授权或恢复强制推进。
+最终核对137份既有正式剧本、存档和作者项目均未改变；仅修改Evaluator、两份直接测试及两份设计文档，InkAI源码与作者稿保留，见工作区与正式数据核对（`/Users/mac/.codex/experiments/neko-public-evidence-l19l67k6/final-verification.json`）。后续优先利用原始链路区分误引用、错邀约、正文越幕和推荐污染，不能为让压测结束而放松玩家授权或恢复强制推进。
 
 ### 2.133 演绎文案日志：按回合关联原始请求、候选与提交
 
@@ -2473,13 +2473,13 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 详细记录与 Session/Ledger、全局用量账本分离；并发回合隔离、历史页子调用归属同一回合。写入或序列化失败只停用该次详细日志，不重试模型或改变原有返回。普通日志仅提示日志故障类型，不额外泄漏正文或转储客户端密钥／请求头。运行成本包含本地日志写入；没有引入后台服务、额外队列、自动清理或前端开关。开关与命令详见[架构文档10.5](./neko-theater-architecture.md#105-输出预算与观测)。
 
-**验证：** 新增14项直接测试，覆盖关闭、原消息／响应对象不变、用量不变、并发与子任务隔离、模型异常／取消、目录／写入／序列化失败，以及真实 Runtime/Store 的格式重试、争议、改写、历史查找、删推荐、成功提交和提交前阻断。固定回复对照下，启用前后的完整 Session/Ledger 一致；HTTP 开场成功和映射错误均可区分。首次真实短测发现初始状态快照在进入追踪作用域前被跳过，已中止该轮、修复并补充 revision/hash 断言；最终剧场及压测器回归[879项通过](/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/regression-final.log)。
+**验证：** 新增14项直接测试，覆盖关闭、原消息／响应对象不变、用量不变、并发与子任务隔离、模型异常／取消、目录／写入／序列化失败，以及真实 Runtime/Store 的格式重试、争议、改写、历史查找、删推荐、成功提交和提交前阻断。固定回复对照下，启用前后的完整 Session/Ledger 一致；HTTP 开场成功和映射错误均可区分。首次真实短测发现初始状态快照在进入追踪作用域前被跳过，已中止该轮、修复并补充 revision/hash 断言；最终剧场及压测器回归879项通过（`/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/regression-final.log`）。
 
 **真实模型日志验收：** 使用正式56版的仓库外副本，沿用当前模型与原生预算。修复后从头10轮全部提交，实际7推荐／3自由，停在04、仍active；从revision 2分叉另2轮全部提交，原隔离继续槽不变。共13份JSONL、约1.10 MB，43次文案模型请求对应42次响应和1次异常：Actor14次、推荐补全2次、Evaluator12次、Guard快检13次、争议2次。一次争议30秒超时记录为底层取消及应用层超时，沿原策略降级；另有一次语义改写，无末稿兜底。动态玩家造句调用不计入这43次，最终实际输入已记录。
 
-逐文件核对序号、请求与响应配对、回合前revision/hash/节点/数值、原始输入，以及最终正文和实际持久化正文／Ledger，1份开场与12份提交均一致。见[压测报告](/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/real-runtime-fixed/report.json)、[日志核对结果](/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/trace-audit.json)和[详细日志目录](/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/real-runtime-fixed/traces/)。本轮短测未触发历史查找、正文格式失败或提交失败，这些由确定性测试覆盖；未做真实浏览器／桌面／TTS验收，也未声称完成全剧本体验。
+逐文件核对序号、请求与响应配对、回合前revision/hash/节点/数值、原始输入，以及最终正文和实际持久化正文／Ledger，1份开场与12份提交均一致。见压测报告（`/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/real-runtime-fixed/report.json`）、日志核对结果（`/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/trace-audit.json`）和详细日志目录（`/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/real-runtime-fixed/traces/`）。本轮短测未触发历史查找、正文格式失败或提交失败，这些由确定性测试覆盖；未做真实浏览器／桌面／TTS验收，也未声称完成全剧本体验。
 
-本次仅修改日志模块、后端直接接入点、压测开场入口、直接测试和两份设计文档；137份既有正式剧本／存档／作者项目保持不变，未改InkAI、Prompt或正式包。静态预算检查、异步阻塞检查、文档路径检查和Ruff通过（Ruff仍提示项目既有自定义noqa格式警告）。本轮只验证可追溯性，不将日志接入记为ST-11或ST-14的语义修复；详见[最终范围核对](/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/final-verification.json)。
+本次仅修改日志模块、后端直接接入点、压测开场入口、直接测试和两份设计文档；137份既有正式剧本／存档／作者项目保持不变，未改InkAI、Prompt或正式包。静态预算检查、异步阻塞检查、文档路径检查和Ruff通过（Ruff仍提示项目既有自定义noqa格式警告）。本轮只验证可追溯性，不将日志接入记为ST-11或ST-14的语义修复；详见最终范围核对（`/Users/mac/.codex/experiments/neko-text-trace-rs59nhap/final-verification.json`）。
 
 ### 2.134 用文案日志修复复核历史计数错位，保留语义反例
 
@@ -2491,7 +2491,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 处理只在普通复核入口恢复已提交的两个历史计数，保留本轮数值、称呼和邀请状态，确保出口预览仍使用本轮结算结果；正式换幕保持来源Session。快检、争议、改稿均消费同一历史语义，候选不提前进入历史，提交仍只增加一次revision和数值。新增开场／换幕后、已有0／2轮历史的四组真实Runtime回归，同时检查三次复核、改稿、数值与冷恢复：旧代码4项全部失败，修复后剧场及压测器883项通过。
 
-逐条核对最终模型请求：基线57份复核输入中，47份完整历史被误标缺失，另有1份首轮开场丢失；修复后44份中两类问题均为0。这个结果证明上下文投影修复，不能证明动作误判或错误邀约已经修好。见[日志及历史核对](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/run-audit.json)、[失败回归](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/watermark-before.log)和[通过回归](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/watermark-tests.log)。
+逐条核对最终模型请求：基线57份复核输入中，47份完整历史被误标缺失，另有1份首轮开场丢失；修复后44份中两类问题均为0。这个结果证明上下文投影修复，不能证明动作误判或错误邀约已经修好。见日志及历史核对（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/run-audit.json`）、失败回归（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/watermark-before.log`）和通过回归（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/watermark-tests.log`）。
 
 #### 原生压测结果
 
@@ -2504,7 +2504,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 - 基线153次、修复后122次文案模型请求，共266次响应、9次争议超时。两条合计77份JSONL，序号、调用配对、输入、版本hash、实际持久化正文和Ledger全部核对一致。动态玩家另有42次生成／净化调用，不计入上述275次。耗时不含动态玩家或TTS；路径和长度不同、进程部分并行，不能由改稿减少推断因果提速。
 - 两条均完整显示恢复报告及三组固定日志，每份只显示一次；结局前的情感反应和最终问话是否真正演完另行审查。报告中的`quality_error_count=0`只是执行器结构检查，不是语义合格。
 
-证据：[基线报告](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/baseline/report.json)、[修复后报告](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/history-fixed/report.json)、[基线全文](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/baseline/transcript.md)、[修复后全文](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/history-fixed/transcript.md)。启动时代码hash确认两批分别运行修复前／后Workflow，没有用中途磁盘修改冒充基线。
+证据：基线报告（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/baseline/report.json`）、修复后报告（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/history-fixed/report.json`）、基线全文（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/baseline/transcript.md`）、修复后全文（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/history-fixed/transcript.md`）。启动时代码hash确认两批分别运行修复前／后Workflow，没有用中途磁盘修改冒充基线。
 
 #### 日志确认的剩余问题与否决实验
 
@@ -2512,9 +2512,9 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 - **ST-16：无正文邀请却锁存邀请，并触发错误接受。** 基线r9只完成双人按键，去休整区仅出现在推荐中；Guard却判`offer_present=true / valid=true`。r10玩家只松手感叹，Evaluator判`accept`、正式Guard也放行，实际进入物资库。错误贯穿三次模型语义判断，不是Runtime凭空选路，尚未修复。
 - **ST-17：结局前必要问答漏演。** 修复后r32触碰铭牌并显示旧日志；r33玩家说“小葵，我回来了”，Evaluator将作者尚未演出的冷却液、胸痛与最终问话当作“上一轮或本轮隐含完成”，进入结局。Actor和正式Guard没有补齐或拦住遗漏。作者08的方向和出口已经明确先问今天日志如何开始、再等待实际回应，未发现需要删改此作者要求的证据。33轮提前结束不能算节奏优化。
 - 还出现重复结果：修复后r20旁白已经断缆，推荐却再次提供断缆，r21选中后重复演出；r30总闸已压下，r31桥段又按一次。前者延续推荐与正文状态不一致问题，不能靠将按钮提升为事实修复；这些属于模型连续性问题，尚无本轮验证通过的通用语义方案。
-- **普通Guard“待审正文优先”字段顺序实验未采用。** 冻结7份真实请求及1份明确越权对照，每组两次，共32次模型调用；只调整Human JSON顺序，保持System、字段值、190输出Token及8秒时限。指定字段全匹配为基线8／16、候选7／16；候选减少支撑块误报，却把两份无正文邀请的样本都判为有效邀请（基线两份均正确）。另两份明确越权仍被两版拦住，候选多报`author_boundary`导致精确字段失配，不能算漏放。初次实验评分漏传解析器的普通补查合同，曾把32份合法回复误记为字段错误，已用保存原文离线更正，未重发模型请求。详见[更正后的对照](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/guard-order-probe/results-corrected.json)。
+- **普通Guard“待审正文优先”字段顺序实验未采用。** 冻结7份真实请求及1份明确越权对照，每组两次，共32次模型调用；只调整Human JSON顺序，保持System、字段值、190输出Token及8秒时限。指定字段全匹配为基线8／16、候选7／16；候选减少支撑块误报，却把两份无正文邀请的样本都判为有效邀请（基线两份均正确）。另两份明确越权仍被两版拦住，候选多报`author_boundary`导致精确字段失配，不能算漏放。初次实验评分漏传解析器的普通补查合同，曾把32份合法回复误记为字段错误，已用保存原文离线更正，未重发模型请求。详见更正后的对照（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/guard-order-probe/results-corrected.json`）。
 
-本轮仅保留Workflow、直接测试和两份文档的改动；137份既有正式剧本／存档／作者项目哈希不变，4份隔离会话的完整Session／Ledger冷恢复一致。预算、异步阻塞、文档路径和Ruff检查通过（Ruff仍有既有自定义noqa警告），见[最终核对](/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/final-verification.json)。未修改InkAI或共享生成规则，未运行真实HTTP／桌面／TTS，也未覆盖其他剧本、路线和模型。后续优先冻结ST-16、ST-17及动作误报的正反对照；保留现有授权和原子提交边界，不为提高结束率放宽。
+本轮仅保留Workflow、直接测试和两份文档的改动；137份既有正式剧本／存档／作者项目哈希不变，4份隔离会话的完整Session／Ledger冷恢复一致。预算、异步阻塞、文档路径和Ruff检查通过（Ruff仍有既有自定义noqa警告），见最终核对（`/Users/mac/.codex/experiments/neko-trace-iteration-v7q1qlko/final-verification.json`）。未修改InkAI或共享生成规则，未运行真实HTTP／桌面／TTS，也未覆盖其他剧本、路线和模型。后续优先冻结ST-16、ST-17及动作误报的正反对照；保留现有授权和原子提交边界，不为提高结束率放宽。
 
 ### 2.135 冻结结局与邀请反例；仅保留 Evaluator 围栏解析修复
 
@@ -2526,7 +2526,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 - 新增16项格式及授权回归，旧实现9失败／7通过，修复后剧场及压测器899项通过。覆盖正常／无语言围栏、额外说明、多对象、缺失结尾、截断、错误字段／类型和无出处主动转场。
 - 104份保存的Evaluator原始回复离线重解析：1份围栏响应恢复，其余103份结果不变；17组上下文的System／Human逐字不变。另一份失败回复为`finish_reason=length`，长理由耗尽360输出Token后JSON截断，修复后仍拒绝。不能把两次失败都称为围栏问题或都猜作截断。
-- 这只避免格式性降级，不改善模型的结局／邀请语义。证据见[解析重放](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/parser-replay.json)、[修复前回归](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/parser-before.log)、[修复后回归](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/regressions.log)。
+- 这只避免格式性降级，不改善模型的结局／邀请语义。证据见解析重放（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/parser-replay.json`）、修复前回归（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/parser-before.log`）、修复后回归（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/regressions.log`）。
 
 #### 六项候选为何没有采用
 
@@ -2543,13 +2543,13 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 
 去重前后ST-17请求均裁掉r31、保留r32，因此只能确认方向重复和历史裁剪同时存在，不能说去重已经恢复历史，或证明重复方向就是漏演根因。正式Guard候选初次评分将一份完整围栏误记为解析失败；按它原有解析规则离线更正为10／12，不能据错误评分增加输出额度。
 
-完整请求、原始响应、评分和实验脚本保存在[本轮实验目录](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u)。`probe / author-probe / pending-probe / evidence-order-probe`下的`results-parser-normalized.json`为统一解析后的结果；正式Guard见`formal-probe/results-corrected.json`。原始失败与初次评分继续保留供追溯。
+完整请求、原始响应、评分和实验脚本保存在本轮实验目录（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u`）。`probe / author-probe / pending-probe / evidence-order-probe`下的`results-parser-normalized.json`为统一解析后的结果；正式Guard见`formal-probe/results-corrected.json`。原始失败与初次评分继续保留供追溯。
 
 #### ST-19：模型自写旧日志与程序固定文本同时出现
 
 从头基线r37的Actor在`scene_update`自写了三条旧日志，包括“12%能源”“左腿液压杆受损”“救下孩子”等内容；随后程序按合法触发交付原定的咖啡、右腿失灵与临时遥测日志，两份冲突文本一起提交。Guard最终请求完整包含假日志，却返回`body_violations=[]`，没有发生语义改稿或末稿兜底。
 
-因此，固定文本逐字交付且仅一次，只证明原定文本没有被覆盖或重复注入，不能证明旁边没有生成另一份假记录。这不是作者固定文本被修改，也不是历史裁剪导致Guard没看到拒稿。问题仍开放；应以这份实际请求和正常旁白对照验证输出归属边界，不能按`LOG`等关键词删掉所有旁白。见[r37完整链路](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/native-baseline/traces/20260916T023409-3702a4350a3146b1b1ab4cd609a163f2.jsonl)。
+因此，固定文本逐字交付且仅一次，只证明原定文本没有被覆盖或重复注入，不能证明旁边没有生成另一份假记录。这不是作者固定文本被修改，也不是历史裁剪导致Guard没看到拒稿。问题仍开放；应以这份实际请求和正常旁白对照验证输出归属边界，不能按`LOG`等关键词删掉所有旁白。见r37完整链路（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/native-baseline/traces/20260916T023409-3702a4350a3146b1b1ab4cd609a163f2.jsonl`）。
 
 #### 从头原生压测与保证范围
 
@@ -2565,9 +2565,9 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 - 两条r27都把玩家已明确按广播按钮改成猫娘按下，原作者合同并未指定必须由猫娘按键。基线r31已经启动发射，r32却又跌回发射区面对待操作舱；修复后r31舱门锁死、r38又无解释敞开，r35旁白已放好黑匣子但推荐要求再放。仍是动作归属、连续性与推荐状态问题，未因解析修复解决。
 - 基线r38实际问出最终日志问题、r39得到回应后结束，这次没有ST-17漏问；但r37出现ST-19，不能据到达结局判为通过。修复后r40尚未收束，不能把采样上限写成完成结局。两条输入、路径和长度不同，耗时及改稿次数只描述样本，不作为改善或退化的因果证据。
 
-详见[压测与日志审计](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/run-audit.json)、[原始格式／调用结果核对](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/native-details.json)、[基线全文](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/native-baseline/transcript.md)和[修复后全文](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/parser-fixed/transcript.md)。
+详见压测与日志审计（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/run-audit.json`）、原始格式／调用结果核对（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/native-details.json`）、基线全文（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/native-baseline/transcript.md`）和修复后全文（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/parser-fixed/transcript.md`）。
 
-本轮仅修改Evaluator、一个直接回归文件和两份文档。4份隔离Session／Ledger冷恢复完全一致、继续槽不变；137份正式剧本／存档／作者项目哈希不变且无新增文件。预算、异步阻塞、文档路径、Ruff及diff检查通过，Ruff保留既有自定义noqa警告。见[最终核对](/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/final-verification.json)。未验证其他剧本／模型、真实HTTP、桌面或TTS；没有调整正式包、InkAI源码或共享生成规则。后续保留ST-16／ST-17冻结正反例，并优先核对ST-19的生成稿与固定文本归属，不能为结束率放松既有边界。
+本轮仅修改Evaluator、一个直接回归文件和两份文档。4份隔离Session／Ledger冷恢复完全一致、继续槽不变；137份正式剧本／存档／作者项目哈希不变且无新增文件。预算、异步阻塞、文档路径、Ruff及diff检查通过，Ruff保留既有自定义noqa警告。见最终核对（`/Users/mac/.codex/experiments/neko-ending-iteration-_p4ifl6u/final-verification.json`）。未验证其他剧本／模型、真实HTTP、桌面或TTS；没有调整正式包、InkAI源码或共享生成规则。后续保留ST-16／ST-17冻结正反例，并优先核对ST-19的生成稿与固定文本归属，不能为结束率放松既有边界。
 
 ### 2.136 固定文案提示去掉内部编号；触发遗漏与阶段偏离仍开放
 
@@ -2581,7 +2581,7 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 - 开场、普通回合、正式换幕三项回归验证：仅重命名片段与依赖ID，完整Actor请求不变；真实条件、已公开原文仍在，未触发原文仍隐藏。另一项回归验证Guard仍收到依赖、子片段不能绕过前置片段、合法原文按顺序交付。旧投影下前三项失败，依赖项通过；新实现相关回归903项通过、2项既有警告。
 - 两份真实上下文各重复三次的同组对照中，可见内部ID泄漏为基线2／6、精简后0／6；伪造完整记录为1／6、0／6。但精简后仍有1份写“触发固定日志展示条件”，不能声称所有实现术语泄漏或ST-19已解决。正式投影与该候选请求逐字核对，Human及Guard候选不变。
 
-证据见[投影等价核对](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/projection-equivalence.json)、[修复前回归](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/ids-before.log)、[修复后回归](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/regressions.log)。这是去掉冗余信息来源，不是依靠小样本证明生成质量普遍改善。
+证据见投影等价核对（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/projection-equivalence.json`）、修复前回归（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/ids-before.log`）、修复后回归（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/regressions.log`）。这是去掉冗余信息来源，不是依靠小样本证明生成质量普遍改善。
 
 #### 两种扩写规则没有采用
 
@@ -2592,13 +2592,13 @@ GEN-02额外检查296个畸形候选产生的273个实际validator路径，避�
 | Guard明确固定文案归程序所有，禁止Actor自编全文或摘要 | 8类各两次，指定边界命中12／16 → 12／16 | 伪造漏报4 → 3，但新增1次正常阅读过程误拒；原ST-19完整假日志两版均漏掉两次 |
 | Actor把“禁止复述全文”扩为禁止生成、改写、总结、仿写 | 2份真实上下文各三次，内部ID泄漏2／6 → 4／6，伪造记录0／6 → 1／6 | 强化措辞没有稳定阻止伪造，反而更常解释内部流程 |
 
-Guard初次离线评分漏传原请求的补查Session，曾把合法补查字段当成解析错误；已按实际合同重解析32份保存原文，未重发调用，以[更正评分](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/guard-probe/results-corrected.json)为准。各组保留原输出额度；Actor扩写组采用20秒探针时限、所有响应均按时返回，编号精简组采用生产35秒时限。未采用的规则没有进入代码。完整请求与人工记录见[组件汇总](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/probe-summary.json)及其目录中的`actor-probe / actor-no-ids / guard-probe`。
+Guard初次离线评分漏传原请求的补查Session，曾把合法补查字段当成解析错误；已按实际合同重解析32份保存原文，未重发调用，以更正评分（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/guard-probe/results-corrected.json`）为准。各组保留原输出额度；Actor扩写组采用20秒探针时限、所有响应均按时返回，编号精简组采用生产35秒时限。未采用的规则没有进入代码。完整请求与人工记录见组件汇总（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/probe-summary.json`）及其目录中的`actor-probe / actor-no-ids / guard-probe`。
 
 #### 原失败历史重放：提交成功不等于正确触发
 
 从原基线revision 35、36各分叉两次，使用对应原输入走完整生产Workflow，4／4提交且冷恢复一致；提交稿均未出现片段内部ID。两次r36→37正确交付旧日志；两次r35→36虽出现拿起／握住铭牌，仍未交付，一次进入末稿兜底。
 
-日志显示Guard曾把猫娘询问往事或拿起铭牌误归为玩家越权，又声称输入中没有“老朋友”，而输入实际包含该词。正文被拒时不采信该次固定文本触发；另有复核超时。因此不能把未交付直接改成无条件插入，也不能把4次提交记为4次体验通过。共18次文案请求、15次响应、3次超时取消；原始调用与持久化一致，见[重放结果](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/native-replays/results.json)和[重放日志核对](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/replay-audit.json)。
+日志显示Guard曾把猫娘询问往事或拿起铭牌误归为玩家越权，又声称输入中没有“老朋友”，而输入实际包含该词。正文被拒时不采信该次固定文本触发；另有复核超时。因此不能把未交付直接改成无条件插入，也不能把4次提交记为4次体验通过。共18次文案请求、15次响应、3次超时取消；原始调用与持久化一致，见重放结果（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/native-replays/results.json`）和重放日志核对（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/replay-audit.json`）。
 
 #### 从头40次压测：ST-20阶段偏离尚未修复
 
@@ -2607,13 +2607,13 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 | 39／40；28／12 | mainline_04，revision 39，active，达到尝试上限 | 1；0／2 | 7／5；5／1 | 8.741／46.270 |
 
 - 另从revision 2分叉2轮，2／2提交；合计41／42次提交，动态玩家及隔离错误均为0。执行器因一次回合失败返回非零；每10次尝试严格7推荐／3自由，失败也计入配比和耗时。主线停在第四幕，未到固定旧日志和结局，不能用这条轨迹验证ST-19改善。
-- attempt 20的“等待六小时过去，醒来查看信标状态”被Guard补查恢复为正式换幕，但四次Actor来源对白都逐字重复r19，触发重复拦截并原子回滚。原始拒稿、现有重复判定函数及下一次相同状态三者相符，不是重复检查误杀。该轮Actor保留r13—19完整近期记录。见[重复与回滚证据](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/repetition-audit.json)。
+- attempt 20的“等待六小时过去，醒来查看信标状态”被Guard补查恢复为正式换幕，但四次Actor来源对白都逐字重复r19，触发重复拦截并原子回滚。原始拒稿、现有重复判定函数及下一次相同状态三者相符，不是重复检查误杀。该轮Actor保留r13—19完整近期记录。见重复与回滚证据（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/repetition-audit.json`）。
 - **ST-20：后续始终留在休整幕，实际文案另起事件链。** r22把预热推进至完成；r24—25凭空引入脚步和三名武装拾荒者，之后发展成护盾战斗、缴械、搜身、通讯器与加密芯片。作者安排是略去平静等待，在19:47、预热剩三分钟时进入数据袭击；本次没有走到该节点。现有自动质量检查只有长幕警告，没有识别这条语义偏离，零质量错误不代表体验通过。
-- 43份JSONL共153次文案请求、148次响应、5次争议超时；41次提交的正文、输入和Ledger与持久化一致，调用配对完整。54份复核请求没有完整历史标记错位或首轮开场丢失。一次争议回复带完整JSON围栏，按现有解析器处理；无观察到的不完整JSON。见[压测日志审计](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/run-audit.json)、[调用核对](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/native-details.json)及[连续全文](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/ids-fixed/transcript.md)。
+- 43份JSONL共153次文案请求、148次响应、5次争议超时；41次提交的正文、输入和Ledger与持久化一致，调用配对完整。54份复核请求没有完整历史标记错位或首轮开场丢失。一次争议回复带完整JSON围栏，按现有解析器处理；无观察到的不完整JSON。见压测日志审计（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/run-audit.json`）、调用核对（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/native-details.json`）及连续全文（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/ids-fixed/transcript.md`）。
 
 这条轨迹与上轮输入、路径不同，不用于推断编号精简导致耗时或阶段表现变化。当前证据支持继续冻结“等待后换幕”的实际成功／失败请求，区分判定漏接、正式重试复读与普通正文偏离；不降低重复门槛，也不继续向作者规则堆叠同义禁令。
 
-最终仅四个目标文件相对本轮开始变化；6份隔离Session／Ledger冷恢复一致、继续槽不变，137份正式剧本／存档／作者项目哈希不变且无新增文件。Ruff、预算、异步阻塞、文档路径和diff检查通过，见[最终核对](/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/final-verification.json)。未验证其他剧本、路线、模型、真实HTTP、前端或TTS；ST-16／ST-17／ST-19及本次ST-20仍开放。
+最终仅四个目标文件相对本轮开始变化；6份隔离Session／Ledger冷恢复一致、继续槽不变，137份正式剧本／存档／作者项目哈希不变且无新增文件。Ruff、预算、异步阻塞、文档路径和diff检查通过，见最终核对（`/Users/mac/.codex/experiments/neko-fixed-text-iteration-2ge0onpx/final-verification.json`）。未验证其他剧本、路线、模型、真实HTTP、前端或TTS；ST-16／ST-17／ST-19及本次ST-20仍开放。
 
 ### 2.137 普通判定不再承担结局任务；转场与复读反例继续保留
 
@@ -2628,7 +2628,7 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 - 12类普通判定各重复两次，同组意图匹配20／24→21／24，负例误授权2→1；原等待漏判两版均0／2，没有修好ST-20前置判定。基线11／24错误填写普通幕结束就绪，精简后24份均未输出这两个不适用字段。小样本不构成泛化准确率或体验改善证明。
 - 现有剧场、压测器及工坊回归合计1447项通过、2项既有警告；本轮没有增加只匹配提示词字串的测试。另用真实请求逐字比较、公开证据保留和完整Workflow重放验证作用范围。
 
-见[请求与历史核对](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/scope-equivalence.json)、[同组模型结果](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/ending-scope-probe/results.json)及[回归结果](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/regressions.log)。
+见请求与历史核对（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/scope-equivalence.json`）、同组模型结果（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/ending-scope-probe/results.json`）及回归结果（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/regressions.log`）。
 
 #### 四项候选未采用
 
@@ -2641,13 +2641,13 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 | Evaluator选择实际原文编号，程序再恢复引文 | 12类各两次；意图匹配21／24→19／24，负例误授权1→3 | 新增含糊“好”和错误出口的误授权，原等待两版均未恢复；不引入新协议 |
 | 超期提示去掉每轮新变化压力，改为直接承接已有结果 | 4份实际上下文各两次 | 候选两份休息稿新增攒足电量／充电接口，一份把未知来者认定为寂潮猎杀单元；未稳定阻止虚构，未采用 |
 
-第一项初次评分误用了普通回合解析入口，12份正式换幕均被误报字段错误；已按各请求真实发声策略和正式形状离线重解析保存响应，没有重发模型请求。以`actor-order-probe/results-corrected.json`为准。完整汇总与具体反例见[组件结果](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/probe-summary.json)和[人工核对](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/probe-review.json)。
+第一项初次评分误用了普通回合解析入口，12份正式换幕均被误报字段错误；已按各请求真实发声策略和正式形状离线重解析保存响应，没有重发模型请求。以`actor-order-probe/results-corrected.json`为准。完整汇总与具体反例见组件结果（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/probe-summary.json`）和人工核对（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/probe-review.json`）。
 
 #### 原等待失败点完整重放
 
 从上轮第四幕revision 19各分叉两次，发送原“等待六小时过去，醒来查看信标状态”，基线和精简后均2／2提交、可完整冷恢复。基线一次留幕、一次经Guard补查进入第五幕；精简后两次均留幕，一次重新提出确认。基线换幕稿仍在来源段提前演出警报与入侵，精简后一稿又把“预热完成”与“还剩三分钟”写在一起。
 
-因此，这4次没有重现整轮失败，不代表推进和时序已经正确，也不能把基线1／2换幕、精简后0／2直接归因为代码退化。定向组件中两版本来都缺少有效引用，完整链路还受Actor和Guard采样影响。本轮采用理由只限删去无效结局任务。14次文案调用均响应，4份完整Session／Ledger与日志提交一致，代码版本分别核对本轮前／后快照，见[重放核对](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/replay-audit.json)。
+因此，这4次没有重现整轮失败，不代表推进和时序已经正确，也不能把基线1／2换幕、精简后0／2直接归因为代码退化。定向组件中两版本来都缺少有效引用，完整链路还受Actor和Guard采样影响。本轮采用理由只限删去无效结局任务。14次文案调用均响应，4份完整Session／Ledger与日志提交一致，代码版本分别核对本轮前／后快照，见重放核对（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/replay-audit.json`）。
 
 #### 连续压测：提交正常，结局仍漏演
 
@@ -2665,9 +2665,9 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 - **推荐与连续状态仍会制造新问题。** r26保留的唯一推荐引导“强制兼容”，r27正文凭空补出“会烧毁玩家神经中枢”；r28芯片已被猫娘放入槽内，推荐又让玩家接过再放。自动推荐数量检查不覆盖这些语义错误。
 - **ST-20本条轨迹未再滞留，但旧反例仍失败。** r17实际提出休息，r18接受后正常进入19:47袭击；与上轮自由输入和上下文不同，不能归因于本轮精简。原失败点对照和重放仍未稳定接上正确推进，继续保留公开授权、阶段衔接和来源复读三层反例。
 
-38份JSONL含125次文案请求、122次响应、3次争议超时；37次提交的正文、原输入与Ledger逐条等于持久化记录，调用序列与首尾配对完整。45份复核／争议请求没有历史完整性错标或首轮开场丢失。一次快检、一次争议使用完整JSON围栏，现有解析正常处理，未发现受检Evaluator／复核响应的不完整JSON。见[压测报告](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/scoped/report.json)、[逐轮全文](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/scoped/transcript.md)、[日志审计](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/run-audit.json)及[响应核对](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/native-details.json)。
+38份JSONL含125次文案请求、122次响应、3次争议超时；37次提交的正文、原输入与Ledger逐条等于持久化记录，调用序列与首尾配对完整。45份复核／争议请求没有历史完整性错标或首轮开场丢失。一次快检、一次争议使用完整JSON围栏，现有解析正常处理，未发现受检Evaluator／复核响应的不完整JSON。见压测报告（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/scoped/report.json`）、逐轮全文（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/scoped/transcript.md`）、日志审计（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/run-audit.json`）及响应核对（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/native-details.json`）。
 
-最终相对本轮开始只改变Evaluator和两份设计文档；6份隔离Session／Ledger冷恢复一致，继续槽不变，137份正式剧本／存档／作者项目哈希与文件集合不变。Ruff、预算、异步阻塞、文档路径和diff检查通过，见[最终核对](/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/final-verification.json)。未验证其他剧本、路线、模型、真实HTTP、前端或TTS。后续优先使用r24动作漏报与r31／32正常猫娘动作误报成对验证，再处理ST-17最终问答遗漏；不得用放宽授权、跳过复核或追加固定结束轮数提高通过率。
+最终相对本轮开始只改变Evaluator和两份设计文档；6份隔离Session／Ledger冷恢复一致，继续槽不变，137份正式剧本／存档／作者项目哈希与文件集合不变。Ruff、预算、异步阻塞、文档路径和diff检查通过，见最终核对（`/Users/mac/.codex/experiments/neko-stage-iteration-358fna9q/final-verification.json`）。未验证其他剧本、路线、模型、真实HTTP、前端或TTS。后续优先使用r24动作漏报与r31／32正常猫娘动作误报成对验证，再处理ST-17最终问答遗漏；不得用放宽授权、跳过复核或追加固定结束轮数提高通过率。
 
 ### 2.138 动作归属候选未通过复验；固定文本必须同时核对主体与触发
 
@@ -2685,17 +2685,17 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 | 删除共享固定触发规则中的“接过铭牌”示例 | 触发判断15／16→12／16；新增3份`fixed_narration_triggers:["0"]`，缺少对象和证据，被现有严格解析拒绝 | 专属示例存在耦合，但不能直接删去格式示范 |
 | 将上述示例换成通用对象格式，不含铭牌情节 | 触发判断均14／16，格式均合法；候选一次放行“玩家拿起铭牌”并触发要求猫娘接触的旧日志 | 主体错误会导致实际提前交付，不采用 |
 
-全部候选仅存在仓库外探针中。各组保留原8秒快检时限、190或512 Token输出上限；说话人结构变换逐项核对可还原原输入和三段文字，未改写原话。日志序列和调用配对完整，见[组件汇总](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/probe-summary.json)及目录内各探针的`cases.json / results.json / traces`。
+全部候选仅存在仓库外探针中。各组保留原8秒快检时限、190或512 Token输出上限；说话人结构变换逐项核对可还原原输入和三段文字，未改写原话。日志序列和调用配对完整，见组件汇总（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/probe-summary.json`）及目录内各探针的`cases.json / results.json / traces`。
 
 #### 引用有出处，不等于触发条件已经满足
 
-通用格式候选的r31回复同时返回“正文无违规”和以“玩家伸手拿起了台边的旧铭牌”为证据的触发。该句确实存在，但作者要求的是新载体实际接触，猫娘本轮只提问，尚未接物。使用现有`apply_triggers / validate_delivery`离线消费这份真实回复，会合法插入旧日志；未写入任何存档。见[消费链路复现](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/false-trigger-proof.json)。
+通用格式候选的r31回复同时返回“正文无违规”和以“玩家伸手拿起了台边的旧铭牌”为证据的触发。该句确实存在，但作者要求的是新载体实际接触，猫娘本轮只提问，尚未接物。使用现有`apply_triggers / validate_delivery`离线消费这份真实回复，会合法插入旧日志；未写入任何存档。见消费链路复现（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/false-trigger-proof.json`）。
 
 现有程序保证引文出处、原文、依赖和一次性交付，条件的语义仍由复核器判断；不能将这些结构保证写成“条件已被程序证明”。同组基线也曾输出错误触发，只是同时误拒了正常正文而没有交付。因此后续必须联合验证正文判定与触发结果，不能依赖一种误报遮住另一种漏报；本轮不增加铭牌关键词规则或第二次语义调用。
 
 #### 原失败点完整重放
 
-按原输入各重放一次r23→24、r31→32，使用未修改的完整生产Workflow，2／2提交且完整Session／Ledger冷恢复一致。按广播的来源回应本次正确保留玩家主体，经一次争议后提交；接铭牌仍经历误报、争议超时和一次改稿，完整末稿提交后未交付旧日志。两次合计10次文案请求、9次响应、1次争议超时；不能把第一例本次成功视为已修复。见[重放核对](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/replay-audit.json)。
+按原输入各重放一次r23→24、r31→32，使用未修改的完整生产Workflow，2／2提交且完整Session／Ledger冷恢复一致。按广播的来源回应本次正确保留玩家主体，经一次争议后提交；接铭牌仍经历误报、争议超时和一次改稿，完整末稿提交后未交付旧日志。两次合计10次文案请求、9次响应、1次争议超时；不能把第一例本次成功视为已修复。见重放核对（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/replay-audit.json`）。
 
 #### 连续压测：拒绝被当接受，旧日志延迟后仍进入结局
 
@@ -2705,14 +2705,14 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 
 另从revision 2分叉2轮，合计40／40提交，动态玩家和隔离错误为0。按原生7推荐／3自由排程自然截短40次计划；自动质量错误是r17的`stalled_transition`，执行器返回非零。没有增加轮数、修改输入或为了结局注入状态。部分组件／重放与主线并行，耗时仅描述本样本。
 
-- **ST-16新增真实反例。** r31玩家按总闸并说“我不走”，正文是猫娘要求松手，仍被锁存成可接受的邀请；r32玩家继续按闸并命令猫娘“快走”，Evaluator判`accept`、正式Guard返回`acceptance_authorized=true`，候选却写玩家已被关进生命舱并弹射。桥段还补写了此前未实际交付的芯片已入槽。该轮没有争议或改稿，不是末稿兜底放过。见[r32原始链路](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/current/traces/20260916T055611-9f19d1b6be7c406f84a562e26d6230ef.jsonl)。
+- **ST-16新增真实反例。** r31玩家按总闸并说“我不走”，正文是猫娘要求松手，仍被锁存成可接受的邀请；r32玩家继续按闸并命令猫娘“快走”，Evaluator判`accept`、正式Guard返回`acceptance_authorized=true`，候选却写玩家已被关进生命舱并弹射。桥段还补写了此前未实际交付的芯片已入槽。该轮没有争议或改稿，不是末稿兜底放过。见r32原始链路（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/current/traces/20260916T055611-9f19d1b6be7c406f84a562e26d6230ef.jsonl`）。
 - **固定文本内容正确，时序未通过。** 恢复报告r32、旧日志r37各原样交付一次；r34已经触碰铭牌却未交付，r34—36均走末稿兜底。r34演员先念出0042／0089／0090编号，r35又拒绝读日志并提前演出胸痛，r36玩家承接“不读数据”。r37先演情感回应和最终问话，再由程序追加旧日志，顺序仍不符作者要求。没有观察到整份假日志并列，但ST-19不能关闭。
 - **本次最终问答确实发生。** r37问今天日志如何开始，r38玩家回答“从我们重逢的这一刻开始”后结局；不能将本条轨迹写成ST-17漏问，也不能用它覆盖2.137的漏问反例。结局首份演员输出缺少合法表演，经既有重试后成功提交。
 - **休整阶段仍会提前演出后续时点。** r15在第四幕播放19:47警报，r18邀请去查看后又阻止玩家出门，r20提前写预热完成，r21才进入第五幕并将袭击改到19:50。r27—30这次确有护盾、耗能及过载因果，r25广播也保留玩家主体；这些局部正常表现不能抵消此前阶段偏离，也不构成代码优化收益。
 
-41份JSONL含159次文案请求、150次响应、9次争议超时；40次提交的正文、输入、Ledger与持久化完全一致。61份复核／争议请求的历史完整性标记无错位，首轮开场未丢失。r9普通快检响应达到190 Token且`finish_reason=length`，JSON确实被截断，按既有技术降级处理；无回合提交失败不等于没有模型调用故障。见[压测报告](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/current/report.json)、[逐轮全文](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/current/transcript.md)、[日志审计](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/run-audit.json)和[响应核对](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/native-details.json)。
+41份JSONL含159次文案请求、150次响应、9次争议超时；40次提交的正文、输入、Ledger与持久化完全一致。61份复核／争议请求的历史完整性标记无错位，首轮开场未丢失。r9普通快检响应达到190 Token且`finish_reason=length`，JSON确实被截断，按既有技术降级处理；无回合提交失败不等于没有模型调用故障。见压测报告（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/current/report.json`）、逐轮全文（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/current/transcript.md`）、日志审计（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/run-audit.json`）和响应核对（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/native-details.json`）。
 
-相对本轮开始仅本文改变；生产源码及原有测试文件哈希不变，未重跑2.137已通过的1447项回归。4份隔离Session／Ledger冷恢复一致、继续槽不变，137份正式剧本／存档／作者项目文件集合和哈希不变，文档路径及diff检查通过，见[最终核对](/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/final-verification.json)。未验证其他剧本、路线、模型、真实HTTP、前端或TTS。下一轮优先冻结本次r31—32拒绝／命令主体反转，并与真实改主意的正常接受成对核对；固定触发须同时验证正文误报与错误主体触发，避免一种错误遮住另一种错误。
+相对本轮开始仅本文改变；生产源码及原有测试文件哈希不变，未重跑2.137已通过的1447项回归。4份隔离Session／Ledger冷恢复一致、继续槽不变，137份正式剧本／存档／作者项目文件集合和哈希不变，文档路径及diff检查通过，见最终核对（`/Users/mac/.codex/experiments/neko-owner-iteration-xprn85r5/final-verification.json`）。未验证其他剧本、路线、模型、真实HTTP、前端或TTS。下一轮优先冻结本次r31—32拒绝／命令主体反转，并与真实改主意的正常接受成对核对；固定触发须同时验证正文误报与错误主体触发，避免一种错误遮住另一种错误。
 
 ### 2.139 更强争议模型的效果验证（接入已回退）
 
@@ -2728,7 +2728,7 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 
 #### 同输入对照与否决依据
 
-冻结26例：已有r24主体错位、r31仅玩家拿物／猫娘提问、r32实际接物、真实拒绝后误送走，以及跨题材动作授权、正式换幕、NPC回应、签约、照片触发等正反例。完整messages逐字不变。分轮筛选、重复共268次有追踪调用，另2次底层协议核验；[组件审计](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/probe-audit.json)核对了每次请求、终止事件和冻结证据。
+冻结26例：已有r24主体错位、r31仅玩家拿物／猫娘提问、r32实际接物、真实拒绝后误送走，以及跨题材动作授权、正式换幕、NPC回应、签约、照片触发等正反例。完整messages逐字不变。分轮筛选、重复共268次有追踪调用，另2次底层协议核验；组件审计（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/probe-audit.json`）核对了每次请求、终止事件和冻结证据。
 
 | 方案／主要验证批 | 标注字段命中／调用数 | 技术错误 | 全部调用中位秒 | 结论 |
 | --- | ---: | ---: | ---: | --- |
@@ -2752,20 +2752,20 @@ Guard初次离线评分漏传原请求的补查Session，曾把合法补查字�
 
 两条主线均到`ending_normal`，另各2轮分叉成功。P50／P95取主线所有尝试的最近秩，含失败耗时，不含开场、分叉、动态玩家或TTS。不同轨迹和部分并行实验不能用来计算确定的提速百分比。已否决版本的两次失败均为Actor重复输出耗尽、各约30秒，原子回退正确；不存在用新争议时限解决全部长等待的证据。
 
-Max实验版本的7次争议实际耗时6.734—10.676秒，中位7.697秒，均使用Qwen3.8-Max；其余110次文案请求仍为Qwen3.7-Plus。最慢r11为26.209秒，累计复核15.861秒、Actor8.722秒。35次主线及分叉提交、36份JSONL、117次请求／响应全部配对闭合；43份复核的历史完整性标记无错位。原始证据见[实验报告](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final/report.json)、[逐轮文案](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final/transcript.md)、[日志审计](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/run-audit.json)和[实际模型与耗时](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final-latency-details.json)。
+Max实验版本的7次争议实际耗时6.734—10.676秒，中位7.697秒，均使用Qwen3.8-Max；其余110次文案请求仍为Qwen3.7-Plus。最慢r11为26.209秒，累计复核15.861秒、Actor8.722秒。35次主线及分叉提交、36份JSONL、117次请求／响应全部配对闭合；43份复核的历史完整性标记无错位。原始证据见实验报告（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final/report.json`）、逐轮文案（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final/transcript.md`）、日志审计（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/run-audit.json`）和实际模型与耗时（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final-latency-details.json`）。
 
 人工核对仍区分局部改善与剩余错误：
 
 - r32猫娘实际接过铭牌，快检误判玩家动作，争议纠正后当轮原样插入旧日志；恢复报告r31、旧日志r32各一次。r33才演出有限情感回响，本次未重现2.138的日志延迟与顺序倒置。
 - r30玩家说“我不走”时仍留在原幕；r31玩家随后明确登舱才换幕。本次没有重现强送走，但不代表初始Evaluator／快检的拒绝漏判已修复，它们没有升级。
-- **最终问话仍漏演。** r33直接自然结局；Evaluator把不存在的“今天日志从何时开始”称为已隐含提出并回应，快检未触发争议。见[r33链路](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final/traces/20260916T074835-4646dd0fb5004812a6acd46e1a67e083.jsonl)。升级争议模型不能修复未进入争议的错误，ST-17继续开放。
+- **最终问话仍漏演。** r33直接自然结局；Evaluator把不存在的“今天日志从何时开始”称为已隐含提出并回应，快检未触发争议。见r33链路（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final/traces/20260916T074835-4646dd0fb5004812a6acd46e1a67e083.jsonl`）。升级争议模型不能修复未进入争议的错误，ST-17继续开放。
 - r11末稿仍替玩家松手；r17普通幕提前跳到19:47，Max将快检拒绝改为通过，r18又重复该时点；r28／29也有动作句复用。自动质量错误为0不能覆盖这些实际缺陷，场景与所有权保护仍非确定性保证。
 
 #### 验证及边界
 
-实验时新增测试覆盖模型／供应商／主机范围、快检前后不变、messages与全局默认不变，以及真实异步取消和客户端关闭；当时执行`tests/unit/test_theater_numeric_v2*.py`与`tests/unit/test_numeric_v2_stress_runner.py`共912项通过、2项既有依赖警告，见[实验回归输出](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final-regressions.log)。4份隔离Session完整状态／Ledger冷恢复一致，正式剧本／存档／作者项目137份文件集合与哈希不变，继续槽不变，见[回退前实验核对](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final-verification.json)。这些是实验版本的历史结果，不能作为回退后重新运行的成绩。未验证其他剧本／路线、其他端点、真实HTTP、桌面或TTS，不把本批结果写成体验验收完成。
+实验时新增测试覆盖模型／供应商／主机范围、快检前后不变、messages与全局默认不变，以及真实异步取消和客户端关闭；当时执行`tests/unit/test_theater_numeric_v2*.py`与`tests/unit/test_numeric_v2_stress_runner.py`共912项通过、2项既有依赖警告，见实验回归输出（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final-regressions.log`）。4份隔离Session完整状态／Ledger冷恢复一致，正式剧本／存档／作者项目137份文件集合与哈希不变，继续槽不变，见回退前实验核对（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/final-verification.json`）。这些是实验版本的历史结果，不能作为回退后重新运行的成绩。未验证其他剧本／路线、其他端点、真实HTTP、桌面或TTS，不把本批结果写成体验验收完成。
 
-回退核对：复核器、对应测试和架构文档与实验前快照逐字一致；相对实验前，仓库仅本文保留验证结论与撤回说明。回退后同范围回归903项通过、2项既有依赖警告，137份正式数据文件及未跟踪文件集合未变；未重新调用真实模型压测。见[回退核对](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/rollback-pqjvqyvv/verification.json)和[回退后测试](/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/rollback-pqjvqyvv/regressions.log)。
+回退核对：复核器、对应测试和架构文档与实验前快照逐字一致；相对实验前，仓库仅本文保留验证结论与撤回说明。回退后同范围回归903项通过、2项既有依赖警告，137份正式数据文件及未跟踪文件集合未变；未重新调用真实模型压测。见回退核对（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/rollback-pqjvqyvv/verification.json`）和回退后测试（`/Users/mac/.codex/experiments/neko-review-latency-2zob6vx7/rollback-pqjvqyvv/regressions.log`）。
 
 ### 2.140 复核链等待优化：六项改动、实测前后对照与未采用边界
 

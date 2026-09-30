@@ -1,4 +1,4 @@
-"""小剧场现有输出合同的 API 结构约束，不替代语义与引文校验。"""
+"""API shape constraints for theater output; semantic and quote checks remain separate."""
 
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -22,7 +22,7 @@ def _fact_candidates() -> dict[str, Any]:
 
 
 def response_format_for(config: Mapping[str, Any], name: str, schema: dict[str, Any]) -> dict[str, Any] | None:
-    """仅为已核实支持的阿里云兼容接口启用，不向其他模型强加参数。"""
+    """Enable this format only for verified compatible Aliyun endpoints."""
     model = str(config.get("model") or "").lower()
     endpoint = urlsplit(str(config.get("base_url") or ""))
     host = endpoint.hostname or ""
@@ -39,7 +39,7 @@ def response_format_for(config: Mapping[str, Any], name: str, schema: dict[str, 
 def actor_output_schema(*, opening_required: bool = False, transition_required: bool = False,
                         suggestions_only: bool = False, transition_suggestions_only: bool = False,
                         fact_candidates_expected: bool = False) -> dict[str, Any]:
-    """各阶段只声明原提示词已有字段，scene_update 仍按需省略。"""
+    """Declare fields already used by each prompt; scene_update remains optional."""
     suggestions = _array({"type": "string"})
     if transition_suggestions_only:
         return _object({"accept_input": {"type": "string"}, "alternative_inputs": suggestions})
@@ -68,7 +68,7 @@ def review_output_schema(*, formal: bool = False, transition_intent: str = "",
                          fixed_narrations: bool = False, display_suggestions: bool = False,
                          completion_facts: bool = False, evaluator_facts: bool = False,
                          locate_body_issues: bool = False) -> dict[str, Any]:
-    """复核分支保持与当前提示词一致，证据是否真实仍由原解析器判定。"""
+    """Match each review prompt branch; the parser still verifies evidence."""
     violations = _array({"type": "string", "enum": ["player_action", "scene_boundary", "author_boundary"]})
     properties: dict[str, Any] = {}
     if missed_initiation and not formal:
@@ -121,5 +121,5 @@ def review_output_schema(*, formal: bool = False, transition_intent: str = "",
 
 
 def contract_output_schema() -> dict[str, Any]:
-    """窄禁令复核只返回原协议中的违规禁令列表。"""
+    """Return only the violated boundary list from the existing protocol."""
     return _object({"violated": _array({"type": "string"})})
