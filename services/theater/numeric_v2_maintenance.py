@@ -6,7 +6,7 @@ from contextlib import nullcontext
 import json
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import tempfile
 import threading
@@ -45,6 +45,14 @@ DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
 INDEX_QUARANTINE_DIRNAME = "quarantine_indexes"
 # 这些状态只需清理事务目录，绝不重放备份。
 _SETTLED_DELETE_TRANSACTION_STATES = frozenset({"committed", "rolled_back", "superseded"})
+_MANIFEST_PATH_KEYS = (
+    "package_target",
+    "session_root",
+    "public_archive_root",
+    "receipt_root",
+    "public_archive_quarantine_root",
+    "index_target",
+)
 
 _MAINTENANCE_LOCK = threading.Lock()
 _MAINTAINED_ROOTS: set[str] = set()
@@ -80,9 +88,70 @@ def _atomic_write_manifest(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path.unlink()
 
 
-def _manifest_path(payload: Mapping[str, Any], key: str) -> Path | None:
+class _UnresolvableManifestPathError(ValueError):
+    """A delete manifest names a path that cannot be mapped into the current theater root."""
+
+
+def _manifest_relative(theater_root: Path, target: Path) -> str:
+    """Store a manifest target relative to the theater root so a root migration keeps it valid."""
+
+    return Path(target).relative_to(Path(theater_root)).as_posix()
+
+
+def _expected_manifest_relative(payload: Mapping[str, Any], key: str) -> PurePosixPath | None:
+    """Return the fixed layout location of a manifest key, used to map legacy absolute paths."""
+
+    story_id = str(payload.get("story_id") or "").strip()
+    fixed = {
+        "package_target": f"numeric_v2/packages/{story_id}.json" if story_id else "",
+        "session_root": "numeric_v2/sessions",
+        "public_archive_root": "numeric_v2/public_archives",
+        "receipt_root": "numeric_v2/end_receipts",
+        "public_archive_quarantine_root": f"numeric_v2/{PUBLIC_ARCHIVE_QUARANTINE_DIRNAME}",
+        "session_quarantine_root": "numeric_v2/quarantine",
+        "index_target": "numeric_v2/story_sessions.json",
+    }.get(key, "")
+    return PurePosixPath(fixed) if fixed else None
+
+
+def _path_under(root: Path, candidate: Path) -> PurePosixPath | None:
+    for base, target in ((root, candidate), (root.resolve(), candidate.resolve())):
+        try:
+            return PurePosixPath(target.relative_to(base).as_posix())
+        except ValueError:
+            continue
+    return None
+
+
+def _manifest_path(payload: Mapping[str, Any], key: str, theater_root: Path) -> Path | None:
+    """Resolve a manifest target inside the current theater root.
+
+    New manifests store paths relative to the theater root. Legacy manifests
+    stored absolute paths, which go stale after a storage-root migration: a path
+    already under the current root is used as is, and a path under another root
+    is mapped onto the current root only when its tail is exactly the fixed
+    layout location of that key (i.e. relative to the old theater root). Anything
+    else raises, so recovery never writes outside the current root.
+    """
+
     raw = str(payload.get(key) or "").strip()
-    return Path(raw) if raw else None
+    if not raw:
+        return None
+    root = Path(theater_root)
+    candidate = Path(raw)
+    if not candidate.is_absolute() and not PureWindowsPath(raw).is_absolute():
+        relative = PurePosixPath(candidate.as_posix())
+        if ".." in relative.parts:
+            raise _UnresolvableManifestPathError(key)
+        return root.joinpath(*relative.parts)
+    current_relative = _path_under(root, candidate)
+    if current_relative is not None and ".." not in current_relative.parts:
+        return root.joinpath(*current_relative.parts)
+    expected = _expected_manifest_relative(payload, key)
+    legacy_parts = PurePosixPath(raw.replace("\\", "/")).parts
+    if expected is not None and tuple(legacy_parts[-len(expected.parts):]) == expected.parts:
+        return root.joinpath(*expected.parts)
+    raise _UnresolvableManifestPathError(key)
 
 
 def _restore_missing_file(backup: Path, target: Path) -> None:
@@ -94,9 +163,23 @@ def _restore_missing_file(backup: Path, target: Path) -> None:
     shutil.copy2(backup, target)
 
 
-def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any]) -> None:
+def _manifest_paths_resolvable(payload: Mapping[str, Any], theater_root: Path) -> bool:
+    for key in _MANIFEST_PATH_KEYS:
+        try:
+            _manifest_path(payload, key, theater_root)
+        except _UnresolvableManifestPathError:
+            return False
+    return True
+
+
+def _restore_delete_transaction(
+    transaction_dir: Path, payload: Mapping[str, Any], theater_root: Path,
+) -> None:
     """Best-effort undo of a story delete; every step runs, the first failure is raised last."""
 
+    if not _manifest_paths_resolvable(payload, theater_root):
+        # Never restore into a location outside the current root.
+        raise _UnresolvableManifestPathError(str(transaction_dir))
     failures: list[BaseException] = []
 
     def attempt(step: Callable[[], None]) -> None:
@@ -106,7 +189,7 @@ def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any
             failures.append(exc)
 
     package_backup = transaction_dir / "package.json"
-    package_target = _manifest_path(payload, "package_target")
+    package_target = _manifest_path(payload, "package_target", theater_root)
     if package_backup.is_file() and package_target is not None:
         attempt(lambda: _restore_missing_file(package_backup, package_target))
 
@@ -116,7 +199,7 @@ def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any
         ("receipt_root", "end_receipts"),
         ("public_archive_quarantine_root", PUBLIC_ARCHIVE_QUARANTINE_DIRNAME),
     ):
-        target_root = _manifest_path(payload, root_key)
+        target_root = _manifest_path(payload, root_key, theater_root)
         backup_root = transaction_dir / backup_dirname
         if not backup_root.is_dir() or target_root is None:
             continue
@@ -127,7 +210,7 @@ def _restore_delete_transaction(transaction_dir: Path, payload: Mapping[str, Any
                 )
             )
 
-    index_target = _manifest_path(payload, "index_target")
+    index_target = _manifest_path(payload, "index_target", theater_root)
     story_id = str(payload.get("story_id") or "").strip()
     raw_slots = payload.get("index_story_slots")
     if index_target is not None and story_id and isinstance(raw_slots, dict) and raw_slots:
@@ -187,7 +270,17 @@ def recover_numeric_v2_delete_transactions(theater_root: Path) -> None:
             continue
         state = payload.get("state")
         if state == "prepared":
-            _restore_delete_transaction(transaction_dir, payload)
+            if not _manifest_paths_resolvable(payload, theater_root):
+                # A legacy absolute manifest from an unrecognised layout: restoring
+                # could write outside the current root, and deleting would lose the
+                # only backup. Keep it for manual recovery.
+                logger.warning(
+                    "Numeric v2 delete transaction %s names paths outside the current "
+                    "theater root; leaving it in place",
+                    transaction_dir,
+                )
+                continue
+            _restore_delete_transaction(transaction_dir, payload, theater_root)
         elif state not in _SETTLED_DELETE_TRANSACTION_STATES:
             # Unknown state: keep the backup rather than guess.
             logger.warning(
@@ -292,13 +385,17 @@ def _prepare_delete_transaction(
             "schema": DELETE_TRANSACTION_SCHEMA,
             "state": "prepared",
             "story_id": story_id,
-            "package_target": str(package_target),
-            "session_root": str(session_root),
-            "public_archive_root": str(public_archive_root),
-            "receipt_root": str(archive_store.root),
-            "public_archive_quarantine_root": str(archive_store.public_archive_quarantine_root),
+            # Relative to the theater root: a storage-root migration or cloud
+            # restore moves the whole tree, and recovery must follow it.
+            "package_target": _manifest_relative(theater_root, package_target),
+            "session_root": _manifest_relative(theater_root, session_root),
+            "public_archive_root": _manifest_relative(theater_root, public_archive_root),
+            "receipt_root": _manifest_relative(theater_root, archive_store.root),
+            "public_archive_quarantine_root": _manifest_relative(
+                theater_root, archive_store.public_archive_quarantine_root,
+            ),
             "quarantined_archive_files": [path.name for path in quarantined_archives],
-            "index_target": str(index_target),
+            "index_target": _manifest_relative(theater_root, index_target),
             "index_existed": index_target.is_file(),
             "index_story_slots": index_stories.get(story_id, {}),
         }
@@ -344,7 +441,7 @@ def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, 
         _atomic_write_manifest(manifest_path, manifest)
     except BaseException:
         try:
-            _restore_delete_transaction(transaction_dir, manifest)
+            _restore_delete_transaction(transaction_dir, manifest, theater_root)
         except Exception as rollback_exc:
             raise NumericV2StoreError("numeric_story_delete_rollback_failed") from rollback_exc
         # rmtree may silently leave the manifest behind (e.g. a Windows share

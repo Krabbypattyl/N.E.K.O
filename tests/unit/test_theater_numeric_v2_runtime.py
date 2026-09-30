@@ -2868,6 +2868,7 @@ def test_story_delete_restore_continues_after_a_failed_step(tmp_path):
                 "package_target": str(blocker / "packages" / "story.json"),
                 "session_root": str(session_root),
             },
+            tmp_path,
         )
 
     assert (session_root / "s1.json").read_text(encoding="utf-8") == "session"
