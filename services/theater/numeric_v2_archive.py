@@ -927,13 +927,21 @@ class NumericV2ArchiveStore:
         )
         return archives
 
-    def quarantine_invalid_public_archives(self, quarantine_root: Path) -> int:
+    def quarantine_invalid_public_archives(
+        self,
+        quarantine_root: Path,
+        *,
+        skip_story_ids: frozenset[str] | set[str] = frozenset(),
+    ) -> int:
         """Move unparseable public archives aside so strict scans stop failing on them.
 
         Only files that the normal listing already hides and the strict
         enumeration refuses are moved; nothing is deleted, and files that fail
-        with an OS error are left in place because they may be valid.
+        with an OS error are left in place because they may be valid. Archives
+        that still name a story in ``skip_story_ids`` (a delete rollback that
+        failed) are left for its recovery.
         """
+        blocked_stories = {str(value).strip() for value in skip_story_ids if str(value).strip()}
         if not self.public_archive_root.is_dir():
             return 0
         moved = 0
@@ -946,6 +954,12 @@ class NumericV2ArchiveStore:
                     continue
                 payload = None
             if self._valid_public_archive_payload(payload) or not path.is_file():
+                continue
+            if (
+                payload is not None
+                and isinstance(payload.get("story_id"), str)
+                and payload["story_id"].strip() in blocked_stories
+            ):
                 continue
             try:
                 quarantine_root.mkdir(parents=True, exist_ok=True)
@@ -1495,12 +1509,30 @@ class NumericV2ArchiveStore:
             pass
         return removed
 
-    def cleanup_receipts(self, active_session_ids: set[str]) -> dict[str, int]:
-        """冷启动清理无 Session 指向或已被新指针替换的回执。"""  # noqa: DOCSTRING_CJK
+    def cleanup_receipts(
+        self,
+        active_session_ids: set[str],
+        *,
+        skip_story_ids: frozenset[str] | set[str] = frozenset(),
+    ) -> dict[str, int]:
+        """冷启动清理无 Session 指向或已被新指针替换的回执。
+
+        skip_story_ids 中的剧本（删除回滚失败、等待人工恢复）其回执、指针与待提交档案
+        原样保留，也不为它们排队撤回：这些剧本的 Session 可能正缺失在事务备份里。
+        """  # noqa: DOCSTRING_CJK
 
         if not self.root.is_dir():
             return {"receipts_removed": 0, "pointers_removed": 0}
         normalized_active = {str(value) for value in active_session_ids if str(value)}
+        blocked_stories = {str(value).strip() for value in skip_story_ids if str(value).strip()}
+
+        def blocked(payload: Mapping[str, Any] | None) -> bool:
+            return bool(
+                blocked_stories
+                and payload is not None
+                and str(payload.get("story_id") or "").strip() in blocked_stories
+            )
+
         kept_receipt_ids: set[str] = set()
         # Obligations a live receipt already inherited need no queue entry.
         carried_request_ids: set[str] = set()
@@ -1522,6 +1554,10 @@ class NumericV2ArchiveStore:
                     raise
                 receipt = None
             session_id = str((receipt or {}).get("session_id") or "")
+            if blocked(receipt):
+                # Leave a recovery-blocked story exactly as it is.
+                kept_receipt_ids.add(receipt_id)
+                continue
             if receipt is not None and session_id in normalized_active:
                 kept_receipt_ids.add(receipt_id)
                 carried_request_ids.update(
@@ -1551,6 +1587,9 @@ class NumericV2ArchiveStore:
                 if isinstance(exc.__cause__, OSError):
                     raise
                 receipt = None
+            if blocked(receipt):
+                kept_receipt_ids.add(receipt_path.stem)
+                continue
             receipt_session_id = str((receipt or {}).get("session_id") or "")
             if (
                 receipt is not None
@@ -1571,6 +1610,14 @@ class NumericV2ArchiveStore:
             receipt_id = staged_path.stem.removeprefix("staged-")
             if receipt_id in kept_receipt_ids:
                 continue
+            if blocked_stories:
+                try:
+                    staged = self._read(staged_path)
+                except NumericV2ArchiveError:
+                    # Unreadable now: it may belong to a blocked story, keep it.
+                    continue
+                if blocked(staged):
+                    continue
             try:
                 staged_path.unlink()
             except FileNotFoundError:

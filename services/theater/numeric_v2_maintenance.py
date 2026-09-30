@@ -911,11 +911,17 @@ def maintain_numeric_v2_storage_once(
                 for item in list_numeric_v2_sessions(theater_root)
             }
             archive_store = NumericV2ArchiveStore(theater_root)
-            result.update(archive_store.cleanup_receipts(active_session_ids))
+            # A blocked story's sessions may be missing (they sit in its transaction
+            # backup), so ownership judged from sessions on disk would delete its
+            # receipts and queue retractions of its memory; leave it untouched.
+            result.update(archive_store.cleanup_receipts(
+                active_session_ids, skip_story_ids=blocked_stories,
+            ))
             # 损坏的公开冷档案会让角色改名/删除的严格快照对所有角色失败；
             # 与坏档 Session 一样移入隔离区，但使用独立目录，不参与数量裁剪删除。
             archives_quarantined = archive_store.quarantine_invalid_public_archives(
-                Path(theater_root) / "numeric_v2" / PUBLIC_ARCHIVE_QUARANTINE_DIRNAME
+                Path(theater_root) / "numeric_v2" / PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
+                skip_story_ids=blocked_stories,
             )
             if archives_quarantined:
                 logger.warning("Numeric v2 已隔离 %d 份无法解析的公开冷档案", archives_quarantined)

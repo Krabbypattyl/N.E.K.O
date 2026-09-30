@@ -2932,6 +2932,77 @@ async def test_unrecoverable_delete_transaction_blocks_only_its_story(tmp_path, 
     ) is None
 
 
+@pytest.mark.asyncio
+async def test_startup_cleanup_leaves_a_recovery_blocked_story_untouched(tmp_path, monkeypatch):
+    """Receipts of a story whose delete rollback failed survive startup cleanup.
+
+    The interrupted delete already removed the story's session, so judging
+    ownership from sessions on disk would delete its receipts, pointer and staged
+    archive and queue retractions of its memory writes.
+    """
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_MAINTAINED_ROOTS", set())
+    monkeypatch.setattr(numeric_v2_maintenance, "_RECOVERY_BLOCKED_STORIES", {})
+    story, registry, runtime, stored = await _started_story_session(tmp_path, "blocked_receipts")
+    story_id = story["meta"]["story_id"]
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+
+    def unresolved_receipt(session_id, story_package_id):
+        session = replace(stored.session, session_id=session_id, story_package_id=story_package_id)
+        receipt = store.update(store.create_or_get(session), status="pending", archive_attempt=1)
+        store._write(store._staged_archive_path(receipt["receipt_id"]), {
+            "story_id": story_package_id, "session_id": session_id,
+        })
+        return receipt
+
+    blocked_receipt = unresolved_receipt(stored.session.session_id, story_id)
+    blocked_files = [
+        store._receipt_path(blocked_receipt["receipt_id"]),
+        store._staged_archive_path(blocked_receipt["receipt_id"]),
+        store._session_path(stored.session.session_id),
+    ]
+    # A second run of the blocked story whose receipt the interrupted delete
+    # already removed; its staged archive still names the story.
+    half_deleted = unresolved_receipt("blocked_half_deleted", story_id)
+    blocked_files.append(store._staged_archive_path(half_deleted["receipt_id"]))
+    # And one whose session pointer it removed, leaving the receipt itself.
+    unpointed = unresolved_receipt("blocked_unpointed", story_id)
+    blocked_files.append(store._receipt_path(unpointed["receipt_id"]))
+    snapshot = {path: path.read_bytes() for path in blocked_files}
+    # Another story's receipt without a session is still cleaned up as before.
+    orphan = unresolved_receipt("orphan_session", "other_story")
+
+    numeric_v2_maintenance._prepare_delete_transaction(tmp_path, registry, story_id)
+    # The process died after deleting the session and package; the rollback now fails.
+    runtime.store._path(stored.session.session_id).unlink()
+    registry.package_path(story_id).unlink()
+    store._receipt_path(half_deleted["receipt_id"]).unlink()
+    store._session_path("blocked_unpointed").unlink()
+    # A damaged public archive that still names the blocked story stays for its recovery.
+    archive_dir = tmp_path / "numeric_v2" / "public_archives"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    blocked_archive = archive_dir / "blocked_invalid.json"
+    blocked_archive.write_text(json.dumps({"story_id": story_id}), encoding="utf-8")
+
+    def failing_restore(backup, target):
+        raise PermissionError(13, "access denied", str(target))
+
+    monkeypatch.setattr(numeric_v2_maintenance, "_restore_missing_file", failing_restore)
+    result = numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, registry, character_ids_by_name={"Lan": _binding()["character_id"]},
+    )
+
+    assert result["recovery_blocked_stories"] == [story_id]
+    assert {path: path.read_bytes() for path in blocked_files if path.is_file()} == snapshot
+    assert store.load(half_deleted["receipt_id"]) is None
+    assert blocked_archive.is_file()
+    assert store.load(orphan["receipt_id"]) is None
+    assert not store._staged_archive_path(orphan["receipt_id"]).exists()
+    # Only the orphan's possibly landed write is queued; the blocked story queues nothing.
+    queued = store.pending_retract_intents(character_id=_binding()["character_id"])
+    assert [intent["story_id"] for intent in queued] == ["other_story"]
+
+
 def test_story_delete_restore_continues_after_a_failed_step(tmp_path):
     transaction_dir = tmp_path / "tx"
     (transaction_dir / "sessions").mkdir(parents=True)
