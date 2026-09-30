@@ -174,6 +174,20 @@ class NumericV2PackageRegistry:
             raise NumericV2PackageError("invalid_numeric_v2_story_id")
         return self.root / f"{story_id}.json"
 
+    def package_file_exists(self, story_id: str) -> bool:
+        """True only when the package file name matches ``story_id`` literally.
+
+        On case-insensitive filesystems ``foo.json`` also opens ``Foo.json``;
+        the directory listing keeps the exact spelling, so a request for
+        another casing cannot load, delete or cascade into a different story.
+        """
+
+        path = self.package_path(story_id)
+        try:
+            return path.name in os.listdir(self.root) and path.is_file()
+        except FileNotFoundError:
+            return False
+
     def validate_package(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         compiled = self.compile_for_import(payload)
         meta = compiled.story["meta"]
@@ -220,12 +234,15 @@ class NumericV2PackageRegistry:
         from .numeric_v2_runtime import NumericV2Engine
 
         path = self.package_path(story_id)
-        if not path.is_file():
-            raise NumericV2PackageNotFoundError("numeric_story_not_found")
         try:
+            if not self.package_file_exists(story_id):
+                raise NumericV2PackageNotFoundError("numeric_story_not_found")
             payload = json.loads(path.read_text(encoding="utf-8"))
             # 运行时加载与导入使用同一版本门禁，旧包只能先经过作者升级流程。
             compiled = self.compile_for_import(payload)
+            if compiled.story_id != story_id:
+                # A copied or renamed file would run under another story's sessions.
+                raise NumericV2PackageError("numeric_story_id_mismatch")
             return NumericV2Engine(compiled)
         except NumericV2CompileError as exc:
             raise NumericV2PackageError("numeric_v2_contract_invalid") from exc

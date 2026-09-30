@@ -692,8 +692,7 @@ async def preview_numeric_story_delete(story_id: str):
     try:
         registry = await _registry(config_manager)
         # 预览和删除使用相同的安全路径检查，损坏或旧合同剧本也能进入删除确认。
-        package_path = registry.package_path(normalized_story_id)
-        if not await asyncio.to_thread(package_path.is_file):
+        if not await asyncio.to_thread(registry.package_file_exists, normalized_story_id):
             raise NumericV2PackageNotFoundError("numeric_story_not_found")
         sessions = await asyncio.to_thread(
             list_numeric_v2_sessions,
@@ -729,7 +728,7 @@ async def delete_numeric_story(story_id: str, request: Request):
     try:
         registry = await _registry(config_manager)
         # 删除恢复入口只校验安全路径与文件存在性；损坏包无法编译时也必须允许原子清理。
-        package_path = registry.package_path(normalized_story_id)
+        registry.package_path(normalized_story_id)
         # 剧本删除与角色改名/删除会读写同一批 Session、回执和归档，统一按角色锁→故事锁串行。
         async with _memory_operation_lock(
             config_manager, normalized_story_id,
@@ -737,7 +736,9 @@ async def delete_numeric_story(story_id: str, request: Request):
             _numeric_root(config_manager),
             normalized_story_id,
         ):
-            if not await asyncio.to_thread(package_path.is_file):
+            # Exact spelling: on a case-insensitive filesystem another casing would
+            # delete that story's package but cascade only to this id's sessions.
+            if not await asyncio.to_thread(registry.package_file_exists, normalized_story_id):
                 raise NumericV2PackageNotFoundError("numeric_story_not_found")
             await _assert_numeric_writable(config_manager, "packages")
             deleted_session_count = await delete_numeric_v2_story_transactionally(

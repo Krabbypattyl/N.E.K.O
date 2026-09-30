@@ -403,6 +403,39 @@ def _client(
     return _NumericV2TestClient(app)
 
 
+def test_story_id_must_match_the_package_file_literally(tmp_path, monkeypatch):
+    """On case-insensitive filesystems "numeric_v2_contract.json" also answers other casings."""
+
+    other_casing = "NUMERIC_V2_CONTRACT"
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post("/api/theater-numeric/session/start", json={
+            "story_id": "numeric_v2_contract", "session_id": "case_session",
+        })
+        assert started.status_code == 200
+        preview = client.get(f"/api/theater-numeric/packages/{other_casing}/delete-preview")
+        deleted = client.delete(f"/api/theater-numeric/packages/{other_casing}")
+        wrong_start = client.post("/api/theater-numeric/session/start", json={
+            "story_id": other_casing, "session_id": "case_session_2",
+        })
+
+    assert preview.status_code == 404
+    assert deleted.status_code == 404
+    assert wrong_start.status_code == 404
+    packages = tmp_path / "theater" / "numeric_v2" / "packages"
+    assert [path.name for path in packages.glob("*.json")] == ["numeric_v2_contract.json"]
+    assert (tmp_path / "theater" / "numeric_v2" / "sessions" / "case_session.json").is_file()
+
+
+def test_load_engine_rejects_package_whose_story_id_differs_from_its_file(tmp_path):
+    registry = NumericV2PackageRegistry(tmp_path / "packages")
+    registry.root.mkdir(parents=True)
+    (registry.root / "renamed_copy.json").write_text(
+        json.dumps(numeric_v2_story(), ensure_ascii=False), encoding="utf-8",
+    )
+    with pytest.raises(NumericV2PackageError, match="numeric_story_id_mismatch"):
+        registry.load_engine("renamed_copy")
+
+
 def test_player_story_list_hides_metric_gating_hints(tmp_path, monkeypatch):
     """Unused-metric warnings and the metric count stay on author-facing responses only."""
 
