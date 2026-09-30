@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 
 from .numeric_v2_archive import (
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
+    SESSION_QUARANTINE_DIRNAME,
     NumericV2ArchiveError,
     NumericV2ArchiveStore,
 )
@@ -45,12 +46,15 @@ DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
 INDEX_QUARANTINE_DIRNAME = "quarantine_indexes"
 # 这些状态只需清理事务目录，绝不重放备份。
 _SETTLED_DELETE_TRANSACTION_STATES = frozenset({"committed", "rolled_back", "superseded"})
+# Backup subdirectory for quarantined session files inside a delete transaction.
+_QUARANTINED_SESSION_BACKUP_DIRNAME = "quarantined_sessions"
 _MANIFEST_PATH_KEYS = (
     "package_target",
     "session_root",
     "public_archive_root",
     "receipt_root",
     "public_archive_quarantine_root",
+    "session_quarantine_root",
     "index_target",
 )
 
@@ -108,7 +112,7 @@ def _expected_manifest_relative(payload: Mapping[str, Any], key: str) -> PurePos
         "public_archive_root": "numeric_v2/public_archives",
         "receipt_root": "numeric_v2/end_receipts",
         "public_archive_quarantine_root": f"numeric_v2/{PUBLIC_ARCHIVE_QUARANTINE_DIRNAME}",
-        "session_quarantine_root": "numeric_v2/quarantine",
+        "session_quarantine_root": f"numeric_v2/{SESSION_QUARANTINE_DIRNAME}",
         "index_target": "numeric_v2/story_sessions.json",
     }.get(key, "")
     return PurePosixPath(fixed) if fixed else None
@@ -198,6 +202,7 @@ def _restore_delete_transaction(
         ("public_archive_root", "public_archives"),
         ("receipt_root", "end_receipts"),
         ("public_archive_quarantine_root", PUBLIC_ARCHIVE_QUARANTINE_DIRNAME),
+        ("session_quarantine_root", _QUARANTINED_SESSION_BACKUP_DIRNAME),
     ):
         target_root = _manifest_path(payload, root_key, theater_root)
         backup_root = transaction_dir / backup_dirname
@@ -381,6 +386,16 @@ def _prepare_delete_transaction(
         for source in quarantined_archives:
             quarantine_backup_root.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, quarantine_backup_root / source.name)
+        # Quarantined session files (full ledger) of this story follow the same
+        # rule: attributable ones are erased with the package, unknown ones kept.
+        quarantined_sessions = archive_store.quarantined_session_paths(
+            story_id=story_id,
+            session_ids=story_session_ids,
+        )
+        session_quarantine_backup_root = transaction_dir / _QUARANTINED_SESSION_BACKUP_DIRNAME
+        for source in quarantined_sessions:
+            session_quarantine_backup_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, session_quarantine_backup_root / source.name)
         manifest = {
             "schema": DELETE_TRANSACTION_SCHEMA,
             "state": "prepared",
@@ -395,6 +410,10 @@ def _prepare_delete_transaction(
                 theater_root, archive_store.public_archive_quarantine_root,
             ),
             "quarantined_archive_files": [path.name for path in quarantined_archives],
+            "session_quarantine_root": _manifest_relative(
+                theater_root, archive_store.session_quarantine_root,
+            ),
+            "quarantined_session_files": [path.name for path in quarantined_sessions],
             "index_target": _manifest_relative(theater_root, index_target),
             "index_existed": index_target.is_file(),
             "index_story_slots": index_stories.get(story_id, {}),
@@ -436,6 +455,8 @@ def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, 
         for name in manifest["quarantined_archive_files"]:
             # Backed up in the prepared transaction above, so a rollback restores it.
             (archive_store.public_archive_quarantine_root / name).unlink(missing_ok=True)
+        for name in manifest["quarantined_session_files"]:
+            (archive_store.session_quarantine_root / name).unlink(missing_ok=True)
         registry.delete_package(story_id)
         manifest["state"] = "committed"
         _atomic_write_manifest(manifest_path, manifest)
@@ -512,7 +533,7 @@ def audit_numeric_v2_storage(
     """启动/维护时全盘复验；日常恢复路径不扫描 Session 目录。"""  # noqa: DOCSTRING_CJK
 
     session_root = Path(theater_root) / "numeric_v2" / "sessions"
-    quarantine_root = Path(theater_root) / "numeric_v2" / "quarantine"
+    quarantine_root = Path(theater_root) / "numeric_v2" / SESSION_QUARANTINE_DIRNAME
     index_path = Path(theater_root) / "numeric_v2" / "story_sessions.json"
     known_characters = {
         str(name).strip(): str(character_id).strip()

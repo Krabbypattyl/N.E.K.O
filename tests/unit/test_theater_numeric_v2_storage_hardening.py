@@ -171,3 +171,203 @@ async def test_session_file_io_retries_windows_share_violation(tmp_path, monkeyp
     assert replace_calls["failed"] == 2
     assert read_calls["failed"] == 2
 
+
+_OTHER_CHARACTER = "character_22222222222222222222222222222222"
+
+
+def _quarantine_copy(theater_root, source, session_id, *, reason="invalid", mutate=None, raw=None):
+    """Place one session-quarantine file named exactly like the startup audit does."""
+    quarantine_root = theater_root / "numeric_v2" / "quarantine"
+    staging = theater_root / "staging"
+    staging.mkdir(exist_ok=True)
+    # The audit quarantines ``sessions/<session_id>.json`` and keeps that name as the suffix.
+    staged = staging / f"{session_id}.json"
+    if raw is not None:
+        staged.write_text(raw, encoding="utf-8")
+    else:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        if mutate is not None:
+            mutate(payload)
+        staged.write_text(json.dumps(payload), encoding="utf-8")
+    before = set(quarantine_root.glob("*")) if quarantine_root.is_dir() else set()
+    numeric_v2_maintenance._quarantine_session(staged, quarantine_root, reason)
+    (created,) = set(quarantine_root.glob("*")) - before
+    return created
+
+
+async def _quarantine_fixture(theater_root):
+    """One live Lan session plus quarantined copies: own, other character, other story, unknown."""
+    story = _branch_story()
+    story_id = story["meta"]["story_id"]
+    registry = NumericV2PackageRegistry(theater_root / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), theater_root)
+    stored = await runtime.start_session(
+        session_id="runtime_quarantine_live",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    source = runtime.store._path(stored.session.session_id)
+
+    def rebind(session_id, **binding):
+        def mutate(payload):
+            payload["session"]["session_id"] = session_id
+            payload["session"]["catgirl_binding"].update(binding)
+        return mutate
+
+    def restory(payload):
+        payload["session"]["session_id"] = "runtime_other_story"
+        payload["session"]["story_package_id"] = "other_story"
+
+    files = {
+        # Duplicate of the live session: attributable by its name/session id.
+        "duplicate": _quarantine_copy(
+            theater_root, source, stored.session.session_id, reason="duplicate",
+        ),
+        "own": _quarantine_copy(
+            theater_root, source, "runtime_own_old", mutate=rebind("runtime_own_old"),
+        ),
+        "other_character": _quarantine_copy(
+            theater_root, source, "runtime_other_char",
+            mutate=rebind("runtime_other_char", character_id=_OTHER_CHARACTER, catgirl_name="Other"),
+        ),
+        "other_story": _quarantine_copy(
+            theater_root, source, "runtime_other_story", mutate=restory,
+        ),
+        "unknown": _quarantine_copy(theater_root, source, "runtime_corrupt", raw="{broken"),
+        # Unparseable, but its name still records an in-scope session id.
+        "corrupt_live": _quarantine_copy(
+            theater_root, source, stored.session.session_id, raw="{broken",
+        ),
+        # Another character that once used the same display name.
+        "same_name_other": _quarantine_copy(
+            theater_root, source, "runtime_same_name",
+            mutate=rebind("runtime_same_name", character_id=_OTHER_CHARACTER),
+        ),
+    }
+    return story_id, registry, runtime, stored, files
+
+
+@pytest.mark.asyncio
+async def test_quarantined_session_attribution_follows_archive_policy(tmp_path):
+    story_id, _registry, _runtime, stored, files = await _quarantine_fixture(tmp_path)
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+
+    character_scope = dict(
+        character_id=_binding()["character_id"],
+        legacy_catgirl_name="Lan",
+        session_ids=[stored.session.session_id],
+    )
+    assert set(store.quarantined_session_paths(**character_scope, include_unattributable=True)) == {
+        files["duplicate"], files["own"], files["other_story"], files["unknown"],
+        files["corrupt_live"],
+    }
+    assert set(store.quarantined_session_paths(**character_scope)) == {
+        files["duplicate"], files["own"], files["other_story"], files["corrupt_live"],
+    }
+    # Package delete: story scope, attributable only.
+    assert set(store.quarantined_session_paths(
+        story_id=story_id, session_ids=[stored.session.session_id],
+    )) == {
+        files["duplicate"], files["own"], files["other_character"], files["corrupt_live"],
+        files["same_name_other"],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_commit", [False, True])
+async def test_package_delete_erases_attributable_quarantined_sessions_recoverably(
+    tmp_path, monkeypatch, fail_commit,
+):
+    story_id, registry, _runtime, _stored, files = await _quarantine_fixture(tmp_path)
+    contents = {name: path.read_bytes() for name, path in files.items()}
+    if fail_commit:
+        monkeypatch.setattr(
+            registry, "delete_package", lambda _story_id: (_ for _ in ()).throw(OSError("busy")),
+        )
+        with pytest.raises(OSError):
+            await numeric_v2_maintenance.delete_numeric_v2_story_transactionally(
+                tmp_path, registry, story_id,
+            )
+        assert {name: path.read_bytes() for name, path in files.items()} == contents
+        return
+
+    await numeric_v2_maintenance.delete_numeric_v2_story_transactionally(tmp_path, registry, story_id)
+
+    assert not files["duplicate"].exists()
+    assert not files["own"].exists()
+    assert not files["other_character"].exists()
+    assert not files["corrupt_live"].exists()
+    # Another story's copy and the unattributable one survive a package delete.
+    assert files["other_story"].read_bytes() == contents["other_story"]
+    assert files["unknown"].read_bytes() == contents["unknown"]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_package_delete_restores_quarantined_sessions(tmp_path):
+    story_id, registry, _runtime, _stored, files = await _quarantine_fixture(tmp_path)
+    contents = {name: path.read_bytes() for name, path in files.items()}
+    _dir, _manifest_path, manifest = numeric_v2_maintenance._prepare_delete_transaction(
+        tmp_path, registry, story_id,
+    )
+    for name in manifest["quarantined_session_files"]:
+        (tmp_path / "numeric_v2" / "quarantine" / name).unlink()
+
+    numeric_v2_maintenance.recover_numeric_v2_delete_transactions(tmp_path)
+
+    assert {name: path.read_bytes() for name, path in files.items()} == contents
+
+
+@pytest.mark.asyncio
+async def test_forget_erases_story_character_quarantined_sessions(tmp_path):
+    story_id, _registry, _runtime, stored, files = await _quarantine_fixture(tmp_path)
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+
+    pending = store.prepare_forget(
+        story_id=story_id,
+        character_id=_binding()["character_id"],
+        legacy_catgirl_name="Lan",
+        session=stored.session,
+    )
+    store.delete_forget_files(pending)
+
+    assert not files["duplicate"].exists()
+    assert not files["own"].exists()
+    assert not files["unknown"].exists()
+    assert not files["corrupt_live"].exists()
+    assert files["other_character"].is_file()
+    assert files["same_name_other"].is_file()
+    assert files["other_story"].is_file()
+
+
+def test_forget_rejects_path_like_quarantined_session_names(tmp_path):
+    store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
+    with pytest.raises(numeric_v2_archive.NumericV2ArchiveError):
+        store.delete_forget_files({
+            "archive_files": [],
+            "receipt_files": [],
+            "quarantined_session_files": ["../sessions/live.json"],
+        })
+
+
+@pytest.mark.asyncio
+async def test_character_delete_snapshots_and_erases_quarantined_sessions(tmp_path):
+    from main_routers.characters_router import crud
+
+    _story_id, _registry, _runtime, stored, files = await _quarantine_fixture(tmp_path)
+    purge = await crud.collect_numeric_v2_character_purge(
+        tmp_path, character_id=_binding()["character_id"], legacy_catgirl_name="Lan",
+    )
+    erased = {
+        files["duplicate"], files["own"], files["other_story"], files["unknown"],
+        files["corrupt_live"],
+    }
+    assert set(purge.quarantined_session_paths) == erased
+    assert erased <= set(purge.snapshot_targets())
+
+    await crud.purge_numeric_v2_character_data(purge)
+
+    assert not any(path.exists() for path in erased)
+    assert files["other_character"].is_file()
+    assert files["same_name_other"].is_file()
+

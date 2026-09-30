@@ -487,6 +487,7 @@ class NumericV2CharacterPurge:
     receipt_paths: tuple[Path, ...]
     forget_paths: tuple[Path, ...]
     quarantined_archive_paths: tuple[Path, ...]
+    quarantined_session_paths: tuple[Path, ...] = ()
 
     @property
     def index_path(self) -> Path:
@@ -503,6 +504,7 @@ class NumericV2CharacterPurge:
             *self.receipt_paths,
             *self.forget_paths,
             *self.quarantined_archive_paths,
+            *self.quarantined_session_paths,
             self.index_path,
         ]
 
@@ -563,6 +565,17 @@ async def collect_numeric_v2_character_purge(
             include_unattributable=True,
         )
     )
+    # Startup audit moves invalid/duplicate session files (full ledger) into the
+    # session quarantine; the same attribution policy applies to them.
+    quarantined_session_paths = tuple(
+        await asyncio.to_thread(
+            archive_store.quarantined_session_paths,
+            character_id=character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+            session_ids=[path.stem for path in session_paths],
+            include_unattributable=True,
+        )
+    )
     return NumericV2CharacterPurge(
         theater_root=Path(numeric_theater_root),
         character_id=character_id,
@@ -572,11 +585,12 @@ async def collect_numeric_v2_character_purge(
         receipt_paths=receipt_paths,
         forget_paths=forget_paths,
         quarantined_archive_paths=quarantined_archive_paths,
+        quarantined_session_paths=quarantined_session_paths,
     )
 
 
 async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> None:
-    """Erase a collected character's theater data (sessions, archives, receipts, intents, quarantine)."""
+    """Erase a collected character's theater data (sessions, archives, receipts, intents, quarantines)."""
     archive_store = purge.archive_store
     # 角色卡是剧场 Session 槽位的一部分；删除角色时必须同步删除所有剧本下的对应槽位。
     await delete_numeric_v2_sessions(
@@ -599,7 +613,10 @@ async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> Non
     for intent_path in purge.forget_paths:
         await _await_thread_mutation(intent_path.unlink, missing_ok=True)
     # 隔离区冷档案已进入调用方快照；删除失败时随其它目标一并恢复。
-    for quarantined_path in purge.quarantined_archive_paths:
+    for quarantined_path in (
+        *purge.quarantined_archive_paths,
+        *purge.quarantined_session_paths,
+    ):
         await _await_thread_mutation(quarantined_path.unlink, missing_ok=True)
 
 
