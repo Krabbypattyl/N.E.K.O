@@ -1665,7 +1665,7 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
         else:
             os.environ["NEKO_THEATER_TRACE_DIR"] = previous_trace_dir
 
-    summary = summarize_stories(stories)
+    summary = _report_summary(stories, selection)
     report = {
         "schema": REPORT_SCHEMA,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1689,8 +1689,27 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
         "elapsed_seconds": round(time.monotonic() - started_at, 3),
     }
     _atomic_write_json(report_path, report)
+    return _exit_code(summary), report_path
+
+
+def _report_summary(
+    stories: Sequence[Mapping[str, Any]],
+    selection: Mapping[str, Any],
+) -> dict[str, int]:
+    """Summarise story results plus run-level selection problems."""
+
+    summary = summarize_stories(stories)
+    # A baseline whose pinned titles drifted no longer measures the same sample:
+    # the run still completes, but the result must not read as a clean pass.
+    summary["baseline_title_mismatch_count"] = len(selection.get("title_mismatches") or [])
+    return summary
+
+
+def _exit_code(summary: Mapping[str, Any]) -> int:
+    """Return 1 when any failure counter in the report summary is non-zero."""
+
     has_failure = any(
-        summary[key]
+        summary.get(key)
         for key in (
             "fatal_count",
             "turn_error_count",
@@ -1698,9 +1717,10 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
             "isolation_failure_count",
             # 模拟器失败意味着轨迹未完成，不能因没有正式回合错误而退出成功。
             "dynamic_player_error_count",
+            "baseline_title_mismatch_count",
         )
     )
-    return (1 if has_failure else 0), report_path
+    return 1 if has_failure else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -81,7 +81,7 @@ def test_numeric_v2_stress_parser_accepts_text_trace_directory(tmp_path):
 
 
 def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift(tmp_path):
-    # 标题变化只记录为报告诊断，不改变固定 story_id 的执行顺序。
+    # 标题变化记入报告并使退出码非零（见下一个用例），但不改变固定 story_id 的执行顺序。
     installed = {story_id: {"title": title} for story_id, title in _BASELINE_TITLES.items()}
     drifted_story_id = list(_BASELINE_TITLES)[-1]
     installed[drifted_story_id] = {"title": "改稿后的标题"}
@@ -98,6 +98,34 @@ def test_numeric_v2_stress_baseline_selection_is_stable_and_reports_title_drift(
         "expected_title": _BASELINE_TITLES[drifted_story_id],
         "actual_title": "改稿后的标题",
     }]
+
+
+def test_numeric_v2_stress_baseline_title_drift_fails_the_exit_code(tmp_path):
+    installed = {story_id: {"title": title} for story_id, title in _BASELINE_TITLES.items()}
+    installed[list(_BASELINE_TITLES)[0]] = {"title": "改稿后的标题"}
+    args = run_numeric_v2_stress._build_parser().parse_args(
+        ["--baseline", str(_write_baseline_manifest(tmp_path))],
+    )
+    _story_ids, drifted = run_numeric_v2_stress._resolve_story_selection(args, installed)
+    _story_ids, clean = run_numeric_v2_stress._resolve_story_selection(
+        args, {story_id: {"title": title} for story_id, title in _BASELINE_TITLES.items()},
+    )
+
+    drifted_summary = run_numeric_v2_stress._report_summary([], drifted)
+    assert drifted_summary["baseline_title_mismatch_count"] == 1
+    assert run_numeric_v2_stress._exit_code(drifted_summary) == 1
+    assert run_numeric_v2_stress._exit_code(run_numeric_v2_stress._report_summary([], clean)) == 0
+    # _async_main needs live models; pin that it reports and exits through these helpers.
+    import ast
+    import inspect
+
+    called = {
+        node.func.id
+        for node in ast.walk(ast.parse(inspect.getsource(run_numeric_v2_stress._async_main)))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {"_report_summary", "_exit_code"} <= called
+    assert "summarize_stories" not in called
 
 
 def test_numeric_v2_stress_baseline_selection_reports_missing_focus_package(tmp_path):
