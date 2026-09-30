@@ -433,6 +433,7 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     assert ("/record_surfaced/{lanlan_name}", "POST") in fenced
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/forget", "POST") in fenced
+    assert ("/internal/memory/{lanlan_name}/theater/retract", "POST") in fenced
 
 
 @pytest.mark.unit
