@@ -1486,19 +1486,54 @@ def test_numeric_v2_condition_overlap_matches_brute_force_oracle():
 
 
 def test_numeric_v2_condition_overlap_scales_linearly_with_rows():
-    """Large condition lists must not trigger pairwise or candidate-squared checks."""
+    """Large condition lists must not trigger pairwise or candidate-squared checks.
 
-    import time
+    Counts row field reads instead of timing the call, so the bound does not
+    depend on machine speed: a linear pass reads each row a constant number of
+    times, while a pairwise or candidate-by-row scan reads rows millions of
+    times and trips the budget long before it would finish.
+    """
 
     from services.theater.numeric_v2 import _conditions_overlap
 
-    ranges = {"trust": (0, 100_000)}
-    left_any = {"any": [{"metric": "trust", "op": "==", "value": 2 * index} for index in range(3000)]}
-    right_any = {"any": [{"metric": "trust", "op": "==", "value": 2 * index + 1} for index in range(3000)]}
-    many_all = {"all": [{"metric": "trust", "op": "!=", "value": index} for index in range(3000)]}
+    rows_per_list = 3000
+    reads_per_row_budget = 20
 
-    started = time.perf_counter()
-    assert _conditions_overlap(left_any, right_any, ranges) is False
-    assert _conditions_overlap(many_all, {"all": []}, ranges) is True
-    assert _conditions_overlap(left_any, many_all, ranges) is True
-    assert time.perf_counter() - started < 1.0
+    class _ReadBudgetExceeded(AssertionError):
+        pass
+
+    class _CountingRow(dict):
+        reads = 0
+        budget = 0
+
+        @classmethod
+        def _tick(cls) -> None:
+            cls.reads += 1
+            if cls.reads > cls.budget:
+                raise _ReadBudgetExceeded(f"row reads exceeded {cls.budget}")
+
+        def get(self, key, default=None):
+            self._tick()
+            return super().get(key, default)
+
+        def __getitem__(self, key):
+            self._tick()
+            return super().__getitem__(key)
+
+    def rows(op: str, value) -> list[dict]:
+        return [_CountingRow(metric="trust", op=op, value=value(index)) for index in range(rows_per_list)]
+
+    def overlap(left: dict, right: dict) -> bool:
+        row_count = sum(len(next(iter(side.values()))) for side in (left, right))
+        _CountingRow.reads = 0
+        _CountingRow.budget = reads_per_row_budget * max(row_count, 1)
+        return _conditions_overlap(left, right, ranges)
+
+    ranges = {"trust": (0, 100_000)}
+    left_any = {"any": rows("==", lambda index: 2 * index)}
+    right_any = {"any": rows("==", lambda index: 2 * index + 1)}
+    many_all = {"all": rows("!=", lambda index: index)}
+
+    assert overlap(left_any, right_any) is False
+    assert overlap(many_all, {"all": []}) is True
+    assert overlap(left_any, many_all) is True
