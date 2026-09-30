@@ -289,9 +289,17 @@ def _enable_theater_review_modules(monkeypatch):
     shared rewrite budget and the output-retry contract. Enabling them here keeps
     those tests testing what they document; tests that exercise the switches
     themselves rebind ``aload_theater_module_options`` and still win.
+
+    Only patch when some test module already imported the workflow. Importing it
+    from here for every test pulls the whole theater stack into modules that
+    stub parts of ``utils``/``memory`` at import time (e.g.
+    test_timeindex_batched_read.py), which then fail with ModuleNotFoundError
+    when they happen to run first.
     """
 
-    import services.theater.numeric_v2_workflow as workflow
+    workflow = sys.modules.get("services.theater.numeric_v2_workflow")
+    if workflow is None:
+        return
     from services.theater.numeric_v2_options import default_options
 
     async def _all_on() -> dict[str, bool]:
