@@ -351,8 +351,9 @@ def test_actor_rewrite_candidate_context_marks_rejected_output_as_uncommitted() 
 
 
 @pytest.mark.asyncio
-async def test_actor_output_retry_changes_hint_for_each_attempt() -> None:
-    """Give each retry a different rewriting angle after repeated body failures."""
+@pytest.mark.parametrize("route_changed", [False, True])
+async def test_actor_format_errors_keep_four_attempts(route_changed) -> None:
+    """Format failures keep their retry budget and formal transitions keep distinct hints."""
 
     class RetryActor:
         def __init__(self) -> None:
@@ -361,12 +362,12 @@ async def test_actor_output_retry_changes_hint_for_each_attempt() -> None:
         async def generate_turn(self, **kwargs):
             self.hints.append(str(kwargs.get("retry_hint") or ""))
             if len(self.hints) < 4:
-                raise NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+                raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json")
             return {"performance": "（抬眼）这次回应加入了新的动作。"}
 
     actor = RetryActor()
     outcome = SimpleNamespace(
-        ledger_event={"from_node_id": "start", "to_node_id": "start"},
+        ledger_event={"from_node_id": "start", "to_node_id": "next" if route_changed else "start"},
     )
 
     result = await _generate_actor_turn_with_output_retry(
@@ -376,15 +377,19 @@ async def test_actor_output_retry_changes_hint_for_each_attempt() -> None:
     )
 
     assert result["performance"] == "（抬眼）这次回应加入了新的动作。"
+    assert len(actor.hints) == 4
     assert actor.hints[0] == ""
-    assert len(set(actor.hints[1:])) == 3
-    assert "第二次重复输出重试" in actor.hints[2]
-    assert "最后一次重复输出重试" in actor.hints[3]
+    assert all(actor.hints[1:])
+    if route_changed:
+        assert len(set(actor.hints[1:])) == 3
+        assert "第二次正式换场重试" in actor.hints[2]
+        assert "最后一次正式换场重试" in actor.hints[3]
 
 
 @pytest.mark.asyncio
-async def test_tagged_repeated_output_stops_after_one_retry_and_records_guard() -> None:
-    """真实重复保护只再采样一次，并把命中来源写入本轮诊断。"""  # noqa: DOCSTRING_CJK
+@pytest.mark.parametrize("format_failures", [0, 1, 2])
+async def test_tagged_repeated_output_stops_after_retry_and_records_guard(format_failures) -> None:
+    """真实重复保护不会因先前格式失败而延长重试预算。"""  # noqa: DOCSTRING_CJK
 
     class RetryActor:
         def __init__(self) -> None:
@@ -392,6 +397,8 @@ async def test_tagged_repeated_output_stops_after_one_retry_and_records_guard() 
 
         async def generate_turn(self, **kwargs):
             self.calls += 1
+            if self.calls <= format_failures:
+                raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json")
             error = NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
             error.repetition_guard = "previous_performance"
             raise error
@@ -410,9 +417,9 @@ async def test_tagged_repeated_output_stops_after_one_retry_and_records_guard() 
             session=SimpleNamespace(session_id="tagged-retry", revision=2),
         )
 
-    assert actor.calls == 2
+    assert actor.calls == max(2, format_failures + 1)
     assert diagnostics["actor_repeated_output_guards"] == {
-        "previous_performance": 2,
+        "previous_performance": 2 if format_failures == 0 else 1,
     }
     assert diagnostics["actor_repeated_output_retry_aborted"] == 1
 
@@ -464,7 +471,7 @@ async def test_accepted_transition_allows_one_source_repeat_retry_when_output_re
 
 @pytest.mark.asyncio
 async def test_actor_output_retry_preserves_required_boundary_rewrite() -> None:
-    """A format failure in a boundary rewrite must not make later retries lose the original boundary requirements."""
+    """A repetition failure must not make retries lose the required boundary rewrite."""
 
     class RetryActor:
         def __init__(self) -> None:
@@ -473,7 +480,9 @@ async def test_actor_output_retry_preserves_required_boundary_rewrite() -> None:
         async def generate_turn(self, **kwargs):
             self.hints.append(str(kwargs.get("retry_hint") or ""))
             if len(self.hints) == 1:
-                raise NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+                error = NumericV2ActorOutputError("numeric_v2_actor_repeated_output")
+                error.repetition_guard = "previous_performance"
+                raise error
             return {"performance": "（撑住门）要继续穿过去吗？"}
 
     actor = RetryActor()
@@ -490,7 +499,7 @@ async def test_actor_output_retry_preserves_required_boundary_rewrite() -> None:
 
     assert actor.hints[0] == "必须停在门槛前等待玩家确认。"
     assert "必须停在门槛前等待玩家确认。" in actor.hints[1]
-    assert "上一版与较早回合" in actor.hints[1]
+    assert "上一版重复了已发生的回应" in actor.hints[1]
 
 
 @pytest.mark.asyncio

@@ -95,7 +95,6 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
             assert '玩家只同意前往旧地点' not in kwargs['retry_hint']
             if ordinary_result == 'technical':
                 raise NumericV2ActorOutputError('numeric_v2_actor_test_failed')
-            assert kwargs['interaction_intent'] == 'scene_action'
             return {'performance': '刚才我说错了，去阅览室看看，好吗？' if ordinary_result == 'new_offer' else '先沿你刚才指的方向看看。',
                     'suggested_inputs': [], 'transition_offered': False}
         return engine.finalize_transition_performance(outcome, _candidate(), target_opening='错误转场待审候选。')
@@ -252,7 +251,9 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
         async def ainvoke(self, messages):
                 calls.append(messages)
                 return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False, body_violations=[],
-                    unsafe_suggestion_indexes=[], acceptance_authorized=False, failure_reason='街市不是阅览室。')))
+                    unsafe_suggestion_indexes=[], acceptance_authorized=False, pending_invitation_invalid=True,
+                    delivery_matches_route=True,
+                    failure_reason='街市不是阅览室。')))
 
     async def config(_): return dict(model='test', base_url='http://test.invalid')
     async def factory(*args, **kwargs): return Client()

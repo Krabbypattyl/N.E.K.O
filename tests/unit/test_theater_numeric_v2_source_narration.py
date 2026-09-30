@@ -9,7 +9,7 @@ from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_actor_output import _parse_output, NumericV2ActorOutputError
 from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
 from services.theater.numeric_v2_context import history_evidence
-from services.theater.numeric_v2_performance import performance_content_blocks, performance_dialogue
+from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
@@ -92,7 +92,7 @@ async def test_source_reply_survives_commit_cold_restore_and_fork(tmp_path, with
         blocks = performance_content_blocks(record)
         assert blocks[0] == {'type': 'narration', 'text': NPC_REPLY}
         assert blocks[1]['type'] == 'action'
-        assert all(NPC_REPLY not in line['text'] for line in performance_dialogue(record))
+        assert all(NPC_REPLY not in line['text'] for line in performance_content_blocks(record) if line['type'] == 'dialogue')
         evidence = history_evidence(restored.session, '值班员说的编号是什么？')
         assert NPC_REPLY in json.dumps(evidence, ensure_ascii=False)
     fork = await runtime.fork_session_for_test('source_reply', session_id='fork', through_revision=1)

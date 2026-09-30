@@ -77,7 +77,8 @@ def test_fence_does_not_authorize_unverified_destination(engine):
     assert fenced.public_destination_quote == ''
 
 
-def test_stale_invitation_requires_reply_target_binding(engine):
+@pytest.mark.parametrize('active', [False, True])
+def test_stale_invitation_requires_reply_target_binding(engine, active):
     """邀请隔过一轮后，含糊同意必须明确指向原邀请，不能抢走最近互动的回复。"""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
@@ -88,7 +89,7 @@ def test_stale_invitation_requires_reply_target_binding(engine):
     session = replace(
         session,
         revision=2,
-        transition_offered=True,
+        transition_offered=active,
         performance_history=(
             {
                 "revision": 1,
@@ -103,7 +104,7 @@ def test_stale_invitation_requires_reply_target_binding(engine):
                 "from_node_id": "start",
                 "to_node_id": "start",
                 "performance": "你帮我看着门口，好吗？",
-                "transition_offered": True,
+                "transition_offered": active,
             },
         ),
     )
@@ -128,6 +129,40 @@ def test_stale_invitation_requires_reply_target_binding(engine):
     assert explicit.transition_intent == "accept"
     assert selected.transition_intent == "accept"
     assert bypass.transition_intent == "unclear"
+
+
+@pytest.mark.parametrize('destination', ['长街寻找旧信', '轨道站核对星图'])
+@pytest.mark.parametrize('boundary', ['withdrawn', 'invalidated', 'revisited', 'missing'])
+def test_withdrawn_acceptance_requires_a_current_valid_origin(engine, destination, boundary):
+    """明确重新接受可保留模型判定，但不能跨越错误邀请或场景访问边界。"""  # noqa: DOCSTRING_CJK
+
+    session = engine.create_session(
+        session_id='withdrawn_parser', catgirl_binding={'catgirl_name': '测试猫娘'},
+        opening_performance={'performance': '先聊聊吧。'},
+    )
+    offer = {
+        'revision': 1, 'from_node_id': 'start', 'to_node_id': 'start',
+        'transition_offered': True, 'transition_offer_presented': True,
+        'performance': f'要和我一起去{destination}吗？',
+        'suggested_inputs': [f'好，我们去{destination}。'],
+    }
+    withdrawn = {
+        'revision': 2, 'from_node_id': 'start', 'to_node_id': 'start',
+        'transition_offered': False, 'input_text': '先不去，等等。', 'performance': '好，先留在这里。',
+    }
+    if boundary == 'invalidated':
+        withdrawn['transition_offer_invalidated'] = True
+    elif boundary == 'revisited':
+        withdrawn['from_node_id'] = 'elsewhere'
+    session = replace(session, revision=2, transition_offered=False,
+                      performance_history=() if boundary == 'missing' else (offer, withdrawn))
+    payload = {**json.loads(RESPONSE), 'transition_intent': 'accept',
+               'transition_reply_target': 'pending_transition'}
+    parsed = _parse_output(json.dumps(payload), engine, f'我改主意了，我们去{destination}。', session)
+    assert parsed.transition_intent == ('accept' if boundary == 'withdrawn' else 'unclear')
+    # 没有新的模型接受判断时，仅出现目的地或历史邀请不会恢复授权。
+    payload['transition_intent'] = 'unclear'
+    assert _parse_output(json.dumps(payload), engine, f'去{destination}的事再说吧。', session).transition_intent == 'unclear'
 
 
 def test_represented_invitation_refreshes_reply_binding(engine):

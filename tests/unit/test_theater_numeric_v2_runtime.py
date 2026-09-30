@@ -19,6 +19,7 @@ from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.numeric_v2_store import update_numeric_v2_character_bindings
 from services.theater.numeric_v2_runtime import (
     apply_fact_ops,
+    validate_fact_candidates,
     _fact_projection,
     _timeline_projection,
     MetricChangeV2,
@@ -253,8 +254,9 @@ def test_numeric_v2_engine_applies_only_story_fact_contract_values():
         opening_performance=_opening(),
     )
 
-    state = engine.apply_story_fact_ops(
+    state = apply_fact_ops(
         session.story_state,
+        fact_contract={"facts": engine.fact_contract},
         revision=1,
         client_turn_id="fact_contract_turn",
         ops=[{
@@ -267,8 +269,9 @@ def test_numeric_v2_engine_applies_only_story_fact_contract_values():
     assert state["facts"]["prop:old_letter"]["value"] == "柜台抽屉里的旧信"
 
     with pytest.raises(NumericV2RuntimeError, match="story_state_fact_value_type_not_allowed"):
-        engine.apply_story_fact_ops(
+        apply_fact_ops(
             session.story_state,
+            fact_contract={"facts": engine.fact_contract},
             revision=1,
             client_turn_id="fact_contract_wrong_type",
             ops=[{
@@ -350,8 +353,9 @@ def test_numeric_v2_completion_contract_absence_is_distinct_from_false():
     assert engine.completion_contract_satisfied(session) is None
 
     with pytest.raises(NumericV2RuntimeError, match="story_state_fact_key_not_allowed"):
-        engine.apply_story_fact_ops(
+        apply_fact_ops(
             session.story_state,
+            fact_contract={"facts": engine.fact_contract},
             revision=1,
             client_turn_id="fact_contract_unknown",
             ops=[{
@@ -374,8 +378,9 @@ def test_numeric_v2_engine_without_story_fact_contract_rejects_model_fact_ops():
     )
 
     with pytest.raises(NumericV2RuntimeError, match="story_state_fact_key_not_allowed"):
-        engine.apply_story_fact_ops(
+        apply_fact_ops(
             session.story_state,
+            fact_contract={"facts": engine.fact_contract},
             revision=1,
             client_turn_id="fact_contract_missing",
             ops=[{
@@ -415,14 +420,19 @@ def test_numeric_v2_engine_adjudicates_fact_candidates_before_commit():
         "evidence": [{"source": "actor_performance", "quote": "（拉开抽屉）柜台里放着旧信。"}],
     }
 
-    state, audit = engine.apply_story_fact_candidates(
-        session.story_state,
-        revision=1,
-        client_turn_id="fact_candidate_turn",
-        candidates=[candidate],
+    operations, audit = validate_fact_candidates(
+        [candidate],
+        fact_contract={"facts": engine.fact_contract},
         evidence_sources={"actor_performance": "（拉开抽屉）柜台里放着旧信。"},
     )
 
+    state = apply_fact_ops(
+        session.story_state,
+        revision=1,
+        client_turn_id="fact_candidate_turn",
+        ops=operations,
+        fact_contract={"facts": engine.fact_contract},
+    )
     assert state["facts"]["prop:old_letter"]["value"] == "柜台抽屉里的旧信"
     assert audit[0]["subject"] == "环境"
     assert audit[0]["evidence"][0]["source"] == "actor_performance"
@@ -632,11 +642,9 @@ def test_numeric_v2_fact_candidate_rejection_does_not_write_partial_state(change
     before = deepcopy(session.story_state)
 
     with pytest.raises(NumericV2RuntimeError):
-        engine.apply_story_fact_candidates(
-            session.story_state,
-            revision=1,
-            client_turn_id="fact_candidate_reject",
-            candidates=[base, invalid],
+        validate_fact_candidates(
+            [base, invalid],
+            fact_contract={"facts": engine.fact_contract},
             evidence_sources={"actor_performance": "柜台里放着旧信。"},
         )
 

@@ -333,11 +333,11 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         assert body["participants"]["player_name"] == "你"
 
 
-def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
+def test_numeric_v2_subjective_input_reaches_actor_without_classification(
     tmp_path,
     monkeypatch,
 ):
-    """Interaction intent serves only the current Actor call and must not enter Session or Ledger state."""
+    """Subjective input reaches the Actor directly without a classification field or persisted mode."""
 
     captured: dict[str, str] = {}
     client = _client(tmp_path, monkeypatch)
@@ -346,12 +346,12 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="chat",
         )
 
     async def turn(*args, **kwargs):
-        captured["interaction_intent"] = str(kwargs.get("interaction_intent"))
+        assert "interaction_intent" not in kwargs
         captured["input_source"] = str(kwargs.get("input_source"))
+        captured["player_input"] = str(kwargs.get("player_input"))
         return {
             "performance": "（轻轻点头）我也有一点紧张。",
             "suggested_inputs": ["你最担心什么？", "我们先聊点别的。"],
@@ -392,7 +392,7 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
 
     assert started.status_code == 200
     assert submitted.status_code == 200
-    assert captured["interaction_intent"] == "chat"
+    assert captured["player_input"] == "你现在是不是有点害怕？"
     assert captured["input_source"] == "freeform"
     session_path = (
         tmp_path
@@ -407,25 +407,30 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
     assert persisted["ledger_events"][0]["input_text"] == "你现在是不是有点害怕？"
 
 
-def test_numeric_v2_suggested_input_bypasses_chat_pacing_only_when_current(
+@pytest.mark.parametrize('choice', ['（点头）请继续说。', '（翻开课本开始复习）'])
+def test_numeric_v2_suggested_input_source_requires_current_choice(
     tmp_path,
     monkeypatch,
+    choice,
 ):
     """Suggestion clicks follow public choices; forged or stale suggestions cannot change Actor pacing through the source field."""
 
     captured: dict[str, str] = {}
     client = _client(tmp_path, monkeypatch)
 
+    async def opening(*args, **kwargs):
+        return {**_performance('你先看看。', opening=True), 'suggested_inputs': [choice]}
+
     async def evaluate(*args, **kwargs):
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="chat",
         )
 
     async def turn(*args, **kwargs):
-        captured["interaction_intent"] = str(kwargs.get("interaction_intent"))
+        assert "interaction_intent" not in kwargs
         captured["input_source"] = str(kwargs.get("input_source"))
+        captured["player_input"] = str(kwargs.get("player_input"))
         return {
             "performance": "（轻轻点头）我知道了，那就照这个选择继续。",
             "suggested_inputs": [
@@ -443,6 +448,7 @@ def test_numeric_v2_suggested_input_bypasses_chat_pacing_only_when_current(
             unsafe_suggestion_indexes=(),
         )
 
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_opening", opening)
     monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
     monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
     monkeypatch.setattr(
@@ -483,8 +489,8 @@ def test_numeric_v2_suggested_input_bypasses_chat_pacing_only_when_current(
     assert started.status_code == 200
     assert submitted.status_code == 200
     assert captured == {
-        "interaction_intent": "mixed_or_unclear",
         "input_source": "suggestion",
+        "player_input": choice,
     }
     assert invalid.status_code == 409
     assert invalid.json()["reason"] == "numeric_suggested_input_not_current"
@@ -503,7 +509,6 @@ def test_numeric_v2_scene_complete_does_not_trigger_second_actor_call(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=True,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -582,7 +587,6 @@ def test_numeric_v2_overdue_turns_do_not_trigger_second_actor_call(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -668,7 +672,6 @@ def test_numeric_v2_drops_reviewed_invalid_transition_suggestions(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -734,7 +737,6 @@ def test_numeric_v2_filters_unsafe_future_suggestions_without_body_rereview(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -819,7 +821,6 @@ def test_numeric_v2_removes_only_reported_unsafe_suggestion(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -906,7 +907,6 @@ def test_numeric_v2_reviews_and_filters_target_opening_suggestions(
             metric_changes=(),
             scene_complete=False,
             transition_intent=("accept" if kwargs["message"] == "好，我们现在出发。" else "unclear"),
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1023,7 +1023,6 @@ def test_numeric_v2_preserves_safe_body_when_flagged_retry_only_has_invalid_sugg
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1104,7 +1103,6 @@ def test_numeric_v2_confirmed_body_violation_cannot_be_erased_by_later_review_dr
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1196,7 +1194,6 @@ def test_numeric_v2_unflagged_played_result_is_rewritten_once(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1265,7 +1262,6 @@ def test_numeric_v2_played_transition_is_rewritten_once(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=True,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1344,7 +1340,6 @@ def test_numeric_v2_mixed_route_offer_is_rewritten_once(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=True,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1422,7 +1417,6 @@ def test_numeric_v2_filters_only_unsafe_suggestions_after_body_retry(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1721,7 +1715,6 @@ def test_numeric_v2_boundary_repair_keeps_diagnostic_without_rejected_candidate(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1795,7 +1788,6 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
         return NumericV2EvaluationResult(
             metric_changes=(MetricChangeV2("trust", 1, "玩家兑现承诺", player_input),),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1901,7 +1893,6 @@ def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -1996,7 +1987,6 @@ def test_numeric_v2_clears_phantom_transition_flag_without_actor_retry(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -2071,7 +2061,6 @@ def test_numeric_v2_offer_uses_one_guard_and_never_rewrites_service_failure(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=True,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -2152,7 +2141,6 @@ def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):
@@ -2235,7 +2223,6 @@ def test_numeric_v2_rewrites_fact_boundary_without_structured_field_scope(
         return NumericV2EvaluationResult(
             metric_changes=(),
             scene_complete=False,
-            interaction_intent="scene_action",
         )
 
     async def turn(*args, **kwargs):

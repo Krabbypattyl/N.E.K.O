@@ -239,11 +239,13 @@ def _parse_actor_suggestions(
             parse_counts["placeholder_item"] += 1
             continue
         blocks = mixed_performance_blocks(text)
-        if [block.get("type") for block in blocks] != ["action", "dialogue"]:
+        if [block.get("type") for block in blocks] not in (["action"], ["action", "dialogue"]):
             parse_counts["mixed_shape_invalid"] += 1
             continue
         action = str(blocks[0].get("text") or "").strip()
-        dialogue = str(blocks[1].get("text") or "").strip()
+        if action in {"玩家动作", "玩家对白", "动作", "对白"}:
+            parse_counts["placeholder_item"] += 1
+            continue
         # suggested_inputs 后续会由程序作为 player_input/input_text 存储，
         # 中文动作可以自然省略“我”；只拒绝明确把第三方写成动作主体。
         explicit_nonplayer_prefixes = (
@@ -256,7 +258,7 @@ def _parse_actor_suggestions(
             "男主",
             "环境",
         )
-        if action.startswith(explicit_nonplayer_prefixes) or not dialogue:
+        if action.startswith(explicit_nonplayer_prefixes):
             parse_counts["action_owner_invalid"] += 1
             continue
         parsed.append(text)

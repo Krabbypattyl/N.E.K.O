@@ -2977,7 +2977,7 @@
         "moduleOptDetail.dispute": "Revisa de forma independiente el primer juicio disputado. Desactivado: prevalece el juicio inicial de la revisión rápida.",
         "moduleOptDetail.review_delivery": "Comprueba los objetos obligatorios antes de cambiar de escena. Desactivado: la transición puede seguir sin ellos.",
         "moduleOptDetail.review_contract": "Comprueba prohibiciones del autor y llegadas prematuras. Desactivado: no se bloquean esas infracciones.",
-        "moduleOptDetail.suggestion_fill": "Pide más sugerencias si faltan opciones. Desactivado: se muestran las sugerencias válidas existentes.",
+        "moduleOptDetail.suggestion_fill": "Genera sugerencias si no hay ninguna utilizable o si una nueva invitación a cambiar de escena necesita más opciones. No regenera las eliminadas por la revisión. Desactivado: muestra las sugerencias válidas existentes.",
         "moduleOptDetail.history_lookup": "Consulta texto anterior de esta sesión cuando hace falta. Desactivado: los detalles antiguos siguen siendo desconocidos.",
         "moduleOptDetail.actor_retry": "Reintenta una salida inválida del actor. Desactivado: se revierte el turno y el jugador debe reenviarlo.",
         "kicker": "Lanlan Theater",

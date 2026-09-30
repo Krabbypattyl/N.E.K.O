@@ -168,7 +168,7 @@ def test_guard_offer_and_button_responsibilities_do_not_overlap():
     assert "body_violations：只列正文已写出的冲突" in system
     assert "offer_present：以 next_scene_direction 声明的出口作为阶段边界" in system
     assert "按钮不能创建、补足或否决正文提议" in system
-    assert "首次提出正文尚未公开的跨阶段行动" in system
+    assert "首次提出尚未公开的跨阶段行动" in system
     assert "opening_boundary 与 bridge_boundary 是接受后的入口" in system
     assert "只用于发现已经偷跑" not in system
 

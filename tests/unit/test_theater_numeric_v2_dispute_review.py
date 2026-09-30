@@ -166,7 +166,7 @@ async def test_review_cannot_call_the_same_explicit_movement_unauthorized(monkey
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult(
-            (), False, transition_intent='unclear', interaction_intent='scene_action')
+            (), False, transition_intent='unclear', )
 
     async def generate(self, **kwargs):
         generations.append(kwargs)
@@ -227,13 +227,27 @@ async def test_review_cannot_call_the_same_explicit_movement_unauthorized(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('violations', [('player_action',), ('player_action', 'scene_boundary')])
+@pytest.mark.parametrize('scene_update, player_input, safe_reply', [
+    ('你冒雨重新回到店里，站在刚才的位置。', '（推门离开）明天见。', '（点头目送你离开）好，路上小心，明天见。'),
+    ('你重新回到控制室，站在刚才的位置。', '（转身离开控制室）通讯保持畅通。', '（点头目送你离开）收到，我会守着通讯。'),
+])
 async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_rewrite(
     monkeypatch,
     tmp_path,
+    scene_update,
+    player_input,
+    safe_reply,
+    violations,
 ):
     """玩家已明确离场时，只删除被定位为冲突的场景更新，不再整稿重写。"""  # noqa: DOCSTRING_CJK
 
     engine = _engine()
+    engine.nodes['start']['story_beat']['fixed_narrations'] = [{
+        'id': 'return_piece', 'text': '玩家返回后才交付的作者旁白。',
+        'trigger': {'type': 'condition', 'condition': '玩家已经返回当前场景。'},
+        'after': [], 'required_before_exit': False,
+    }]
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(
         session_id='departure_scene_update_guard',
@@ -244,13 +258,13 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult(
-            (), False, transition_intent='unclear', interaction_intent='scene_action')
+            (), False, transition_intent='unclear', )
 
     async def generate(self, **kwargs):
         generations.append(kwargs)
         return {
-            'performance': '（点头目送你离开）好，路上小心，明天见。',
-            'scene_narration': '你冒雨重新回到店里，站在刚才的位置。',
+            'performance': safe_reply,
+            'scene_narration': scene_update,
             'fact_candidates': [{'key': 'scene:start:returned', 'value': True}],
             'suggested_inputs': ['（挥挥手）明天见。', '（继续往前走）我先回去了。'],
             'transition_offered': False,
@@ -261,13 +275,13 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
         return evaluator.NumericV2TransitionOfferReview(
             offer_present=False,
             valid=False,
-            body_violations=('player_action',),
+            body_violations=violations,
             unsafe_suggestion_indexes=(),
-            failure_reason=(
-                'scene_update把已离场玩家写成重新回到当前地点，'
-                '和player_action_projection冲突。'
-            ),
+            failure_reason='已确认的离场结果与候选内容冲突。',
+            body_issues=({'code': 'player_return_after_departure', 'field': 'scene_update',
+                          'quote': scene_update, 'violations': list(violations)},),
             fact_candidates=({'key': 'scene:start:returned', 'value': True},),
+            fixed_narration_triggers=({'id': 'return_piece', 'evidence': scene_update},),
         )
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -279,7 +293,7 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
         config_manager=object(),
         runtime=runtime,
         current=current,
-        turn=TurnRequestV2('leave_with_future', 0, '（推门离开）明天见。'),
+        turn=TurnRequestV2('leave_with_future', 0, player_input),
         ensure_current_binding=lambda _: _binding(),
     )
 
@@ -292,7 +306,12 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
     assert result.diagnostics['semantic_review_fallback'] is False
     assert 'scene_narration' not in result.performance
     assert 'fact_candidates' not in result.performance
-    assert result.performance['performance'] == '（点头目送你离开）好，路上小心，明天见。'
+    assert result.performance['performance'] == safe_reply
+    assert result.diagnostics['transition_review_results'][0]['body_issues'][0]['quote'] == scene_update
+    restored = await NumericV2Runtime(engine, tmp_path).restore_session('departure_scene_update_guard')
+    assert restored == result.stored
+    assert scene_update not in str(restored.session.performance_history)
+    assert 'return_piece' not in str(restored.session.performance_history)
 
 
 def test_confirmed_departure_does_not_trim_conflict_outside_scene_update():
@@ -305,6 +324,12 @@ def test_confirmed_departure_does_not_trim_conflict_outside_scene_update():
         unsafe_suggestion_indexes=(),
         failure_reason=(
             'performance与scene_update都把已离场玩家写成重新回到当前地点。'
+        ),
+        body_issues=(
+            {'code': 'player_return_after_departure', 'field': 'actor_performance',
+             'quote': '你怎么又回来了？', 'violations': ['player_action']},
+            {'code': 'player_return_after_departure', 'field': 'scene_update',
+             'quote': '你重新回到店里。', 'violations': ['player_action']},
         ),
     )
     projection = workflow.project_player_action_result('（推门离开）明天见。')

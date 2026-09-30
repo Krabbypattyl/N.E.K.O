@@ -2976,7 +2976,7 @@
         "moduleOptDetail.dispute": "首次判斷出現爭議時獨立複查。關閉後直接採用快速複核的初判。",
         "moduleOptDetail.review_delivery": "換場前檢查作者要求保留的關鍵道具。關閉後即使缺失也可換場。",
         "moduleOptDetail.review_contract": "檢查作者禁令和提前到達後續階段。關閉後不再攔截這類越界。",
-        "moduleOptDetail.suggestion_fill": "推薦不足時請求補齊。關閉後直接顯示已生成的合法推薦。",
+        "moduleOptDetail.suggestion_fill": "推薦為空或新換場邀請選項不足時補一次；複核刪除後不再補寫。關閉後顯示已有合法推薦。",
         "moduleOptDetail.history_lookup": "需要回憶舊事時查找本次演繹的原文。關閉後舊細節保持未知。",
         "moduleOptDetail.actor_retry": "演員輸出不合格時自動重試。關閉後本輪回滾，玩家需重新送出。",
         "kicker": "Lanlan Theater",

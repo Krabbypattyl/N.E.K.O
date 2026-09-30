@@ -21,9 +21,9 @@
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
         playerName: '', catgirlName: '',
-        sessionStatus: '', scene: null, history: [], currentBlock: null, suggestedInputs: [],
+        sessionStatus: '', scene: null, history: [], suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
-        draftRestore: null, ordinaryDraftRestore: null, presentationSeq: 0, composerVisibilityRestore: null,
+        draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
         chatSurfaceModeRestore: null,
         errorMessage: '', tokenUsage: null
     };
@@ -410,7 +410,6 @@
             active: state.active,
             phase: state.phase,
             storyTitle: state.storyTitle,
-            currentBlock: state.currentBlock,
             history: state.history.slice(),
             suggestedInputs: state.phase === 'awaiting_player' ? state.suggestedInputs.slice(0, 3) : [],
             busy: ['loading', 'evaluating', 'ending', 'returning_selector'].indexOf(state.phase) >= 0,
@@ -418,8 +417,7 @@
             errorMessage: state.errorMessage,
             tokenUsage: usagePresentation(),
             draftRestore: state.draftRestore,
-            ordinaryDraftRestore: state.ordinaryDraftRestore,
-            presentationSeq: ++state.presentationSeq
+            ordinaryDraftRestore: state.ordinaryDraftRestore
         };
     }
     function render() {
@@ -531,11 +529,17 @@
             timer = window.setTimeout(finish, timeoutMs);
         });
     }
-    async function typeBlock(historyId, block, token) {
+    async function typeBlock(historyId, block, token, immediate) {
         var entry = state.history.find(function (candidate) { return candidate.id === historyId; });
         if (!entry) return false;
         var text = formatPresentationBlock(block);
         var separator = entry.text && !block.preserveSpacing ? '\n' : '';
+        if (token !== state.queueToken) return false;
+        if (immediate) {
+            entry.text += separator + text;
+            render();
+            return token === state.queueToken;
+        }
         var characters = Array.from(separator + text);
         for (var index = 0; index < characters.length; index += 1) {
             if (token !== state.queueToken) return false;
@@ -577,11 +581,13 @@
         var token = ++state.queueToken;
         var groups = performanceHistoryGroups(performance, options && options.displayPhase || 'ordinary');
         var nextSuggestedInputs = state.suggestedInputs.slice();
-        state.phase = 'performing'; state.currentBlock = null; state.suggestedInputs = []; render();
+        state.phase = 'performing'; state.suggestedInputs = []; render();
         if (options && options.playerInput && !options.playerAlreadyShown) {
             state.history.push(historyEntry('player-' + revision, 'player_action', options.playerInput, state.playerName));
         }
         var historyBaseId = options && options.historyId || 'performance-' + revision;
+        // 开场首句前的场景和动作整段呈现；对白及后续段落仍按原有打字/语音时序播放。
+        var openingPrefix = !!(options && options.displayPhase === 'opening');
         for (var groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
             var group = groups[groupIndex];
             var historyId = historyBaseId + '-' + groupIndex;
@@ -597,11 +603,12 @@
             var speechPromise = null;
             for (var itemIndex = 0; itemIndex < group.blocks.length; itemIndex += 1) {
                 var item = group.blocks[itemIndex];
+                if (item.block.type === 'dialogue') openingPrefix = false;
                 // 同一演绎段只在首个对白块发起一次合并 TTS；动作与后续对白仍按原顺序逐字显示。
                 if (!speechPromise && item.block.type === 'dialogue') {
                     speechPromise = playDialogue(group, item.block, item.blockIndex, revision, token);
                 }
-                if (!await typeBlock(historyId, item.block, token)) return;
+                if (!await typeBlock(historyId, item.block, token, openingPrefix)) return;
             }
             if (speechPromise && !await speechPromise) return;
             var completedEntry = state.history.find(function (entry) { return entry.id === historyId; });
@@ -647,7 +654,6 @@
             claimAudioPlayback();
             state.queueToken += 1;
             state.pendingTurn = null;
-            state.currentBlock = null;
         }
         state.errorMessage = '';
         state.tokenUsage = message.token_usage || null;
@@ -702,7 +708,6 @@
             });
         } else {
             state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
-            state.currentBlock = null;
             render();
         }
         return true;
@@ -906,7 +911,6 @@
             // 上一次请求可能已在服务端提交但响应丢失；幂等重放只返回权威快照，
             // 不会再次返回 performance。必须用快照重建历史，不能留下乐观玩家气泡或漏掉猫娘回复。
             state.history = buildCommittedHistory(result);
-            state.currentBlock = null;
             state.draftRestore = null;
             state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             render();
@@ -918,7 +922,6 @@
                 playerAlreadyShown: true
             });
         } catch (_) {
-            state.currentBlock = null;
             state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             state.errorMessage = t('theater.performanceFailed', '演绎播放中断，请继续输入或重新打开小剧场。');
             render();
@@ -929,7 +932,7 @@
     function clear(reason) {
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
-        state.active = false; state.phase = 'inactive'; state.currentBlock = null; state.history = []; state.suggestedInputs = [];
+        state.active = false; state.phase = 'inactive'; state.history = []; state.suggestedInputs = [];
         state.playerName = ''; state.catgirlName = '';
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
@@ -1097,7 +1100,6 @@
                 // 结束动作已经取消逐字播放；失败时从已提交快照重建，不能留下截断正文和空推荐项。
                 applySnapshot(snapshot);
                 state.history = buildCommittedHistory(snapshot);
-                state.currentBlock = null;
             }
             state.phase = 'awaiting_player';
             // 只有请求本身未取得响应时才提示本地服务连接；后端拒绝属于业务状态错误。
@@ -1147,7 +1149,7 @@
                 end_receipt_id: snapshot.end_receipt_id,
                 archive_request_id: snapshot.archive_request_id || ''
             };
-            state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot); state.currentBlock = null;
+            state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot);
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {

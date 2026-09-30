@@ -132,10 +132,21 @@ def test_evaluator_lookup_request_is_optional_and_not_a_runtime_decision(query):
         evaluator._parse_output(json.dumps(raw), engine, '问', _session())
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_evaluator_only_requests_lookup_when_enabled(enabled):
+    messages = evaluator._build_messages(_engine(), _session(), '那项许可还有效吗？',
+                                         allow_history_lookup=enabled)
+    assert ('history_query' in messages[0].content) == enabled
+    # 关闭额外查询不移除已有历史，也不改变当前玩家输入。
+    assert '许可撤回，日记保密。' in messages[1].content
+    assert '那项许可还有效吗？' in messages[1].content
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('formal', [False, True])
-@pytest.mark.parametrize('requested,status', [(False, 'found'), (True, 'found'), (True, 'partial')])
-async def test_workflow_shares_one_lookup_across_rewrite_and_dispute(monkeypatch, tmp_path, requested, status, formal):
+@pytest.mark.parametrize('requested,status,enabled', [(False, 'found', True), (True, 'found', True),
+                                                     (True, 'partial', True), (True, 'found', False)])
+async def test_workflow_shares_one_lookup_across_rewrite_and_dispute(monkeypatch, tmp_path, requested, status, formal, enabled):
     """Ordinary turns perform no lookup; failed lookup still permits final-draft submission without duplicate calls or new archive fields."""
     engine = _engine(); runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='lookup_flow', catgirl_binding=_binding(), opening_performance=_opening())
@@ -143,6 +154,7 @@ async def test_workflow_shares_one_lookup_across_rewrite_and_dispute(monkeypatch
     result = {'status': status, 'evidence': [], 'calls': 1}
 
     async def evaluate(self, **kwargs):
+        assert kwargs['allow_history_lookup'] is enabled
         return evaluator.NumericV2EvaluationResult((MetricChangeV2('trust', 2, '玩家兑现承诺', '原话'),), formal, natural_ending_ready=formal,
             history_query='先前如何决定？' if requested else '')
     async def lookup(*args): lookups.append(args); return result
@@ -161,10 +173,14 @@ async def test_workflow_shares_one_lookup_across_rewrite_and_dispute(monkeypatch
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda _: '温和')
+    original_options = workflow.aload_theater_module_options
+    async def options():
+        return {**await original_options(), 'history_lookup': enabled}
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     completed = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('lookup_once', 0, '那件事呢？'), ensure_current_binding=lambda _: _binding())
-    assert len(lookups) == int(requested) and len(generations) == 2 and len(reviews) == 3
-    assert all(row.get('history_lookup') is (result if requested else None) for row in [*generations, *reviews])
+    assert len(lookups) == int(requested and enabled) and len(generations) == 2 and len(reviews) == 3
+    assert all(row.get('history_lookup') is (result if requested and enabled else None) for row in [*generations, *reviews])
     assert completed.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert completed.stored.session.revision == 1
     assert 'history_lookup' not in json.dumps(completed.stored.session.to_dict())

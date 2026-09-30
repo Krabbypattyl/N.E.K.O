@@ -31,15 +31,22 @@ from .runtime_rules import GOAL_METADATA_RULE
 # 普通转场与自然结局分开编写；不为结局制造第二次邀请，也不替 Runtime 选路。
 _SCENE_PROCESS_AUTHORING_RULE = (
     # 固定原文属于作者资产，模型只编排触发与前后反应，不承担逐字复制的运行职责。
-    "作者明确要求原样展示日志、信件等旁白时，可在章节、ending 或支线 scene/ending 对象中加入 fixed_narrations 数组；"
+    "作者明确要求原样展示日志、信件等旁白时，须在章节、ending 或支线 scene/ending 对象中用 fixed_narrations 保存原文；"
     "没有这种需求则省略，不把普通台词或所有叙事冻结。每项仅含 id、text、trigger、after、required_before_exit。"
     "id 同幕唯一；text 保存完整原文，只可用 {{catgirl_name}}、{{player_name}} 显式适配姓名，序列号等文字不替换。"
-    "trigger 为 {type:entry} 或 {type:condition,condition:具体可观察的完成事件}；after 是同幕更早片段 id 数组；"
+    "trigger 为 {type:entry} 或 {type:condition,condition:具体可观察的完成事件,player_handoff_required:布尔值}；"
+    "只有确实要求玩家递交才填 true，触碰、观察等不改变持有者的条件填 false；旧稿缺省保留原规则。"
+    "condition 写满足触发所需的最小事件，不把无需交接的触碰与要求交接的接收混写为同一个要求；false不授权改变持有者。"
+    "after 是同幕更早片段 id 数组；"
     "required_before_exit 为布尔值，只有作者明确要求离幕前必显才设 true。每幕最多八项，原文合计不超过2000 tokens，超限报错不截断。"
     "入幕片段在场景旁白之后、猫娘回应之前展示；条件片段在动作实际发生并通过复核的当轮正文后展示，阅读反应留给下一轮。"
     "条件不能仅写考虑、准备、同意或回合数，也不能替玩家完成操作；不依赖未公开内容或无法完成的条件。"
     "终止输入的 ending 只用 entry，需玩家触发的日志放在之前仍可互动的场景。"
     "固定原文不得预写玩家尚未作出的选择或可变历史；改用不依赖该选择的原文，不能为了兑现原文强迫玩家。"
+    "主线章节的 completion_facts 若仅表示某段固定原文已展示，在原五字段外增加 fixed_narration_id，明确引用同章片段；"
+    "该项须为 value_type=bool、target_value=true、visibility=public，仍用其 id 参与 exit_plan.trigger_fact_ids。"
+    "程序将其编译成展示记录条件，不生成模型事实；不要再为同一展示结果生成另一项无引用的布尔事实。"
+    "此引用只证明原文已提交展示，不证明玩家已经阅读、理解、同意或实施其中动作；这些结果保留独立语义事实。"
     "完善、续写与修订保留既有固定原文、触发条件与离幕标记，只调整本次允许的前后叙事；"
     "评分可指出原文与上下文的具体冲突，但原文不在自动文本修订权限内，不能通过改写或删除掩盖冲突。"
     "角色名称规则：输入有 cast_names 或 intro/story_intro/characters 中的 player_name、catgirl_name 字段时，"
@@ -370,13 +377,27 @@ _MAINLINE_OUTPUT_CONTRACT = """{
       "opening_scene": "本幕唯一直接展示的完整开场场景",
       "entry_bridge": "第一章为空字符串；后续章节为承接上幕事实的确定性换场旁白",
       "transition_goal": "本幕如何逐步收束并靠近下一幕或结局",
+      "fixed_narrations": [
+        {
+          "id": "同幕唯一的原文片段编号；未要求固定原文时省略整个 fixed_narrations 字段",
+          "text": "作者要求原样展示的完整原文",
+          "trigger": {
+            "type": "condition",
+            "condition": "明确主体实际完成的最小触发事件；入幕即展示则 trigger 仅含 type:entry",
+            "player_handoff_required": false
+          },
+          "after": [],
+          "required_before_exit": true
+        }
+      ],
       "completion_facts": [
         {
           "id": "本幕内唯一的稳定英文标识",
           "description": "已经成立时可从玩家输入或本轮可见演出直接核对的具体结果",
           "value_type": "bool | int | string",
           "target_value": true,
-          "visibility": "public | story"
+          "visibility": "public | story",
+          "fixed_narration_id": "可选：仅原文展示项填写同章片段的实际 id，并使用 bool/true/public；普通语义事实必须省略此字段"
         }
       ],
       "exit_plan": {
@@ -705,6 +726,12 @@ def _continuation_output_contract(path: str) -> Any:
     """Select the requested value's shape from the same JSON contract sent on the first call."""
 
     value = json.loads(_MAINLINE_OUTPUT_CONTRACT)
+    if path == "ending.fixed_narrations":
+        # The optional ending asset shares the chapter shape, but cannot wait
+        # for a player action after the session has ended.
+        pieces = value["mainline_chapters"][0]["fixed_narrations"]
+        pieces[0]["trigger"] = {"type": "entry"}
+        return pieces
     try:
         for token in _path_tokens(path):
             # 数组只有一个类型示例；实际索引仍保留在 requested_paths，不改写作者数据。
@@ -1076,6 +1103,46 @@ def _validate_idea_outline(
             text(row, f"{path}[{index}]")
         return rows
 
+    def fixed_narrations(value: Mapping[str, Any], path: str, *, ending: bool = False) -> None:
+        # Repair the asset as a whole, including IDs and dependencies. Repairing
+        # only a completion reference cannot fix a malformed referenced asset.
+        if "fixed_narrations" not in value:
+            return
+        rows = value["fixed_narrations"]
+        valid = isinstance(rows, list) and len(rows) <= 8
+        seen: dict[str, str] = {}
+        for item in rows if isinstance(rows, list) else []:
+            if not isinstance(item, Mapping) or set(item) != {"id", "text", "trigger", "after", "required_before_exit"}:
+                valid = False
+                continue
+            piece_id, raw_text = item["id"], item["text"]
+            if (not isinstance(piece_id, str) or not piece_id.strip() or piece_id in seen
+                    or not isinstance(raw_text, str) or not raw_text.strip() or raw_text != raw_text.strip()
+                    or not isinstance(item["required_before_exit"], bool)):
+                valid = False
+            trigger = item["trigger"]
+            kind = trigger.get("type") if isinstance(trigger, Mapping) else None
+            if kind == "entry":
+                valid = valid and set(trigger) == {"type"}
+            elif kind == "condition" and not ending:
+                valid = valid and set(trigger) in (
+                    {"type", "condition"}, {"type", "condition", "player_handoff_required"})
+                valid = valid and isinstance(trigger.get("condition"), str) and bool(trigger["condition"].strip())
+                if "player_handoff_required" in trigger:
+                    valid = valid and isinstance(trigger["player_handoff_required"], bool)
+            else:
+                valid = False
+            after = item["after"]
+            if (not isinstance(after, list) or any(not isinstance(key, str) or key not in seen for key in after)
+                    or len(after) != len(set(map(str, after)))
+                    or (kind == "entry" and any(seen.get(str(key)) != "entry" for key in after))):
+                valid = False
+            if isinstance(piece_id, str):
+                seen[piece_id] = str(kind)
+        if not valid:
+            issues.append({"code": "fixed_narration_shape_invalid", "path": f"{path}.fixed_narrations",
+                           "message": "完整修复固定原文数组的对象字段、触发方式及同幕前置引用，保留原文和完成项所引用的id；结局只允许entry。"})
+
     world = obj(candidate.get("world"), "world")
     for field in ("background", "core_mystery", "core_conflict"):
         text(world.get(field), f"world.{field}")
@@ -1319,6 +1386,7 @@ def _validate_idea_outline(
     for index, raw in enumerate(chapters):
         path = f"mainline_chapters[{index}]"
         chapter = obj(raw, path)
+        fixed_narrations(chapter, path)
         for field in ("title", "narrative", "narrative_focus", "catgirl_situation"):
             text(chapter.get(field), f"{path}.{field}")
         stage = relationship_stages[index] if index < len(relationship_stages) else {}
@@ -1371,14 +1439,16 @@ def _validate_idea_outline(
                 "message": "每幕最多声明八项核心完成事实。",
             })
         completion_ids: set[str] = set()
+        display_ids: set[str] = set()
         for fact_index, raw_fact in enumerate(completion_facts):
             fact_path = f"{path}.completion_facts[{fact_index}]"
             fact = obj(raw_fact, fact_path)
-            if set(fact) != {"id", "description", "value_type", "target_value", "visibility"}:
+            fact_fields = {"id", "description", "value_type", "target_value", "visibility"}
+            if set(fact) not in (fact_fields, fact_fields | {"fixed_narration_id"}):
                 issues.append({
                     "code": "completion_fact_shape_invalid",
                     "path": fact_path,
-                    "message": "完成事实必须且只能包含 id、description、value_type、target_value 和 visibility。",
+                    "message": "完成事实须含 id、description、value_type、target_value、visibility；展示项可增加 fixed_narration_id。",
                 })
             fact_id = text(fact.get("id"), f"{fact_path}.id")
             if fact_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", fact_id):
@@ -1420,6 +1490,18 @@ def _validate_idea_outline(
                     "path": f"{fact_path}.visibility",
                     "message": "完成事实可见性必须是 public 或 story。",
                 })
+            if "fixed_narration_id" in fact:
+                pieces = chapter.get("fixed_narrations")
+                piece_ids = {piece.get("id") for piece in (pieces if isinstance(pieces, list) else [])
+                             if isinstance(piece, Mapping) and isinstance(piece.get("id"), str)}
+                reference = fact["fixed_narration_id"]
+                if (not isinstance(reference, str) or reference not in piece_ids
+                        or reference in display_ids or value_type != "bool"
+                        or target_value is not True or fact.get("visibility") != "public"):
+                    issues.append({"code": "completion_display_reference_invalid", "path": fact_path,
+                                   "message": "展示完成须唯一引用同章固定原文，类型为bool、目标为true、可见性为public。"})
+                if isinstance(reference, str):
+                    display_ids.add(reference)
         expected_turns = chapter.get("expected_turns")
         if expected_turns is not None and (
             not isinstance(expected_turns, int)
@@ -1617,6 +1699,7 @@ def _validate_idea_outline(
         if opening_goal_count > 1:
             issues.append({"code": "too_many_opening_goals", "path": f"{path}.ordered_goals", "message": "每幕最多只能有一项 opening 目标。"})
     ending = obj(candidate.get("ending"), "ending")
+    fixed_narrations(ending, "ending", ending=True)
     ending_type = text(ending.get("type"), "ending.type")
     for field in ("title", "summary", "opening_scene", "entry_bridge"):
         text(ending.get(field), f"ending.{field}")
@@ -2295,6 +2378,11 @@ class NumericV2Generator(ModelAgent):
             goals = self._project_chapter_goals(node_id, chapter)
             completion_by_id: dict[str, dict[str, Any]] = {}
             for completion_fact in chapter["completion_facts"]:
+                if "fixed_narration_id" in completion_fact:
+                    completion_by_id[completion_fact["id"]] = {
+                        "fixed_narration_id": completion_fact["fixed_narration_id"],
+                    }
+                    continue
                 fact_key = f"scene:{node_id}:{completion_fact['id']}"
                 fact_definitions[fact_key] = {
                     "value_type": completion_fact["value_type"],

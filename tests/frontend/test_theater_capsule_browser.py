@@ -194,6 +194,53 @@ def test_runtime_enters_theater_loading_before_start_model_response(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('setting', ['花店柜台旁的旧信', '轨道站舷窗外的星图'])
+def test_opening_prefix_does_not_delay_first_dialogue(mock_page: Page, running_server: str, setting):
+    """长开场前缀完整保留，但不再逐字挡住首句对白和 TTS 请求。"""  # noqa: DOCSTRING_CJK
+
+    snapshot = _snapshot(revision=0)
+    narration = f'{setting}映着微光。' * 8
+    action = '（整理手边的物件，抬头看向你）'
+    snapshot['session']['opening_performance'] = {
+        'scene_narration': narration,
+        'performance': action + '欢迎回来。',
+        'suggested_inputs': [],
+    }
+    speech = []
+
+    def handler(route: Route):
+        if route.request.url.split('?')[0].endswith('/session/start'):
+            route.fulfill(json=snapshot)
+        elif route.request.url.split('?')[0].endswith('/session/speak-block'):
+            speech.append(json.loads(route.request.post_data))
+            route.fulfill(json={'ok': False})
+        else:
+            route.continue_()
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script("localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost?.isMounted()')
+    with mock_page.expect_response('**/session/start'):
+        mock_page.evaluate("""() => window.postMessage({
+            schema: 'neko.theater.interpage.v1', action: 'theater:start-request',
+            launch_id: 'opening-prefix', story_id: 'capsule-browser-story',
+            session_id: 'capsule-browser-session', character_id: 'character:test',
+            replace_existing: false
+        }, location.origin)""")
+    dialogue = mock_page.locator(
+        '[data-compact-export-history-message-id^="theater:opening-performance-"] .compact-export-history-content'
+    ).filter(has_text='欢迎')
+    expect(dialogue).to_be_visible(timeout=1500)
+    expect(dialogue).to_contain_text(action)
+    expect(mock_page.locator(
+        '[data-compact-export-history-message-id^="theater:opening-performance-"] .compact-export-history-content'
+    ).filter(has_text=setting)).to_contain_text(narration)
+    assert len(speech) == 1
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+
+
+@pytest.mark.frontend
 def test_theater_capsule_reasserts_composer_visibility_on_active_render(
     mock_page: Page,
     running_server: str,
@@ -407,7 +454,6 @@ def test_theater_capsule_restores_committed_turn_after_end_failure(
     )
 
     state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
-    assert state["currentBlock"] is None
     assert all(entry.get("status") != "streaming" for entry in state["history"])
     assert state["history"][-1]["text"] == performance
     assert state["suggestedInputs"] == turn["suggested_inputs"]
@@ -1248,7 +1294,6 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     assert len(visible_samples[0]) < len(visible_samples[-1])
     assert all(current.startswith(previous) for previous, current in zip(visible_samples, visible_samples[1:]))
     completed_state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
-    assert completed_state["currentBlock"] is None
     assert completed_state["history"][-1]["status"] == "sent"
     assert input_messages == ["把旧信递给她"]
     assert speak_blocks == [1, 1]

@@ -25,15 +25,16 @@ def numeric_v2_usage_scope():
         _usage_calls.reset(token)
 
 
-async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str):
+async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str,
+                            response_format: dict[str, Any] | None = None):
     """Read only reported client usage; timeout or missing provider data stays unknown rather than becoming an estimate presented as actual consumption."""
     # Actor/Evaluator 在调用前已按会话档位检查完整 messages；这里仅观察，不二次裁剪或改写证据。
     calls = _usage_calls.get()
     if calls is None:
-        return await invoke_with_trace(client, messages, stage=stage)
+        return await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
     row = {"stage": stage, "input_tokens": None, "output_tokens": None}
     calls.append(row)
-    response = await invoke_with_trace(client, messages, stage=stage)
+    response = await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
     usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
     # 客户端对 Anthropic 也提供 OpenAI 别名；兼容原生字段时输入包含缓存创建和读取。
     prompt = usage.get("prompt_tokens")

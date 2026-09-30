@@ -12,7 +12,7 @@ import logging
 import os
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 
@@ -105,23 +105,25 @@ def trace_state(session: Any) -> dict[str, Any]:
     )}
 
 
-async def invoke_with_trace(client: Any, messages: list[Any], *, stage: str):
+async def invoke_with_trace(client: Any, messages: list[Any], *, stage: str,
+                            response_format: dict[str, Any] | None = None):
+    request_options = {"response_format": response_format} if response_format is not None else {}
     trace = _current_trace.get()
     if trace is None or trace.file is None:
-        return await client.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET # Caller has packed and checked these exact messages.
+        return await client.ainvoke(messages, **request_options)  # noqa: LLM_INPUT_BUDGET # Caller has packed and checked these exact messages.
     trace.calls += 1
     call_id = trace.calls
     started_at = time.monotonic()
     try:
         trace_event("model.request", call_id=call_id, stage=stage, model=getattr(client, "model", None),
                     max_completion_tokens=getattr(client, "max_completion_tokens", None),
-                    temperature=getattr(client, "temperature", None),
+                    temperature=getattr(client, "temperature", None), **request_options,
                     messages=[{"role": m.role, "content": m.content} if not isinstance(m, dict)
                               else {"role": m.get("role"), "content": m.get("content")} for m in messages])
     except Exception as exc:
         trace.disable(exc)
     try:
-        response = await client.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET # Observe without modifying the packed request.
+        response = await client.ainvoke(messages, **request_options)  # noqa: LLM_INPUT_BUDGET # Observe without modifying the packed request.
     except BaseException as exc:
         trace_event("model.failed", call_id=call_id, stage=stage, error_type=type(exc).__name__,
                     cancelled=isinstance(exc, asyncio.CancelledError),
@@ -131,11 +133,19 @@ async def invoke_with_trace(client: Any, messages: list[Any], *, stage: str):
         try:
             metadata = getattr(response, "response_metadata", None) or {}
             usage = metadata.get("token_usage") or {}
+            recorded_usage = {key: value for key in ("prompt_tokens", "completion_tokens", "total_tokens",
+                              "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+                              if type(value := usage.get(key)) is int}
+            # OpenAI-compatible providers report cache hits inside token details.
+            # Keep the existing trace field; missing is unknown, not a zero hit.
+            details = usage.get("prompt_tokens_details")
+            if "cache_read_input_tokens" not in recorded_usage and isinstance(details, Mapping):
+                cached = details.get("cached_tokens")
+                if type(cached) is int and cached >= 0:
+                    recorded_usage["cache_read_input_tokens"] = cached
             trace_event("model.response", call_id=call_id, stage=stage, content=getattr(response, "content", None),
                         finish_reason=metadata.get("finish_reason"),
-                        usage={key: value for key in ("prompt_tokens", "completion_tokens", "total_tokens",
-                               "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-                               if type(value := usage.get(key)) is int},
+                        usage=recorded_usage,
                         duration_ms=round((time.monotonic() - started_at) * 1000, 3))
         except Exception as exc:
             trace.disable(exc)

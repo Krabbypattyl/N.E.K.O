@@ -545,8 +545,9 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     # 作者已确认先事实后文学：时序核对移入事实阶段，文学阶段消费其报告。
     assert "按路线的实际 source/target" in FACT_REVIEW_PROMPT
     assert "fact_review 是完整事实报告" in _ASSESSMENT_PROMPT
-    assert "completion_facts 与 exit_plan.trigger_fact_ids 必须覆盖同一组真正决定离幕的结果" in _ASSESSMENT_PROMPT
-    assert "结局节点已经交付后不得" in _ASSESSMENT_PROMPT
+    assert "对每个非结局章节额外核对一条转场因果链" not in _ASSESSMENT_PROMPT
+    assert "不得重新核对或推翻 fact_review" in _ASSESSMENT_PROMPT
+    assert "fact_issue_ids引用事实报告已有issue_id" in _ASSESSMENT_PROMPT
     assert "路线可辨识性" in _ASSESSMENT_PROMPT
     assert "不能只靠隐藏数值暗中分流" in _ASSESSMENT_PROMPT
     assert "relationship_effect 标成 none" in _ASSESSMENT_PROMPT

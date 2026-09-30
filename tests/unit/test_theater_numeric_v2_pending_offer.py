@@ -27,6 +27,115 @@ async def _commit(runtime, stored, text, *, offer=False, intent="unclear", narra
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('invitation', ['我们去长街寻找旧信，好吗？', '我们去轨道站核对星图，好吗？'])
+@pytest.mark.parametrize('drift_before_accept', [False, True])
+@pytest.mark.parametrize('withdrawn', [False, True])
+async def test_accept_cannot_redirect_original_offer_after_metric_drift(
+    tmp_path, invitation, drift_before_accept, withdrawn,
+):
+    from services.theater.numeric_v2_runtime import MetricChangeV2
+
+    story = numeric_v2_story()
+    for route in story['nodes'][0]['route_gates']:
+        route['conditions']['all'][0]['value'] = 21
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(
+        session_id='route_drift', catgirl_binding=_binding(), opening_performance=_opening())
+    current = await _commit(runtime, current, invitation, offer=True)
+    if withdrawn:
+        current = await _commit(runtime, current, '好，先不去。', intent='reject')
+    changes = (MetricChangeV2.from_mapping({
+        'metric_id': 'trust', 'delta': 1, 'criterion': '玩家兑现承诺', 'evidence': '好',
+    }, runtime.engine.metric_schema),)
+    if drift_before_accept:
+        outcome = runtime.prepare_turn(current,
+            TurnRequestV2('followup', current.session.revision, '好，我再想想。'), changes)
+        current = await runtime.commit_turn(outcome, {
+            'performance': '你慢慢考虑。', 'suggested_inputs': [],
+            'transition_offered': current.session.transition_offered,
+        })
+    current = await runtime.restore_session(current.session.session_id)
+    outcome = runtime.prepare_turn(current,
+        TurnRequestV2('accept_old', current.session.revision, '好，就按刚才说的去。'),
+        () if drift_before_accept else changes,
+        transition_intent='accept', scene_complete=True, natural_ending_ready=True)
+
+    assert outcome.route is None
+    assert outcome.session.current_node_id == 'start'
+    assert outcome.session.metrics['trust'] == 21
+    assert outcome.ledger_event['accepted_offer_route_id'] == 'to_leave'
+    assert outcome.ledger_event['transition_offer_invalidated'] is True
+    outcome, performance = runtime.engine.finalize_transition_offer_state(outcome,
+        {'performance': '安排有变化，先留在这里。', 'suggested_inputs': []}, new_offer=False)
+    committed = await runtime.commit_turn(outcome, performance)
+    assert await runtime.restore_session(current.session.session_id) == committed
+    fork = await runtime.fork_session_for_test(current.session.session_id,
+        session_id='drift_fork', through_revision=committed.session.revision)
+    assert fork.session.current_node_id == 'start'
+    assert fork.ledger_events[-1]['accepted_offer_route_id'] == 'to_leave'
+
+    from services.theater.numeric_v2_store import NumericV2StoreError
+    path = tmp_path/'numeric_v2/sessions/route_drift.json'
+    data = json.loads(path.read_text())
+    data['ledger_events'][-1].pop('transition_offer_invalidated')
+    data['session']['performance_history'][-1].pop('transition_offer_invalidated')
+    path.write_text(json.dumps(data))
+    with pytest.raises(NumericV2StoreError, match='numeric_ledger_replay_mismatch'):
+        await runtime.restore_session('route_drift')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invitation', ['我们去长街寻找旧信，好吗？', '我们去轨道站核对星图，好吗？'])
+async def test_route_drift_is_cancelled_before_actor_without_extra_calls(tmp_path, monkeypatch, invitation):
+    from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_runtime import MetricChangeV2
+    from services.theater.numeric_v2_options import default_options
+
+    story = numeric_v2_story()
+    for route in story['nodes'][0]['route_gates']:
+        route['conditions']['all'][0]['value'] = 21
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(session_id='drift_workflow', catgirl_binding=_binding(), opening_performance=_opening())
+    current = await _commit(runtime, current, invitation, offer=True)
+    calls = []
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((MetricChangeV2.from_mapping({
+            'metric_id': 'trust', 'delta': 1, 'criterion': '玩家兑现承诺', 'evidence': '好',
+        }, runtime.engine.metric_schema),), False, transition_intent='accept')
+
+    async def generate(self, **kwargs):
+        calls.append('actor')
+        assert kwargs['outcome'].route is None
+        assert kwargs['outcome'].ledger_event['transition_offer_invalidated'] is True
+        return {'performance': '（放下手中的东西）安排有变化，我们先留在这里。', 'suggested_inputs': []}
+
+    async def review(self, **kwargs):
+        calls.append('review')
+        assert not kwargs['route_changed']
+        assert kwargs['invalidated_invitation'] is True
+        return ev.NumericV2TransitionOfferReview(
+            offer_present=False, valid=False, body_violations=(), unsafe_suggestion_indexes=())
+
+    async def options():
+        return {**default_options(), 'review': True}
+
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=current, turn=TurnRequestV2('accept', 1, '好，就按刚才说的去。'),
+        ensure_current_binding=lambda _: _binding())
+    assert calls == ['actor', 'review']
+    assert result.stored.session.current_node_id == 'start'
+    assert result.performance['suggested_inputs'] == []
+    assert result.diagnostics['pending_acceptance_suggestions_preserved'] == 0
+    assert await runtime.restore_session('drift_workflow') == result.stored
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("new_offer", [False, True])
 async def test_invalid_invitation_is_not_revived_by_followup_restore_or_fork(tmp_path, new_offer):
     """A confirmed invalid invitation establishes a history boundary; a corrected invitation in the same turn can still be accepted or reconsidered."""
@@ -117,7 +226,7 @@ async def test_invalidated_invitation_is_shared_before_rewrite_and_review(tmp_pa
     outcome = runtime.prepare_turn(current, TurnRequestV2("go", 1, "好，走吧。"), ())
     outcome, _ = runtime.engine.finalize_transition_offer_state(outcome, {}, new_offer=False, invalidate_previous_offer=True)
     messages = _turn_messages(runtime.engine, current.session, outcome, "好，走吧。", "温和。", "测试猫娘", "哥哥",
-                             retry_hint="请更正邀请。", interaction_intent="scene_action", recent_ledger_events=current.ledger_events)
+                             retry_hint="请更正邀请。",  recent_ledger_events=current.ledger_events)
     data = json.loads(messages[1].content.split('：', 1)[1])
     assert "已确认去向错误并撤下的旧邀请原文：我们去便利店买热饮吧？" in data['pacing']
     assert "当前待确认提议原文" not in data['pacing']
@@ -435,7 +544,6 @@ async def test_current_scene_completion_action_is_not_rewritten_as_wrong_exit(tm
             metric_changes=(),
             scene_complete=True,
             transition_intent='unclear',
-            interaction_intent='scene_action',
         )
 
     async def generate(self, **kwargs):
@@ -528,7 +636,7 @@ async def test_fact_candidates_keep_valid_siblings_when_one_candidate_is_stale_o
 
     async def evaluate(self, **kwargs):
         return ev.NumericV2EvaluationResult(
-            (), False, transition_intent='unclear', interaction_intent='scene_action')
+            (), False, transition_intent='unclear', )
 
     async def generate(self, **kwargs):
         return {
@@ -543,7 +651,9 @@ async def test_fact_candidates_keep_valid_siblings_when_one_candidate_is_stale_o
         }
 
     async def review(self, **kwargs):
-        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+        # 本例检查 Runtime 对复核所确认候选的逐项证据校验；未确认的 Actor 候选另测旁路拒绝。
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            fact_candidates=tuple(kwargs['actor_performance']['fact_candidates']))
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
@@ -609,7 +719,6 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
             metric_changes=(),
             scene_complete=False,
             transition_intent='unclear',
-            interaction_intent='scene_action',
         )
 
     async def generate(self, **kwargs):
@@ -643,12 +752,17 @@ async def test_narration_location_is_not_rewritten_when_review_denies_its_own_of
 
 
 @pytest.mark.asyncio
-async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no_offer(tmp_path, monkeypatch):
+@pytest.mark.parametrize('destination', ['长街继续调查', '轨道站核对星图'])
+@pytest.mark.parametrize('known', [False, True])
+@pytest.mark.parametrize('departed', [False, True])
+async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no_offer(
+    tmp_path, monkeypatch, destination, known, departed,
+):
     """完成合同已满足且复核确认正文安全但没有邀请时，零调用追加作者原文。"""  # noqa: DOCSTRING_CJK
 
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
 
-    story = numeric_v2_story()
+    story = numeric_v2_story(player_address_known=known)
     story['fact_contract'] = {
         'facts': {
             'scene:start:done': {
@@ -661,8 +775,10 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
     story['nodes'][0]['completion_contract'] = {
         'all': [{'key': 'scene:start:done', 'equals': True}],
     }
-    fallback_offer = '大家已经安全了。要现在和我一起去长街继续调查吗？'
+    fallback_offer = f'林舟，要现在和小岚一起去{destination}吗？'
+    projected_offer = f'{_binding()["player_address"] if known else "你"}，要现在和Lan一起去{destination}吗？'
     story['nodes'][0]['route_gates'][1]['transition_contract']['fallback_offer'] = fallback_offer
+    story['nodes'][0]['route_gates'][1]['transition_contract']['accept_input'] = '（看向小岚）好，现在过去。'
     middle = story['nodes'][2]
     middle['type'] = 'scene'
     middle.pop('terminal')
@@ -713,7 +829,7 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
 
     async def evaluate(self, **kwargs):
         return ev.NumericV2EvaluationResult(
-            (), False, transition_intent='unclear', interaction_intent='scene_action')
+            (), False, transition_intent='unclear', )
 
     async def generate(self, **kwargs):
         generations.append(kwargs)
@@ -742,17 +858,28 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
         config_manager=object(),
         runtime=runtime,
         current=current,
-        turn=TurnRequestV2('ask_next', current.session.revision, '接下来怎么办？'),
+        turn=TurnRequestV2('ask_next', current.session.revision,
+            '（点头致意，转身推门离开）谢谢，明天见。' if departed else '接下来怎么办？'),
         ensure_current_binding=lambda _: _binding(),
     )
 
     assert len(generations) == 1
     assert len(reviews) == 1
+    if departed:
+        assert result.diagnostics['completion_fallback_offer_applied'] == 0
+        assert projected_offer not in result.performance['performance']
+        assert result.performance['transition_offered'] is False
+        assert result.stored.session.transition_offered is False
+        return
     assert result.diagnostics['completion_fallback_offer_applied'] == 1
     assert result.diagnostics['phantom_transition_flags_cleared'] == 1
-    assert result.performance['performance'].endswith(fallback_offer)
+    assert result.performance['performance'].endswith(projected_offer)
+    assert result.performance['suggested_inputs'][0] == '（看向Lan）好，现在过去。'
+    assert runtime.engine.nodes['start']['route_gates'][1]['transition_contract']['fallback_offer'] == fallback_offer
     assert result.performance['transition_offered'] is True
     assert result.stored.session.transition_offered is True
+    restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id)
+    assert restored.session.performance_history[-1]['performance'].endswith(projected_offer)
     accepted = runtime.prepare_turn(
         result.stored,
         TurnRequestV2('accept_fallback', result.stored.session.revision, '好，现在过去。'),

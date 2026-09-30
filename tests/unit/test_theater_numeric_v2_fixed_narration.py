@@ -19,7 +19,7 @@ from services.theater.numeric_v2_evaluator import (
     _build_transition_judge_messages, _parse_transition_judge_output,
 )
 from services.theater.numeric_v2_fixed_narration import apply_triggers, displayed_ids, review_candidates, validate_delivery
-from services.theater.numeric_v2_performance import performance_content_blocks, performance_dialogue
+from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from services.theater import numeric_v2_workflow as workflow
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
@@ -268,7 +268,7 @@ async def test_literal_order_cold_recovery_fork_and_exit_gate(tmp_path):
     raw = {'performance': ACTION, 'suggested_inputs': [], 'transition_offered': False}
     performance = apply_triggers(engine.nodes['start'], current.session, raw, _claims(), request.message, known=False)
     assert performance_content_blocks(performance)[-1] == {'type': 'narration', 'text': LOG}
-    assert all(LOG not in line['text'] for line in performance_dialogue(performance))
+    assert all(LOG not in line['text'] for line in performance_content_blocks(performance) if line['type'] == 'dialogue')
     committed = await runtime.commit_turn(outcome, performance)
     restored = await NumericV2Runtime(engine, tmp_path).restore_session('fixed')
     assert restored == committed

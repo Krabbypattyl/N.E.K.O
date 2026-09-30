@@ -108,7 +108,7 @@ await host.close()
   "fixed_narrations": [{
     "id": "read_letter",
     "text": "致{{player_name}}：\n愿你一路平安。",
-    "trigger": {"type": "condition", "condition": "信封已经实际打开，信纸已能阅读。"},
+    "trigger": {"type": "condition", "condition": "信封已经实际打开，信纸已能阅读。", "player_handoff_required": false},
     "after": [],
     "required_before_exit": false
   }]
@@ -118,6 +118,14 @@ await host.close()
 运行时依据实际演出触发后原样显示，不交给演员改写或朗读。入幕即展示用 `{"type":"entry"}`；终止输入的结局仅支持入幕片段。每幕最多8项、原文合计2000 tokens；超限报错。姓名仅替换两个显式占位符，昵称未披露时使用“你”。`required_before_exit=true` 会在未展示时阻止离幕，普通文案建议保持 `false`。修改后仍需 `compile → validate → export/install`，不能复用旧 revision 的发布凭据。
 
 完整触发、恢复和姓名合同见[架构说明](../docs/design/neko-theater-architecture.md#34-作者固定旁白)。
+
+若完成条件仅表示这段原文已经展示，可通过 `changes["story"]` 将本幕 `completion_contract.all` 中的对应布尔事实项替换为 `{"fixed_narration_id":"read_letter"}`。运行端直接读取已提交展示记录，模型不再判断此条件；可以与其他 `key/equals` 完成事实混用。确认无其他引用后同步移除冗余事实定义和路线元数据，再重新编译、复验。此字段不改变旁白触发方式，离幕前必显仍用 `required_before_exit`；只表示内容已提交展示，不代表玩家已经阅读。旧包和存档不自动迁移；需使用支持该扩展的本体编译器与运行端。
+
+主线自动生成及续写支持作者完成项 `{"id":"letter_displayed","description":"原文已展示","value_type":"bool","target_value":true,"visibility":"public","fixed_narration_id":"read_letter"}`。引用必须位于同章且不能重复，`exit_plan.trigger_fact_ids` 仍填写 `letter_displayed`。投影自动转换为展示条件，不再创建该项的布尔事实；普通完成项省略 `fixed_narration_id`。支线完成项生成沿用原合同。
+
+主线生成在投影前检查固定原文数组的形状、触发方式和同幕前置引用；坏片段会将整个 `fixed_narrations` 数组加入定向修订，避免仅改完成项引用却保留损坏资产。结局修订使用仅含 `entry` 的触发示例。仍遵守原三次调用上限；该检查不等于原文与剧情语义、完整编译或文学质量已经通过。
+
+条件触发可显式声明 `player_handoff_required`：只有需要玩家实际递交时填 true，触碰或观察但不改变持有者时填 false；缺省保留旧包保护。false 不授权角色接走物品，也不代替正文复核。模型生成稿仍需检查触发主体、原文与剧情一致性，结构合法不等于演绎质量通过。
 
 ## 导入旧作者项目
 

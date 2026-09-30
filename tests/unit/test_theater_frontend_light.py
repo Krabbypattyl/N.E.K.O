@@ -105,7 +105,7 @@ def test_capsule_runtime_separates_narration_and_dialogue_tts():
 
     assert "/session/speak-block" in runtime
     assert "if (block.type === 'dialogue')" in runtime
-    assert "typeBlock(historyId, block, token)" in runtime
+    assert "typeBlock(historyId, block, token, immediate)" in runtime
     assert "playDialogue(group, item.block, item.blockIndex, revision, token)" in runtime
     assert "if (speechPromise && !await speechPromise) return" in runtime
     assert "theaterPresentation" in runtime

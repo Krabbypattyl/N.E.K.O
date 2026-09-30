@@ -142,14 +142,6 @@ def performance_content_blocks(performance: Mapping[str, Any]) -> list[dict[str,
     return content_blocks(performance)
 
 
-def performance_dialogue(performance: Mapping[str, Any]) -> list[dict[str, str]]:
-    return [
-        block
-        for block in performance_content_blocks(performance)
-        if block["type"] == "dialogue"
-    ]
-
-
 def valid_ordered_content(
     container: Mapping[str, Any],
     *,
@@ -220,7 +212,6 @@ __all__ = [
     "content_blocks",
     "mixed_performance_blocks",
     "performance_content_blocks",
-    "performance_dialogue",
     "transition_source_dialogue_policy",
     "valid_mixed_performance_policy",
     "valid_ordered_content",

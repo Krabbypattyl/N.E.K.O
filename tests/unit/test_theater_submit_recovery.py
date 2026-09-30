@@ -243,8 +243,6 @@ SCENARIOS = (
         const before = copy(ctx.runtime.getState());
         await reject(late);
         const after = copy(ctx.runtime.getState());
-        // 无业务变化的重绘序号不是旧响应污染，不把表现层计数当状态语义。
-        delete before.presentationSeq; delete after.presentationSeq;
         assert.deepEqual(after, before);
         assert.equal(after.sessionId, 'session_b'); assert.equal(after.revision, 7);
         assert.equal(after.errorMessage, '');

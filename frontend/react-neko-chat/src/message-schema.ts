@@ -115,11 +115,6 @@ const theaterPresentationSchema = z.object({
   active: z.boolean(),
   phase: z.enum(['inactive', 'loading', 'performing', 'awaiting_player', 'evaluating', 'ending', 'ended', 'returning_selector']),
   storyTitle: z.string().optional(),
-  currentBlock: z.object({
-    type: z.enum(['narration', 'dialogue']),
-    text: z.string(),
-    displayKind: z.enum(['action', 'scene']).optional(),
-  }).nullable().optional(),
   history: z.array(theaterHistoryEntrySchema).optional(),
   suggestedInputs: z.array(z.string()).optional(),
   busy: z.boolean().optional(),
@@ -129,7 +124,6 @@ const theaterPresentationSchema = z.object({
   tokenUsage: z.object({ summary: z.string(), detail: z.string() }).nullable().optional(),
   draftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
   ordinaryDraftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
-  presentationSeq: z.number().int().nonnegative().optional(),
 });
 
 // Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。

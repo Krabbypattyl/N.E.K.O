@@ -1,4 +1,4 @@
-"""复核链等待优化：时限位置、改写后定向复检与整回合复核预算。  # noqa: DOCSTRING_CJK
+"""复核链等待优化：时限位置、改写后证据保留与整回合复核预算。  # noqa: DOCSTRING_CJK
 
 这些改动只约束等待与第二次判定看到的材料，不改变玩家授权、去向公开、数值结算或原子提交。
 """
@@ -41,34 +41,31 @@ def _judge_payload(engine, session, outcome, candidate, **kwargs):
     return _payload(messages)
 
 
-def test_recheck_only_trims_earlier_turns_and_keeps_absence_conservative():
-    """改写后复检只保留最新完整回合，并把历史完整性按保守方向置为不完整。"""  # noqa: DOCSTRING_CJK
+def test_rewritten_candidate_preserves_full_review_evidence():
+    """复检仍承担完整判断，必须与初检使用同一历史及完整性标记。"""  # noqa: DOCSTRING_CJK
 
     engine, session, outcome, candidate = _fixture(50)
     session = _long_history_session(engine, session)
     full = _judge_payload(engine, session, outcome, candidate)
-    narrowed = _judge_payload(engine, session, outcome, candidate, recheck_only=True)
+    rewritten = _judge_payload(engine, session, outcome, {
+        'segments': [{'phase': 'source_response', 'performance': '（她收好工具）今天就到这里吧。'}],
+        'suggested_inputs': [],
+    })
 
     assert len(full['scene_context']) > 1
-    assert len(narrowed['scene_context']) == 1
-    assert narrowed['scene_fact_index'] == []
-    # 不允许凭缺项断言"从未发生"：裁掉更早回合后必须显式声明历史不完整。
-    assert narrowed['current_visit_history_complete'] is False
-    # 候选、本轮输入与作者合同不受收窄影响。
-    assert narrowed['candidate_segments'] == full['candidate_segments']
-    assert narrowed['player_input'] == full['player_input']
-    assert narrowed['current_scene'] == full['current_scene']
+    for key in ('scene_context', 'scene_fact_index', 'current_visit_history_complete'):
+        assert rewritten[key] == full[key]
 
 
-def test_recheck_only_survives_emptied_index_under_pressure(monkeypatch):
-    """收窄后仍超预算时，装箱循环必须能处理已置空的索引而不是崩溃。"""  # noqa: DOCSTRING_CJK
+def test_review_budget_trimming_marks_history_incomplete(monkeypatch):
+    """总预算压力仍可整轮裁剪，但不能额外清空复检历史。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
 
     engine, session, outcome, candidate = _fixture(950)
     session = _long_history_session(engine, session)
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy'], 'formal_judge_input_max_tokens', 1500)
-    narrowed = _judge_payload(engine, session, outcome, candidate, recheck_only=True)
+    narrowed = _judge_payload(engine, session, outcome, candidate)
     assert narrowed['scene_fact_index'] == []
     assert narrowed['current_visit_history_complete'] is False
 
@@ -79,9 +76,7 @@ def test_missed_initiation_recheck_keeps_full_history():
     engine, session, outcome, candidate = _fixture(200)
     session = _long_history_session(engine, session)
     full = _judge_payload(engine, session, outcome, candidate, check_missed_initiation=True)
-    narrowed = _judge_payload(
-        engine, session, outcome, candidate, check_missed_initiation=True, recheck_only=True)
-    assert len(narrowed['scene_context']) == len(full['scene_context']) > 1
+    assert len(full['scene_context']) > 1
 
 
 @pytest.mark.asyncio
@@ -158,6 +153,7 @@ async def test_review_call_accepts_remaining_budget_timeout(monkeypatch):
                 'valid': False,
                 'body_violations': [],
                 'unsafe_suggestion_indexes': [],
+                'delivery_matches_route': True,
                 'failure_reason': '',
             }))
 
@@ -297,6 +293,150 @@ def test_verified_offer_gets_the_authored_acceptance_button():
         '我想先问问路况。',
         '我暂时不走。',
     ]
+
+
+@pytest.mark.parametrize('acceptance', ['我知道了，我会好好分析的。', '（收起星图）我会再核对坐标。'])
+@pytest.mark.parametrize('already_committed', [False, True])
+def test_consumed_pending_acceptance_does_not_return(acceptance, already_committed):
+    """本轮或邀请后已提交的同一句输入，不能被按钮保留逻辑重新引入。"""  # noqa: DOCSTRING_CJK
+
+    _engine, session, _outcome, _candidate = _fixture(50)
+    offer = {
+        'revision': 1,
+        'from_node_id': session.current_node_id,
+        'to_node_id': session.current_node_id,
+        'transition_offered': True,
+        'transition_offer_presented': True,
+        'suggested_inputs': [acceptance, '我再想想。'],
+    }
+    followup = {
+        **offer, 'revision': 2, 'transition_offer_presented': False,
+        'input_text': acceptance, 'suggested_inputs': ['我再想想。'],
+    }
+    session = replace(session, transition_offered=True,
+                      performance_history=(offer, followup) if already_committed else (offer,))
+    candidate = {'performance': '我在听。', 'suggested_inputs': [acceptance, '我再想想。']}
+    result, preserved = numeric_v2_workflow._preserve_pending_acceptance_suggestion(
+        candidate, current=SimpleNamespace(session=session, ledger_events=()), keep_pending=True,
+        player_input='还有多久？' if already_committed else '  ' + acceptance + '\n',
+    )
+    assert result['suggested_inputs'] == ['我再想想。']
+    assert preserved is False
+    assert candidate['suggested_inputs'] == [acceptance, '我再想想。']
+
+
+def test_authored_acceptance_does_not_repeat_current_input():
+    result, inserted = numeric_v2_workflow._insert_verified_offer_acceptance_suggestion(
+        {'suggested_inputs': ['换个办法吧。']}, accept_input='我会认真分析。',
+        consumed_inputs=('我会认真\n分析。',),
+    )
+    assert result['suggested_inputs'] == ['换个办法吧。']
+    assert inserted is False
+
+
+def test_new_invitation_resets_consumed_acceptance_boundary():
+    """旧邀请期间用过的话不限制后来重新公开的邀请。"""  # noqa: DOCSTRING_CJK
+
+    _engine, session, _outcome, _candidate = _fixture(50)
+    acceptance = '（点头）好，我们出发。'
+    offer = {
+        'revision': 1, 'from_node_id': session.current_node_id, 'to_node_id': session.current_node_id,
+        'transition_offered': True, 'transition_offer_presented': True,
+        'suggested_inputs': [acceptance],
+    }
+    used = {**offer, 'revision': 2, 'transition_offer_presented': False, 'input_text': acceptance}
+    new_offer = {**offer, 'revision': 3, 'input_text': acceptance}
+    session = replace(session, transition_offered=True, performance_history=(offer, used, new_offer))
+    result, preserved = numeric_v2_workflow._preserve_pending_acceptance_suggestion(
+        {'suggested_inputs': ['还要带什么？']},
+        current=SimpleNamespace(session=session, ledger_events=()), keep_pending=True, player_input='还有多久？',
+    )
+    assert result['suggested_inputs'] == [acceptance, '还要带什么？']
+    assert preserved is True
+
+
+def test_fallback_does_not_treat_replacement_first_option_as_acceptance():
+    """接受按钮退场后，判定故障不能把顶上首位的暂缓按钮当成授权。"""  # noqa: DOCSTRING_CJK
+
+    _engine, session, _outcome, _candidate = _fixture(50)
+    offer = {
+        'revision': 1, 'from_node_id': session.current_node_id, 'to_node_id': session.current_node_id,
+        'transition_offered': True, 'transition_offer_presented': True,
+        'suggested_inputs': ['好，现在出发。', '再等等。'],
+    }
+    followup = {**offer, 'revision': 2, 'transition_offer_presented': False,
+                'suggested_inputs': ['再等等。']}
+    session = replace(session, transition_offered=True, performance_history=(offer, followup))
+    result = numeric_v2_workflow._evaluation_without_evaluator(
+        SimpleNamespace(session=session, ledger_events=()), SimpleNamespace(message='再等等。'))
+    assert result.transition_intent == 'unclear'
+    assert result.metric_changes == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('acceptance, offer', [
+    ('我知道了，我会好好分析的。', '哭完了就擦干，看看错在哪。'),
+    ('（收起星图）我会再核对坐标。', '先检查读数，看看哪里偏了。'),
+])
+async def test_consumed_acceptance_stays_removed_across_commits_and_restore(
+    tmp_path, monkeypatch, acceptance, offer,
+):
+    """两类卡幕样本沿真实提交与恢复链路去掉旧按钮，不追加采样也不强行换幕。"""  # noqa: DOCSTRING_CJK
+
+    from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+
+    engine = initiation_case()['engine']
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='consumed_acceptance', catgirl_binding=_binding(),
+                                          opening_performance={'performance': '我在听。', 'suggested_inputs': []})
+    outcome = runtime.prepare_turn(current, TurnRequestV2('setup', 0, '接下来呢？'), ())
+    outcome, performance = engine.finalize_transition_offer_state(outcome, {
+        'performance': offer, 'suggested_inputs': [acceptance, '（摇头）再等等。'],
+    }, new_offer=True)
+    current = await runtime.commit_turn(outcome, performance)
+    calls = []
+
+    async def evaluate(self, **kwargs):
+        calls.append('evaluate')
+        return evaluator.NumericV2EvaluationResult((), False, transition_intent='unclear')
+
+    async def generate(self, **kwargs):
+        calls.append('actor')
+        return {'performance': '（点头）我们再商量一下。', 'transition_offered': False,
+                'suggested_inputs': ['（摇头）再等等。', '（抬头）还有别的办法吗？']}
+
+    async def review(self, **kwargs):
+        calls.append('review')
+        return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
+
+    async def review_on():
+        return {**await _all_off(), 'evaluator': True, 'review': True}
+
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(numeric_v2_workflow, 'aload_theater_module_options', review_on)
+    node = current.session.current_node_id
+    for index, message in enumerate((acceptance, '还有多久？', '还有别的办法吗？')):
+        result = await numeric_v2_workflow.execute_numeric_v2_turn(
+            config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2(f'followup_{index}', current.session.revision, message),
+            ensure_current_binding=lambda _: _binding(),
+        )
+        assert acceptance not in result.performance['suggested_inputs']
+        assert len(result.performance['suggested_inputs']) == 2
+        assert result.stored.session.current_node_id == node
+        assert result.stored.session.transition_offered is True
+        assert result.diagnostics['pending_acceptance_suggestions_preserved'] == 0
+        runtime = NumericV2Runtime(engine, tmp_path)
+        current = await runtime.restore_session(current.session.session_id)
+        assert current.session.performance_history[-1]['suggested_inputs'] == result.performance['suggested_inputs']
+        fallback = numeric_v2_workflow._evaluation_without_evaluator(
+            current, SimpleNamespace(message=result.performance['suggested_inputs'][0]))
+        assert fallback.transition_intent == 'unclear'
+    assert calls == ['evaluate', 'actor', 'review'] * 3
 
 
 @pytest.mark.asyncio
@@ -534,7 +674,7 @@ async def test_review_budget_skips_later_rechecks_and_uses_existing_fallback(tmp
                 'suggested_inputs': []}
 
     async def review(self, **kwargs):
-        reviews.append(kwargs.get('recheck_only'))
+        reviews.append(kwargs)
         return _violating_review(**kwargs)
 
     monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -578,7 +718,7 @@ async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monk
         # 必须真的跨幕，才能覆盖正式转场的"未完成复核不提交"分支。
         return evaluator.NumericV2EvaluationResult(
             (MetricChangeV2('trust', 2, '玩家兑现承诺', '我来帮你。'),), False,
-            transition_intent='initiate', interaction_intent='scene_action')
+            transition_intent='initiate', )
 
     async def generate(self, **kwargs):
         generations.append(kwargs)
@@ -620,7 +760,7 @@ async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypat
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult(
             (MetricChangeV2('trust', 2, '玩家兑现承诺', '我来帮你。'),), False,
-            transition_intent='initiate', interaction_intent='scene_action')
+            transition_intent='initiate', )
 
     async def generate(self, **kwargs):
         return case['engine'].finalize_transition_performance(
@@ -887,7 +1027,7 @@ async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult(
             (MetricChangeV2('trust', 2, '玩家兑现承诺', '我来帮你。'),), False,
-            transition_intent='initiate', interaction_intent='scene_action')
+            transition_intent='initiate', )
 
     payloads = []
 
@@ -951,12 +1091,13 @@ async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeyp
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult(
-            (), False, transition_intent='initiate', interaction_intent='scene_action')
+            (), False, transition_intent='initiate', )
 
     async def generate(self, **kwargs):
         generations.append(kwargs.get('retry_hint', ''))
         candidate = _candidate()
         candidate['bridge_scene_narration'] = '沿着石阶向上，视野豁然开朗，小葵快步走向平台边缘。'
+        candidate['target_scene_narration'] = target_opening
         return case['engine'].finalize_transition_performance(
             kwargs['outcome'], candidate, target_opening=target_opening)
 

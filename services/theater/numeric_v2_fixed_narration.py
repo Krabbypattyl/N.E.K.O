@@ -44,8 +44,11 @@ def validate_definitions(collector, beat: Mapping[str, Any], path: str) -> None:
         kind = trigger.get("type")
         if kind == "condition":
             collector.require_text(trigger.get("condition"), f"{item_path}.trigger.condition")
+            if "player_handoff_required" in trigger and not isinstance(trigger["player_handoff_required"], bool):
+                collector.add("fixed_narration_handoff_invalid", item_path, "玩家递交要求必须是布尔值。")
         if (not isinstance(kind, str) or kind not in {"entry", "condition"}
-                or set(trigger) != ({"type"} if kind == "entry" else {"type", "condition"})):
+                or (set(trigger) != {"type"} if kind == "entry" else
+                    set(trigger) not in ({"type", "condition"}, {"type", "condition", "player_handoff_required"}))):
             collector.add("fixed_narration_trigger_invalid", item_path, "触发方式必须为入幕或明确的剧情条件。")
         after = collector.array(item.get("after"), f"{item_path}.after")
         if any(not isinstance(key, str) or key not in seen for key in after) or len(after) != len(set(map(str, after))):
@@ -127,13 +130,18 @@ def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any]
         else:
             # Actor 不选择片段或结算依赖；只接收实际触发条件，避免内部编号进入可见旁白。
             lines.append(f"待展示原文的触发条件：{project_condition(item['trigger']['condition'])}。不得替玩家执行触发动作。")
+            if "player_handoff_required" in item["trigger"]:
+                lines.append("此条件必须有玩家实际递交。" if item["trigger"]["player_handoff_required"] else
+                             "此条件不要求玩家递交；这不授权改变物品持有者或替玩家行动。")
     if any(item["required_before_exit"] for item in rows):
         lines.append("当前尚有离幕前必显片段；回应当前互动，不提前邀请跳到下一幕或结束。")
     return "\n".join(lines)
 
 
 def review_candidates(node: Mapping[str, Any], session: Any) -> list[dict[str, Any]]:
-    return [{"id": item["id"], "condition": item["trigger"]["condition"], "after": item["after"]}
+    return [{"id": item["id"], "condition": item["trigger"]["condition"], "after": item["after"],
+             **({"player_handoff_required": item["trigger"]["player_handoff_required"]}
+                if "player_handoff_required" in item["trigger"] else {})}
             for item in pending_definitions(node, session) if item["trigger"]["type"] == "condition"]
 
 
@@ -162,8 +170,11 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
         if not evidence or not any(evidence in text for text in sources):
             continue
         definition = next((item for item in definitions(node) if item["id"] == claim.get("id")), None)
-        condition = str((definition or {}).get("trigger", {}).get("condition") or "")
-        if _actor_receive_requires_handoff(condition):
+        trigger = (definition or {}).get("trigger", {})
+        condition = str(trigger.get("condition") or "")
+        requires_handoff = trigger.get("player_handoff_required", _actor_receive_requires_handoff(condition))
+        # 显式触碰条件可不要求递交，但引用实际写成接收动作时仍保留交接保护。
+        if requires_handoff or ("player_handoff_required" in trigger and _actor_receive_requires_handoff(evidence)):
             # 候选正文自称“接过/收到”不能证明交接已经发生；必须有玩家明确递交，
             # 或历史中已有该证据。这样保留“玩家递出→猫娘接收”，拦住“玩家拿起→猫娘接收”。
             historical_text = "\n".join(

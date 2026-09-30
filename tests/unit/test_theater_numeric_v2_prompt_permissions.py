@@ -148,7 +148,7 @@ def test_ending_prompt_does_not_invent_a_new_invitation(turn_count, complete, re
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '先回应最后的问题。'), (),
                                   scene_complete=complete, natural_ending_ready=ready)
     messages = actor._turn_messages(engine, session, outcome, '先回应最后的问题。', '温和。', '小葵', '你',
-                                    interaction_intent='scene_action')
+                                    )
     if complete and ready:
         assert outcome.session.status == 'ended'
         assert _payload(messages)['transition']['natural_ending']
@@ -170,7 +170,8 @@ def test_ordinary_mature_exit_still_requests_a_reversible_public_offer():
     messages = actor._turn_messages(engine, session, outcome, '处理好了。', '温和。', '小葵', '你')
     assert outcome.session.current_node_id == session.current_node_id
     assert '本轮自然收束合同' in messages[0].content
-    assert '提出具体收束行动' in _payload(messages)['pacing']
+    assert '按自然收束合同回应，不自动换幕' in _payload(messages)['pacing']
+    assert '提出 next_scene 支持的具体跨阶段行动' in messages[0].content
 
 
 def test_opening_omits_retired_transition_fields_but_keeps_current_permissions():
@@ -183,3 +184,34 @@ def test_opening_omits_retired_transition_fields_but_keeps_current_permissions()
     assert '玩家称呼尚未确认' in system
     assert 'forbidden 只能写动作' in system
     assert '作者剧情方向是导演信息' in system
+
+
+def test_opening_does_not_assign_later_turn_or_transition_tasks():
+    messages = actor._opening_messages(_engine(), '温和。', '小葵', '你', False, max_tokens=10000)
+    system = messages[0].content
+    assert 'recent_context' not in system
+    assert 'reject 后留在本幕' not in system
+    assert '换场两侧' not in system
+    assert '已实施的动作是已发生事实' not in system
+    assert 'current_story_beat.opening_scene' in system
+    assert 'opening_deliverables' not in system
+    assert '2—3' in system
+    assert '不得假定玩家已经说话' in _payload(messages)['instruction']
+
+
+@pytest.mark.parametrize('boundary', ['未获许可不得拆开星核。', '未获许可不得公开信件。'])
+@pytest.mark.parametrize('offered', [False, True])
+def test_suggestion_fill_only_assigns_suggestion_duties(boundary, offered):
+    messages = actor._suggestion_fill_messages(
+        catgirl_name='小葵', performance={'performance': '先确认许可，再决定下一步。'},
+        player_input='我先看看。', max_tokens=4800, hard_boundaries=[boundary],
+        transition_offered=offered,
+    )
+    system = messages[0].content
+    assert '猫娘必须在正文' not in system
+    assert '来源禁令不延伸到目标段' not in system
+    assert 'scene_update' not in system
+    assert sum(m.content.count(boundary) for m in messages) == 1
+    assert '2—3' in system
+    assert ('accept_input' in system) == offered
+    assert _payload(messages)['visible_performance'] == '先确认许可，再决定下一步。'

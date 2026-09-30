@@ -60,7 +60,7 @@ THEATER_MODULE_OPTIONS: tuple[TheaterModuleOption, ...] = (
     TheaterModuleOption(
         key="suggestion_fill",
         default=False,
-        disabled_effect="推荐条数不在 2—3 条时不再补一次调用，按演员实际返回展示。",
+        disabled_effect="推荐为空或新换场邀请选项不足时不再补一次调用，按演员实际返回展示；复核删除后不再补写。",
     ),
     TheaterModuleOption(
         key="history_lookup",
@@ -114,12 +114,6 @@ def disabled_effects() -> dict[str, str]:
     return {option.key: option.disabled_effect for option in THEATER_MODULE_OPTIONS}
 
 
-def storage_key_known(key: str) -> bool:
-    """True when a storage key belongs to a declared module switch."""
-
-    return key in {storage_key(option.key) for option in THEATER_MODULE_OPTIONS}
-
-
 async def aload_theater_module_options() -> dict[str, bool]:
     """Read every switch at once; any failure falls back to declared defaults."""
 
@@ -162,5 +156,4 @@ __all__ = [
     "normalize_options",
     "option_keys",
     "storage_key",
-    "storage_key_known",
 ]

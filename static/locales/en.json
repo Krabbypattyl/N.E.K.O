@@ -2976,7 +2976,7 @@
         "moduleOptDetail.dispute": "Rechecks the first disputed judgment independently. Off: the quick review’s initial judgment stands.",
         "moduleOptDetail.review_delivery": "Checks required props before a transition. Off: the transition may proceed without them.",
         "moduleOptDetail.review_contract": "Checks author prohibitions and premature arrival. Off: these boundary violations are not blocked.",
-        "moduleOptDetail.suggestion_fill": "Requests more suggestions when too few are returned. Off: existing valid suggestions are shown as-is.",
+        "moduleOptDetail.suggestion_fill": "Generates suggestions when none are usable or a new scene invitation needs more choices. Suggestions removed by review are not regenerated. Off: show existing valid suggestions.",
         "moduleOptDetail.history_lookup": "Looks up earlier text from this session when needed. Off: older details remain unknown.",
         "moduleOptDetail.actor_retry": "Retries invalid actor output once. Off: the turn rolls back and the player must resend.",
         "kicker": "Lanlan Theater",

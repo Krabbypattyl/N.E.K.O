@@ -166,13 +166,14 @@ def project_player_action_result(
             "source": "player_input",
             "evidence_quote": text,
         })
-    if text and not confirmed and _action_is_explicit(text):
+    action_clause = _explicit_action_clause(text)
+    if text and not confirmed and _action_is_explicit(action_clause):
         confirmed.append({
             "kind": "player_action",
             "status": "performed",
-            "action_term": _action_term(text),
+            "action_term": _action_term(action_clause),
             "source": "player_input",
-            "evidence_quote": text,
+            "evidence_quote": action_clause,
         })
     if text and _future_reference(text):
         future.append({

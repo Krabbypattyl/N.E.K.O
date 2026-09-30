@@ -2977,7 +2977,7 @@
         "moduleOptDetail.dispute": "最初の争点を独立して再判定します。オフでは簡易レビューの初回判定を採用します。",
         "moduleOptDetail.review_delivery": "場面転換前に必須の小道具の受け渡しを確認します。オフでは欠けていても転換できます。",
         "moduleOptDetail.review_contract": "作者の禁止事項と次の段階への早すぎる到達を確認します。オフではその逸脱を止めません。",
-        "moduleOptDetail.suggestion_fill": "候補が不足したときに推薦を追加で生成します。オフでは既存の有効な候補だけを表示します。",
+        "moduleOptDetail.suggestion_fill": "使える候補がない場合や、新しい場面への誘いで選択肢が不足する場合に追加生成します。確認で削除された候補は再生成しません。オフでは既存の有効な候補を表示します。",
         "moduleOptDetail.history_lookup": "必要に応じてこのセッションの過去の本文を参照します。オフでは古い詳細は不明のままです。",
         "moduleOptDetail.actor_retry": "俳優の出力が不正なときに再試行します。オフではターンを取り消し、プレイヤーが再送します。",
         "kicker": "Lanlan Theater",

@@ -83,6 +83,43 @@ async def test_trace_preserves_requests_responses_usage_and_excludes_credentials
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("details, native, expected", [
+    ({"cached_tokens": 4096, "debug": "SECRET_AUTH"}, None, 4096),
+    ({"cached_tokens": 0}, None, 0),
+    ({"cached_tokens": 4096}, 128, 128),
+    ({"cached_tokens": 4096}, 0, 0),
+    ({"cached_tokens": True}, None, None),
+    ({"cached_tokens": -1}, None, None),
+    ({"cached_tokens": "4096"}, None, None),
+    ({}, None, None),
+    (None, None, None),
+])
+async def test_trace_records_cache_hits_without_mutating_provider_usage(
+    tmp_path, monkeypatch, details, native, expected,
+):
+    monkeypatch.setenv("NEKO_THEATER_TRACE_DIR", str(tmp_path))
+    client = Client()
+    usage = client.response.response_metadata["token_usage"]
+    usage["prompt_tokens_details"] = details
+    if native is not None:
+        usage["cache_read_input_tokens"] = native
+    original = json.dumps(usage)
+    with numeric_v2_usage_scope() as calls, trace.text_trace_scope("turn"):
+        response = await invoke_with_usage(client, [], stage="actor")
+    rows, = read_traces(tmp_path)
+    recorded = next(r["data"]["usage"] for r in rows if r["event"] == "model.response")
+    if expected is None:
+        assert "cache_read_input_tokens" not in recorded
+    else:
+        assert recorded["cache_read_input_tokens"] == expected
+    assert "prompt_tokens_details" not in recorded
+    assert "SECRET_AUTH" not in json.dumps(rows)
+    assert json.dumps(usage) == original and response is client.response
+    assert len(client.calls) == 1
+    assert calls == [{"stage": "actor", "input_tokens": 12, "output_tokens": 4}]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_turns_and_child_calls_are_isolated_and_closed(tmp_path, monkeypatch):
     monkeypatch.setenv("NEKO_THEATER_TRACE_DIR", str(tmp_path))
     clients = {name: Client(name) for name in ("first", "second")}

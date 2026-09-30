@@ -971,6 +971,8 @@ class NumericV2Compiler:
                         node.get("completion_contract"),
                         f"{path}.completion_contract",
                         fact_definitions=fact_definitions or {},
+                        fixed_narrations=(node["story_beat"].get("fixed_narrations")
+                                          if isinstance(node.get("story_beat"), Mapping) else None),
                     )
             if node.get("type") == "ending" or node.get("terminal") is True:
                 beat = node.get("story_beat")
@@ -1051,8 +1053,9 @@ class NumericV2Compiler:
         path: str,
         *,
         fact_definitions: Mapping[str, Any],
+        fixed_narrations: list[dict[str, Any]] | None = None,
     ) -> None:
-        """校验幕完成条件只引用已声明且类型一致的事实。"""  # noqa: DOCSTRING_CJK
+        """校验幕完成条件只引用已声明的事实或本幕固定旁白。"""  # noqa: DOCSTRING_CJK
 
         contract = c.obj(value, path)
         if set(contract) != {"all"}:
@@ -1071,14 +1074,27 @@ class NumericV2Compiler:
                 f"每幕最多声明 {_COMPLETION_CONTRACT_MAX_FACTS} 项完成事实。",
             )
         seen_keys: set[str] = set()
+        seen_narrations: set[str] = set()
+        narration_ids = {piece.get("id") for piece in (fixed_narrations if isinstance(fixed_narrations, list) else [])
+                         if isinstance(piece, Mapping)
+                         and isinstance(piece.get("id"), str)}
         for index, raw in enumerate(requirements):
             requirement_path = f"{path}.all[{index}]"
             requirement = c.obj(raw, requirement_path)
+            if set(requirement) == {"fixed_narration_id"}:
+                piece_id = requirement["fixed_narration_id"]
+                if not isinstance(piece_id, str) or piece_id not in narration_ids:
+                    c.add("unknown_completion_narration", requirement_path, "展示条件只能引用本幕已声明的固定旁白。")
+                elif piece_id in seen_narrations:
+                    c.add("duplicate_completion_narration", requirement_path, "同一幕不能重复声明展示条件。")
+                else:
+                    seen_narrations.add(piece_id)
+                continue
             if set(requirement) != {"key", "equals"}:
                 c.add(
                     "invalid_completion_fact_shape",
                     requirement_path,
-                    "完成事实必须且只能包含 key 和 equals。",
+                    "完成条件须为 key 和 equals，或单独的 fixed_narration_id。",
                 )
             key = requirement.get("key")
             if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):

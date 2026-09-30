@@ -698,7 +698,6 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     isolation_failure_count = 0
     committed_turns = 0
     evaluator_degraded_count = 0
-    interaction_intent_counts: dict[str, int] = {}
     actor_generation_attempts = 0
     actor_repeated_output_guards: dict[str, int] = {}
     actor_repeated_output_retry_aborted = 0
@@ -792,13 +791,6 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             evaluator_degraded_count += int(
                 diagnostics.get("evaluator_degraded") is True
             )
-            interaction_intent = str(
-                diagnostics.get("interaction_intent") or ""
-            ).strip()
-            if interaction_intent:
-                interaction_intent_counts[interaction_intent] = (
-                    interaction_intent_counts.get(interaction_intent, 0) + 1
-                )
             actor_generation_attempts += int(
                 diagnostics.get("actor_generation_attempts") or 0
             )
@@ -1005,7 +997,6 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         "quality_warning_count": quality_warning_count,
         "isolation_failure_count": isolation_failure_count,
         "evaluator_degraded_count": evaluator_degraded_count,
-        "interaction_intent_counts": interaction_intent_counts,
         "actor_generation_attempts": actor_generation_attempts,
         "actor_repeated_output_guards": actor_repeated_output_guards,
         "actor_repeated_output_retry_aborted": actor_repeated_output_retry_aborted,

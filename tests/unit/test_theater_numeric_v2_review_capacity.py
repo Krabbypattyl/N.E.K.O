@@ -39,7 +39,7 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
         async def ainvoke(self, messages):
             calls.append(messages)
             return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False,
-                body_violations=[], unsafe_suggestion_indexes=[], failure_reason='')))
+                body_violations=[], unsafe_suggestion_indexes=[], failure_reason='', delivery_matches_route=True)))
 
     async def config(_):
         return dict(model='test', base_url='http://test.invalid')

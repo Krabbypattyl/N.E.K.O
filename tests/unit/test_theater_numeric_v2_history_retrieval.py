@@ -34,6 +34,48 @@ def _long_session():
                            performance_history=(old, crossing, *later))
 
 
+@pytest.mark.parametrize('fact', ['星核尚未获得拆解许可。', '信件尚未获得公开许可。'])
+@pytest.mark.parametrize('consumer', ['evaluator', 'review'])
+@pytest.mark.parametrize('trim', [False, True])
+def test_packed_evidence_dedup_preserves_provenance_and_trimmed_history(monkeypatch, fact, consumer, trim):
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = replace(_session(engine), revision=2, node_turn_count=2, performance_history=(
+        {'revision': 1, 'from_node_id': 'start', 'to_node_id': 'start',
+         'input_text': '我先观察。', 'performance': fact},
+        {'revision': 2, 'from_node_id': 'start', 'to_node_id': 'start',
+         'input_text': '那就先保留。', 'performance': '好，暂时保持原样。'},
+    ))
+    duplicate = dict(revision=1, source='performance', current_visit=True, text=fact)
+    protected = [
+        {**duplicate, 'source': 'player_input'},
+        {**duplicate, 'revision': 0},
+        {**duplicate, 'current_visit': False},
+        {**duplicate, 'text': fact + '对方明确拒绝了。'},
+    ]
+    evidence = [duplicate, *protected]
+    monkeypatch.setattr(evaluator, 'history_evidence', lambda *args, **kwargs: list(evidence))
+    def build(value):
+        if consumer == 'evaluator':
+            return evaluator._build_messages(engine, value, '现在许可还有效吗？')
+        return evaluator._build_transition_judge_messages(engine, value, player_input='现在许可还有效吗？',
+            actor_performance={'performance': '仍按已有许可办理。'})[0]
+    if trim:
+        baseline = build(session)
+        budget_key = 'evaluator_input_max_tokens' if consumer == 'evaluator' else 'judge_input_max_tokens'
+        monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['balanced'], budget_key,
+                            sum(count_tokens(m.content) for m in baseline) + 50)
+        session = replace(session, performance_history=(
+            {**session.performance_history[0], 'input_text': '旧背景记录。' * 1500},
+            session.performance_history[1],
+        ))
+    messages = build(session)
+    data = json.loads(messages[1].content[messages[1].content.index('{'):])
+    assert (duplicate in data.get('history_evidence', [])) is trim
+    assert all(item in data.get('history_evidence', []) for item in protected)
+    assert any(row['revision'] == 1 for row in data['scene_context']) is not trim
+    assert fact in messages[1].content
+
+
 @pytest.mark.parametrize("query,expected", [
     ("我的综合大学在哪里？", "本地综合大学"),
     ("观察日记同意公开了吗？", "没有同意公开"),

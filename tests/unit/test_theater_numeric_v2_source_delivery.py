@@ -123,7 +123,7 @@ def test_pacing_does_not_promote_authored_exit_preconditions_to_current_results(
     message = '我们现在拿到包裹了吗？'
     outcome = engine.resolve_turn(session, TurnRequestV2('question', 0, message), ())
     messages = _turn_messages(engine, session, outcome, message, '谨慎友好。', '小葵', '你',
-                             interaction_intent='chat')
+                             )
     data = json.loads(messages[1].content.split('\n', 1)[1])
     assert beat['transition_goal'] not in data['pacing']
     assert '包裹仍在柜台' in data['story_so_far']

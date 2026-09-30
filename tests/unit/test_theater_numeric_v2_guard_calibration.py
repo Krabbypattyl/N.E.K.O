@@ -58,7 +58,8 @@ async def test_formal_output_has_room_without_changing_ordinary_or_dispute(monke
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
             return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False,
-                body_violations=[], unsafe_suggestion_indexes=[], failure_reason='')))
+                body_violations=[], unsafe_suggestion_indexes=[], failure_reason='',
+                **({'delivery_matches_route': True} if formal else {}))))
     async def config(_): return {'model': 'test', 'base_url': 'http://test.invalid'}
     async def factory(*args, **kwargs): options.append(kwargs); return Client()
     monkeypatch.setattr(ev, '_model_config', config)

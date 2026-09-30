@@ -18,8 +18,10 @@ QUOTE = "左侧走廊通往阅览室，通道已经开放。"
 def test_recovery_requires_actual_public_quote(quote, allowed):
     case = initiation_case()
     payload = dict(offer_present=False, valid=False, body_violations=["scene_boundary"],
-                   unsafe_suggestion_indexes=[], missed_initiation=True, public_destination_index=0)
-    review = ev._parse_transition_judge_output(json.dumps(payload), recovery_session=case["session"], recovery_evidence=(quote,))
+                   unsafe_suggestion_indexes=[], missed_initiation=True, public_destination_index=0,
+                   player_request_quote=case["message"])
+    review = ev._parse_transition_judge_output(json.dumps(payload), recovery_session=case["session"], recovery_evidence=(quote,),
+                                               recovery_player_input=case["message"])
     assert review.missed_initiation is allowed
     assert review.public_destination_quote == (QUOTE if allowed else "")
     assert review.body_violations == ("scene_boundary",)
@@ -43,9 +45,9 @@ def test_legacy_review_does_not_invent_recovery():
 def test_invalid_evidence_index_does_not_authorize(index):
     # 布尔值也是Python整数的子类，不能被当作编号；越界或缺失同样不恢复。
     payload = dict(offer_present=False, valid=False, body_violations=[], unsafe_suggestion_indexes=[],
-                   missed_initiation=True, public_destination_index=index)
+                   missed_initiation=True, public_destination_index=index, player_request_quote="带路吧。")
     result = ev._parse_transition_judge_output(json.dumps(payload), recovery_session=initiation_case()["session"],
-                                               recovery_evidence=(QUOTE,))
+                                               recovery_evidence=(QUOTE,), recovery_player_input="带路吧。")
     assert not result.missed_initiation and not result.public_destination_quote
 
 
@@ -65,7 +67,26 @@ def test_numbered_evidence_excludes_player_and_candidate():
     assert "新秘密房间" not in str(recovery_check["public_destination_evidence"])
     assert evidence == tuple(recovery_check["public_destination_evidence"])
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
-    assert "保留原六字段并增加 missed_initiation 与 public_destination_index" in messages[0].content
+    assert "保留原六字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
+
+
+def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparation():
+    case = initiation_case()
+    route = case["engine"].nodes["start"]["route_gates"][1]
+    route["transition_contract"]["reason"] = "一起确认登记信息后继续下一步。"
+    messages, _ = ev._build_transition_judge_messages(
+        case["engine"], case["session"], player_input="信息没错，现在一起确认吧。",
+        actor_performance={"performance": "（点头）登记信息确认好了。", "suggested_inputs": []},
+        check_missed_initiation=True,
+    )
+    data = json.loads(messages[1].content.split("：", 1)[1])
+    required = data["missed_initiation_check"]["required_exit"]
+    # 补查会触发昂贵的正式演绎，必须先看到接受后真正抵达的地点与阶段。
+    assert required["direction"] == "一起确认登记信息后继续下一步。"
+    assert required["bridge_boundary"] == data["next_scene_direction"]["bridge_boundary"]
+    assert required["opening_boundary"] == data["next_scene_direction"]["opening_boundary"]
+    assert "阅览室" in required["bridge_boundary"]
+    assert "阅览室" in required["opening_boundary"]
 
 
 @pytest.mark.asyncio
@@ -95,7 +116,7 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
             index = next(index for index, text in enumerate(sent_evidence) if QUOTE in text)
             payload = dict(offer_present=False, offer_quote="", valid=False, body_violations=[],
                            unsafe_suggestion_indexes=[], missed_initiation=True,
-                           public_destination_index=index)
+                           public_destination_index=index, player_request_quote=case["message"])
             return type('Response', (), {'content': json.dumps(payload)})()
 
     async def model_config(_manager):
@@ -174,3 +195,97 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
                            else ["start", "ending_leave", "ending_leave"] if formal_failure == "body"
                            else ["start", "ending_leave"])
     assert len(reviews) == (4 if formal_failure == "body" or recover_after_rewrite else 2)
+
+
+@pytest.mark.parametrize("request_quote,allowed", [
+    ("带路吧。", True), ("带路吧", True), ("  带路吧。  ", True),
+    ("", False), ("去阅览室。", False), (QUOTE, False),
+    ("稍后再去。", False), (None, False), (True, False), (1, False),
+    ([], False), ({"text": "带路吧。"}, False),
+])
+def test_recovery_requires_quote_from_current_request_and_preserves_other_results(request_quote, allowed):
+    case = initiation_case()
+    fact = {"key": "scene:start:confirmed", "value": True, "evidence_quote": "确认好了。"}
+    payload = dict(offer_present=False, valid=False, body_violations=["player_action"],
+                   unsafe_suggestion_indexes=[1], failure_reason="仍需修正正文。",
+                   missed_initiation=True, public_destination_index=0,
+                   player_request_quote=request_quote, fact_candidates=[fact],
+                   approved_evaluator_fact_indexes=[0])
+    result = ev._parse_transition_judge_output(
+        json.dumps(payload), recovery_session=case["session"], recovery_evidence=(QUOTE,),
+        recovery_player_input=case["message"], completion_fact_review=True, evaluator_fact_claim_count=1,
+    )
+    assert result.missed_initiation is allowed
+    assert result.public_destination_quote == (QUOTE if allowed else "")
+    assert result.body_violations == ("player_action",)
+    assert result.unsafe_suggestion_indexes == (1,)
+    assert result.failure_reason == "仍需修正正文。"
+    assert result.fact_candidates == (fact,)
+    assert result.approved_evaluator_fact_indexes == (0,)
+
+
+def test_legacy_positive_without_current_request_quote_does_not_recover():
+    payload = dict(offer_present=False, valid=False, body_violations=[], unsafe_suggestion_indexes=[],
+                   missed_initiation=True, public_destination_index=0)
+    result = ev._parse_transition_judge_output(
+        json.dumps(payload), recovery_session=initiation_case()["session"],
+        recovery_evidence=(QUOTE,), recovery_player_input="带路吧。",
+    )
+    assert not result.missed_initiation
+    assert not result.public_destination_quote
+
+
+def test_overlong_current_request_quote_does_not_recover():
+    quote = "沿着走廊一直往前走" * 7
+    payload = dict(offer_present=False, valid=False, body_violations=[], unsafe_suggestion_indexes=[],
+                   missed_initiation=True, public_destination_index=0, player_request_quote=quote)
+    result = ev._parse_transition_judge_output(
+        json.dumps(payload), recovery_session=initiation_case()["session"],
+        recovery_evidence=(QUOTE,), recovery_player_input=quote,
+    )
+    assert not result.missed_initiation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("place,target", [("档案接待台", "阅览室"), ("花园值班室", "温室")])
+async def test_unverified_current_request_never_starts_formal_actor(tmp_path, monkeypatch, place, target):
+    case = initiation_case(place, target, message="我先整理一下手里的东西。")
+    runtime = NumericV2Runtime(case["engine"], tmp_path)
+    current = await runtime.start_session(
+        session_id="stay", catgirl_binding=_binding(), opening_performance=case["session"].opening_performance,
+    )
+    actor_nodes = []
+    review_count = 0
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        actor_nodes.append(kwargs["outcome"].session.current_node_id)
+        return {"performance": "（点头）慢慢来。", "suggested_inputs": [], "transition_offered": False}
+
+    async def review(self, **kwargs):
+        nonlocal review_count
+        review_count += 1
+        assert kwargs["check_missed_initiation"]
+        payload = dict(offer_present=False, valid=False, body_violations=[], unsafe_suggestion_indexes=[],
+                       missed_initiation=True, public_destination_index=0, player_request_quote="带路吧。")
+        return ev._parse_transition_judge_output(
+            json.dumps(payload), recovery_session=kwargs["session"],
+            recovery_evidence=(f"左侧走廊通往{target}，通道已经开放。",),
+            recovery_player_input=kwargs["message"],
+        )
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("stay", 0, case["message"]), ensure_current_binding=lambda _: _binding(),
+    )
+    assert actor_nodes == ["start"] and review_count == 1
+    assert result.diagnostics["missed_initiation_recoveries"] == 0
+    assert result.stored.session.current_node_id == "start"
+    assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
+    assert await NumericV2Runtime(case["engine"], tmp_path).restore_session("stay") == result.stored

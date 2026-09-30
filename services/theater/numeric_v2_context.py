@@ -36,6 +36,17 @@ PLAYER_ACTION_LANGUAGE_RULE = (
 )
 
 
+# 动作提取有意保守；三个消费者共用空值语义，不能将漏提取变成行动禁令。
+PLAYER_ACTION_PROJECTION_RULE = (
+    "player_action_projection 是 Runtime 从 player_input 和已提交结果保守提取的辅助证据，不是完整行动清单。"
+    "confirmed_actions 仅承接各项证据支持的动作或结果；evidence_quote 是原文，不额外授权目的地或后续操作。"
+    "future_references 表示未来约定，不能当作已发生。"
+    "confirmed_actions 为空或 has_confirmed_player_action/player_left_current_scene 为 false 只表示未提取到对应证据，"
+    "仍按 player_input 和已提交历史核对。提问、准备、假设与尝试不证明完成；"
+    "不能推定未知成功、额外动作或跨阶段授权。"
+)
+
+
 # 作者状态统一取开场演完后的时点；实际历史仍优先，不新增第二套可变状态或存档。
 SCENE_ENTRY_STATE_RULE = (
     "作者角色状态记录开场演完后的起点，不是开场前姿态或整幕完成结果。"
@@ -398,14 +409,10 @@ def project_contract_boundaries(
     *,
     include_opening_only: bool = False,
     fact_only: bool = False,
-    max_items: int | None = None,
-    max_tokens: int | None = None,
 ) -> tuple[str, ...]:
     """按统一顺序投影作者边界，避免 Actor 与复核器各自拼接出不同合同。"""  # noqa: DOCSTRING_CJK
 
     if not isinstance(beat, Mapping):
-        return ()
-    if max_items is not None and int(max_items) <= 0:
         return ()
     character_state = beat.get("character_state")
     acting_contract = beat.get("acting_contract")
@@ -440,14 +447,11 @@ def project_contract_boundaries(
         text = str(item or "").strip()
         if fact_only and any(marker in text for marker in CONTRACT_NON_FACT_MARKERS):
             continue
-        if max_tokens is not None:
-            text = truncate_to_tokens(text, max_tokens=max_tokens).strip()
+        # 禁令的条件和例外属于同一条规则；完整投影，由消费者总预算装箱或明确拒绝。
         if not text or text in seen:
             continue
         seen.add(text)
         boundaries.append(text)
-        if max_items is not None and len(boundaries) >= max(0, int(max_items)):
-            break
     return tuple(boundaries)
 
 

@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from utils.tokenize import truncate_to_tokens
 
 from .numeric_v2_context import pending_transition_record
-from .numeric_v2_fixed_narration import add_entry, required_pending, validate_delivery
+from .numeric_v2_fixed_narration import add_entry, displayed_ids, required_pending, validate_delivery
 
 from .numeric_v2 import (
     CompiledNumericV2Package,
@@ -871,48 +871,6 @@ class NumericV2Engine:
     def story_id(self) -> str:
         return self.compiled.story_id
 
-    def apply_story_fact_ops(
-        self,
-        current: Mapping[str, Any],
-        *,
-        revision: int,
-        client_turn_id: str,
-        ops: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
-    ) -> dict[str, Any]:
-        """按当前剧本的事实合同应用候选；未声明白名单时所有模型候选都会被拒绝。"""  # noqa: DOCSTRING_CJK
-
-        return apply_fact_ops(
-            current,
-            revision=revision,
-            client_turn_id=client_turn_id,
-            ops=ops,
-            fact_contract={"facts": self.fact_contract},
-        )
-
-    def apply_story_fact_candidates(
-        self,
-        current: Mapping[str, Any],
-        *,
-        revision: int,
-        client_turn_id: str,
-        candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
-        evidence_sources: Mapping[str, str],
-    ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
-        """先验证候选四元组和逐字证据，再一次性写入并返回审计记录。"""  # noqa: DOCSTRING_CJK
-
-        operations, audit = validate_fact_candidates(
-            candidates,
-            fact_contract={"facts": self.fact_contract},
-            evidence_sources=evidence_sources,
-        )
-        state = self.apply_story_fact_ops(
-            current,
-            revision=revision,
-            client_turn_id=client_turn_id,
-            ops=operations,
-        )
-        return state, audit
-
     def finalize_actor_fact_candidates(
         self,
         base_session: ScriptSessionV2,
@@ -923,14 +881,6 @@ class NumericV2Engine:
     ) -> tuple[TurnOutcomeV2, tuple[dict[str, Any], ...]]:
         """把最终 Actor 候选与 Evaluator 事实合并后按同一 revision 原子重建。"""  # noqa: DOCSTRING_CJK
 
-        self.validate_session(base_session)
-        event = outcome.ledger_event
-        if (
-            event.get("base_revision") != base_session.revision
-            or event.get("result_revision") != base_session.revision + 1
-            or event.get("client_turn_id") not in outcome.session.processed_client_turn_ids
-        ):
-            raise NumericV2RuntimeError("actor_fact_outcome_mismatch")
         node = self.nodes.get(base_session.current_node_id)
         completion_contract = node.get("completion_contract") if isinstance(node, Mapping) else None
         allowed_keys = {
@@ -952,16 +902,35 @@ class NumericV2Engine:
             fact_contract={"facts": self.fact_contract},
             evidence_sources=evidence_sources,
         )
+        return self.finalize_fact_operations(base_session, outcome, operations=actor_operations), audit
+
+    def finalize_fact_operations(
+        self,
+        base_session: ScriptSessionV2,
+        outcome: TurnOutcomeV2,
+        *,
+        operations: tuple[Mapping[str, Any], ...],
+    ) -> TurnOutcomeV2:
+        """合并已核验操作，重建同一 revision 的事实与访问记录，不重复计分或换幕。"""  # noqa: DOCSTRING_CJK
+
+        self.validate_session(base_session)
+        event = outcome.ledger_event
+        if (
+            event.get("base_revision") != base_session.revision
+            or event.get("result_revision") != base_session.revision + 1
+            or event.get("client_turn_id") not in outcome.session.processed_client_turn_ids
+        ):
+            raise NumericV2RuntimeError("actor_fact_outcome_mismatch")
         existing_operations = tuple(event.get("fact_operations") or ())
         existing_keys = {
             str(operation.get("key") or "")
             for operation in existing_operations
             if isinstance(operation, Mapping)
         }
-        actor_keys = {str(operation["key"]) for operation in actor_operations}
+        actor_keys = {str(operation["key"]) for operation in operations}
         if existing_keys.intersection(actor_keys):
             raise NumericV2RuntimeError("actor_fact_candidate_duplicate_key")
-        combined_operations = (*existing_operations, *actor_operations)
+        combined_operations = (*existing_operations, *operations)
         story_state = _advance_story_state(
             base_session.story_state,
             from_node_id=str(event["from_node_id"]),
@@ -975,13 +944,17 @@ class NumericV2Engine:
         ledger_event["fact_operations"] = deepcopy(
             [dict(operation) for operation in combined_operations]
         )
-        return (
-            replace(
-                outcome,
-                session=replace(outcome.session, story_state=story_state),
-                ledger_event=ledger_event,
-            ),
-            audit,
+        ledger_event["player_action_projection"] = project_player_action_result(
+            str(event["input_text"]),
+            revision=int(event["result_revision"]),
+            transition_intent=str(event["transition_intent"]),
+            route_changed=event["from_node_id"] != event["to_node_id"],
+            fact_operations=combined_operations,
+        )
+        return replace(
+            outcome,
+            session=replace(outcome.session, story_state=story_state),
+            ledger_event=ledger_event,
         )
 
     @staticmethod
@@ -1077,6 +1050,7 @@ class NumericV2Engine:
         transition_intent: str = "unclear",
         natural_ending_ready: bool = False,
         fact_operations: tuple[Mapping[str, Any], ...] = (),
+        ledger_events: tuple[Mapping[str, Any], ...] = (),
     ) -> TurnOutcomeV2:
         """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
 
@@ -1092,9 +1066,12 @@ class NumericV2Engine:
         if transition_intent not in {"accept", "initiate", "reject", "unclear"}:
             raise NumericV2RuntimeError("transition_intent_invalid")
         # 重新接受只能依据本次场景访问中已经公开的邀请；不新增状态，冷恢复仍从同一历史判定。
+        offered_record = pending_transition_record(
+            session, ledger_events=ledger_events, include_withdrawn=True,
+        )
         can_accept_offer = session.transition_offered or (
             transition_intent == "accept"
-            and pending_transition_record(session, include_withdrawn=True) is not None
+            and offered_record is not None
         )
         effective_transition_intent = transition_intent
         if (
@@ -1116,6 +1093,8 @@ class NumericV2Engine:
         next_turn_count = session.node_turn_count + 1
         route = None
         route_status = "playing"
+        accepted_offer_route_id = None
+        offer_route_changed = False
         if effective_transition_intent == "initiate":
             # 玩家可主动要求进入已公开的下一阶段；不伪造邀请，也不绕过本轮数值选路。
             # Evaluator 识别明确请求，正式转场复核再检查公开去向和授权；不合格正文仍不提交。
@@ -1123,9 +1102,20 @@ class NumericV2Engine:
         elif effective_transition_intent == "accept" and can_accept_offer:
             # 活跃或明确重新接受的历史邀请共用选路条件；不能凭作者目标或模型空口 accept 换幕。
             route, route_status = self._select_route(source, after)
+            # 接受的是原邀请，不能把追问或本轮加分选出的另一出口当成玩家授权。
+            # 从既有 Ledger 取发出邀请时的数值，不另设可漂移的待确认路线状态。
+            offered_event = next((event for event in ledger_events
+                if offered_record is not None
+                and event.get("result_revision") == offered_record.get("revision")), None)
+            if offered_event is not None:
+                offered_route, _ = self._select_route(source, offered_event["after_metrics"])
+                accepted_offer_route_id = str(offered_route["id"]) if offered_route else ""
+                offer_route_changed = route is None or route["id"] != accepted_offer_route_id
+                if offer_route_changed:
+                    route, route_status = None, "playing"
             if route is None:
                 # 提议对应的路线当前仍不可达时，留在当前幕而不伪造 advanced。
-                route_status = "transition_offered"
+                route_status = "playing" if offer_route_changed else "transition_offered"
         elif session.transition_offered and effective_transition_intent == "unclear":
             # unclear 保留提议，下一轮只回应玩家，不重复催促。
             route_status = "transition_offered"
@@ -1135,7 +1125,7 @@ class NumericV2Engine:
 
         # 自然结束只放行本轮已经可收束的结局，不借用 scene_complete 自动推进普通幕。
         # 保持原路线优先级；若胜出的路线是普通幕，不跳过它另找一个结局。
-        if route is None and scene_complete and natural_ending_ready is True and effective_transition_intent != "reject":
+        if route is None and not offer_route_changed and scene_complete and natural_ending_ready is True and effective_transition_intent != "reject":
             ending_route, _ = self._select_route(source, after)
             # 判定看到的是结算前的候选结局；数值变化若改选另一出口，不能挪用前者的授权。
             preview_route, _ = self._select_route(source, before)
@@ -1240,6 +1230,11 @@ class NumericV2Engine:
             fact_operations=fact_operations,
         )
         event["transition_intent"] = effective_transition_intent
+        if accepted_offer_route_id is not None:
+            # 同时作为审计/分叉的重放边界；无此字段的旧回合沿用旧选路规则。
+            event["accepted_offer_route_id"] = accepted_offer_route_id
+        if offer_route_changed:
+            event["transition_offer_invalidated"] = True
         if fact_operations:
             # 事实候选已经在提交前通过合同校验；Ledger 保存规范化操作以支持确定性重放。
             event["fact_operations"] = deepcopy([dict(operation) for operation in fact_operations])
@@ -1267,7 +1262,7 @@ class NumericV2Engine:
             **performance,
             "transition_offered": transition_offered,
         }
-        # 只有 Workflow 的明确复核结论能撤下旧邀请，Actor 不能注入历史边界。
+        # Runtime 选路漂移或 Workflow 明确复核才能撤下旧邀请，Actor 不能注入历史边界。
         finalized_performance.pop("transition_offer_invalidated", None)
         # 区分“本轮重新公开有效邀请”和“仅沿用旧邀请”；回复绑定不能只看最终布尔状态。
         finalized_performance.pop("transition_offer_presented", None)
@@ -1423,9 +1418,14 @@ class NumericV2Engine:
             return None
         story_state = _validate_story_state(session.story_state)
         facts = story_state["facts"]
+        displayed = (displayed_ids(session)
+                     if any("fixed_narration_id" in row for row in contract["all"]) else set())
         return all(
-            isinstance(facts.get(str(requirement["key"])), Mapping)
-            and facts[str(requirement["key"])]["value"] == requirement["equals"]
+            (session.current_node_id, requirement["fixed_narration_id"]) in displayed
+            if "fixed_narration_id" in requirement else (
+                isinstance(facts.get(str(requirement["key"])), Mapping)
+                and facts[str(requirement["key"])]["value"] == requirement["equals"]
+            )
             for requirement in contract["all"]
         )
 
@@ -1571,6 +1571,7 @@ class NumericV2Runtime:
                 scene_complete=bool(source_event.get("scene_complete")),
                 transition_intent=str(source_event.get("transition_intent") or "unclear"),
                 natural_ending_ready=source_event.get("natural_ending_ready") is True,
+                ledger_events=tuple(replay_events) if "accepted_offer_route_id" in source_event else (),
                 fact_operations=tuple(
                     dict(operation)
                     for operation in source_event.get("fact_operations") or []
@@ -1651,6 +1652,7 @@ class NumericV2Runtime:
             scene_complete=scene_complete,
             transition_intent=transition_intent,
             natural_ending_ready=natural_ending_ready,
+            ledger_events=current.ledger_events,
             fact_operations=fact_operations,
         )
 

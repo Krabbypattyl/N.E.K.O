@@ -1145,6 +1145,7 @@ class NumericV2SessionStore:
                     scene_complete=scene_complete,
                     transition_intent=str(event.get("transition_intent") or "unclear"),
                     natural_ending_ready=natural_ending_ready,
+                    ledger_events=tuple(events[:event_index]) if "accepted_offer_route_id" in event else (),
                     fact_operations=tuple(
                         dict(operation)
                         for operation in event.get("fact_operations") or []
@@ -1175,6 +1176,7 @@ class NumericV2SessionStore:
                 "after_metrics",
                 "metric_changes",
                 "fact_operations",
+                "accepted_offer_route_id",
             ):
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
@@ -1184,6 +1186,8 @@ class NumericV2SessionStore:
                 if not isinstance(value.get("transition_offer_invalidated", False), bool):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if event.get("transition_offer_invalidated", False) != performance.get("transition_offer_invalidated", False):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if expected_event.get("transition_offer_invalidated") is True and event.get("transition_offer_invalidated") is not True:
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             # 新邀请来源标记必须与可见正文同回合一致；缺省表示仅保留旧邀请。
             for value in (event, performance):

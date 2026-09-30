@@ -68,6 +68,19 @@ def test_noun_containing_action_character_is_not_a_player_action():
     assert projection["confirmed_actions"] == []
 
 
+@pytest.mark.parametrize("message,term,clause", [
+    ("（拿起地图）等通知来了再决定要不要参加社区活动。", "拿", "（拿起地图）"),
+    ("（拿起星图）我先核对坐标，等基地通知来了再决定要不要参加远征。", "拿", "（拿起星图）"),
+    ("我已经核对坐标。之后再决定是否参加远征。", "核对", "我已经核对坐标"),
+])
+def test_action_term_and_evidence_come_from_the_validated_clause(message, term, clause):
+    projection = project_player_action_result(message)
+
+    assert len(projection["confirmed_actions"]) == 1
+    assert projection["confirmed_actions"][0]["action_term"] == term
+    assert projection["confirmed_actions"][0]["evidence_quote"] == clause
+
+
 def test_runtime_results_are_projected_without_claiming_player_success():
     projection = project_player_action_result(
         "我已经签了。",

@@ -1,5 +1,6 @@
 """Deliver stage boundaries, public destinations and latest state to real consumers together; replay model semantics separately."""
 
+from dataclasses import replace
 import json
 
 from services.theater.numeric_v2_actor import _opening_messages, _suggestion_fill_messages, _turn_messages
@@ -38,6 +39,12 @@ def test_acceptance_still_checks_actual_exit_in_evaluator_contract():
     engine = _engine()
     session = engine.create_session(session_id='accept_scope', catgirl_binding=_binding(),
         opening_performance=_opening())
+    session = replace(session, revision=1, node_turn_count=1, transition_offered=True,
+        performance_history=({
+            'revision': 1, 'from_node_id': 'start', 'to_node_id': 'start',
+            'transition_offered': True, 'transition_offer_presented': True,
+            'performance': '要一起去展示室吗？',
+        },))
     messages = _build_messages(engine, session, '好，去刚才说的展示室。')
     assert 'accept 同样须核对原邀请与实际出口的地点、时段和行动' in messages[0].content
     assert '不相符时判 unclear' in messages[0].content
@@ -69,8 +76,7 @@ def test_player_fact_rule_reaches_all_suggestion_generation_paths():
             actor_performance={'performance': '请问需要登记哪些信息？', 'suggested_inputs': ['（填写）我叫林风，擅长竹编。']},
             route_changed=outcome is not None, transition_outcome=outcome)[0]
         if outcome is None:
-            assert '按钮用第一人称断言玩家的姓名、联系方式、技能、经历、持物或既定行程' in review[0].content
-            assert '必须有作者、实际历史或本轮玩家自述依据' in review[0].content
+            assert '姓名、联系方式、技能、经历、已有持物与既定行程等前提须有作者、实际历史或玩家自述依据' in review[0].content
         else:
             assert '拒绝或解释中的个人情况也须核对依据' in review[0].content
             assert '玩家已经明确披露的称呼不能再报虚构' in review[0].content
