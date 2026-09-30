@@ -1358,3 +1358,147 @@ def test_numeric_v2_registry_does_not_replace_dangling_package_link(tmp_path):
     with pytest.raises(NumericV2PackageExistsError):
         registry.import_package(numeric_v2_story())
     assert target.is_symlink()
+
+
+def _set_path(story: dict, path: tuple, value) -> None:
+    target = story
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("metric_schema", "trust", "visibility"),
+        ("metric_schema", "trust", "relationship_effect"),
+        ("nodes", 0, "type"),
+        ("nodes", 0, "route_gates", 0, "conditions", "all", 0, "op"),
+        ("nodes", 1, "ending_id"),
+        ("nodes", 0, "route_gates", 0, "conditions", "all"),
+    ],
+)
+@pytest.mark.parametrize("bad_value", [[], {}, 5])
+def test_numeric_v2_malformed_values_raise_structured_compile_error(path, bad_value):
+    """Wrong JSON types deep in a package are contract errors, never TypeError."""
+
+    story = numeric_v2_story()
+    _set_path(story, path, bad_value)
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+
+    assert caught.value.issues
+
+
+def test_numeric_v2_registry_lists_valid_packages_despite_malformed_neighbours(tmp_path):
+    """One malformed file in packages/ is skipped instead of failing the whole list."""
+
+    registry = NumericV2PackageRegistry(tmp_path)
+    registry.import_package(numeric_v2_story())
+    broken = numeric_v2_story()
+    broken["meta"]["story_id"] = "broken_story"
+    broken["nodes"][0]["type"] = []
+    (tmp_path / "broken_story.json").write_text(json.dumps(broken), encoding="utf-8")
+    (tmp_path / "array_story.json").write_text("[]", encoding="utf-8")
+
+    listed = registry.list_packages()
+
+    assert [item["story_id"] for item in listed] == ["numeric_v2_contract"]
+    for story_id in ("broken_story", "array_story"):
+        with pytest.raises(numeric_v2_registry.NumericV2PackageError):
+            registry.load_engine(story_id)
+
+
+@pytest.mark.parametrize("field", ["narrative_focus", "narrative_summary"])
+def test_numeric_v2_caps_optional_narrative_prompt_fields(field):
+    """narrative_focus/summary reach the Actor prompt, so they share the per-field cap."""
+
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"][field] = "她把旧信一页页摊开。" * 200
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+
+    assert any(
+        issue.code == "actor_prompt_field_too_large"
+        and issue.path == f"nodes[0].story_beat.{field}"
+        for issue in caught.value.issues
+    )
+
+    story["nodes"][0]["story_beat"][field] = {"text": "not a string"}
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+    assert any(issue.code == "expected_text" for issue in caught.value.issues)
+
+    # Empty or short values stay valid: runtime falls back to other beat text.
+    for accepted in ("", "先听完她对旧信的解释。"):
+        story["nodes"][0]["story_beat"][field] = accepted
+        NumericV2Compiler().compile_v2_2(story)
+
+
+def _brute_force_overlap(left: dict, right: dict, ranges: dict) -> bool:
+    """Oracle: enumerate every metric state and evaluate both predicates."""
+
+    import itertools
+    import operator
+
+    ops = {"==": operator.eq, "!=": operator.ne, ">": operator.gt,
+           "<": operator.lt, ">=": operator.ge, "<=": operator.le}
+
+    def holds(conditions: dict, state: dict) -> bool:
+        mode = "any" if "any" in conditions else "all"
+        results = [ops[row["op"]](state[row["metric"]], row["value"]) for row in conditions[mode]]
+        return any(results) if mode == "any" else all(results)
+
+    metrics = sorted(ranges)
+    for values in itertools.product(*(range(ranges[m][0], ranges[m][1] + 1) for m in metrics)):
+        state = dict(zip(metrics, values))
+        if holds(left, state) and holds(right, state):
+            return True
+    return False
+
+
+def test_numeric_v2_condition_overlap_matches_brute_force_oracle():
+    """The interval-based overlap check agrees with exhaustive enumeration."""
+
+    import random
+
+    from services.theater.numeric_v2 import _conditions_overlap
+
+    rng = random.Random(7)
+    ops = ["==", "!=", ">", "<", ">=", "<="]
+
+    def conditions() -> dict:
+        rows = [
+            {"type": "metric_compare", "metric": rng.choice("ab"),
+             "op": rng.choice(ops), "value": rng.randint(-1, 7)}
+            for _ in range(rng.randint(0, 4))
+        ]
+        return {rng.choice(["all", "any"]): rows}
+
+    for _ in range(3000):
+        ranges = {"a": (0, rng.randint(0, 5)), "b": (rng.randint(-1, 2), 5)}
+        left, right = conditions(), conditions()
+        assert _conditions_overlap(left, right, ranges) is _brute_force_overlap(left, right, ranges), (
+            left, right, ranges,
+        )
+
+
+def test_numeric_v2_condition_overlap_scales_linearly_with_rows():
+    """Large condition lists must not trigger pairwise or candidate-squared checks."""
+
+    import time
+
+    from services.theater.numeric_v2 import _conditions_overlap
+
+    ranges = {"trust": (0, 100_000)}
+    left_any = {"any": [{"metric": "trust", "op": "==", "value": 2 * index} for index in range(3000)]}
+    right_any = {"any": [{"metric": "trust", "op": "==", "value": 2 * index + 1} for index in range(3000)]}
+    many_all = {"all": [{"metric": "trust", "op": "!=", "value": index} for index in range(3000)]}
+
+    started = time.perf_counter()
+    assert _conditions_overlap(left_any, right_any, ranges) is False
+    assert _conditions_overlap(many_all, {"all": []}, ranges) is True
+    assert _conditions_overlap(left_any, many_all, ranges) is True
+    assert time.perf_counter() - started < 1.0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -18,6 +19,10 @@ _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
 _DEFAULT_PACKAGES_INITIALIZED_MARKER = ".defaults_initialized"
 _DEFAULT_PACKAGES_MARKER_SCHEMA = "neko.theater.numeric.v2.default-packages"
+# Real v2.2 packages are tens of KB (each prompt field is capped at 384 tokens);
+# 8 MiB leaves ample headroom while bounding what an import may make us parse.
+MAX_PACKAGE_BYTES = 8 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 def _read_default_package_ids(marker: Path) -> set[str]:
@@ -101,7 +106,7 @@ class NumericV2PackageRegistry:
     def _declares_v2_2(payload: Mapping[str, Any]) -> bool:
         """识别新生成包，确保导入时不会退回旧版宽松限幅。"""  # noqa: DOCSTRING_CJK
 
-        meta = payload.get("meta")
+        meta = payload.get("meta") if isinstance(payload, Mapping) else None
         return isinstance(meta, Mapping) and meta.get("contract_version") == "v2.2"
 
     def compile_for_import(
@@ -196,14 +201,16 @@ class NumericV2PackageRegistry:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 result.append(self.validate_package(payload))
-            except (
-                OSError,
-                UnicodeError,
-                json.JSONDecodeError,
-                NumericV2CompileError,
-                NumericV2PackageUpgradeRequiredError,
-            ):
+            except NumericV2PackageUpgradeRequiredError:
                 # 旧包文件保留给作者升级，但不出现在可运行剧本列表中。
+                continue
+            except Exception as exc:
+                # One unreadable or malformed file must not hide every other story.
+                logger.warning(
+                    "Skipping unusable numeric v2 package %s: %s",
+                    path.name,
+                    type(exc).__name__,
+                )
                 continue
         return result
 
@@ -268,6 +275,7 @@ class NumericV2PackageRegistry:
 
 
 __all__ = [
+    "MAX_PACKAGE_BYTES",
     "NumericV2PackageError",
     "NumericV2PackageExistsError",
     "NumericV2PackageNotFoundError",

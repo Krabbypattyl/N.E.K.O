@@ -6,6 +6,7 @@ Ledger 或回合数值判定。InkAI 发布前会调用这里进行第二次独�
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
@@ -143,12 +144,211 @@ def _identity_source_name(value: Any) -> str:
     return name if 0 < len(name) <= 24 else ""
 
 
-def _condition_branches(conditions: Mapping[str, Any]) -> list[list[Mapping[str, Any]]]:
+def _condition_mode_rows(conditions: Any) -> tuple[str, list[Mapping[str, Any]]]:
+    """Return the predicate mode and its object rows, tolerating malformed shapes."""
+
     if not isinstance(conditions, Mapping):
-        return []
+        return "any", []
     mode = "any" if "any" in conditions else "all"
-    rows = [row for row in conditions.get(mode) or [] if isinstance(row, Mapping)]
-    return [rows] if mode == "all" else [[row] for row in rows]
+    raw_rows = conditions.get(mode)
+    rows = [row for row in raw_rows if isinstance(row, Mapping)] if isinstance(raw_rows, list) else []
+    return mode, rows
+
+
+def _condition_row_parts(
+    row: Mapping[str, Any],
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> tuple[str, str, int] | None:
+    """Return ``(metric, op, value)`` for a well-formed metric row, else ``None``."""
+
+    metric = str(row.get("metric") or "")
+    operator = row.get("op")
+    value = row.get("value")
+    if (
+        metric not in metric_ranges
+        or not isinstance(operator, str)
+        or operator not in _COMPARATORS
+        or not _is_int(value)
+    ):
+        return None
+    return metric, operator, int(value)
+
+
+def _narrow_bounds(low: int, high: int, operator: str, value: int) -> tuple[int, int]:
+    """Intersect ``[low, high]`` with an interval comparator (``!=`` is handled separately)."""
+
+    if operator == "==":
+        return max(low, value), min(high, value)
+    if operator == ">":
+        return max(low, value + 1), high
+    if operator == ">=":
+        return max(low, value), high
+    if operator == "<":
+        return low, min(high, value - 1)
+    if operator == "<=":
+        return low, min(high, value)
+    return low, high
+
+
+def _metric_bounds(
+    metric: str,
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> tuple[int, int]:
+    minimum, maximum = metric_ranges[metric]
+    # A metric without a declared range cannot satisfy any predicate.
+    return (1, 0) if minimum is None or maximum is None else (minimum, maximum)
+
+
+_MetricSpace = dict[str, tuple[int, int, frozenset[int]]]
+
+
+def _branch_space(
+    rows: list[Mapping[str, Any]],
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> _MetricSpace | None:
+    """Fold one conjunctive branch into per-metric bounds and excluded points.
+
+    Returns ``None`` when a row is malformed: other validation reports that row,
+    so the branch is ignored instead of adding a secondary overlap error.
+    """
+
+    bounds: dict[str, tuple[int, int]] = {}
+    excluded: dict[str, set[int]] = {}
+    for row in rows:
+        parts = _condition_row_parts(row, metric_ranges)
+        if parts is None:
+            return None
+        metric, operator, value = parts
+        low, high = bounds.get(metric) or _metric_bounds(metric, metric_ranges)
+        points = excluded.setdefault(metric, set())
+        if operator == "!=":
+            points.add(value)
+        else:
+            low, high = _narrow_bounds(low, high, operator, value)
+        bounds[metric] = (low, high)
+    return {metric: (low, high, frozenset(excluded[metric])) for metric, (low, high) in bounds.items()}
+
+
+def _count_between(sorted_points: list[int], low: int, high: int) -> int:
+    return bisect_right(sorted_points, high) - bisect_left(sorted_points, low) if low <= high else 0
+
+
+def _interval_feasible(low: int, high: int, excluded_count: int) -> bool:
+    return low <= high and excluded_count < high - low + 1
+
+
+def _space_feasible(space: _MetricSpace) -> bool:
+    return all(
+        _interval_feasible(low, high, sum(1 for point in points if low <= point <= high))
+        for low, high, points in space.values()
+    )
+
+
+def _merge_spaces(left: _MetricSpace, right: _MetricSpace) -> _MetricSpace:
+    merged = dict(left)
+    for metric, (low, high, points) in right.items():
+        if metric in merged:
+            other_low, other_high, other_points = merged[metric]
+            merged[metric] = (max(low, other_low), min(high, other_high), points | other_points)
+        else:
+            merged[metric] = (low, high, points)
+    return merged
+
+
+def _any_rows_overlap_space(
+    rows: list[Mapping[str, Any]],
+    space: _MetricSpace,
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> bool:
+    """Return whether one ``any`` row can hold together with a conjunctive space."""
+
+    if not _space_feasible(space):
+        return False
+    sorted_points = {metric: sorted(points) for metric, (_low, _high, points) in space.items()}
+    for row in rows:
+        parts = _condition_row_parts(row, metric_ranges)
+        if parts is None:
+            continue
+        metric, operator, value = parts
+        if metric in space:
+            low, high, points = space[metric]
+            ordered = sorted_points[metric]
+        else:
+            low, high = _metric_bounds(metric, metric_ranges)
+            points, ordered = frozenset(), []
+        if operator == "!=":
+            extra = int(low <= value <= high and value not in points)
+            if _interval_feasible(low, high, _count_between(ordered, low, high) + extra):
+                return True
+            continue
+        low, high = _narrow_bounds(low, high, operator, value)
+        if _interval_feasible(low, high, _count_between(ordered, low, high)):
+            return True
+    return False
+
+
+def _row_intervals(
+    parts: tuple[str, str, int],
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> list[tuple[int, int]]:
+    """Return the non-empty integer intervals satisfying one metric row."""
+
+    metric, operator, value = parts
+    low, high = _metric_bounds(metric, metric_ranges)
+    if operator == "!=":
+        candidates = [(low, min(high, value - 1)), (max(low, value + 1), high)]
+    else:
+        candidates = [_narrow_bounds(low, high, operator, value)]
+    return [(start, end) for start, end in candidates if start <= end]
+
+
+def _intervals_intersect(left: list[tuple[int, int]], right: list[tuple[int, int]]) -> bool:
+    left, right = sorted(left), sorted(right)
+    left_index = right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        left_start, left_end = left[left_index]
+        right_start, right_end = right[right_index]
+        if max(left_start, right_start) <= min(left_end, right_end):
+            return True
+        if left_end < right_end:
+            left_index += 1
+        else:
+            right_index += 1
+    return False
+
+
+def _satisfiable_row_intervals(
+    rows: list[Mapping[str, Any]],
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> dict[str, list[tuple[int, int]]]:
+    by_metric: dict[str, list[tuple[int, int]]] = {}
+    for row in rows:
+        parts = _condition_row_parts(row, metric_ranges)
+        if parts is None:
+            continue
+        intervals = _row_intervals(parts, metric_ranges)
+        if intervals:
+            by_metric.setdefault(parts[0], []).extend(intervals)
+    return by_metric
+
+
+def _any_rows_overlap(
+    left_rows: list[Mapping[str, Any]],
+    right_rows: list[Mapping[str, Any]],
+    metric_ranges: Mapping[str, tuple[int | None, int | None]],
+) -> bool:
+    """Return whether one row from each ``any`` list can hold together."""
+
+    left = _satisfiable_row_intervals(left_rows, metric_ranges)
+    right = _satisfiable_row_intervals(right_rows, metric_ranges)
+    if not left or not right:
+        return False
+    # Rows on different metrics constrain independent values, so each only has
+    # to be satisfiable on its own.
+    if len(set(left) | set(right)) > 1:
+        return True
+    metric = next(iter(left))
+    return _intervals_intersect(left[metric], right[metric])
 
 
 def _conditions_overlap(
@@ -156,54 +356,28 @@ def _conditions_overlap(
     right: Mapping[str, Any],
     metric_ranges: Mapping[str, tuple[int | None, int | None]],
 ) -> bool:
-    """Return whether two route predicates can be true for one metric state."""
+    """Return whether two route predicates can be true for one metric state.
+
+    Runs in near-linear time in the number of rows: an ``all`` branch folds into
+    per-metric intervals, and ``any`` rows are checked against those intervals
+    instead of enumerating every row pair and candidate value.
+    """
 
     if not isinstance(left, Mapping) or not isinstance(right, Mapping):
         return False
-    for left_branch in _condition_branches(left):
-        for right_branch in _condition_branches(right):
-            rows = [*left_branch, *right_branch]
-            by_metric: dict[str, list[Mapping[str, Any]]] = {}
-            for row in rows:
-                metric = str(row.get("metric") or "")
-                if metric not in metric_ranges or row.get("op") not in _COMPARATORS or not _is_int(row.get("value")):
-                    # Other validation reports the malformed condition; do not
-                    # add a secondary overlap error for the same malformed row.
-                    by_metric = {}
-                    break
-                by_metric.setdefault(metric, []).append(row)
-            if not by_metric and rows:
-                continue
-            possible = True
-            for metric, metric_rows in by_metric.items():
-                minimum, maximum = metric_ranges[metric]
-                if minimum is None or maximum is None:
-                    possible = False
-                    break
-                candidates = {minimum, maximum}
-                for row in metric_rows:
-                    threshold = int(row["value"])
-                    candidates.update({threshold - 1, threshold, threshold + 1})
-                if not any(
-                    minimum <= candidate <= maximum
-                    and all(
-                        {
-                            "==": candidate == int(row["value"]),
-                            "!=": candidate != int(row["value"]),
-                            ">": candidate > int(row["value"]),
-                            "<": candidate < int(row["value"]),
-                            ">=": candidate >= int(row["value"]),
-                            "<=": candidate <= int(row["value"]),
-                        }[str(row["op"])]
-                        for row in metric_rows
-                    )
-                    for candidate in candidates
-                ):
-                    possible = False
-                    break
-            if possible:
-                return True
-    return False
+    left_mode, left_rows = _condition_mode_rows(left)
+    right_mode, right_rows = _condition_mode_rows(right)
+    if left_mode == "any" and right_mode == "any":
+        return _any_rows_overlap(left_rows, right_rows, metric_ranges)
+    if left_mode == "any" or right_mode == "any":
+        any_rows, all_rows = (left_rows, right_rows) if left_mode == "any" else (right_rows, left_rows)
+        space = _branch_space(all_rows, metric_ranges)
+        return space is not None and _any_rows_overlap_space(any_rows, space, metric_ranges)
+    left_space = _branch_space(left_rows, metric_ranges)
+    right_space = _branch_space(right_rows, metric_ranges)
+    if left_space is None or right_space is None:
+        return False
+    return _space_feasible(_merge_spaces(left_space, right_space))
 
 
 class _Collector:
@@ -240,6 +414,21 @@ class _Collector:
             )
         return text
 
+    def optional_prompt_text(self, value: Any, path: str) -> None:
+        """Validate an optional prompt string: absent/empty is allowed, oversize is not."""
+
+        if value is None:
+            return
+        if not isinstance(value, str):
+            self.add("expected_text", path, "必须是文本。")
+            return
+        if count_tokens(value) > MAX_ACTOR_PROMPT_FIELD_TOKENS:
+            self.add(
+                "actor_prompt_field_too_large",
+                path,
+                f"单个文本字段不能超过 {MAX_ACTOR_PROMPT_FIELD_TOKENS} tokens。",
+            )
+
     def require_id(self, value: Any, path: str) -> str:
         if not _valid_id(value):
             self.add("invalid_id", path, "必须是安全且稳定的 ID。")
@@ -268,6 +457,25 @@ class NumericV2Compiler:
     """只编译 Numeric v2 作者包，不提供旧协议兼容或迁移。"""  # noqa: DOCSTRING_CJK
 
     def compile(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
+        """Compile a package, reporting any malformed shape as a structured contract error."""
+
+        try:
+            return self._compile(payload)
+        except NumericV2CompileError:
+            raise
+        except (TypeError, AttributeError, KeyError, IndexError, ValueError, RecursionError) as exc:
+            # Validators assume JSON-shaped values; a wrong type deep inside the
+            # package (e.g. a list where an enum string belongs) must surface as a
+            # package error, never as an unhandled 500 or a broken story list.
+            raise NumericV2CompileError([
+                NumericV2Issue(
+                    "malformed_package",
+                    "story",
+                    f"剧本包结构无法解析：{type(exc).__name__}。",
+                )
+            ]) from exc
+
+    def _compile(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
         collector = _Collector()
         story = collector.obj(payload, "story")
         if story.get("schema") != STORY_SCHEMA:
@@ -568,6 +776,10 @@ class NumericV2Compiler:
         beat = c.obj(value, path)
         validate_definitions(c, beat, path)
         c.require_text(beat.get("summary"), f"{path}.summary")
+        # Optional prompt fields fall back to other beat text when empty, but a
+        # non-empty value is sent to the Actor/Evaluator and needs the same cap.
+        for field in ("narrative_focus", "narrative_summary"):
+            c.optional_prompt_text(beat.get(field), f"{path}.{field}")
         if "opening_scene" in beat:
             c.require_text(beat.get("opening_scene"), f"{path}.opening_scene")
         if "relationship_ceiling" in beat and beat.get("relationship_ceiling") not in _RELATIONSHIP_CEILINGS:

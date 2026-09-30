@@ -50,6 +50,7 @@ from services.theater.numeric_v2_evaluator import (
     NumericV2MetricEvaluator,
 )
 from services.theater.numeric_v2_registry import (
+    MAX_PACKAGE_BYTES,
     NumericV2PackageError,
     NumericV2PackageExistsError,
     NumericV2PackageNotFoundError,
@@ -296,6 +297,24 @@ async def _json_object(request: Request) -> dict[str, Any]:
     try:
         payload = await request.json()
     except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+async def _bounded_json_object(request: Request, maximum_bytes: int) -> dict[str, Any] | None:
+    """Parse a JSON object body, returning ``None`` once it exceeds ``maximum_bytes``."""
+
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > maximum_bytes:
+        return None
+    buffered = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > maximum_bytes - len(buffered):
+            return None
+        buffered.extend(chunk)
+    try:
+        payload = json.loads(bytes(buffered))
+    except (ValueError, RecursionError):
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -611,7 +630,9 @@ async def set_numeric_options(request: Request):
 
 @router.post("/packages/import")
 async def import_numeric_story(request: Request):
-    payload = await _json_object(request)
+    payload = await _bounded_json_object(request, MAX_PACKAGE_BYTES)
+    if payload is None:
+        return _error("numeric_story_package_too_large", 413)
     validation_error = _validate_local_mutation_request(request, payload=payload, error_defaults={"ok": False, "reason": "csrf_validation_failed"})
     if validation_error is not None:
         return validation_error

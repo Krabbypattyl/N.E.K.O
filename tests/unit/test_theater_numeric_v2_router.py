@@ -237,6 +237,47 @@ def test_numeric_v2_story_import_requires_v22_upgrade(tmp_path, monkeypatch):
     assert accepted.json()["package"]["contract_version"] == "v2.2"
 
 
+def test_numeric_v2_malformed_package_is_rejected_and_skipped_structurally(tmp_path, monkeypatch):
+    """A malformed package yields a structured import error and never breaks the story list."""
+
+    client = _client(tmp_path, monkeypatch)
+    malformed = numeric_v2_story()
+    malformed["meta"]["story_id"] = "malformed_import"
+    malformed["metric_schema"]["trust"]["visibility"] = []
+    on_disk = numeric_v2_story()
+    on_disk["meta"]["story_id"] = "malformed_on_disk"
+    on_disk["nodes"][0]["type"] = []
+    packages = tmp_path / "theater" / "numeric_v2" / "packages"
+    (packages / "malformed_on_disk.json").write_text(json.dumps(on_disk), encoding="utf-8")
+
+    with client:
+        imported = client.post("/api/theater-numeric/packages/import", json=malformed)
+        listed = client.get("/api/theater-numeric/stories")
+
+    assert imported.status_code == 422
+    assert imported.json()["reason"] == "numeric_v2_contract_invalid"
+    assert listed.status_code == 200
+    assert [item["story_id"] for item in listed.json()["stories"]] == ["numeric_v2_contract"]
+
+
+def test_numeric_v2_story_import_rejects_oversized_package(tmp_path, monkeypatch):
+    """Import bodies above the package cap are refused before JSON parsing."""
+
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(numeric_theater_router, "MAX_PACKAGE_BYTES", 4096)
+    story = numeric_v2_story()
+    story["meta"]["story_id"] = "oversized_import"
+    story["characters"] = {"padding": "x" * 8192}
+
+    with client:
+        rejected = client.post("/api/theater-numeric/packages/import", json=story)
+        accepted = client.post("/api/theater-numeric/packages/import", content=b"{}")
+
+    assert rejected.status_code == 413
+    assert rejected.json()["reason"] == "numeric_story_package_too_large"
+    assert accepted.status_code != 413
+
+
 def test_numeric_v2_story_list_reuses_compiled_summary_intro():
     """列表投影只能消费注册表已经编译的摘要，不能为显示简介再次加载整包。"""  # noqa: DOCSTRING_CJK
 
