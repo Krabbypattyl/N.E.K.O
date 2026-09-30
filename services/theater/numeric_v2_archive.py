@@ -320,6 +320,68 @@ class NumericV2ArchiveStore:
             self._write(session_path, reconciled)
             return True
 
+    @staticmethod
+    def pending_retractions(receipt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+        """Return the well-formed retraction obligations a receipt inherited."""
+
+        result: list[dict[str, Any]] = []
+        raw = (receipt or {}).get("pending_retractions")
+        for entry in raw if isinstance(raw, list) else ():
+            if not isinstance(entry, Mapping):
+                continue
+            request_id = str(entry.get("archive_request_id") or "").strip()
+            attempt = entry.get("archive_attempt")
+            through = entry.get("archive_through_revision")
+            if (
+                request_id
+                and isinstance(attempt, int) and not isinstance(attempt, bool)
+                and isinstance(through, int) and not isinstance(through, bool)
+            ):
+                result.append({
+                    "archive_request_id": request_id,
+                    "archive_attempt": attempt,
+                    "archive_through_revision": through,
+                })
+        return result
+
+    def _carried_retractions(self, previous: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+        """Collect the memory writes a replaced receipt may have left behind.
+
+        A receipt that is neither written nor skipped may have issued archive
+        attempts whose memory write timed out but still landed. Replacing it
+        deletes its staged copy (the only local evidence), so the obligation to
+        retract those attempts moves onto the new receipt instead.
+        """
+
+        if previous is None or previous.get("status") in {"written", "skipped"}:
+            return []
+        carried = {
+            entry["archive_request_id"]: entry
+            for entry in self.pending_retractions(previous)
+        }
+        request_id = str(previous.get("archive_request_id") or "").strip()
+        raw_attempt = previous.get("archive_attempt")
+        attempt = (
+            raw_attempt
+            if isinstance(raw_attempt, int) and not isinstance(raw_attempt, bool) and raw_attempt > 0
+            else 0
+        )
+        staged = self._staged_archive_path(str(previous.get("receipt_id") or "")).is_file()
+        through = previous.get("archive_through_revision", previous.get("revision"))
+        if (
+            request_id
+            and (attempt > 0 or staged)
+            and isinstance(through, int)
+            and not isinstance(through, bool)
+        ):
+            prior = carried.get(request_id)
+            carried[request_id] = {
+                "archive_request_id": request_id,
+                "archive_attempt": max(attempt, int((prior or {}).get("archive_attempt") or 0)),
+                "archive_through_revision": through,
+            }
+        return list(carried.values())
+
     def create_or_get(self, session: Any) -> dict[str, Any]:
         session_id = str(session.session_id)
         session_path = self._session_path(session_id)
@@ -380,6 +442,12 @@ class NumericV2ArchiveStore:
                 "archive_through_revision": int(session.revision),
                 "include_opening": archived_through_revision < 0,
             }
+            if previous_receipt_id and previous_receipt_id != receipt["receipt_id"]:
+                # Written before the old receipt and its staged copy are deleted, so
+                # a crash in between never loses a pending retraction.
+                carried = self._carried_retractions(self.load(previous_receipt_id))
+                if carried:
+                    receipt["pending_retractions"] = carried
             self._write(self._receipt_path(receipt["receipt_id"]), receipt)
             self._write(session_path, {
                 "receipt_id": receipt["receipt_id"],

@@ -6226,3 +6226,139 @@ def test_numeric_turn_only_retries_for_actor_visible_persona_changes(
         assert submitted.json()["reason"] == "catgirl_profile_changed_requires_retry"
     else:
         assert submitted.json()["session"]["revision"] == 1
+
+
+def _resume_play_and_end(client, scope, *, revision, lifecycle_revision, turn_id):
+    resumed = client.post("/api/theater-numeric/session/resume", json={
+        **scope, "base_revision": revision, "base_lifecycle_revision": lifecycle_revision,
+    })
+    assert resumed.status_code == 200, resumed.text
+    played = client.post("/api/theater-numeric/session/input", json={
+        **scope, "client_turn_id": turn_id, "base_revision": revision, "message": "我们接着说。",
+    })
+    assert played.status_code == 200, played.text
+    ended = client.post("/api/theater-numeric/session/end", json={
+        **scope, "base_revision": revision + 1, "base_lifecycle_revision": lifecycle_revision + 1,
+    })
+    assert ended.status_code == 200, ended.text
+    return ended.json()
+
+
+@pytest.mark.parametrize("final_choice", ["skip", "archive"])
+def test_timed_out_archive_retraction_survives_resume_and_new_end_receipt(
+    tmp_path, monkeypatch, final_choice,
+):
+    """A replaced receipt's possibly committed write is retracted by the next skip or archive."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+    cache_replies = [None]  # the first /cache call times out; later ones succeed
+
+    async def post(url, **kwargs):
+        calls.append((url, kwargs.get("json")))
+        if "/cache/" in url:
+            if cache_replies:
+                cache_replies.pop(0)
+                raise TimeoutError("memory service slow")
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached", "count": 1})
+        if url.endswith("/theater/retract"):
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        raise AssertionError(url)
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        first = _ended_archive_payload(client)
+        scope = {"story_id": first["story_id"], "session_id": first["session_id"]}
+        assert client.post("/api/theater-numeric/session/archive", json=first).status_code == 502
+        assert store.has_staged_public_archive(first["end_receipt_id"])
+
+        second = _resume_play_and_end(client, scope, revision=0, lifecycle_revision=1, turn_id="after_timeout")
+        assert second["end_receipt_id"] != first["end_receipt_id"]
+        # The old receipt and its staged copy are gone, but the obligation moved on.
+        assert store.load(first["end_receipt_id"]) is None
+        assert not store.has_staged_public_archive(first["end_receipt_id"])
+        second_payload = {**scope, "revision": 1, "end_receipt_id": second["end_receipt_id"]}
+        if final_choice == "skip":
+            response = client.post("/api/theater-numeric/session/archive/skip", json=second_payload)
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "skipped"
+        else:
+            response = client.post("/api/theater-numeric/session/archive", json={
+                **second_payload, "archive_request_id": second["archive_request_id"],
+            })
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "written"
+
+    retracts = [body for url, body in calls if url.endswith("/theater/retract")]
+    assert retracts == [{
+        "story_id": "numeric_v2_contract",
+        "session_id": "gap_session",
+        "archive_through_revision": 0,
+        "archive_request_id": first["archive_request_id"],
+        "archive_attempt": 1,
+    }]
+    if final_choice == "archive":
+        # The replaced range is taken back before the wider range is written.
+        order = ["retract" if url.endswith("/theater/retract") else "cache" for url, _ in calls]
+        assert order == ["cache", "retract", "cache"]
+
+
+def test_archive_does_not_write_when_carried_retraction_fails(tmp_path, monkeypatch):
+    """The wider range is never written while the replaced prefix might still be stored."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    calls = []
+
+    async def post(url, **kwargs):
+        calls.append(url)
+        if "/cache/" in url:
+            raise TimeoutError("memory service slow")
+        return SimpleNamespace(is_success=False, content=b"{}", json=lambda: {})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    with _client(tmp_path, monkeypatch) as client:
+        first = _ended_archive_payload(client)
+        scope = {"story_id": first["story_id"], "session_id": first["session_id"]}
+        assert client.post("/api/theater-numeric/session/archive", json=first).status_code == 502
+        second = _resume_play_and_end(client, scope, revision=0, lifecycle_revision=1, turn_id="after_timeout")
+        response = client.post("/api/theater-numeric/session/archive", json={
+            **scope, "revision": 1, "end_receipt_id": second["end_receipt_id"],
+            "archive_request_id": second["archive_request_id"],
+        })
+
+    assert response.status_code == 502
+    assert [url.endswith("/theater/retract") for url in calls] == [False, True]
+    receipt = store.load(second["end_receipt_id"])
+    assert receipt["status"] == "pending"
+    assert receipt["pending_retractions"][0]["archive_request_id"] == first["archive_request_id"]
+
+
+def test_resume_chain_carries_every_unretracted_attempt(tmp_path):
+    """Two resume/end cycles keep both older possibly committed attempts on the newest receipt."""
+
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    session = SimpleNamespace(
+        session_id="chain_session",
+        story_package_id="numeric_v2_contract",
+        revision=1,
+        catgirl_binding={"character_id": "character_" + "1" * 32, "catgirl_name": "测试猫娘"},
+        forgotten_through_revision=-1,
+    )
+    first = store.create_or_get(session)
+    first = store.update(first, status="pending", archive_attempt=2)
+    store._write(store._staged_archive_path(first["receipt_id"]), {"session_id": "chain_session"})
+    session.revision = 3
+    second = store.create_or_get(session)
+    # Attempted but never staged (crash before staging): still fenced, harmless if nothing landed.
+    second = store.update(second, status="pending", archive_attempt=1)
+    session.revision = 5
+    third = store.create_or_get(session)
+
+    assert third["pending_retractions"] == [
+        {"archive_request_id": first["archive_request_id"], "archive_attempt": 2, "archive_through_revision": 1},
+        {"archive_request_id": second["archive_request_id"], "archive_attempt": 1, "archive_through_revision": 3},
+    ]
+    # A skipped or written predecessor carries nothing: it was retracted or is wanted memory.
+    third = store.update(third, status="skipped")
+    session.revision = 7
+    assert "pending_retractions" not in store.create_or_get(session)

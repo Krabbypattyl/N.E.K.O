@@ -1654,6 +1654,12 @@ async def archive_numeric_session(request: Request):
                 # The durable "writing" receipt and staged archive make this request
                 # retryable, so the memory round trip runs without the global
                 # character lock (it may wait behind /settle compression).
+                # A replaced receipt's timed-out write covers a prefix of this range;
+                # take it back first so the wider summary is not stored twice.
+                if not await _retract_carried_episodes(current_binding, receipt):
+                    await _reset_writing_archive_receipt(config_manager, store, receipt)
+                    receipt = None
+                    return _error("numeric_archive_memory_failed", 502)
                 response = await get_internal_http_client().post(
                     memory_url,
                     # 记忆服务使用同一稳定键收敛未知响应和跨进程重试，不能只在剧场侧去重。
@@ -1768,17 +1774,27 @@ async def skip_numeric_session_archive(request: Request):
                     # was about to send) the summary, and the memory service may have
                     # committed it even though this server timed out. A pending story
                     # forget removes all of the story's memory anyway.
-                    retract = await asyncio.to_thread(
-                        store.has_staged_public_archive,
-                        str(receipt.get("receipt_id") or ""),
-                    ) and not await asyncio.to_thread(
+                    forget_pending = await asyncio.to_thread(
                         store.pending_forget,
                         receipt["story_id"],
                         receipt.get("character_id", ""),
                     )
-                if retract:
+                    retract = not forget_pending and await asyncio.to_thread(
+                        store.has_staged_public_archive,
+                        str(receipt.get("receipt_id") or ""),
+                    )
+                    # Receipts replaced by a later end (resume, play, end again)
+                    # hand over their possibly committed attempts; skip owns them now.
+                    carried = (
+                        []
+                        if forget_pending
+                        else NumericV2ArchiveStore.pending_retractions(receipt)
+                    )
+                if retract or carried:
                     await _assert_numeric_writable(config_manager, "memory")
-                    if not await _retract_archived_episode(binding, receipt):
+                    if not await _retract_carried_episodes(binding, receipt) or (
+                        retract and not await _retract_archived_episode(binding, receipt)
+                    ):
                         # Nothing changed locally: the receipt keeps its status and
                         # staged copy, so retrying skip (or choosing to remember) is safe.
                         return _error("numeric_archive_memory_failed", 502)
@@ -1841,6 +1857,27 @@ async def _retract_archived_episode(
     except Exception:
         return False
     return bool(response.is_success and data.get("ok") is True)
+
+
+async def _retract_carried_episodes(
+    binding: Mapping[str, str],
+    receipt: Mapping[str, Any],
+) -> bool:
+    """Retract every attempt a replaced end receipt handed over to this one.
+
+    The memory service keys the tombstone on request id and attempt and removes
+    the capsule by through-revision, so repeating this after a partial failure
+    is idempotent.
+    """
+
+    for entry in NumericV2ArchiveStore.pending_retractions(receipt):
+        if not await _retract_archived_episode(binding, {
+            "story_id": receipt.get("story_id"),
+            "session_id": receipt.get("session_id"),
+            **entry,
+        }):
+            return False
+    return True
 
 
 @router.get("/memory/archives")
