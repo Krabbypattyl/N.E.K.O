@@ -154,7 +154,7 @@ await host.close()
 
 若完成条件仅表示这段原文已经展示，可通过 `changes["story"]` 将本幕 `completion_contract.all` 中的对应布尔事实项替换为 `{"fixed_narration_id":"read_letter"}`。运行端直接读取已提交展示记录，模型不再判断此条件；可以与其他 `key/equals` 完成事实混用。确认无其他引用后同步移除冗余事实定义和路线元数据，再重新编译、复验。此字段不改变旁白触发方式，离幕前必显仍用 `required_before_exit`；只表示内容已提交展示，不代表玩家已经阅读。旧包和存档不自动迁移；需使用支持该扩展的本体编译器与运行端。
 
-主线自动生成及续写支持作者完成项 `{"id":"letter_displayed","description":"原文已展示","value_type":"bool","target_value":true,"visibility":"public","fixed_narration_id":"read_letter"}`。引用必须位于同章且不能重复，`exit_plan.trigger_fact_ids` 仍填写 `letter_displayed`。投影自动转换为展示条件，不再创建该项的布尔事实；普通完成项省略 `fixed_narration_id`。支线完成项生成沿用原合同。
+主线自动生成及续写支持作者完成项 `{"id":"letter_displayed","description":"原文已展示","value_type":"bool","target_value":true,"visibility":"public","fixed_narration_id":"read_letter"}`。带 `fixed_narration_id` 的完成项必须是 `bool`、`target_value=true`、`visibility=public`；引用必须位于同章且不能重复，`exit_plan.trigger_fact_ids` 仍填写 `letter_displayed`。投影自动转换为展示条件，不再创建该项的布尔事实；普通完成项省略 `fixed_narration_id`。支线完成项生成沿用原合同。
 
 主线生成在投影前检查固定原文数组的形状、触发方式和同幕前置引用；坏片段会将整个 `fixed_narrations` 数组加入定向修订，避免仅改完成项引用却保留损坏资产。结局修订使用仅含 `entry` 的触发示例。仍遵守原三次调用上限；该检查不等于原文与剧情语义、完整编译或文学质量已经通过。
 
