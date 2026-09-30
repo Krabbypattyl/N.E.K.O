@@ -3005,7 +3005,7 @@
         "moduleOptDetail.review_contract": "检查作者禁令和提前到达后续阶段。关闭后不再拦截这类越界。",
         "moduleOptDetail.suggestion_fill": "推荐不足时请求补齐。关闭后直接展示已生成的合法推荐。",
         "moduleOptDetail.history_lookup": "需要回忆旧事时查找本次演绎的原文。关闭后旧细节保持未知。",
-        "moduleOptDetail.actor_retry": "演员输出不合格时自动重试。关闭后本轮回滚，玩家需重新发送。",
+        "moduleOptDetail.actor_retry": "演员输出不合格时自动重试，每次生成最多调用演员 4 次（额外消耗 token 与时间）。关闭后本轮回滚，玩家需重新发送。",
         "kicker": "Lanlan Theater",
         "loading": "正在准备舞台...",
         "generating": "片刻之后",

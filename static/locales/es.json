@@ -3006,7 +3006,7 @@
         "moduleOptDetail.review_contract": "Comprueba prohibiciones del autor y llegadas prematuras. Desactivado: no se bloquean esas infracciones.",
         "moduleOptDetail.suggestion_fill": "Pide más sugerencias si faltan opciones. Desactivado: se muestran las sugerencias válidas existentes.",
         "moduleOptDetail.history_lookup": "Consulta texto anterior de esta sesión cuando hace falta. Desactivado: los detalles antiguos siguen siendo desconocidos.",
-        "moduleOptDetail.actor_retry": "Reintenta una salida inválida del actor. Desactivado: se revierte el turno y el jugador debe reenviarlo.",
+        "moduleOptDetail.actor_retry": "Reintenta la salida inválida del actor, con hasta 4 llamadas al actor por generación (más tokens y tiempo). Desactivado: se revierte el turno y el jugador debe reenviarlo.",
         "kicker": "Lanlan Theater",
         "loading": "Preparando el escenario...",
         "generating": "Un momento después",

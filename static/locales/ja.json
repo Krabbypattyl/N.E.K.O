@@ -3006,7 +3006,7 @@
         "moduleOptDetail.review_contract": "作者の禁止事項と次の段階への早すぎる到達を確認します。オフではその逸脱を止めません。",
         "moduleOptDetail.suggestion_fill": "候補が不足したときに推薦を追加で生成します。オフでは既存の有効な候補だけを表示します。",
         "moduleOptDetail.history_lookup": "必要に応じてこのセッションの過去の本文を参照します。オフでは古い詳細は不明のままです。",
-        "moduleOptDetail.actor_retry": "俳優の出力が不正なときに再試行します。オフではターンを取り消し、プレイヤーが再送します。",
+        "moduleOptDetail.actor_retry": "俳優の出力が不正なときに再試行し、1 回の生成で俳優を最大 4 回呼び出します（トークンと時間が増えます）。オフではターンを取り消し、プレイヤーが再送します。",
         "kicker": "Lanlan Theater",
         "loading": "舞台を準備しています...",
         "generating": "しばらくして",
