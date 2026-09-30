@@ -418,7 +418,28 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         assert started.status_code == 200
         assert started.json()["session"]["lifecycle_revision"] == 0
         assert body["story_intro"]["player_identity"].startswith("你，")
-        assert body["participants"]["player_name"] == "你"
+        # Prose keeps the second-person projection; the speaker label is left
+        # empty so the page shows its localized "Player" fallback.
+        assert body["participants"] == {"player_name": "", "catgirl_name": "测试猫娘"}
+
+
+def test_numeric_v2_participant_labels_never_use_chinese_placeholders():
+    """Participant labels are the real names or empty, never "你" / "当前猫娘"."""
+
+    participants = numeric_theater_router._participants
+    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=True) == {
+        "player_name": "哥哥",
+        "catgirl_name": "小岚",
+    }
+    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=False) == {
+        "player_name": "",
+        "catgirl_name": "小岚",
+    }
+    # No nickname configured: the binding default "你" is not a name either.
+    assert participants({"player_address": "你", "catgirl_name": ""}, known=True) == {
+        "player_name": "",
+        "catgirl_name": "",
+    }
 
 
 def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(

@@ -282,6 +282,22 @@ def _surface_player_name(binding: Mapping[str, str], *, known: bool) -> str:
     return str(binding.get("player_address") or "你").strip() or "你"
 
 
+def _participants(binding: Mapping[str, str], *, known: bool) -> dict[str, str]:
+    """Speaker labels for the page's history; never a hard-coded Chinese placeholder.
+
+    The cast projection keeps substituting "你" into the (Chinese) story prose while
+    the address is undisclosed. Labels are UI chrome instead: an unknown or unset
+    name is sent empty so the page renders its own localized fallback.
+    """
+
+    player_name = _surface_player_name(binding, known=known)
+    return {
+        # "你" is the projection placeholder / no-nickname default, not a name.
+        "player_name": "" if player_name == "你" else player_name,
+        "catgirl_name": str(binding.get("catgirl_name") or "").strip(),
+    }
+
+
 def _ensure_current_catgirl(session: Any, config_manager: Any) -> dict[str, str]:
     """只用不可变角色 ID 校验归属，允许同一角色改名或更新角色卡。"""  # noqa: DOCSTRING_CJK
 
@@ -438,13 +454,10 @@ def _numeric_payload(
         payload = {
             "session": {**_public_session(stored.session), "continuation_allowed": False},
             "story_title": str(runtime.engine.story["meta"]["title"]),
-            "participants": {
-                "player_name": _surface_player_name(
-                    binding,
-                    known=bool(stored.session.player_address_known),
-                ),
-                "catgirl_name": str(binding.get("catgirl_name") or "当前猫娘"),
-            },
+            "participants": _participants(
+                binding,
+                known=bool(stored.session.player_address_known),
+            ),
             "story_intro": {},
             "scene": None,
             "suggested_inputs": [],
@@ -468,13 +481,10 @@ def _numeric_payload(
         "session": _public_session(stored.session),
         "story_title": str(runtime.engine.story["meta"]["title"]),
         # 历史区署名使用当前展示绑定；不要让前端从本地文案猜玩家或猫娘名称。
-        "participants": {
-            "player_name": _surface_player_name(
-                binding,
-                known=bool(stored.session.player_address_known),
-            ),
-            "catgirl_name": str(binding.get("catgirl_name") or "当前猫娘"),
-        },
+        "participants": _participants(
+            binding,
+            known=bool(stored.session.player_address_known),
+        ),
         "story_intro": cast.intro(runtime.engine.story),
         "scene": _scene_projection(runtime, stored, binding),
         "suggested_inputs": list(latest.get("suggested_inputs") or []),
