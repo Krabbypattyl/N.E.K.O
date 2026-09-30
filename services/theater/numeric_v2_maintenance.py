@@ -16,6 +16,7 @@ import uuid
 from typing import Any, Callable, Mapping
 
 from .numeric_v2_archive import (
+    FORGET_MARKER_DIRNAME,
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
     RETRACT_INTENT_DIRNAME,
     SESSION_QUARANTINE_DIRNAME,
@@ -341,6 +342,7 @@ _CHARACTER_PURGE_TARGET_DIRS = frozenset({
     "end_receipts",
     "forget_transactions",
     RETRACT_INTENT_DIRNAME,
+    FORGET_MARKER_DIRNAME,
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
     SESSION_QUARANTINE_DIRNAME,
 })

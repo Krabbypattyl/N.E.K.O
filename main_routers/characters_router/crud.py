@@ -648,6 +648,9 @@ async def collect_numeric_v2_character_purge(
     forget_paths = tuple(
         await asyncio.to_thread(archive_store.forget_paths_for_character, character_id)
     ) + tuple(
+        # Story-forget markers only match tombstones in her deleted memory.
+        await asyncio.to_thread(archive_store.forget_marker_paths_for_character, character_id)
+    ) + tuple(
         # Queued memory retractions are moot once her memory is deleted.
         await asyncio.to_thread(
             archive_store.retract_intent_paths_for_character,

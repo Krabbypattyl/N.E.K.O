@@ -3407,7 +3407,7 @@ def test_forget_transaction_recovers_after_interruption_and_blocks_archival(tmp_
             remote_calls.append(url)
             if failure == "remote" and len(remote_calls) == 1:
                 raise OSError("lost response after remote deletion")
-            return SimpleNamespace(content=b"{}", is_success=True, json=lambda: {"ok": True})
+            return SimpleNamespace(content=b"{}", is_success=True, json=lambda: {"ok": True, "forget_marker": "marker_1"})
         return SimpleNamespace(content=b"{}", is_success=True, json=lambda: {"status": "cached"})
     monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
     client = _client(tmp_path, monkeypatch)
@@ -4705,6 +4705,7 @@ def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch)
                 captured["forgotten"] = True
                 return _MemoryResponse({
                     "ok": True,
+                    "forget_marker": "marker_1",
                     "removed_recent": 1,
                     "removed_time_index": 3,
                 })
@@ -4879,6 +4880,7 @@ def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
         def json():
             return {
                 "ok": True,
+                "forget_marker": "marker_1",
                 "removed_recent": 1,
                 "removed_time_index": 1,
             }
@@ -5919,7 +5921,7 @@ def test_deleted_package_keeps_pending_forget_discoverable_and_retryable(tmp_pat
             return SimpleNamespace(is_success=True, json=lambda: {'ok': True, 'stories': []})
 
         async def post(self, url, **kwargs):
-            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True, 'forget_marker': 'marker_1'})
 
     monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
     client = _client(tmp_path, monkeypatch)
@@ -5963,7 +5965,7 @@ def test_forget_erases_story_and_unattributable_quarantined_public_archives(tmp_
 
     class MemoryClient:
         async def post(self, url, **kwargs):
-            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True, 'forget_marker': 'marker_1'})
 
     monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
     scope = {'story_id': 'numeric_v2_contract', 'character_id': 'character_' + '1' * 32}
@@ -6003,7 +6005,7 @@ def test_forget_then_exit_without_new_turn_cannot_archive_old_content(tmp_path, 
     class MemoryClient:
         async def post(self, url, **kwargs):
             memory_calls.append(url)
-            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True, 'forget_marker': 'marker_1'})
 
     monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
     scope = {'story_id': 'numeric_v2_contract', 'session_id': 'forget_exit'}
@@ -6280,7 +6282,7 @@ def test_forget_memory_call_releases_character_lock_and_stops_after_character_de
             observed["character_lock"] = numeric_theater_router.character_config_mutation_lock.locked()
             # Character deletion removes the scoped forget intent with its files.
             store.complete_forget(scope["story_id"], scope["character_id"])
-            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+            return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True, "forget_marker": "marker_1"})
         return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"status": "cached"})
 
     monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
@@ -6626,7 +6628,7 @@ def test_story_forget_drains_queued_retractions(tmp_path, monkeypatch):
 
     async def post(url, **kwargs):
         calls.append(url.rsplit("/", 1)[-1])
-        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True})
+        return SimpleNamespace(is_success=True, content=b"{}", json=lambda: {"ok": True, "forget_marker": "marker_1"})
 
     monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
     with _client(tmp_path, monkeypatch) as client:

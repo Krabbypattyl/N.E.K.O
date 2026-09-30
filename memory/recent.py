@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import logging
 import locale
+import secrets
 import sys
 import time
 from contextlib import suppress
@@ -529,16 +530,20 @@ def _is_fresh_tombstone(stamp, now: float) -> bool:
 
 
 def _theater_story_write_is_forgotten(
-    forgotten: list[dict], story_id: str, archive_issued_at: float | None,
+    forgotten: list[dict], story_id: str, forget_marker: str | None, now: float,
 ) -> bool:
     """True when a write for this story was issued before the story was forgotten.
 
-    The theater stamps every archive request with the wall-clock time it issued
-    it while holding the story's memory lock, which forget also takes; the
-    memory server stamps the forget with its own clock on the same host. A write
-    issued before the forget therefore carries an older stamp and is dropped,
-    while an archive the player starts after the forget carries a newer one and
-    lands. A write without a stamp cannot prove it came later and is dropped.
+    Every forget of a story stores a fresh random ``forget_marker`` and returns
+    it to the theater, which persists it and attaches it to each archive request
+    it issues afterwards (under the story's memory lock, which forget also
+    holds). A write issued before the forget carries an older marker or none, so
+    it cannot match and is dropped; an archive the player starts after the forget
+    carries the current marker and lands. No clock is compared, so a system clock
+    stepping backwards cannot reject a legitimate archive. A tombstone without a
+    marker (written by an intermediate build) drops every write of its story.
+    Tombstones stop applying after the retention window, which bounds the damage
+    if the theater ever loses its marker.
     """
 
     if not story_id:
@@ -547,9 +552,16 @@ def _theater_story_write_is_forgotten(
         if str(entry.get("story_id") or "") != story_id:
             continue
         forgotten_at = entry.get("forgotten_at")
-        if not isinstance(forgotten_at, (int, float)) or isinstance(forgotten_at, bool):
+        if (
+            isinstance(forgotten_at, (int, float))
+            and not isinstance(forgotten_at, bool)
+            and not _is_fresh_tombstone(forgotten_at, now)
+        ):
+            continue
+        current_marker = entry.get("forget_marker")
+        if not isinstance(current_marker, str) or not current_marker:
             return True
-        if archive_issued_at is None or archive_issued_at <= forgotten_at:
+        if forget_marker != current_marker:
             return True
     return False
 
@@ -1108,7 +1120,7 @@ class CompressedRecentHistoryManager:
 
     def _upsert_theater_episode_locked(
         self, file_path, lanlan_name, incoming, expected_generation=None,
-        archive_request_id="", archive_attempt=None, archive_issued_at=None,
+        archive_request_id="", archive_attempt=None, forget_marker=None,
     ):
         """在单个文件临界区内替换同 Session 胶囊并落盘。"""  # noqa: DOCSTRING_CJK
 
@@ -1127,7 +1139,8 @@ class CompressedRecentHistoryManager:
             if _theater_story_write_is_forgotten(
                 forgotten_stories,
                 str(message_metadata(incoming).get("story_id") or ""),
-                archive_issued_at,
+                forget_marker,
+                time.time(),
             ):
                 raise TheaterEpisodeRetracted(archive_request_id)
             status, history = self._load_history_unlocked(file_path, lanlan_name)
@@ -1179,12 +1192,12 @@ class CompressedRecentHistoryManager:
 
     async def upsert_theater_episode(
         self, message, lanlan_name, *, archive_request_id="", archive_attempt=None,
-        archive_issued_at=None,
+        forget_marker=None,
     ):
         """把同一 Session 的暂停与完成状态收敛成一条近期记忆。
 
-        带 archive_request_id 的写入若命中撤回墓碑，或在该剧本被遗忘之前发出
-        （archive_issued_at 不晚于遗忘墓碑），抛 TheaterEpisodeRetracted 且不落盘。
+        带 archive_request_id 的写入若命中撤回墓碑，或该剧本存在遗忘墓碑而写入未携带
+        其当前 forget_marker（即在遗忘之前发出），抛 TheaterEpisodeRetracted 且不落盘。
         """  # noqa: DOCSTRING_CJK
 
         if not is_theater_episode_summary(message):
@@ -1214,7 +1227,7 @@ class CompressedRecentHistoryManager:
             admission_generation,
             str(archive_request_id or ""),
             archive_attempt,
-            archive_issued_at,
+            str(forget_marker or "") or None,
         )
 
     def _restore_theater_cache_snapshot_locked(
@@ -1335,33 +1348,42 @@ class CompressedRecentHistoryManager:
             _write_theater_retraction_state_unlocked(file_path, kept, forgotten)
 
     def _record_theater_story_forget_locked(
-        self, file_path, lanlan_name, story_id, forgotten_at, expected_generation=None,
+        self, file_path, lanlan_name, story_id, forgotten_at, forget_marker,
+        expected_generation=None,
     ):
-        """Persist a story-level forget tombstone inside the recent.json critical section."""
+        """Persist a story-level forget tombstone inside the recent.json critical section.
+
+        A repeated forget of the same story replaces its tombstone: the new
+        marker supersedes the old one, and ``forgotten_at`` (only used for
+        retention) restarts from this forget.
+        """
 
         with recent_file.recent_file_access(
             file_path, expected_generation=expected_generation,
         ) as file_path:
             entries, forgotten = _load_theater_retraction_state_unlocked(file_path)
-            kept = []
-            for existing in forgotten:
-                previous = existing.get("forgotten_at")
-                if existing.get("story_id") == story_id:
-                    if isinstance(previous, (int, float)) and not isinstance(previous, bool):
-                        forgotten_at = max(forgotten_at, float(previous))
-                    continue
-                if _is_fresh_tombstone(previous, forgotten_at):
-                    kept.append(existing)
-            kept.append({"story_id": story_id, "forgotten_at": forgotten_at})
+            kept = [
+                existing for existing in forgotten
+                if existing.get("story_id") != story_id
+                and _is_fresh_tombstone(existing.get("forgotten_at"), forgotten_at)
+            ]
+            kept.append({
+                "story_id": story_id,
+                "forgotten_at": forgotten_at,
+                "forget_marker": forget_marker,
+            })
             _write_theater_retraction_state_unlocked(file_path, entries, kept)
 
-    async def record_theater_story_forget(self, lanlan_name, story_id) -> float:
+    async def record_theater_story_forget(self, lanlan_name, story_id) -> str:
         """Durably drop every later-arriving write of this story issued before now.
 
         Story forget removes the story's capsules, but an archive request the
         theater timed out on may still be in flight and land afterwards. The
         tombstone is keyed by story rather than by archive attempt, so it also
-        covers writes whose receipts the forget has already deleted.
+        covers writes whose receipts the forget has already deleted. Returns the
+        fresh forget marker: only writes that carry it are admitted for this
+        story from now on, and the theater attaches it only to archive requests
+        it issues after this forget completed.
         """
 
         normalized_story_id = str(story_id or "").strip()
@@ -1376,16 +1398,17 @@ class CompressedRecentHistoryManager:
             operation="save",
             target=f"memory/{lanlan_name}/{THEATER_RETRACTIONS_FILENAME}",
         )
-        forgotten_at = time.time()
+        forget_marker = secrets.token_hex(16)
         await _await_recent_mutation_to_completion(
             self._record_theater_story_forget_locked,
             file_path,
             lanlan_name,
             normalized_story_id,
-            forgotten_at,
+            time.time(),
+            forget_marker,
             admission_generation,
         )
-        return forgotten_at
+        return forget_marker
 
     async def record_theater_retraction(
         self,

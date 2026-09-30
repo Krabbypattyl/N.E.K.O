@@ -47,6 +47,10 @@ _QUARANTINED_SESSION_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*\.json")
 # the next archive/skip/forget of that character retracts them.
 RETRACT_INTENT_DIRNAME = "retract_intents"
 RETRACT_INTENT_SCHEMA = "neko.theater.retract-intent.v1"
+# The memory service's latest story-forget marker per (story, character); the
+# theater attaches it to archive requests issued after that forget completed.
+FORGET_MARKER_DIRNAME = "forget_markers"
+FORGET_MARKER_SCHEMA = "neko.theater.forget-marker.v1"
 
 
 def _retry_windows_permission_error(operation):
@@ -93,6 +97,7 @@ class NumericV2ArchiveStore:
             Path(theater_root) / "numeric_v2" / SESSION_QUARANTINE_DIRNAME
         )
         self.retract_intent_root = Path(theater_root) / "numeric_v2" / RETRACT_INTENT_DIRNAME
+        self.forget_marker_root = Path(theater_root) / "numeric_v2" / FORGET_MARKER_DIRNAME
 
     @staticmethod
     def _session_key(session_id: str) -> str:
@@ -200,6 +205,53 @@ class NumericV2ArchiveStore:
 
     def complete_forget(self, story_id: str, character_id: str) -> None:
         self._forget_path(story_id, character_id).unlink(missing_ok=True)
+
+    def _forget_marker_path(self, story_id: str, character_id: str) -> Path:
+        key = json.dumps([story_id, character_id], ensure_ascii=False)
+        return self.forget_marker_root / f"{self._session_key(key)}.json"
+
+    def forget_marker(self, story_id: str, character_id: str) -> str:
+        """Return the memory service's marker from this story's latest completed forget.
+
+        Empty when the story was never forgotten for this character. Archive
+        requests attach it so the memory service can tell them apart from late
+        writes issued before the forget, which cannot know the marker.
+        """
+        payload = self._read(self._forget_marker_path(story_id, character_id))
+        if payload is None:
+            return ""
+        marker = payload.get("forget_marker")
+        if (
+            payload.get("schema") != FORGET_MARKER_SCHEMA
+            or payload.get("story_id") != story_id
+            or payload.get("character_id") != character_id
+            or not isinstance(marker, str)
+            or not marker
+        ):
+            raise NumericV2ArchiveError("numeric_forget_marker_invalid")
+        return marker
+
+    def record_forget_marker(self, story_id: str, character_id: str, marker: str) -> None:
+        """Durably adopt the marker a story forget just returned (before completing it)."""
+        if not isinstance(marker, str) or not marker.strip():
+            raise NumericV2ArchiveError("numeric_forget_marker_invalid")
+        self._write(self._forget_marker_path(story_id, character_id), {
+            "schema": FORGET_MARKER_SCHEMA,
+            "story_id": story_id,
+            "character_id": character_id,
+            "forget_marker": marker,
+        })
+
+    def forget_marker_paths_for_character(self, character_id: str) -> list[Path]:
+        """Markers die with their character, whose memory (and tombstones) go too."""
+        if not character_id or not self.forget_marker_root.is_dir():
+            return []
+        paths = []
+        for path in sorted(self.forget_marker_root.glob("*.json")):
+            payload = self._read(path)
+            if payload is not None and payload.get("character_id") == character_id:
+                paths.append(path)
+        return paths
 
     def _receipt_path(self, receipt_id: str) -> Path:
         # 回执 ID 只能采用服务端生成的固定格式，禁止路径分隔符和父目录片段逃逸回执根目录。

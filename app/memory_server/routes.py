@@ -90,9 +90,10 @@ class HistoryRequest(BaseModel):
     # Theater archive attempt number; lets a retraction fence late writes of
     # attempts issued before the player declined the archive.
     theater_archive_attempt: int | None = Field(default=None, ge=0)
-    # Wall-clock time the theater issued this archive request; a story forget
-    # drops every write of that story issued at or before the forget.
-    theater_archive_issued_at: float | None = Field(default=None, ge=0)
+    # Opaque marker returned by the latest story forget. Once a story is
+    # forgotten, only writes carrying its current marker (issued after the
+    # forget completed) are stored; late writes issued before it are dropped.
+    theater_forget_marker: str | None = Field(default=None, max_length=128)
 
 
 class PromptLocalePreferenceRequest(BaseModel):
@@ -1109,7 +1110,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                                 lanlan_name,
                                 archive_request_id=idempotency_key,
                                 archive_attempt=request.theater_archive_attempt,
-                                archive_issued_at=request.theater_archive_issued_at,
+                                forget_marker=request.theater_forget_marker,
                             )
                         except TheaterEpisodeRetracted:
                             # The player declined this archive (or forgot the story)
@@ -1226,7 +1227,10 @@ async def forget_theater_memory(
             # this forget. Record the story tombstone first, under the settle lock
             # /cache checks it under, so such a late write is dropped even when
             # the rest of this forget fails and is retried.
-            await runtime.recent_history_manager.record_theater_story_forget(
+            # Every forget issues a fresh marker; the theater attaches it only to
+            # archive requests issued after it recorded this forget, so no write
+            # sent before the forget can carry it (no clock is compared).
+            forget_marker = await runtime.recent_history_manager.record_theater_story_forget(
                 lanlan_name,
                 story_id,
             )
@@ -1272,6 +1276,7 @@ async def forget_theater_memory(
             "ok": True,
             "removed_recent": removed_recent,
             "removed_time_index": int(reconcile_result.get("removed") or 0),
+            "forget_marker": forget_marker,
         }
     except Exception as exc:
         logger.error(

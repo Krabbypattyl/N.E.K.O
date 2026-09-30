@@ -8,7 +8,6 @@ import functools
 import json
 import logging
 from pathlib import Path
-import time
 from typing import Any, Mapping
 from urllib.parse import quote
 from weakref import WeakValueDictionary
@@ -1675,6 +1674,15 @@ async def archive_numeric_session(request: Request):
                     from config import MEMORY_SERVER_PORT
                     from utils.internal_http_client import get_internal_http_client
 
+                    # Read under this story's memory lock, which forget holds until
+                    # it has persisted the marker: only requests issued after a
+                    # completed forget carry its marker, so the memory service can
+                    # drop earlier writes of the story that land late.
+                    forget_marker = await asyncio.to_thread(
+                        store.forget_marker,
+                        receipt["story_id"],
+                        str(receipt.get("character_id") or ""),
+                    )
                     await _assert_numeric_writable(config_manager, "archives")
                     archive_attempt = _receipt_archive_attempt(receipt) + 1
                     receipt = await store.aupdate(
@@ -1714,10 +1722,9 @@ async def archive_numeric_session(request: Request):
                         # A skip retracts every attempt up to the recorded number; an
                         # attempt that times out and lands later is then dropped.
                         "theater_archive_attempt": archive_attempt,
-                        # Stamped while this story's memory lock is held, which a
-                        # story forget also takes: a forget completed later drops
-                        # this write even when it lands after the forget.
-                        "theater_archive_issued_at": time.time(),
+                        # A forget completed later issues a new marker, so this
+                        # write is dropped even when it lands after that forget.
+                        "theater_forget_marker": forget_marker or None,
                     },
                     timeout=8.0,
                 )
@@ -2163,7 +2170,13 @@ async def forget_numeric_story_memory(request: Request):
                 timeout=8.0,
             )
             data = response.json() if response.content else {}
-            if not response.is_success or data.get("ok") is not True:
+            forget_marker = data.get("forget_marker")
+            if (
+                not response.is_success
+                or data.get("ok") is not True
+                or not isinstance(forget_marker, str)
+                or not forget_marker.strip()
+            ):
                 return _error("numeric_theater_memory_forget_failed", 502)
             async with character_config_mutation_lock, numeric_v2_story_session_guard(
                 _numeric_root(config_manager),
@@ -2176,6 +2189,16 @@ async def forget_numeric_story_memory(request: Request):
                 ) != pending:
                     return _error("catgirl_changed_requires_refresh", 409)
                 await _assert_numeric_writable(config_manager, "memory")
+                # From now on the memory service stores this story's archives only
+                # when they carry this forget's marker. Persist it before the intent
+                # is completed (archiving stays blocked until then); if this process
+                # dies first, the retried forget issues and adopts a fresh marker.
+                await archive_store.mutate(
+                    archive_store.record_forget_marker,
+                    story_id,
+                    binding["character_id"],
+                    forget_marker,
+                )
                 if stored is not None and runtime is not None:
                     # The session may have ended while the lock was released.
                     stored = await runtime.restore_session_for_lifecycle(stored.session.session_id)
