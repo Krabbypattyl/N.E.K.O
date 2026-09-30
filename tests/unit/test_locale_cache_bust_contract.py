@@ -65,6 +65,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-30-theater-local-asr-main-merge",
+        "2026-09-30-voice-identity-off-mode-main-merge",
         "2026-09-29-theater-voice-unavailable-main-merge",
         "2026-09-30-local-asr-queue-timeout",
         "2026-09-28-theater-voiceprint-plugin-config-main-merge",
@@ -226,6 +228,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-28-screen-source-choose-again",
         "2026-09-29-screen-source-choose-again-main-merge",
         "2026-09-29-screen-source-generic-labels",
+        "2026-09-29-voice-identity-feature-disabled",
+        "2026-09-30-local-asr-queue-timeout",
     }
 )
 
@@ -238,7 +242,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "09a0494d0ae8c4183b91287cb99877d246413fdaaa21b4f0857fe46293d0e841"
+LOCALE_KEY_SIGNATURE = "8cca810705ac6fdde76373e47736549eef5366e90e035881c249f37127bb4e0a"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
