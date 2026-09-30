@@ -963,8 +963,12 @@ async def test_rejected_offer_does_not_put_old_acceptance_button_first(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_dispute_recheck_keeps_author_fallback_invitation_protected(tmp_path, monkeypatch):
-    """The dispute verdict replaces the fast one, but must pass the same deterministic corrections."""
+@pytest.mark.parametrize('dispute_verdict', ['invalid_invitation', 'body_only'])
+async def test_author_fallback_invitation_follows_review_on_fast_and_dispute_paths(tmp_path, monkeypatch, dispute_verdict):
+    """An explicit invalid verdict withdraws even the author's fallback invitation; body-only errors keep the accept.
+
+    The dispute verdict replaces the fast one through the same handling, so both paths agree.
+    """
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
     from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
@@ -989,12 +993,21 @@ async def test_dispute_recheck_keeps_author_fallback_invitation_protected(tmp_pa
 
     async def review(self, **kwargs):
         reviews.append(kwargs)
-        if kwargs['route_changed']:
-            # Both the fast and the independent dispute verdict deny this accept and call the invitation wrong.
+        if not kwargs['route_changed']:
+            return ev.NumericV2TransitionOfferReview(False, False, (), ())
+        transition_calls = sum(bool(call['route_changed']) for call in reviews)
+        if transition_calls == 1 or dispute_verdict == 'invalid_invitation':
+            # The fast verdict (and, here, the independent dispute) calls the invitation itself wrong.
             return ev.NumericV2TransitionOfferReview(
-                False, False, ('player_action',), (), '玩家只是追问，并未接受。',
+                False, False, ('player_action',), (), '邀请与作者实际出口不符。',
                 acceptance_authorized=False, pending_invitation_invalid=True)
-        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+        if transition_calls == 2:
+            # The dispute keeps the valid acceptance and only rejects the target-segment body.
+            return ev.NumericV2TransitionOfferReview(
+                False, False, ('scene_boundary',), (), '目标段仍在旧场景。',
+                acceptance_authorized=True, pending_invitation_invalid=False)
+        return ev.NumericV2TransitionOfferReview(
+            False, False, (), (), acceptance_authorized=True, pending_invitation_invalid=False)
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
@@ -1002,13 +1015,23 @@ async def test_dispute_recheck_keeps_author_fallback_invitation_protected(tmp_pa
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     result = await workflow.execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
-        turn=TurnRequestV2('accept_turn', current.session.revision, '远吗？'), ensure_current_binding=lambda _: _binding())
-    assert [bool(call.get('dispute_review')) for call in reviews if call['route_changed']] == [False, True]
-    assert result.diagnostics['transition_cancellations'] == 1
-    assert result.diagnostics['author_fallback_invitation_protected'] == 2
-    # The author's verbatim invitation survives the cancelled accept and stays acceptable.
-    assert 'transition_offer_invalidated' not in result.stored.ledger_events[-1]
-    assert result.stored.session.transition_offered is True
+        turn=TurnRequestV2('accept_turn', current.session.revision, '好，现在过去。'),
+        ensure_current_binding=lambda _: _binding())
+    transition_reviews = [bool(call.get('dispute_review')) for call in reviews if call['route_changed']]
+    if dispute_verdict == 'invalid_invitation':
+        assert transition_reviews == [False, True]
+        assert result.diagnostics['transition_cancellations'] == 1
+        # No author exemption: the explicitly invalid invitation is withdrawn with the accept.
+        assert result.stored.ledger_events[-1]['transition_offer_invalidated'] is True
+        assert result.stored.session.transition_offered is False
+        assert result.stored.session.current_node_id == 'start'
+    else:
+        # The dispute verdict replaces the fast one; the body-only error keeps the accept and rewrites.
+        assert transition_reviews == [False, True, False]
+        assert result.diagnostics['transition_cancellations'] == 0
+        assert result.diagnostics['semantic_rewrite_attempts'] == 1
+        assert 'transition_offer_invalidated' not in result.stored.ledger_events[-1]
+        assert result.stored.session.current_node_id == 'ending_leave'
 
 
 @pytest.mark.asyncio

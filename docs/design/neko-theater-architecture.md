@@ -327,7 +327,7 @@ Runtime 已选路线时，Actor 同一回合完成三段并按固定顺序存储
 - 完成合同满足后的下一回合：当前无待确认邀请且玩家未拒绝时，Actor 收到收束要求（先回应当前输入，再公开下一阶段并等待选择）。事实在 Actor 输出之后才落账，不能反向改变同一回合已生成的正文。
 - 作者出口兜底：回合开始前完成合同已满足、仍在原幕、无既有邀请、玩家未拒绝、正文无违规且复核确认未公开邀请时，Workflow 逐字追加 `fallback_offer` 并锁存邀请；不执行路线、不替玩家接受。
 - 接受按钮：复核确认正文存在有效新邀请后，把当前选中路线的 `accept_input` 放到推荐首槽；待确认邀请期间，普通追问回合把原始接受按钮补回首位（同节点、旧邀请有效、本轮无新邀请时）。
-- 邀请状态：Runtime 统一锁存与清除；只有 `offer_present && valid` 才锁存新邀请。经复核的新邀请正文写入 `transition_offer_presented=true`（performance 与 Ledger 同步，恢复与分叉校验）。错误旧邀请可由 `pending_invitation_invalid` 撤下，并记录 `transition_offer_invalidated=true` 作为检索边界。
+- 邀请状态：Runtime 统一锁存与清除；只有 `offer_present && valid` 才锁存新邀请。经复核的新邀请正文写入 `transition_offer_presented=true`（performance 与 Ledger 同步，恢复与分叉校验）。错误旧邀请可由 `pending_invitation_invalid` 撤下，并记录 `transition_offer_invalidated=true` 作为检索边界；作者写定的 `fallback_offer` 同样不豁免。玩家逐字点击接受按钮只证明接受了刚展示的邀请，不证明邀请有效，也不豁免候选正文：只有目标段正文出错时保留接受并改写，改写后仍错则回滚；只有复核（快检或争议复查同样处理）明确判定邀请本身无效时才撤回接受并撤下邀请。
 - 投影：每条演出记录与 Ledger 带 `fact_projection`（`evidence_only`，玩家输入、可见文本、数值变化与节点迁移）、`timeline_projection`（revision、`scene_entered / scene_left / scene_turn`、访问 ID `<node_id>:r<进入 revision>`，不推断自然日期）和 `player_action_projection`（玩家已确认动作与 `future_references` 分开；疑问、想要、准备、条件句不进入完成动作）。公开历史过滤内部投影字段。
 
 ## 5. 模型调用、复核与确定性检查

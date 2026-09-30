@@ -27,7 +27,6 @@ from .numeric_v2_context import (
     current_scene_records,
     missing_contract_names,
     pending_transition_record,
-    pending_transition_performance,
     premature_target_markers,
     premature_target_scene_facts,
     scene_opening_text,
@@ -1472,36 +1471,22 @@ async def _execute_numeric_v2_turn(
                 outcome.ledger_event.get("player_action_projection")
             )
 
-            def protect_author_fallback(
+            def apply_confirmed_acceptance(
                 result: NumericV2TransitionOfferReview,
             ) -> NumericV2TransitionOfferReview:
-                """Keep a verbatim author fallback invitation from being withdrawn by one rejected accept."""
+                """Derive acceptance for a verbatim authored click from the invitation verdict.
 
-                if (
-                    changed
-                    and outcome.ledger_event.get("transition_intent") == "accept"
-                    and result.pending_invitation_invalid is True
-                ):
-                    transition_contract = outcome.transition_contract or {}
-                    author_fallback = (
-                        str(transition_contract.get("fallback_offer") or "").strip()
-                        if isinstance(transition_contract, Mapping)
-                        else ""
-                    )
-                    pending_text = pending_transition_performance(
-                        current.session,
-                        ledger_events=current.ledger_events,
-                        include_withdrawn=True,
-                    )
-                    if author_fallback and author_fallback in pending_text:
-                        # 作者逐字兜底与当前实际路线一致时，模型只能否定本轮接受，不能撤下邀请本身。
-                        result = replace(result, pending_invitation_invalid=False)
-                        diagnostics["author_fallback_invitation_protected"] += 1
-                        trace_event(
-                            "review.author_fallback_invitation_protected",
-                            route_id=(outcome.route or {}).get("id"),
-                        )
-                return result
+                Fast and dispute verdicts both pass through here. The click only proves the
+                player accepted the invitation just shown: it neither proves that invitation
+                valid (an author fallback offer included) nor exempts the candidate body. An
+                explicit ``pending_invitation_invalid=True`` therefore withdraws the acceptance,
+                while body-only errors keep it and go to the rewrite path.
+                """
+
+                if not confirmed_acceptance:
+                    return result
+                # 玩家严格点击当前邀请只确认接受；邀请本身是否有效、正文是否落在正确场景仍独立复核。
+                return replace(result, acceptance_authorized=result.pending_invitation_invalid is False)
 
             def correct_ordinary_review(
                 result: NumericV2TransitionOfferReview,
@@ -1602,10 +1587,7 @@ async def _execute_numeric_v2_turn(
                        if result.fact_candidates else {}),
                 })
 
-            review = protect_author_fallback(review)
-            if confirmed_acceptance:
-                # 玩家严格点击当前邀请只确认接受；正文是否落在正确场景仍独立复核。
-                review = replace(review, acceptance_authorized=review.pending_invitation_invalid is False)
+            review = apply_confirmed_acceptance(review)
             record_review(review, "fast")
             review = correct_ordinary_review(review)
             failure_reason = str(review.failure_reason or "")
@@ -1745,9 +1727,7 @@ async def _execute_numeric_v2_turn(
                             "review_mode": "dispute", "degraded": True, "failure_reason": str(exc),
                         })
                     else:
-                        reviewed = protect_author_fallback(reviewed)
-                        if confirmed_acceptance:
-                            reviewed = replace(reviewed, acceptance_authorized=reviewed.pending_invitation_invalid is False)
+                        reviewed = apply_confirmed_acceptance(reviewed)
                         record_review(reviewed, "dispute")
                         review = correct_ordinary_review(reviewed)
             if not changed:

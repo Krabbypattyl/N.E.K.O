@@ -91,9 +91,12 @@ async def test_authored_acceptance_requires_current_visible_pair(tmp_path, chang
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["阅信桌", "光学扫描室"])
-@pytest.mark.parametrize("mode", ["normal", "repair", "unrepaired"])
+@pytest.mark.parametrize("mode", ["normal", "repair", "unrepaired", "bad_invitation"])
 async def test_confirmed_acceptance_keeps_route_during_body_repair(tmp_path, monkeypatch, target, mode):
     runtime, current, accept = await _invited(tmp_path, target)
+    if mode == "bad_invitation":
+        runtime.engine.nodes["start"]["route_gates"][1]["transition_contract"]["bridge_scene_narration"] = "两人来到另一处未受邀请的地点。"
+        runtime.engine.nodes["ending_leave"]["story_beat"]["opening_scene"] = "两人在另一处未受邀请的地点。"
     calls = {"actor": 0, "review": 0, "evaluator": 0}
 
     async def options():
@@ -111,7 +114,9 @@ async def test_confirmed_acceptance_keeps_route_during_body_repair(tmp_path, mon
             assert "仍在旧接待台" not in kwargs["retry_hint"]
             assert "目标段仍在旧场景" in kwargs["retry_hint"]
         if kwargs["outcome"].session.current_node_id == "start":
-            pytest.fail("逐字确认的接受不得被复核撤回")
+            assert mode == "bad_invitation"
+            return {"performance": "刚才的邀请不准确，先留在这里。", "suggested_inputs": ["（等待说明）"],
+                    "transition_offered": False}
         assert kwargs["outcome"].session.current_node_id == "ending_leave"
         wrong = mode == "unrepaired" or (mode == "repair" and calls["actor"] == 1)
         return runtime.engine.finalize_transition_performance(kwargs["outcome"], {
@@ -124,10 +129,12 @@ async def test_confirmed_acceptance_keeps_route_during_body_repair(tmp_path, mon
     async def review(self, **kwargs):
         calls["review"] += 1
         if not kwargs["route_changed"]:
-            pytest.fail("逐字确认的接受不得被复核撤回")
+            assert mode == "bad_invitation"
+            return ev.NumericV2TransitionOfferReview(False, False, (), ())
         assert kwargs.get("confirmed_acceptance") is True
         assert kwargs["route_changed"]
-        return _review(delivered=mode == "normal" or (mode == "repair" and calls["actor"] == 2))
+        return _review(delivered=mode in {"normal", "bad_invitation"} or (mode == "repair" and calls["actor"] == 2),
+                       rejected=mode == "bad_invitation")
 
     monkeypatch.setattr(wf, "aload_theater_module_options", options)
     monkeypatch.setattr(ev.NumericV2MetricEvaluator, "evaluate", evaluate)
@@ -142,9 +149,12 @@ async def test_confirmed_acceptance_keeps_route_during_body_repair(tmp_path, mon
         assert await runtime.restore_session("authorized") == current
     else:
         result = await wf.execute_numeric_v2_turn(**args)
-        assert result.diagnostics["transition_cancellations"] == 0
+        assert result.diagnostics["transition_cancellations"] == int(mode == "bad_invitation")
         assert not result.diagnostics["semantic_review_fallback"]
-        assert result.stored.session.current_node_id == "ending_leave"
+        assert result.stored.session.current_node_id == ("start" if mode == "bad_invitation" else "ending_leave")
+        if mode == "bad_invitation":
+            assert result.stored.ledger_events[-1]["transition_offer_invalidated"] is True
+            assert result.stored.session.transition_offered is False
         assert result.stored.session.metrics["trust"] == 22
         assert len(result.stored.ledger_events) == 2
         assert "仍在旧接待台" not in json.dumps(result.stored.session.to_dict(), ensure_ascii=False)
