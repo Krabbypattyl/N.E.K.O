@@ -285,7 +285,7 @@ def _surface_player_name(binding: Mapping[str, str], *, known: bool) -> str:
 def _participants(binding: Mapping[str, str], *, known: bool) -> dict[str, str]:
     """Speaker labels for the page's history; never a hard-coded Chinese placeholder.
 
-    The cast projection keeps substituting "你" into the (Chinese) story prose while
+    The cast projection keeps substituting the second-person pronoun into the (Chinese) story prose while
     the address is undisclosed. Labels are UI chrome instead: an unknown or unset
     name is sent empty so the page renders its own localized fallback.
     """

@@ -424,7 +424,7 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
 
 
 def test_numeric_v2_participant_labels_never_use_chinese_placeholders():
-    """Participant labels are the real names or empty, never "你" / "当前猫娘"."""
+    """Participant labels are the real names or empty, never the Chinese placeholders."""
 
     participants = numeric_theater_router._participants
     assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=True) == {
