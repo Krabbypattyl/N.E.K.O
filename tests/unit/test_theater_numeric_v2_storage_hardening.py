@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
 import shutil
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,7 @@ import pytest
 from services.theater import numeric_v2_archive, numeric_v2_maintenance, numeric_v2_store
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
+from services.theater.numeric_v2_store import update_numeric_v2_character_bindings
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _branch_story, _opening
 
 
@@ -370,4 +373,93 @@ async def test_character_delete_snapshots_and_erases_quarantined_sessions(tmp_pa
     assert not any(path.exists() for path in erased)
     assert files["other_character"].is_file()
     assert files["same_name_other"].is_file()
+
+
+_OFF_LOOP_IO = (
+    "list_numeric_v2_sessions",
+    "_read_story_session_slots",
+    "_atomic_write_json_payload",
+    "_write_story_session_slots",
+)
+
+
+@pytest.mark.asyncio
+async def test_character_binding_update_runs_file_io_off_event_loop(tmp_path, monkeypatch):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_rename_off_loop",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    loop_thread = threading.get_ident()
+    observed: dict[str, list[int]] = {}
+
+    def record(name):
+        original = getattr(numeric_v2_store, name)
+
+        def wrapper(*args, **kwargs):
+            observed.setdefault(name, []).append(threading.get_ident())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(numeric_v2_store, name, wrapper)
+
+    for name in _OFF_LOOP_IO:
+        record(name)
+    renamed = {**_binding(), "catgirl_name": "Lan Renamed"}
+
+    assert await update_numeric_v2_character_bindings(
+        tmp_path,
+        character_id=_binding()["character_id"],
+        legacy_catgirl_name="Lan",
+        catgirl_binding=renamed,
+    ) == 1
+
+    assert set(observed) == set(_OFF_LOOP_IO)
+    assert all(ident != loop_thread for idents in observed.values() for ident in idents)
+    restored = await runtime.restore_story_session(renamed)
+    assert restored is not None
+    assert restored.session.session_id == stored.session.session_id
+    assert restored.session.catgirl_binding["catgirl_name"] == "Lan Renamed"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_character_binding_update_keeps_session_lock_until_write_ends(
+    tmp_path, monkeypatch,
+):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="runtime_rename_cancel",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    writing = threading.Event()
+    release = threading.Event()
+    original_write = numeric_v2_store._atomic_write_json_payload
+
+    def blocking_write(path, payload):
+        writing.set()
+        assert release.wait(timeout=5)
+        return original_write(path, payload)
+
+    monkeypatch.setattr(numeric_v2_store, "_atomic_write_json_payload", blocking_write)
+    renamed = {**_binding(), "catgirl_name": "Lan Renamed"}
+    update = asyncio.create_task(update_numeric_v2_character_bindings(
+        tmp_path,
+        character_id=_binding()["character_id"],
+        legacy_catgirl_name="Lan",
+        catgirl_binding=renamed,
+    ))
+    assert await asyncio.to_thread(writing.wait, 5)
+    update.cancel()
+    load = asyncio.create_task(runtime.store.load(stored.session.session_id))
+    await asyncio.sleep(0.05)
+    # The session path lock stays with the cancelled rename until its worker ends.
+    assert not update.done()
+    assert not load.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await update
+    loaded = await load
+    assert loaded is not None
+    assert loaded.session.catgirl_binding["catgirl_name"] == "Lan Renamed"
 

@@ -524,6 +524,47 @@ def _delete_numeric_v2_sessions_unlocked(
     return deleted
 
 
+def _rebind_session_file(
+    path: Path,
+    stories: dict[str, dict[str, str]],
+    normalized_character_id: str,
+    legacy_catgirl_name: str,
+    catgirl_binding: Mapping[str, Any],
+) -> None:
+    """Rewrite one session's identity projection and migrate its story slot in ``stories``."""
+    try:
+        payload = json.loads(
+            _retry_windows_permission_error(lambda: path.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise NumericV2StoreError("numeric_session_read_failed") from exc
+    raw_session = payload.get("session") if isinstance(payload, dict) else None
+    if not isinstance(raw_session, dict):
+        raise NumericV2StoreError("numeric_session_payload_invalid")
+    existing_binding = raw_session.get("catgirl_binding")
+    refreshed_binding = {
+        str(key): str(value)
+        for key, value in catgirl_binding.items()
+    }
+    if isinstance(existing_binding, Mapping):
+        # 历史 Ledger 按该 Session 当时的称呼事实重放；角色改名只能刷新猫娘展示字段。
+        refreshed_binding["player_address"] = str(
+            existing_binding.get("player_address") or ""
+        )
+    raw_session["catgirl_binding"] = refreshed_binding
+    _atomic_write_json_payload(path, payload)
+    story_id = str(raw_session.get("story_package_id") or "").strip()
+    session_id = str(raw_session.get("session_id") or path.stem).strip()
+    if story_id and session_id:
+        slots = stories.get(story_id, {})
+        legacy_key = str(legacy_catgirl_name or "").strip()
+        # Rename only migrates an existing slot; snapshots stay unpublished.
+        # An established character-ID slot wins over a stale legacy slot.
+        if legacy_key != normalized_character_id and slots.get(legacy_key) == session_id:
+            slots.pop(legacy_key)
+            slots.setdefault(normalized_character_id, session_id)
+
+
 async def update_numeric_v2_character_bindings(
     theater_storage_root: Path,
     *,
@@ -538,14 +579,20 @@ async def update_numeric_v2_character_bindings(
         raise NumericV2StoreError("numeric_character_id_required")
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
+    # Lock order is unchanged (index, then one session path at a time) and the
+    # asyncio locks stay on the loop; every read, write and fsync runs on a
+    # worker. run_storage_mutation keeps a lock held until its worker finishes,
+    # even if the caller is cancelled, so the rename's snapshot rollback never
+    # races a half-written file.
     async with _lock(index_path):
-        candidates = list_numeric_v2_sessions(
+        candidates = await asyncio.to_thread(
+            list_numeric_v2_sessions,
             theater_storage_root,
             character_id=normalized_character_id,
             legacy_catgirl_name=legacy_catgirl_name,
         )
         try:
-            stories = _read_story_session_slots(index_path)
+            stories = await asyncio.to_thread(_read_story_session_slots, index_path)
         except NumericV2StoreError as exc:
             if candidates or not _is_story_session_index_content_error(exc):
                 raise
@@ -555,37 +602,17 @@ async def update_numeric_v2_character_bindings(
         for candidate in candidates:
             path = Path(candidate["path"])
             async with _lock(path):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                    raise NumericV2StoreError("numeric_session_read_failed") from exc
-                raw_session = payload.get("session") if isinstance(payload, dict) else None
-                if not isinstance(raw_session, dict):
-                    raise NumericV2StoreError("numeric_session_payload_invalid")
-                existing_binding = raw_session.get("catgirl_binding")
-                refreshed_binding = {
-                    str(key): str(value)
-                    for key, value in catgirl_binding.items()
-                }
-                if isinstance(existing_binding, Mapping):
-                    # 历史 Ledger 按该 Session 当时的称呼事实重放；角色改名只能刷新猫娘展示字段。
-                    refreshed_binding["player_address"] = str(
-                        existing_binding.get("player_address") or ""
-                    )
-                raw_session["catgirl_binding"] = refreshed_binding
-                _atomic_write_json_payload(path, payload)
-                story_id = str(raw_session.get("story_package_id") or "").strip()
-                session_id = str(raw_session.get("session_id") or path.stem).strip()
-                if story_id and session_id:
-                    slots = stories.get(story_id, {})
-                    legacy_key = str(legacy_catgirl_name or "").strip()
-                    # Rename only migrates an existing slot; snapshots stay unpublished.
-                    # An established character-ID slot wins over a stale legacy slot.
-                    if legacy_key != normalized_character_id and slots.get(legacy_key) == session_id:
-                        slots.pop(legacy_key)
-                        slots.setdefault(normalized_character_id, session_id)
+                await run_storage_mutation(
+                    nullcontext,
+                    _rebind_session_file,
+                    path,
+                    stories,
+                    normalized_character_id,
+                    legacy_catgirl_name,
+                    catgirl_binding,
+                )
                 updated += 1
-        _write_story_session_slots(index_path, stories)
+        await run_storage_mutation(nullcontext, _write_story_session_slots, index_path, stories)
         return updated
 
 
