@@ -751,6 +751,41 @@ def test_theater_upsert_keeps_other_stories_capsules_byte_identical():
 
 
 @pytest.mark.unit
+def test_theater_upsert_retry_keeps_slot_and_changed_capsule_moves_last():
+    """An unchanged retry keeps its index; a real update is the newest event."""
+    from memory.recent import _compute_review_capacity, _merge_theater_episode_summary
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    paused = _wire_theater_capsule(
+        "story_a", "session_a", "Paused mid-scene.",
+        episode_status="paused", ending_summary="",
+    )
+    history, _ = _merge_theater_episode_summary(
+        [HumanMessage(content="before")], paused,
+    )
+    history, _ = _merge_theater_episode_summary(
+        history, _wire_theater_capsule("story_b", "session_b", "Story B ended."),
+    )
+    history = history + [HumanMessage(content="after one"), HumanMessage(content="after two")]
+    before = messages_to_dict(history)
+    snapshot = list(history)
+
+    retried, _ = _merge_theater_episode_summary(history, paused)
+
+    assert messages_to_dict(retried) == before
+    capacity, cutoff = _compute_review_capacity(snapshot, retried)
+    assert (capacity, cutoff) == (len(snapshot), len(snapshot) - 1)
+
+    completed, stored = _merge_theater_episode_summary(
+        history, _wire_theater_capsule("story_a", "session_a", "Story A ended."),
+    )
+    assert completed[-1] is stored
+    assert [message.content for message in completed[:-1]] == [
+        message.content for message in history if message is not history[1]
+    ]
+
+
+@pytest.mark.unit
 def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, monkeypatch):
     """时间索引重建应删除旧剧场全文，同时保留普通对话。"""  # noqa: DOCSTRING_CJK
 

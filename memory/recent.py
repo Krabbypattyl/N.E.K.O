@@ -658,15 +658,16 @@ def _merge_theater_episode_summary(history: list, incoming):
     incoming_metadata = dict(message_metadata(incoming))
     incoming_key = theater_memory_episode_key(incoming)
     story_id = incoming_key[0]
-    previous = next(
+    previous_index = next(
         (
-            message
-            for message in merged
+            index
+            for index, message in enumerate(merged)
             if is_theater_episode_summary(message)
             and theater_memory_episode_key(message) == incoming_key
         ),
         None,
     )
+    previous = merged[previous_index] if previous_index is not None else None
     merged = [
         message
         for message in merged
@@ -728,7 +729,18 @@ def _merge_theater_episode_summary(history: list, incoming):
         "ending_titles_seen": ending_titles,
     })
     stored_incoming = _copy_message_metadata(incoming, incoming_metadata)
-    merged.append(stored_incoming)
+    if (
+        previous is not None
+        and messages_to_dict([stored_incoming]) == messages_to_dict([previous])
+    ):
+        # A retried archive that changes nothing keeps its slot, so the retry
+        # cannot reorder history under an in-flight compression snapshot or
+        # reset the story's time-index timestamp. A changed capsule (resumed,
+        # paused again, or completed) is the newest event and moves to the end,
+        # matching the fresh timestamp reconcile gives an updated story.
+        merged.insert(previous_index, stored_incoming)
+    else:
+        merged.append(stored_incoming)
 
     story_indexes = [
         index
