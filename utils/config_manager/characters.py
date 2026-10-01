@@ -34,7 +34,10 @@ from .persona_payload import (
 )
 from .reserved_schema import (
     ensure_catgirl_character_id,
+    get_reserved,
     migrate_catgirl_reserved,
+    normalize_character_id,
+    set_reserved,
     validate_reserved_schema,
 )
 
@@ -60,6 +63,21 @@ def _characters_file_signature(path):
     """
     stat_result = os.stat(path)
     return (stat_result.st_mtime_ns, stat_result.st_size)
+
+
+def _catgirl_character_ids(characters) -> dict[str, str]:
+    """Map each catgirl name to its valid ``character_id`` in a characters payload."""
+    catgirl_map = characters.get("猫娘") if isinstance(characters, dict) else None
+    if not isinstance(catgirl_map, dict):
+        return {}
+    character_ids: dict[str, str] = {}
+    for name, catgirl_data in catgirl_map.items():
+        character_id = normalize_character_id(
+            get_reserved(catgirl_data, "character_id", default="")
+        )
+        if character_id:
+            character_ids[name] = character_id
+    return character_ids
 
 
 class CharactersMixin:
@@ -242,6 +260,23 @@ class CharactersMixin:
                 migration_persistence_allowed = False
             catgirl_map = character_data.get("猫娘")
             if isinstance(catgirl_map, dict):
+                # A dirty cache may hold ids that were already handed out but never
+                # written back. A re-read of a rewritten file that still lacks them
+                # must keep those identities instead of minting new random ones; a
+                # card whose file entry carries its own id keeps that id, and no
+                # carried id may collide with an id the file already uses.
+                carried_character_ids: dict[str, str] = {}
+                if cache_dirty and cache_path == character_json_path:
+                    carried_character_ids = _catgirl_character_ids(cache)
+                    if carried_character_ids:
+                        disk_character_ids = set(
+                            _catgirl_character_ids(character_data).values()
+                        )
+                        carried_character_ids = {
+                            name: character_id
+                            for name, character_id in carried_character_ids.items()
+                            if character_id not in disk_character_ids
+                        }
                 all_schema_errors: list[str] = []
                 used_character_ids: set[str] = set()
                 for name, catgirl_data in catgirl_map.items():
@@ -249,6 +284,16 @@ class CharactersMixin:
                         logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
                         continue
                     if migrate_catgirl_reserved(catgirl_data):
+                        migrated = True
+                    carried_id = carried_character_ids.get(name)
+                    if (
+                        carried_id
+                        and carried_id not in used_character_ids
+                        and not normalize_character_id(
+                            get_reserved(catgirl_data, "character_id", default="")
+                        )
+                    ):
+                        set_reserved(catgirl_data, "character_id", carried_id)
                         migrated = True
                     _, character_id_changed = ensure_catgirl_character_id(
                         catgirl_data,

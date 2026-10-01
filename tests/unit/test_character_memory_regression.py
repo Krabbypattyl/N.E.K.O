@@ -407,6 +407,86 @@ def test_dirty_character_write_back_retries_at_once_when_the_file_changes(
 
 
 @pytest.mark.unit
+def test_dirty_character_ids_survive_an_external_rewrite_without_ids(
+    tmp_path, characters_clock,
+):
+    """A rewrite that still lacks the unpersisted ids reuses them instead of minting new ones."""
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    character_id = _legacy_id(cm.load_characters())
+    assert cm._characters_dirty
+
+    bee_id = "character_" + "2" * 32
+    # A cloud restore or manual edit rewrites the file: Legacy still has no id
+    # and Bee is a new card that brings its own.
+    path.write_text(
+        json.dumps(
+            {
+                "当前猫娘": "Legacy",
+                "猫娘": {
+                    "Legacy": {"昵称": "edited"},
+                    "Bee": {"_reserved": {"character_id": bee_id}},
+                },
+                "主人": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    reloaded = cm.load_characters()
+    assert _legacy_id(reloaded) == character_id
+    assert reloaded["猫娘"]["Legacy"]["昵称"] == "edited"
+    assert reloaded["猫娘"]["Bee"]["_reserved"]["character_id"] == bee_id
+    # The carried id is itself an unpersisted migration that must be retried.
+    assert cm._characters_dirty
+
+    # Once writable, the carried id is the one that persists.
+    set_root_mode(cm, ROOT_MODE_NORMAL)
+    characters_clock.advance()
+    assert _legacy_id(cm.load_characters()) == character_id
+    assert not cm._characters_dirty
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert _legacy_id(persisted) == character_id
+    assert persisted["猫娘"]["Bee"]["_reserved"]["character_id"] == bee_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("legacy_has_disk_id", [True, False])
+def test_disk_character_ids_win_over_unpersisted_cached_ids(
+    tmp_path, characters_clock, legacy_has_disk_id,
+):
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    cached_id = _legacy_id(cm.load_characters())
+
+    disk_id = "character_" + "3" * 32
+    if legacy_has_disk_id:
+        # The rewritten Legacy card carries its own id: the file wins.
+        catgirls = {"Legacy": {"_reserved": {"character_id": disk_id}}, "Fresh": {}}
+    else:
+        # Another card now claims the cached id: it keeps it, and the cached id
+        # is never duplicated onto Legacy.
+        catgirls = {"Legacy": {}, "Other": {"_reserved": {"character_id": cached_id}}}
+    path.write_text(
+        json.dumps(
+            {"当前猫娘": "Legacy", "猫娘": catgirls, "主人": {}}, ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    reloaded = cm.load_characters()["猫娘"]
+    ids = {name: card["_reserved"]["character_id"] for name, card in reloaded.items()}
+    assert len(set(ids.values())) == len(ids)
+    if legacy_has_disk_id:
+        assert ids["Legacy"] == disk_id
+        assert ids["Fresh"] != cached_id
+    else:
+        assert ids["Other"] == cached_id
+        assert ids["Legacy"] != cached_id
+
+
+@pytest.mark.unit
 def test_explicit_character_save_clears_the_write_back_backoff(tmp_path, characters_clock):
     from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
 
