@@ -5069,41 +5069,6 @@ def test_sql_history_serialization_preserves_theater_and_allowed_runtime_metadat
     }
 
 
-def test_sql_history_replaces_theater_story_event_atomically(tmp_path):
-    """同一稳定事件更新后只保留最新周目胶囊。"""  # noqa: DOCSTRING_CJK
-
-    from sqlalchemy import create_engine, text
-
-    database_path = tmp_path / "theater-memory.db"
-    connection_string = f"sqlite:///{database_path}"
-    history = SQLChatMessageHistory(
-        connection_string=connection_string,
-        session_id="theater-story-stable",
-        table_name="message_store",
-    )
-    history.add_messages([SystemMessage(content="旧周目摘要")])
-    history.replace_messages([
-        SystemMessage(content="新周目一"),
-        SystemMessage(content="新周目二"),
-    ])
-    with pytest.raises(ValueError, match="empty_conversation_replacement"):
-        history.replace_messages([])
-
-    with create_engine(connection_string).connect() as connection:
-        rows = connection.execute(
-            text(
-                "SELECT message FROM message_store "
-                "WHERE session_id = :session_id ORDER BY id"
-            ),
-            {"session_id": "theater-story-stable"},
-        ).fetchall()
-
-    assert len(rows) == 2
-    assert "旧周目摘要" not in "\n".join(row[0] for row in rows)
-    assert "新周目一" in rows[0][0]
-    assert "新周目二" in rows[1][0]
-
-
 def test_numeric_archive_retries_transient_windows_permission_error(monkeypatch):
     from services.theater import numeric_v2_archive
 

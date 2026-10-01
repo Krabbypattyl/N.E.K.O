@@ -912,50 +912,6 @@ class TimeIndexedMemory:
             self.store_conversation, event_id, messages, lanlan_name, timestamp
         )
 
-    def replace_conversation(self, event_id, messages, lanlan_name, timestamp=None):
-        """按稳定事件 ID 原子替换对话，供同一剧本更新有界周目摘要。"""  # noqa: DOCSTRING_CJK
-
-        self._assert_timeindex_writable(lanlan_name)
-        if not self._ensure_engine_exists(lanlan_name):
-            logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
-            return
-        if timestamp is None:
-            timestamp = datetime.now()
-
-        db_path = self.db_paths[lanlan_name]
-        uri_path = db_path.replace("\\", "/")
-        history = SQLChatMessageHistory(
-            connection_string=f"sqlite:///{uri_path}",
-            session_id=event_id,
-            table_name=self._validate_table_name(TIME_ORIGINAL_TABLE_NAME),
-        )
-        history.replace_messages(messages)
-        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-        with self.engines[lanlan_name].connect() as conn:
-            conn.execute(
-                text(
-                    f"UPDATE {original_table} SET timestamp = :timestamp "
-                    "WHERE session_id = :session_id"
-                ),
-                {"timestamp": timestamp, "session_id": event_id},
-            )
-            conn.commit()
-
-    async def areplace_conversation(
-        self,
-        event_id,
-        messages,
-        lanlan_name,
-        timestamp=None,
-    ):
-        await asyncio.to_thread(
-            self.replace_conversation,
-            event_id,
-            messages,
-            lanlan_name,
-            timestamp,
-        )
-
     @staticmethod
     def _is_serialized_theater_message(serialized_message: object) -> bool:
         """识别时间索引中的新旧剧场行；解析失败时宁可保留。"""  # noqa: DOCSTRING_CJK
