@@ -21,6 +21,7 @@ and the aggregated character data snapshot used by the runtime.
 import asyncio
 import json
 import os
+import time
 from copy import deepcopy
 
 from utils.file_utils import atomic_write_json
@@ -36,6 +37,14 @@ from .reserved_schema import (
     migrate_catgirl_reserved,
     validate_reserved_schema,
 )
+
+
+# A migration whose write-back failed (cloud-save maintenance fence, read-only
+# disk) leaves the cache dirty. Retrying the write on every read would cost a
+# reload lock, a deepcopy and a rejected save per request for the whole outage,
+# so retries back off from the base delay up to the cap.
+_CHARACTERS_DIRTY_RETRY_BASE_SECONDS = 30.0
+_CHARACTERS_DIRTY_RETRY_MAX_SECONDS = 300.0
 
 
 def _characters_file_signature(path):
@@ -55,6 +64,32 @@ def _characters_file_signature(path):
 
 class CharactersMixin:
     """characters.json access and aggregated character data."""
+
+    # Monotonic time before which a dirty cache is served without retrying its
+    # write-back, and the delay that produced it (0 when no failure is pending).
+    _characters_dirty_retry_at: float | None = None
+    _characters_dirty_retry_delay: float = 0.0
+
+    def _characters_dirty_retry_due_locked(self) -> bool:
+        """Whether a dirty cache may retry its write now (hold the cache lock)."""
+        retry_at = self._characters_dirty_retry_at
+        return retry_at is None or time.monotonic() >= retry_at
+
+    def _note_characters_persist_failure_locked(self) -> None:
+        """Back off the next dirty-cache write retry (hold the cache lock)."""
+        delay = self._characters_dirty_retry_delay
+        delay = (
+            _CHARACTERS_DIRTY_RETRY_BASE_SECONDS
+            if delay <= 0
+            else min(delay * 2, _CHARACTERS_DIRTY_RETRY_MAX_SECONDS)
+        )
+        self._characters_dirty_retry_delay = delay
+        self._characters_dirty_retry_at = time.monotonic() + delay
+
+    def _clear_characters_persist_backoff_locked(self) -> None:
+        """Forget any pending write-back backoff (hold the cache lock)."""
+        self._characters_dirty_retry_at = None
+        self._characters_dirty_retry_delay = 0.0
 
     # --- Character configuration helpers ---
 
@@ -85,15 +120,18 @@ class CharactersMixin:
             cache_path = self._characters_cache_path
             cache_mtime = self._characters_cache_mtime
             cache_dirty = self._characters_dirty
+            dirty_retry_due = self._characters_dirty_retry_due_locked()
         if cache is not None and cache_path == character_json_path:
             try:
                 current_mtime = _characters_file_signature(character_json_path)
             except OSError:
                 current_mtime = None
-            if (
-                not cache_dirty
-                and current_mtime is not None
-                and current_mtime == cache_mtime
+            if current_mtime == cache_mtime and (
+                (not cache_dirty and current_mtime is not None)
+                # A dirty cache whose write-back just failed is served as is
+                # until the backoff expires; a changed file or an authoritative
+                # caller still takes the slow path and retries right away.
+                or (cache_dirty and not require_authoritative and not dirty_retry_due)
             ):
                 return deepcopy(cache)
 
@@ -127,6 +165,12 @@ class CharactersMixin:
                 ):
                     if not cache_dirty:
                         return deepcopy(cache)
+                    if not require_authoritative:
+                        # Another thread may have just failed the same retry.
+                        with self._characters_cache_lock:
+                            dirty_retry_due = self._characters_dirty_retry_due_locked()
+                        if not dirty_retry_due:
+                            return deepcopy(cache)
                     # 上次迁移已生成稳定角色 ID，但被维护栅栏或暂时性 I/O 阻止写回；
                     # 每次恢复可写后都先重试持久化，再把该身份交给后续持久化业务使用。
                     dirty_cache = deepcopy(cache)
@@ -137,6 +181,8 @@ class CharactersMixin:
                         )
                         logger.info("已补写此前未持久化的角色保留字段迁移。")
                     except Exception as persist_err:
+                        with self._characters_cache_lock:
+                            self._note_characters_persist_failure_locked()
                         if require_authoritative:
                             raise
                         try:
@@ -227,6 +273,7 @@ class CharactersMixin:
                         self._characters_cache_mtime = loaded_mtime
                         self._characters_cache_path = character_json_path
                         self._characters_dirty = True
+                        self._note_characters_persist_failure_locked()
                     if require_authoritative:
                         raise
                     # 维护态（只读快照阶段）不能持久化，降级为 debug 日志
@@ -246,6 +293,7 @@ class CharactersMixin:
                     self._characters_cache_mtime = loaded_mtime
                     self._characters_cache_path = character_json_path
                     self._characters_dirty = False
+                    self._clear_characters_persist_backoff_locked()
             return character_data
 
     def save_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
@@ -272,6 +320,7 @@ class CharactersMixin:
                 self._characters_cache_mtime = new_mtime
                 self._characters_cache_path = character_json_path
                 self._characters_dirty = False
+                self._clear_characters_persist_backoff_locked()
 
     async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """Async wrapper: the sync version must not run directly on the event loop (atomic_write_json blocks)."""
@@ -326,6 +375,7 @@ class CharactersMixin:
                         if self._characters_cache is not None:
                             self._characters_cache['当前猫娘'] = her_name
                         self._characters_dirty = True
+                        self._note_characters_persist_failure_locked()
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         effective_character_data = {

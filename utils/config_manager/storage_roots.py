@@ -186,6 +186,9 @@ class StorageRootsMixin:
         self._characters_cache_mtime: tuple[int, int] | None = None
         self._characters_cache_path: str | None = None
         self._characters_dirty: bool = False
+        # Write-back backoff of a dirty cache; see CharactersMixin.load_characters.
+        self._characters_dirty_retry_at: float | None = None
+        self._characters_dirty_retry_delay: float = 0.0
         self._characters_cache_lock = threading.Lock()
         self._characters_reload_lock = threading.RLock()
 

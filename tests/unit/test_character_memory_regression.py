@@ -77,6 +77,7 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
         )
         for name, session_manager in session_managers.items()
     }
+from tests.fake_clock import patch_module_clock
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
     CLOUDSAVE_DISABLED_ENV,
@@ -110,6 +111,21 @@ def _make_config_manager(tmp_root: Path):
 def reload_module(module_name: str):
     module = importlib.import_module(module_name)
     return importlib.reload(module)
+
+
+@pytest.fixture
+def characters_clock(monkeypatch):
+    """Monotonic clock of the characters cache; ``advance`` skips write-back backoffs."""
+    import utils.config_manager.characters as characters_module
+
+    clock = SimpleNamespace(now=1000.0)
+
+    def advance(seconds=3600.0):  # default: past any write-back backoff
+        clock.now += seconds
+
+    clock.advance = advance
+    patch_module_clock(monkeypatch, characters_module, monotonic=lambda: clock.now)
+    return clock
 
 
 @pytest.mark.unit
@@ -152,7 +168,7 @@ def test_catgirl_character_ids_are_persisted_and_duplicate_ids_are_repaired(
 
 @pytest.mark.unit
 def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_blocked(
-    tmp_path,
+    tmp_path, characters_clock,
 ):
     cm = _make_config_manager(tmp_path)
     cm.save_characters(
@@ -174,6 +190,7 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
 
     assert first == second
     # 写入恢复后，缓存快路径必须先补写同一个 ID；清空缓存重读仍应保持一致。
+    characters_clock.advance()  # past the write-back backoff
     persisted = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
     with cm._characters_cache_lock:
         assert cm._characters_dirty is False
@@ -188,7 +205,9 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
 
 @pytest.mark.unit
 @pytest.mark.parametrize("failure", ["mtime", "stat_missing", "read", "missing"])
-def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_path, failure):
+def test_dirty_character_identity_survives_subsequent_source_read_failure(
+    tmp_path, failure, characters_clock,
+):
     cm = _make_config_manager(tmp_path)
     cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
     cm._characters_cache = None
@@ -209,6 +228,7 @@ def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_pa
             loaded = cm.load_characters()
     assert loaded == first
     assert cm._characters_dirty
+    characters_clock.advance()  # past the write-back backoff
     assert cm.load_characters() == first
     assert not cm._characters_dirty
 
@@ -264,7 +284,9 @@ def test_character_audit_rejects_unpersisted_ids_and_reuses_them_after_retry(tmp
 
 @pytest.mark.unit
 @pytest.mark.parametrize("authoritative", [False, True])
-def test_missing_character_file_retries_dirty_identity_after_write_recovers(tmp_path, authoritative):
+def test_missing_character_file_retries_dirty_identity_after_write_recovers(
+    tmp_path, authoritative, characters_clock,
+):
     from services.theater.numeric_v2_identity import numeric_v2_character_ids
 
     cm = _make_config_manager(tmp_path)
@@ -285,12 +307,119 @@ def test_missing_character_file_retries_dirty_identity_after_write_recovers(tmp_
         with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
             numeric_v2_character_ids(cm)
         save.assert_not_called()
+    characters_clock.advance()  # past the write-back backoff
     assert cm.load_characters(require_authoritative=authoritative) == first
     assert not cm._characters_dirty
     assert json.loads(path.read_text(encoding="utf-8")) == first
     assert numeric_v2_character_ids(cm) == {
         name: profile["_reserved"]["character_id"] for name, profile in first["猫娘"].items()
     }
+
+
+def _legacy_characters_under_write_fence(tmp_path: Path):
+    """A legacy card without character_id, loaded once a maintenance fence is up."""
+    from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, set_root_mode
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    cm.save_characters(
+        {"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+    set_root_mode(cm, ROOT_MODE_MAINTENANCE_READONLY)
+    return cm
+
+
+class _ForbiddenLock:
+    def __enter__(self):
+        raise AssertionError("characters slow path taken")
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _legacy_id(characters: dict) -> str:
+    return characters["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+
+@pytest.mark.unit
+def test_dirty_character_write_back_backs_off_during_a_write_fence(tmp_path, characters_clock):
+    """Reads during a maintenance window do not retry the rejected save every time."""
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    with patch.object(cm, "save_characters", wraps=cm.save_characters) as save:
+        character_id = _legacy_id(cm.load_characters())
+        assert save.call_count == 1 and cm._characters_dirty
+        # Served from the fast path: no reload lock, no re-read.
+        with patch.object(cm, "_characters_reload_lock", _ForbiddenLock()):
+            for _ in range(5):
+                assert _legacy_id(cm.load_characters()) == character_id
+        characters_clock.advance(29)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 1
+
+        # The window expired: one retry, rejected again, and a longer wait.
+        characters_clock.advance(2)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 2
+        characters_clock.advance(31)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 2
+        characters_clock.advance(30)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 3
+
+        # Authoritative callers still retry and still refuse an unpersisted id.
+        with pytest.raises(MaintenanceModeError):
+            cm.load_characters(require_authoritative=True)
+        assert save.call_count == 4
+
+        # The fence lifts: the next retry after the backoff persists the same id.
+        set_root_mode(cm, ROOT_MODE_NORMAL)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 4 and cm._characters_dirty
+        characters_clock.advance()
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 5
+    assert not cm._characters_dirty
+    assert _legacy_id(json.loads(path.read_text(encoding="utf-8"))) == character_id
+    assert cm._characters_dirty_retry_at is None
+
+
+@pytest.mark.unit
+def test_dirty_character_write_back_retries_at_once_when_the_file_changes(
+    tmp_path, characters_clock,
+):
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    with patch.object(cm, "save_characters", wraps=cm.save_characters) as save:
+        cm.load_characters()
+        assert save.call_count == 1
+        rewritten = json.loads(path.read_text(encoding="utf-8"))
+        rewritten["猫娘"]["Bee"] = {"_reserved": {"character_id": "character_" + "2" * 32}}
+        path.write_text(json.dumps(rewritten, ensure_ascii=False), encoding="utf-8")
+
+        assert set(cm.load_characters()["猫娘"]) == {"Legacy", "Bee"}
+        assert save.call_count == 2
+
+
+@pytest.mark.unit
+def test_explicit_character_save_clears_the_write_back_backoff(tmp_path, characters_clock):
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    characters = cm.load_characters()
+    assert cm._characters_dirty and cm._characters_dirty_retry_at is not None
+    set_root_mode(cm, ROOT_MODE_NORMAL)
+    cm.save_characters(characters)
+
+    assert not cm._characters_dirty
+    assert cm._characters_dirty_retry_at is None
+    assert cm._characters_dirty_retry_delay == 0.0
+    assert _legacy_id(cm.load_characters()) == _legacy_id(characters)
 
 
 def _seed_only_config_manager(tmp_path: Path):
