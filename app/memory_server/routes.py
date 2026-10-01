@@ -86,6 +86,7 @@ class HistoryRequest(BaseModel):
     input_history: str
     language: str | None = None
     render_language: str | None = None
+    # Theater archive request id; /cache accepts it only on a theater episode write.
     idempotency_key: str | None = None
     # Theater archive attempt number; lets a retraction fence late writes of
     # attempts issued before the player declined the archive.
@@ -111,15 +112,6 @@ class TheaterEpisodeRetractRequest(BaseModel):
     # Identify the archive attempts to fence against late /cache writes.
     archive_request_id: str = Field(default="", max_length=160)
     archive_attempt: int = Field(default=0, ge=0)
-
-
-def _cache_event_id(lanlan_name: str, idempotency_key: str) -> str:
-    """把外部幂等键投影成固定长度的 time-indexed 事件 ID。"""  # noqa: DOCSTRING_CJK
-
-    digest = hashlib.sha256(
-        f"{lanlan_name}\x1f{idempotency_key}".encode("utf-8")
-    ).hexdigest()
-    return f"cache-idempotent-{digest}"
 
 
 def _theater_story_event_id(lanlan_name: str, message) -> str:
@@ -1111,113 +1103,81 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             idempotency_key = str(request.idempotency_key or "").strip()
             if len(idempotency_key) > 160:
                 return {"status": "error", "message": "idempotency_key_too_long"}
-            stable_event_id = (
-                _cache_event_id(lanlan_name, idempotency_key)
-                if idempotency_key
-                else ""
-            )
-            if (
-                stable_event_id
-                and not theater_episode_batch
-                and await runtime.time_manager.ahas_conversation_event(
-                    stable_event_id,
-                    lanlan_name,
-                )
-            ):
-                return {"status": "already_cached", "count": len(input_history)}
+            if idempotency_key and not theater_episode_batch:
+                # Only a theater episode write is idempotent: it upserts one
+                # capsule per Session and the key fences retracted attempts.
+                # Ordinary batches have no dedupe, so refuse rather than
+                # silently appending a retry twice.
+                return {"status": "error", "message": "idempotency_key_requires_theater_episode"}
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
-            uid = stable_event_id or str(uuid4())
-            duplicate_request = False
+            uid = str(uuid4())
             retracted_request = False
             theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
-                # 锁内再次检查才能收住两个相同请求同时通过首轮检查的竞争窗口。
-                if (
-                    stable_event_id
-                    and not theater_episode_batch
-                    and await runtime.time_manager.ahas_conversation_event(
-                        stable_event_id,
-                        lanlan_name,
+                if theater_episode_batch:
+                    # 剧场完整正文由 Theater 冷档案承接；recent 只按 Session
+                    # 更新一个摘要胶囊，暂停后继续完成不会再次追加整段原文。
+                    previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                        lanlan_name
                     )
-                ):
-                    duplicate_request = True
-                else:
-                    if theater_episode_batch:
-                        # 剧场完整正文由 Theater 冷档案承接；recent 只按 Session
-                        # 更新一个摘要胶囊，暂停后继续完成不会再次追加整段原文。
-                        previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                    try:
+                        stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
+                            input_history[0],
+                            lanlan_name,
+                            archive_request_id=idempotency_key,
+                            archive_attempt=request.theater_archive_attempt,
+                            forget_marker=request.theater_forget_marker,
+                        )
+                    except TheaterEpisodeRetracted:
+                        # The player declined this archive (or forgot the story)
+                        # while the request was still in flight; the tombstone was
+                        # checked under the same settle lock the retraction holds.
+                        retracted_request = True
+                    else:
+                        input_history = [stored_episode]
+                        updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
                             lanlan_name
                         )
+                        theater_index_events = _theater_index_events(
+                            lanlan_name,
+                            updated_theater_history,
+                        )
+                else:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        compress=False,
+                    )
+                if retracted_request:
+                    pass
+                elif theater_episode_batch:
+                    # 以 recent 为唯一热记忆基线重建剧场时间索引：
+                    # 这会同时淘汰超限周目和升级前遗留的完整正文行。
+                    try:
+                        await runtime.time_manager.areconcile_theater_conversations(
+                            theater_index_events,
+                            lanlan_name,
+                        )
+                    except Exception:
                         try:
-                            stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
-                                input_history[0],
+                            await runtime.recent_history_manager.restore_theater_cache_snapshot(
                                 lanlan_name,
-                                archive_request_id=idempotency_key,
-                                archive_attempt=request.theater_archive_attempt,
-                                forget_marker=request.theater_forget_marker,
-                            )
-                        except TheaterEpisodeRetracted:
-                            # The player declined this archive (or forgot the story)
-                            # while the request was still in flight; the tombstone was
-                            # checked under the same settle lock the retraction holds.
-                            retracted_request = True
-                        else:
-                            input_history = [stored_episode]
-                            updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
-                                lanlan_name
-                            )
-                            theater_index_events = _theater_index_events(
-                                lanlan_name,
+                                previous_theater_history,
                                 updated_theater_history,
                             )
-                    elif stable_event_id:
-                        for message in input_history:
-                            message.metadata["cache_event_id"] = stable_event_id
-                        # The file lock owns deduplication and retry of pending
-                        # batches; only a durable write permits the index receipt.
-                        await runtime.recent_history_manager.update_history(
-                            input_history,
-                            lanlan_name,
-                            compress=False,
-                            cache_event_id=stable_event_id,
-                        )
-                    else:
-                        await runtime.recent_history_manager.update_history(
-                            input_history,
-                            lanlan_name,
-                            compress=False,
-                        )
-                    if retracted_request:
-                        pass
-                    elif theater_episode_batch:
-                        # 以 recent 为唯一热记忆基线重建剧场时间索引：
-                        # 这会同时淘汰超限周目和升级前遗留的完整正文行。
-                        try:
-                            await runtime.time_manager.areconcile_theater_conversations(
-                                theater_index_events,
-                                lanlan_name,
-                            )
                         except Exception:
-                            try:
-                                await runtime.recent_history_manager.restore_theater_cache_snapshot(
-                                    lanlan_name,
-                                    previous_theater_history,
-                                    updated_theater_history,
-                                )
-                            except Exception:
-                                logger.exception("[MemoryServer] 剧场时间索引失败后 recent 回滚失败")
-                            raise
-                    else:
-                        # 稳定 event_id 是本批公开记忆的提交标记；写成后重试直接短路。
-                        await runtime.time_manager.astore_conversation(
-                            uid,
-                            input_history,
-                            lanlan_name,
-                        )
-            if duplicate_request:
-                return {"status": "already_cached", "count": len(input_history)}
+                            logger.exception("[MemoryServer] 剧场时间索引失败后 recent 回滚失败")
+                        raise
+                else:
+                    # store_conversation 必须在 lock 内、与 update_history 串行：和
+                    # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
+                    await runtime.time_manager.astore_conversation(
+                        uid,
+                        input_history,
+                        lanlan_name,
+                    )
             if retracted_request:
                 logger.info(f"[MemoryServer] cache: {lanlan_name} dropped a retracted theater archive write")
                 return {"status": "retracted", "count": 0}

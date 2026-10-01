@@ -798,166 +798,36 @@ def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_cache_idempotency_key_skips_duplicate_memory_batch():
-    """稳定键重试只能写一次 recent、time-indexed 和后续信号。"""  # noqa: DOCSTRING_CJK
-
+async def test_cache_rejects_idempotency_key_on_ordinary_batch():
+    """Only theater episode writes dedupe by key; an ordinary batch must not
+    accept one and then append a retry twice."""
     from app import memory_server
 
     fake_time_manager = MagicMock()
-    fake_time_manager.ahas_conversation_event = AsyncMock(
-        side_effect=[False, False, True]
-    )
-    fake_time_manager.astore_conversation = AsyncMock(return_value=None)
+    fake_time_manager.astore_conversation = AsyncMock()
     fake_recent_history_manager = MagicMock()
-    fake_recent_history_manager.aget_recent_history = AsyncMock(return_value=[])
-    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
-    fake_spawn_outbox = AsyncMock(return_value=None)
+    fake_recent_history_manager.update_history = AsyncMock()
+    fake_spawn_outbox = AsyncMock()
     request = memory_server.HistoryRequest(
         input_history=_build_history_request_payload([
-            {"role": "human", "content": "把这次演绎记下来。"},
-            {"role": "ai", "content": "我会记住的。"},
+            {"role": "human", "content": "你好"},
         ]),
-        language="zh-CN",
-        idempotency_key="theater_archive_stable",
+        idempotency_key="ordinary-retry",
     )
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
-         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
-        first = await memory_server.cache_conversation(request, "测试角色")
-        replay = await memory_server.cache_conversation(request, "测试角色")
-
-    assert first["status"] == "cached"
-    assert replay["status"] == "already_cached"
-    fake_recent_history_manager.update_history.assert_awaited_once()
-    fake_time_manager.astore_conversation.assert_awaited_once()
-    assert fake_time_manager.astore_conversation.await_args.args[0].startswith(
-        "cache-idempotent-"
-    )
-    fake_spawn_outbox.assert_awaited_once()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-@pytest.mark.parametrize("read_failure_on_retry", [False, True])
-async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failure(tmp_path, monkeypatch, read_failure_on_retry):
-    """recent 已写成但 time-indexed 失败时，重试只能补索引。"""  # noqa: DOCSTRING_CJK
-
-    from app import memory_server
-    from tests.unit.test_recent_file_lock import _make_manager, _read_disk
-    from utils import recent_file
-
-    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *args, **kwargs: None)
-
-    payload = _build_history_request_payload([
-        {"role": "human", "content": "这是一次需要恢复的演绎。"},
-        {"role": "ai", "content": "我已经先记进最近历史了。"},
-    ])
-    fake_time_manager = MagicMock()
-    fake_time_manager.ahas_conversation_event = AsyncMock(return_value=False)
-    fake_time_manager.astore_conversation = AsyncMock(
-        side_effect=[RuntimeError("time-indexed unavailable"), None]
-    )
-    recent_manager, _, path = _make_manager(tmp_path, "测试角色")
-    fake_spawn_outbox = AsyncMock(return_value=None)
-    request = memory_server.HistoryRequest(
-        input_history=payload,
-        idempotency_key="theater_archive_partial_commit",
-    )
-
-    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
-         patch.object(memory_server.runtime, "recent_history_manager", recent_manager), \
-         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
-         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
-        first = await memory_server.cache_conversation(request, "测试角色")
-        if read_failure_on_retry:
-            with patch.object(recent_file, "read_recent_text_unlocked", side_effect=OSError("unreadable")):
-                interrupted = await memory_server.cache_conversation(request, "测试角色")
-                assert interrupted["status"] == "error"
-        replay = await memory_server.cache_conversation(request, "测试角色")
-
-    assert first["status"] == "error"
-    assert replay["status"] == "cached"
-    assert [message.content for message in _read_disk(path)] == [
-        "这是一次需要恢复的演绎。", "我已经先记进最近历史了。",
-    ]
-    assert fake_time_manager.astore_conversation.await_count == 2
-    fake_spawn_outbox.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["read", "write"])
-@pytest.mark.parametrize("restart", [False, True])
-async def test_cache_does_not_commit_event_until_recent_is_durable(tmp_path, monkeypatch, failure, restart):
-    from app import memory_server
-    from tests.unit.test_recent_file_lock import _make_manager, _read_disk, _write_disk
-    from utils import recent_file
-    from utils.llm_client import HumanMessage
-
-    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *args, **kwargs: None)
-    recent_manager, name, path = _make_manager(tmp_path, "测试角色")
-    _write_disk(path, [HumanMessage(content="older message")])
-    time_manager = MagicMock()
-    time_manager.ahas_conversation_event = AsyncMock(return_value=False)
-    time_manager.astore_conversation = AsyncMock()
-    signals = AsyncMock()
-    request = memory_server.HistoryRequest(
-        input_history=_build_history_request_payload([
-            {"role": "human", "content": "new question"},
-            {"role": "ai", "content": "new answer"},
-        ]), idempotency_key="durable-batch",
-    )
-    with patch.object(memory_server.runtime, "recent_history_manager", recent_manager), \
-         patch.object(memory_server.runtime, "time_manager", time_manager), \
-         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", signals), \
          patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock()):
-        operation = "read_recent_text_unlocked" if failure == "read" else "write_recent_payload_unlocked"
-        with patch.object(recent_file, operation, side_effect=OSError("disk unavailable")):
-            for _ in range(2):
-                failed = await memory_server.cache_conversation(request, name)
-                assert failed["status"] == "error"
-            time_manager.astore_conversation.assert_not_awaited()
-            signals.assert_not_awaited()
-        assert [message.content for message in _read_disk(path)] == ["older message"]
-        if restart:
-            # Simulate loss of both per-manager cache and process-local pending.
-            with recent_file.recent_file_lock(path):
-                recent_file.set_recent_pending_unlocked(path, [])
-            recent_manager, _, _ = _make_manager(tmp_path, name)
-            monkeypatch.setattr(memory_server.runtime, "recent_history_manager", recent_manager)
-        replay = await memory_server.cache_conversation(request, name)
-        assert replay["status"] == "cached"
-        assert [message.content for message in _read_disk(path)] == ["older message", "new question", "new answer"]
-        assert recent_file.get_recent_pending(path) == []
-        time_manager.astore_conversation.assert_awaited_once()
-        signals.assert_awaited_once()
+        result = await memory_server.cache_conversation(request, "测试角色")
 
-
-@pytest.mark.asyncio
-async def test_identical_text_with_distinct_cache_events_is_preserved_in_both_stores():
-    from app import memory_server
-    recent = []
-    fake_recent = MagicMock()
-    fake_recent.aget_recent_history = AsyncMock(return_value=recent)
-    fake_recent.update_history = AsyncMock(side_effect=lambda batch, *args, **kwargs: recent.extend(batch))
-    fake_time = MagicMock()
-    fake_time.ahas_conversation_event = AsyncMock(return_value=False)
-    fake_time.astore_conversation = AsyncMock()
-    payload = _build_history_request_payload([{"role": "human", "content": "你好"}])
-    with patch.object(memory_server.runtime, "time_manager", fake_time), \
-         patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
-         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", AsyncMock()), \
-         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock()):
-        for key in ("first", "second"):
-            result = await memory_server.cache_conversation(memory_server.HistoryRequest(
-                input_history=payload, idempotency_key=key,
-            ), "测试角色")
-            assert result["status"] == "cached"
-    assert [message.content for message in recent] == ["你好", "你好"]
-    event_ids = [message.metadata["cache_event_id"] for message in recent]
-    assert len(set(event_ids)) == 2
-    assert [call.args[0] for call in fake_time.astore_conversation.await_args_list] == event_ids
+    assert result == {
+        "status": "error",
+        "message": "idempotency_key_requires_theater_episode",
+    }
+    fake_recent_history_manager.update_history.assert_not_awaited()
+    fake_time_manager.astore_conversation.assert_not_awaited()
+    fake_spawn_outbox.assert_not_awaited()
 
 
 @pytest.mark.unit
