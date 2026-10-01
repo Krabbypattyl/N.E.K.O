@@ -790,6 +790,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                                 or ""
                             ).strip(),
                             legacy_catgirl_name=name,
+                            # Like the ordinary delete: a corrupt theater file
+                            # of any character gets one storage repair and a
+                            # retry instead of blocking every unsubscribe until
+                            # the theater page is opened.
+                            config_manager=config_mgr,
                         )
                     except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
                         logger.error(

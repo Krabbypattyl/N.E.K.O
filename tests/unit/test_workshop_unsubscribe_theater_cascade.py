@@ -211,11 +211,11 @@ async def test_workshop_unsubscribe_commits_nothing_when_one_candidate_preflight
     )
     original_collect = crud.collect_numeric_v2_character_purge
 
-    async def collect(root, *, character_id, legacy_catgirl_name):
+    async def collect(root, *, character_id, legacy_catgirl_name, **kwargs):
         if legacy_catgirl_name == "Mia":
             raise NumericV2StoreError("numeric_session_read_failed")
         return await original_collect(
-            root, character_id=character_id, legacy_catgirl_name=legacy_catgirl_name,
+            root, character_id=character_id, legacy_catgirl_name=legacy_catgirl_name, **kwargs,
         )
 
     monkeypatch.setattr(crud, "collect_numeric_v2_character_purge", collect)
@@ -228,6 +228,108 @@ async def test_workshop_unsubscribe_commits_nothing_when_one_candidate_preflight
     assert config.saved == []
     assert set(config.characters["猫娘"]) == {"Lan", "Mia"}
     assert steam_calls == []
+
+
+def _real_config_with_workshop_character(tmp_path: Path):
+    """A real config manager holding workshop "Lan" and an unrelated "Other"."""
+    from tests.unit.test_character_memory_regression import _make_config_manager
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    binding = _binding()
+    characters = cm.load_characters()
+    characters["猫娘"] = {
+        "Lan": _workshop_character(binding["character_id"]),
+        "Other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+    }
+    characters["当前猫娘"] = "Other"
+    cm.save_characters(characters, bypass_write_fence=True)
+    return cm, binding
+
+
+def _corrupt_unrelated_public_archive(theater: Path) -> Path:
+    # Ownership is only known after parsing, so this file blocks every strict scan.
+    path = theater / "numeric_v2" / "public_archives" / f"{'e' * 64}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{broken-json")
+    return path
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_repairs_an_unrelated_corrupt_theater_file_once(
+    tmp_path, monkeypatch,
+):
+    """Like the ordinary delete, a corrupt file is quarantined and the preflight retried."""
+    from main_routers.characters_router import crud
+    from services.theater.paths import theater_root
+
+    cm, binding = _real_config_with_workshop_character(tmp_path)
+    theater = theater_root(cm)
+    session_path, _ = await _seed_theater(theater, binding)
+    corrupt = _corrupt_unrelated_public_archive(theater)
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, cm, candidate="Lan")
+    maintain = crud.maintain_numeric_v2_storage_once
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return maintain(*args, **kwargs)
+
+    monkeypatch.setattr(crud, "maintain_numeric_v2_storage_once", counted)
+
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert result["success"] is True, result
+    assert result["cleanup_summary"]["errors"] == []
+    assert result["cleanup_summary"]["cleaned_characters"] == ["Lan"]
+    assert calls == [theater]
+    assert steam_calls == [ITEM_ID]
+    assert set(cm.load_characters()["猫娘"]) == {"Other"}
+    assert not session_path.exists()
+    # The repair quarantined the file; its owner is unknown, so the cascade then
+    # erases that copy along with the deleted character's data.
+    assert not corrupt.exists()
+    assert not list((theater / "numeric_v2" / "quarantine_public_archives").glob("*.json"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_never_repairs_a_transient_theater_read_failure(
+    tmp_path, monkeypatch,
+):
+    """An OSError may be transient: no repair, and the unsubscribe still fails closed."""
+    from main_routers.characters_router import crud
+    from services.theater.paths import theater_root
+
+    cm, binding = _real_config_with_workshop_character(tmp_path)
+    theater = theater_root(cm)
+    session_path, _ = await _seed_theater(theater, binding)
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, cm, candidate="Lan")
+    maintain_calls = []
+    monkeypatch.setattr(
+        crud, "maintain_numeric_v2_storage_once", lambda *a, **k: maintain_calls.append(a),
+    )
+
+    def locked(*_args, **_kwargs):
+        raise PermissionError("locked by antivirus")
+
+    monkeypatch.setattr(crud, "list_numeric_v2_sessions", locked)
+
+    response = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert response.status_code == 500
+    payload = json.loads(response.body)
+    assert [err["stage"] for err in payload["cleanup_summary"]["errors"]] == ["theater_preflight"]
+    assert maintain_calls == []
+    assert steam_calls == []
+    assert set(cm.load_characters()["猫娘"]) == {"Lan", "Other"}
+    assert session_path.is_file()
 
 
 def _purge_intents(theater: Path) -> list[Path]:
