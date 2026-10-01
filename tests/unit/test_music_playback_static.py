@@ -406,8 +406,9 @@ def test_music_player_reports_confirmed_state_to_backend():
     assert "localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent" in player_source
     assert 'elif action == "music_playback_state":' in router_source
     assert "handle_music_playback_state(" in router_source
+    # Anchor on the comparison alone: the guard may wrap extra conditions.
     superseded_gate = router_source.split(
-        "if session_id.get(lanlan_name) != this_session_id:", 1
+        "session_id.get(lanlan_name) != this_session_id", 1
     )[1].split("action = message.get(\"action\")", 1)[0]
     assert "if _is_music_playback_state_message(message):" in superseded_gate
     assert superseded_gate.index("_is_music_playback_state_message") < superseded_gate.index(
