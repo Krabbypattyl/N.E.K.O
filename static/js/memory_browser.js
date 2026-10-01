@@ -2482,13 +2482,14 @@
         try {
             const choice = await window.NekoTutorialReactivation.open(async choice => {
                 await window.NekoClickGuideState.refresh();
-                await window.NekoClickGuideState.update('choose', { choice });
                 if (choice === 'seven-day') {
                     const reset = window.AvatarFloatingGuideReset?.resetAllAvatarFloatingGuideDays
                         || window.resetAllAvatarFloatingGuideDays;
                     if (!reset) throw new Error('Seven-day reset unavailable');
                     await reset({ source: 'memory_browser_reactivate' });
                 }
+                // Commit the selected mode only after its reset succeeds.
+                await window.NekoClickGuideState.update('choose', { choice });
             });
             if (choice) await showTutorialResetNotice(choice === 'click'
                 ? translate('clickGuide.resetSuccess', '点击引导已重置，刷新主页即可开始。七天教程进度保持不变。')

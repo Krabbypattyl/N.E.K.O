@@ -43,7 +43,7 @@
         const clickGuide = window.NekoClickGuideState;
         if (clickGuide) {
             const choice = clickGuide.get();
-            if (choice?.choice === 'click' && choice.pending) return null;
+            if (choice?.choice === 'click') return null;
         }
         return sevenDayState.getNextAutoRound(
             guideState,

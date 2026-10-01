@@ -1211,6 +1211,8 @@ test('model boot waits for click state before predicting either tutorial', async
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true, 'new users preserve original seven-day role prediction');
     choice = { choice: 'click', pending: true };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false);
+    choice = { choice: 'click', pending: false };
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false, 'finished click replay cannot boot a stale seven-day reset');
     choice = { choice: 'seven-day', pending: false };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
     choice = null;
@@ -1225,7 +1227,7 @@ test('model boot waits for click state before predicting either tutorial', async
 test('existing seven-day users and completed click users do not see the chooser', async () => {
     for (const choice of ['seven-day', 'click']) {
         const ctx = startup({ choice, status: 'completed', pending: false, revision: 1 });
-        assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+        assert.equal(await ctx.api.handleStartup(ctx.manager), choice === 'click');
         assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
         assert.ok(!ctx.calls.includes('choose'));
         ctx.dom.window.close();
@@ -1293,6 +1295,32 @@ test('explicit click reactivation takes precedence over stale seven-day manual i
     const ctx = startup({ choice: 'click', pending: true }, { manualResetRound: 1 });
     assert.equal(await ctx.api.handleStartup(ctx.manager), true);
     assert.ok(ctx.calls.includes('finish'));
+    assert.equal(await ctx.api.handleStartup(ctx.manager), true, 'completed replay never falls through to stale seven-day intent');
+    ctx.dom.window.close();
+});
+
+test('failed seven-day replay reset then cancel preserves the pending click choice', async () => {
+    const state = { choice: 'click', pending: true, revision: 7 };
+    const ctx = startup(state);
+    const root = ctx.dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/memory_browser.js'), 'utf8');
+    const start = source.indexOf('    async function resetClickGuide()');
+    const end = source.indexOf('    async function resetSelectedTutorial()', start);
+    root.translate = key => key;
+    root.showTutorialResetNotice = async () => {};
+    root.AvatarFloatingGuideReset = {
+        resetAllAvatarFloatingGuideDays: async () => { throw new Error('reset failed'); }
+    };
+    root.eval(source.slice(start, end) + '\nwindow.resetClickGuide = resetClickGuide;');
+    const result = root.resetClickGuide();
+    ctx.doc.querySelectorAll('.click-guide-choice button')[1].click();
+    await delay(20);
+    assert.deepEqual(state, { choice: 'click', pending: true, revision: 7 });
+    assert.ok(!ctx.calls.includes('choose'));
+    ctx.doc.querySelectorAll('.click-guide-choice button')[2].click();
+    await result;
+    assert.deepEqual(state, { choice: 'click', pending: true, revision: 7 });
     ctx.dom.window.close();
 });
 

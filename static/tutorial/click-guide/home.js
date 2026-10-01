@@ -197,9 +197,15 @@
             const state = await stateApi.ready();
             // Only an explicit reactivation from the memory browser starts the click guide.
             // New and legacy unset states always continue the original seven-day flow.
-            if (!state || state.choice !== 'click' || !state.pending) {
+            if (!state || state.choice !== 'click') {
                 manager.setHomeTutorialPending(false);
                 return false;
+            }
+            // An explicit replay choice remains authoritative after completion.
+            // A later seven-day reset switches the mode back before requesting a round.
+            if (!state.pending) {
+                manager.dispatchStartupGreetingRelease('click-guide-already-seen');
+                return true;
             }
             const languageWait = new AbortController();
             await api.waitUntil(() => manager.isI18nReady(), languageWait.signal, 15000);
