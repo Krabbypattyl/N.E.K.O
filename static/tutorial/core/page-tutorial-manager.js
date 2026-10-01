@@ -347,7 +347,11 @@
         }
 
         checkAndStartTutorial() {
-            if (isClickGuideInspectingPage()) return;
+            if (isClickGuideInspectingPage()) {
+                this._clickGuideDeferredStart = true;
+                return;
+            }
+            this._clickGuideDeferredStart = false;
             if (!window.driver) return;
             if (!this.shouldManageCurrentPage()) return;
             if (this.isTutorialRunning || window.isInTutorial) return;
@@ -402,6 +406,7 @@
                 if (isReady() || Date.now() - startedAt >= timeoutMs) {
                     window.setTimeout(() => {
                         if (isClickGuideInspectingPage()) {
+                            this._clickGuideDeferredStart = true;
                             if (source === 'manual') {
                                 localStorage.setItem(manualIntentKeyForPage(this.currentPage), 'true');
                             }
@@ -418,7 +423,10 @@
         }
 
         maybeStartModelManagerTutorial(delayMs = 400, reason = '') {
-            if (isClickGuideInspectingPage()) return;
+            if (isClickGuideInspectingPage()) {
+                this._clickGuideDeferredStart = true;
+                return;
+            }
             if (!window.driver) return;
             if (this.currentPage !== 'model_manager') return;
             if (this.isTutorialRunning || window.isInTutorial) return;
@@ -1238,12 +1246,16 @@
         if (document.visibilityState !== 'visible' || isClickGuideInspectingPage()) return;
         const manager = window.pageTutorialManager;
         if (!Number.isInteger(manager?._clickGuideInterruptedStep)) {
-            manager?.checkAndStartTutorial();
+            if (manager?._clickGuideDeferredStart) {
+                manager._clickGuideDeferredStart = false;
+                manager.checkAndStartTutorial();
+            }
             return;
         }
         const index = manager._clickGuideInterruptedStep;
         if (!manager.startTutorial()) return;
         manager._clickGuideInterruptedStep = null;
+        manager._clickGuideDeferredStart = false;
         if (index > 0 && manager.driver?.showStep) {
             manager.driver.showStep(Math.min(index, manager.cachedValidSteps.length - 1));
         }

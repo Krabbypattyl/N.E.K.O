@@ -276,6 +276,8 @@ test('page tutorial starts after inspection ends without an interrupted step', (
     const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
     pageGuide.currentPage = 'memory_browser';
     root.__nekoClickGuideWindowInspection = true;
+    pageGuide.checkAndStartTutorial();
+    assert.equal(pageGuide._clickGuideDeferredStart, true);
     let checks = 0;
     pageGuide.checkAndStartTutorial = () => { checks++; };
     root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
@@ -291,6 +293,11 @@ test('page tutorial starts after inspection ends without an interrupted step', (
     Object.defineProperty(root.document, 'visibilityState', { configurable: true, value: 'visible' });
     root.dispatchEvent(new root.Event('focus'));
     assert.equal(checks, 1);
+    root.localStorage.setItem('neko_tutorial_memory_browser_manual_intent', 'true');
+    root.dispatchEvent(new root.Event('focus'));
+    root.document.dispatchEvent(new root.Event('visibilitychange'));
+    assert.equal(checks, 1, 'ordinary focus must not consume newly reset manual intent');
+    assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
     dom.window.close();
 });
 
@@ -522,13 +529,14 @@ test('chat guide opens an initially unmounted host before waiting for its mount'
     } finally { dom.window.close(); }
 });
 
-test('chat guide restores a collapsed native window if React host mounting fails', async () => {
+for (const nativeReady of [true, false]) {
+test('chat guide restores a collapsed native window after preparation failure: ready=' + nativeReady, async () => {
     const { dom, api } = setup();
     const root = dom.window;
     root.t = key => key;
     let restores = 0;
     root.nekoChatWindow = {
-        prepareExpandedForTutorial: async () => ({ ready: true, wasCollapsed: true }),
+        prepareExpandedForTutorial: async () => ({ ready: nativeReady, wasCollapsed: true }),
         restoreCollapsedAfterTutorial: async () => { restores++; },
     };
     root.reactChatWindowHost = {
@@ -540,10 +548,11 @@ test('chat guide restores a collapsed native window if React host mounting fails
     };
     root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     try {
-        await assert.rejects(api.prepareChat(), /target_not_ready/);
+        await assert.rejects(api.prepareChat(), nativeReady ? /target_not_ready/ : /native_chat_not_ready/);
         assert.equal(restores, 1);
     } finally { dom.window.close(); }
 });
+}
 
 test('typing a greeting and pressing Enter submits once before opening history', async () => {
     const { dom, api, doc } = setup();
@@ -1603,16 +1612,18 @@ test('direct model prediction projects stale manual intent without saving unsync
     dom.window.close();
 });
 
-test('chat state module makes no startup request', async () => {
+for (const chatPath of ['/chat', '/chat_full']) {
+test('chat state module makes no startup request: ' + chatPath, async () => {
     const { dom } = setup();
     const root = dom.window;
-    root.history.replaceState(null, '', '/chat');
+    root.history.replaceState(null, '', chatPath);
     root.fetch = () => { throw new Error('chat must not read guide state'); };
     root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
     assert.equal(await root.NekoClickGuideState.ready(), null);
     assert.equal(root.NekoClickGuideState.isReady(), true);
     dom.window.close();
 });
+}
 
 test('click mutations reuse CSRF token and retry a CSRF rejection exactly once', async () => {
     const { dom } = setup();

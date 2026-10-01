@@ -3,7 +3,7 @@
     const api = root.NekoClickGuide;
     const stateApi = root.NekoClickGuideState;
     const t = key => root.t('clickGuide.' + key);
-    const isChat = location.pathname.replace(/\/$/, '') === '/chat';
+    const isChat = ['/chat', '/chat_full'].includes(location.pathname.replace(/\/$/, ''));
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('neko_click_guide') : null;
     let active = false;
     let runId = null;

@@ -19,7 +19,7 @@
             clearTimeout(timer);
         }
     }
-    const isChat = root.location.pathname.replace(/\/$/, '') === '/chat';
+    const isChat = ['/chat', '/chat_full'].includes(root.location.pathname.replace(/\/$/, ''));
     const ready = (isChat ? Promise.resolve(null) : refresh()).catch(error => { console.warn('[ClickGuide]', error); return null; })
         .finally(() => { settled = true; });
     async function update(action, values = {}, expectedRevision = state?.revision) {

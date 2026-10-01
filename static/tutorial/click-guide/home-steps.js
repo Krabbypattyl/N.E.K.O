@@ -78,11 +78,11 @@
         const wheelIndex = tools.findIndex(tool => document.querySelector(`.compact-input-tool-item-${tool}`)?.dataset.compactToolWheelSlot === '0');
         const native = root.nekoChatWindow;
         let nativeSnapshot;
-        if (native?.prepareExpandedForTutorial) {
-            nativeSnapshot = await native.prepareExpandedForTutorial();
-            if (!nativeSnapshot.ready) throw new Error('native_chat_not_ready');
-        }
         try {
+            if (native?.prepareExpandedForTutorial) {
+                nativeSnapshot = await native.prepareExpandedForTutorial();
+                if (!nativeSnapshot.ready) throw new Error('native_chat_not_ready');
+            }
             await host.openWindow();
             await api.waitUntil(() => host.getState()?.mounted, new AbortController().signal, 10000);
             host.setChatSurfaceMode('compact');
