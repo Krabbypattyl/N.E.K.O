@@ -796,6 +796,104 @@ def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, 
     assert str(rows[2][2]).startswith("2020-01-02 03:04:05")
 
 
+def test_time_index_reconcile_parses_each_candidate_row_once(tmp_path, monkeypatch):
+    """Reconcile holds the SQLite write lock; each marker-matched row is
+    deserialized exactly once to both classify and canonicalize it."""
+    import json as real_json
+    from datetime import datetime
+
+    from sqlalchemy import create_engine, text
+
+    from config import TIME_ORIGINAL_TABLE_NAME
+    from memory import timeindex
+    from memory.timeindex import TimeIndexedMemory
+    from utils.llm_client import HumanMessage, SystemMessage
+    from utils.llm_client.history import SQLChatMessageHistory
+
+    db_path = tmp_path / "time_indexed.db"
+    connection_string = f"sqlite:///{db_path}"
+
+    def add(session_id, message):
+        SQLChatMessageHistory(
+            connection_string=connection_string,
+            session_id=session_id,
+            table_name=TIME_ORIGINAL_TABLE_NAME,
+        ).add_message(message)
+
+    def capsule(story, text_):
+        return SystemMessage(content=text_, metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "story_id": story,
+            "session_id": f"{story}_session",
+        })
+
+    add("plain", HumanMessage(content="普通对话"))
+    # Mentions the marker, so SQL selects it, but it is not a theater message.
+    add("mention", HumanMessage(content="I like theater_numeric_v2 a lot"))
+    add("theater-story-a", capsule("a", "A 的旧摘要"))
+    add("theater-story-b", capsule("b", "B 的摘要"))
+    with create_engine(connection_string).begin() as connection:
+        connection.execute(text(
+            f"ALTER TABLE {TIME_ORIGINAL_TABLE_NAME} ADD COLUMN timestamp DATETIME"
+        ))
+        # Malformed row carrying the marker: parse fails, so it is kept.
+        connection.execute(
+            text(
+                f"INSERT INTO {TIME_ORIGINAL_TABLE_NAME} (session_id, message) "
+                "VALUES ('broken', '{theater_numeric_v2')"
+            )
+        )
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.engines["测试角色"] = create_engine(connection_string)
+    manager.db_paths["测试角色"] = str(db_path)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _name: None)
+    monkeypatch.setattr(manager, "_ensure_engine_exists", lambda *_args, **_kwargs: True)
+
+    loads_calls = []
+    from_dict_calls = []
+
+    class _CountingJson:
+        def __getattr__(self, name):
+            return getattr(real_json, name)
+
+        @staticmethod
+        def loads(value, *args, **kwargs):
+            loads_calls.append(value)
+            return real_json.loads(value, *args, **kwargs)
+
+    real_from_dict = timeindex.messages_from_dict
+
+    def counting_from_dict(dicts):
+        from_dict_calls.append(dicts)
+        return real_from_dict(dicts)
+
+    monkeypatch.setattr(timeindex, "json", _CountingJson())
+    monkeypatch.setattr(timeindex, "messages_from_dict", counting_from_dict)
+
+    result = manager.reconcile_theater_conversations(
+        {
+            "a": ("theater-story-a", [capsule("a", "A 的新摘要")]),
+            "b": ("theater-story-b", [capsule("b", "B 的摘要")]),
+        },
+        "测试角色",
+        timestamp=datetime(2030, 5, 6, 7, 8, 9),
+    )
+
+    # Four marker-matched rows (mention, a, b, broken): one parse each.
+    assert len(loads_calls) == 4
+    assert len(from_dict_calls) == 3  # the malformed row never reaches from_dict
+    assert result == {"removed": 2, "stored": 2}
+    with manager.engines["测试角色"].connect() as connection:
+        session_ids = [row[0] for row in connection.execute(text(
+            f"SELECT session_id FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id"
+        )).fetchall()]
+    assert session_ids == [
+        "plain", "mention", "broken", "theater-story-a", "theater-story-b",
+    ]
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_rejects_idempotency_key_on_ordinary_batch():

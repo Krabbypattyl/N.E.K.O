@@ -913,17 +913,19 @@ class TimeIndexedMemory:
         )
 
     @staticmethod
-    def _is_serialized_theater_message(serialized_message: object) -> bool:
-        """识别时间索引中的新旧剧场行；解析失败时宁可保留。"""  # noqa: DOCSTRING_CJK
+    def _parse_serialized_theater_message(serialized_message: object) -> dict | None:
+        """识别时间索引中的新旧剧场行并返回解析结果；非剧场或解析失败时返回 None（宁可保留）。"""  # noqa: DOCSTRING_CJK
 
         try:
             payload = json.loads(str(serialized_message or ""))
             if not isinstance(payload, dict):
-                return False
+                return None
             messages = messages_from_dict([payload])
-            return bool(messages and is_theater_memory_message(messages[0]))
+            if messages and is_theater_memory_message(messages[0]):
+                return payload
+            return None
         except (TypeError, ValueError, json.JSONDecodeError):
-            return False
+            return None
 
     def reconcile_theater_conversations(
         self,
@@ -967,23 +969,19 @@ class TimeIndexedMemory:
                 {"source_marker": f"%{THEATER_MEMORY_SOURCE}%"},
             ).fetchall()
             existing_events: dict[str, list[tuple[str, object]]] = {}
-            theater_row_ids = [
-                int(row[0])
-                for row in rows
-                if self._is_serialized_theater_message(row[2])
-            ]
+            theater_row_ids: list[int] = []
+            # One parse per row both classifies it and yields its canonical form.
             for row in rows:
-                if not self._is_serialized_theater_message(row[2]):
+                payload = self._parse_serialized_theater_message(row[2])
+                if payload is None:
                     continue
-                try:
-                    canonical_message = json.dumps(
-                        json.loads(str(row[2])),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    canonical_message = str(row[2])
+                theater_row_ids.append(int(row[0]))
+                canonical_message = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
                 existing_events.setdefault(str(row[1] or ""), []).append(
                     (canonical_message, row[3])
                 )
