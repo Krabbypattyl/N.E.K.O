@@ -136,7 +136,8 @@ def _write_story_session_slots(
     path: Path,
     stories: Mapping[str, Mapping[str, str]],
 ) -> None:
-    encoded = json.dumps(
+    _atomic_write_json_payload(
+        path,
         {
             "schema": STORY_SESSION_INDEX_SCHEMA,
             "stories": {
@@ -145,27 +146,7 @@ def _write_story_session_slots(
                 if slots
             },
         },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent,
-            prefix=f".{path.stem}-",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            temporary.write(encoded)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        _retry_windows_permission_error(lambda: os.replace(temporary_path, path))
-        temporary_path = None
-    finally:
-        discard_temporary_file(temporary_path)
+    )
 
 
 def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:

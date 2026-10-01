@@ -1041,6 +1041,47 @@ async def test_numeric_v2_scoped_delete_preserves_other_story_slots(tmp_path):
     }
 
 
+def test_story_session_slots_share_the_atomic_json_writer(tmp_path, monkeypatch):
+    """The slot index is written by the store's one atomic JSON writer."""
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    calls = []
+    real_writer = numeric_v2_store._atomic_write_json_payload
+
+    def recording_writer(path, payload):
+        calls.append((path, deepcopy(payload)))
+        real_writer(path, payload)
+
+    monkeypatch.setattr(numeric_v2_store, "_atomic_write_json_payload", recording_writer)
+    numeric_v2_store._write_story_session_slots(index_path, {
+        "story-a": {"character-a": "session-aa"},
+        "story-empty": {},
+    })
+
+    assert calls == [(index_path, {
+        "schema": numeric_v2_store.STORY_SESSION_INDEX_SCHEMA,
+        "stories": {"story-a": {"character-a": "session-aa"}},
+    })]
+    assert numeric_v2_store._read_story_session_slots(index_path) == {
+        "story-a": {"character-a": "session-aa"},
+    }
+
+
+def test_story_session_slot_write_failure_keeps_the_old_index(tmp_path, monkeypatch):
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    numeric_v2_store._write_story_session_slots(index_path, {"story-a": {"c": "s1"}})
+    original = index_path.read_bytes()
+
+    def failing_replace(_source, _target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(numeric_v2_store.os, "replace", failing_replace)
+    with pytest.raises(OSError, match="disk full"):
+        numeric_v2_store._write_story_session_slots(index_path, {"story-a": {"c": "s2"}})
+
+    assert index_path.read_bytes() == original
+    assert sorted(path.name for path in index_path.parent.iterdir()) == ["story_sessions.json"]
+
+
 def _binding() -> dict[str, str]:
     return {
         "character_id": "character_11111111111111111111111111111111",
