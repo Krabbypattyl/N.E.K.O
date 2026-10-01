@@ -152,6 +152,13 @@ def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[s
     }
 
 
+def _positive_metadata_int(value) -> int:
+    """Read a theater counter from capsule metadata; anything but a positive int is 0."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0
+
+
 def _theater_memory_render_state(history: list):
     """选出每个 Session 最新状态，以及每个 Story 最新周目。"""  # noqa: DOCSTRING_CJK
 
@@ -164,19 +171,58 @@ def _theater_memory_render_state(history: list):
     latest_rank_by_story: dict[str, tuple[int, int]] = {}
     for position, (episode_key, metadata) in enumerate(latest_by_episode.items()):
         story_id = episode_key[0]
-        raw_run_index = metadata.get("run_index")
-        run_index = (
-            raw_run_index
-            if isinstance(raw_run_index, int)
-            and not isinstance(raw_run_index, bool)
-            and raw_run_index > 0
-            else 0
-        )
-        rank = (run_index, position)
+        rank = (_positive_metadata_int(metadata.get("run_index")), position)
         if rank >= latest_rank_by_story.get(story_id, (-1, -1)):
             latest_rank_by_story[story_id] = rank
             latest_episode_by_story[story_id] = episode_key
     return latest_by_episode, latest_episode_by_story
+
+
+def _iter_theater_rendered_history(history: list, *, lang: str, name: str, master: str):
+    """Yield ``(message, capsule_text)`` for the prompt renderings of recent history.
+
+    Each theater Session renders once, at its first position, from its latest
+    metadata; later messages of the same Session are skipped. Only the latest
+    run of a Story carries the story-wide run count and endings seen. Ordinary
+    messages come back with ``capsule_text=None`` for the caller to render.
+    """
+    latest_by_episode, latest_episode_by_story = _theater_memory_render_state(history)
+    rendered_episodes: set[tuple[str, str]] = set()
+    for message in history:
+        if not is_theater_memory_message(message):
+            yield message, None
+            continue
+        episode_key = theater_memory_episode_key(message)
+        if episode_key in rendered_episodes:
+            continue
+        rendered_episodes.add(episode_key)
+        metadata = latest_by_episode[episode_key]
+        is_latest_story_run = latest_episode_by_story.get(episode_key[0]) == episode_key
+        ending_titles = metadata.get("ending_titles_seen")
+        yield message, get_theater_memory_context(
+            lang,
+            name=name,
+            master=master,
+            title=str(metadata.get("story_title") or ""),
+            status=str(metadata.get("episode_status") or "paused"),
+            ending=str(metadata.get("ending_title") or ""),
+            summary=str(
+                metadata.get("episode_summary")
+                or metadata.get("ending_summary")
+                or ""
+            ),
+            run_index=_positive_metadata_int(metadata.get("run_index")),
+            story_run_count=(
+                _positive_metadata_int(metadata.get("story_run_count"))
+                if is_latest_story_run
+                else 0
+            ),
+            ending_titles=(
+                ending_titles
+                if is_latest_story_run and isinstance(ending_titles, list)
+                else []
+            ),
+        )
 class RepetitionInsightsRequest(BaseModel):
     language: Literal["en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"]
     assistant_message_limit: int = Field(default=100, ge=3, le=100)
@@ -1582,52 +1628,11 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
-    latest_theater_metadata, latest_episode_by_story = _theater_memory_render_state(
-        history
-    )
-    rendered_theater_episodes: set[tuple[str, str]] = set()
-    for i in history:
-        if is_theater_memory_message(i):
-            episode_key = theater_memory_episode_key(i)
-            if episode_key in rendered_theater_episodes:
-                continue
-            metadata = latest_theater_metadata[episode_key]
-            is_latest_story_run = (
-                latest_episode_by_story.get(episode_key[0]) == episode_key
-            )
-            result += get_theater_memory_context(
-                _lang,
-                name=lanlan_name,
-                master=master_name,
-                title=str(metadata.get("story_title") or ""),
-                status=str(metadata.get("episode_status") or "paused"),
-                ending=str(metadata.get("ending_title") or ""),
-                summary=str(
-                    metadata.get("episode_summary")
-                    or metadata.get("ending_summary")
-                    or ""
-                ),
-                run_index=(
-                    metadata.get("run_index")
-                    if isinstance(metadata.get("run_index"), int)
-                    and not isinstance(metadata.get("run_index"), bool)
-                    else 0
-                ),
-                story_run_count=(
-                    metadata.get("story_run_count")
-                    if is_latest_story_run
-                    and isinstance(metadata.get("story_run_count"), int)
-                    and not isinstance(metadata.get("story_run_count"), bool)
-                    else 0
-                ),
-                ending_titles=(
-                    metadata.get("ending_titles_seen")
-                    if is_latest_story_run
-                    and isinstance(metadata.get("ending_titles_seen"), list)
-                    else []
-                ),
-            ) + "\n"
-            rendered_theater_episodes.add(episode_key)
+    for i, capsule_text in _iter_theater_rendered_history(
+        history, lang=_lang, name=lanlan_name, master=master_name,
+    ):
+        if capsule_text is not None:
+            result += capsule_text + "\n"
             continue
         if isinstance(i.content, str):
             content = i.content
@@ -4352,52 +4357,11 @@ async def _new_dialog(
         )
 
         recent_history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
-        latest_theater_metadata, latest_episode_by_story = _theater_memory_render_state(
-            recent_history
-        )
-        rendered_theater_episodes: set[tuple[str, str]] = set()
-        for i in recent_history:
-            if is_theater_memory_message(i):
-                episode_key = theater_memory_episode_key(i)
-                if episode_key in rendered_theater_episodes:
-                    continue
-                metadata = latest_theater_metadata[episode_key]
-                is_latest_story_run = (
-                    latest_episode_by_story.get(episode_key[0]) == episode_key
-                )
-                result += get_theater_memory_context(
-                    _lang,
-                    name=lanlan_name,
-                    master=master_name,
-                    title=str(metadata.get("story_title") or ""),
-                    status=str(metadata.get("episode_status") or "paused"),
-                    ending=str(metadata.get("ending_title") or ""),
-                    summary=str(
-                        metadata.get("episode_summary")
-                        or metadata.get("ending_summary")
-                        or ""
-                    ),
-                    run_index=(
-                        metadata.get("run_index")
-                        if isinstance(metadata.get("run_index"), int)
-                        and not isinstance(metadata.get("run_index"), bool)
-                        else 0
-                    ),
-                    story_run_count=(
-                        metadata.get("story_run_count")
-                        if is_latest_story_run
-                        and isinstance(metadata.get("story_run_count"), int)
-                        and not isinstance(metadata.get("story_run_count"), bool)
-                        else 0
-                    ),
-                    ending_titles=(
-                        metadata.get("ending_titles_seen")
-                        if is_latest_story_run
-                        and isinstance(metadata.get("ending_titles_seen"), list)
-                        else []
-                    ),
-                ) + "\n"
-                rendered_theater_episodes.add(episode_key)
+        for i, capsule_text in _iter_theater_rendered_history(
+            recent_history, lang=_lang, name=lanlan_name, master=master_name,
+        ):
+            if capsule_text is not None:
+                result += capsule_text + "\n"
                 continue
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()

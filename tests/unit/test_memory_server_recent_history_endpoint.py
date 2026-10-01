@@ -271,3 +271,187 @@ async def test_get_recent_history_merges_incremental_theater_archives_by_session
     assert "两人保住了共同的住处。" in result
     assert "剧情尚未结束时暂停" not in result
     assert "旧开场正文" not in result
+
+
+def _legacy_theater_render(history, *, lang, name, master):
+    """Verbatim theater-capsule loop that get_recent_history and _new_dialog each inlined."""
+    from config.prompts.prompts_memory import get_theater_memory_context
+    from utils.llm_client import (
+        is_theater_memory_message,
+        message_metadata,
+        theater_memory_episode_key,
+    )
+
+    latest_theater_metadata = {
+        theater_memory_episode_key(message): message_metadata(message)
+        for message in history
+        if is_theater_memory_message(message)
+    }
+    latest_episode_by_story = {}
+    latest_rank_by_story = {}
+    for position, (episode_key, metadata) in enumerate(latest_theater_metadata.items()):
+        story_id = episode_key[0]
+        raw_run_index = metadata.get("run_index")
+        run_index = (
+            raw_run_index
+            if isinstance(raw_run_index, int)
+            and not isinstance(raw_run_index, bool)
+            and raw_run_index > 0
+            else 0
+        )
+        rank = (run_index, position)
+        if rank >= latest_rank_by_story.get(story_id, (-1, -1)):
+            latest_rank_by_story[story_id] = rank
+            latest_episode_by_story[story_id] = episode_key
+
+    rendered = []
+    rendered_theater_episodes = set()
+    for i in history:
+        if is_theater_memory_message(i):
+            episode_key = theater_memory_episode_key(i)
+            if episode_key in rendered_theater_episodes:
+                continue
+            metadata = latest_theater_metadata[episode_key]
+            is_latest_story_run = (
+                latest_episode_by_story.get(episode_key[0]) == episode_key
+            )
+            rendered.append((i, get_theater_memory_context(
+                lang,
+                name=name,
+                master=master,
+                title=str(metadata.get("story_title") or ""),
+                status=str(metadata.get("episode_status") or "paused"),
+                ending=str(metadata.get("ending_title") or ""),
+                summary=str(
+                    metadata.get("episode_summary")
+                    or metadata.get("ending_summary")
+                    or ""
+                ),
+                run_index=(
+                    metadata.get("run_index")
+                    if isinstance(metadata.get("run_index"), int)
+                    and not isinstance(metadata.get("run_index"), bool)
+                    else 0
+                ),
+                story_run_count=(
+                    metadata.get("story_run_count")
+                    if is_latest_story_run
+                    and isinstance(metadata.get("story_run_count"), int)
+                    and not isinstance(metadata.get("story_run_count"), bool)
+                    else 0
+                ),
+                ending_titles=(
+                    metadata.get("ending_titles_seen")
+                    if is_latest_story_run
+                    and isinstance(metadata.get("ending_titles_seen"), list)
+                    else []
+                ),
+            )))
+            rendered_theater_episodes.add(episode_key)
+            continue
+        rendered.append((i, None))
+    return rendered
+
+
+def _golden_theater_histories():
+    from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+
+    def capsule(story, session, **metadata):
+        return SystemMessage(content=f"{story}/{session}", metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": story,
+            "session_id": session,
+            **metadata,
+        })
+
+    legacy_body = AIMessage(content="旧开场正文", metadata={
+        "source": "theater_numeric_v2",
+        "story_id": "rain",
+        "session_id": "rain_1",
+        "story_title": "雨夜合租",
+        "episode_status": "paused",
+    })
+    return {
+        "multi_story_multi_run": [
+            HumanMessage(content="早上好"),
+            capsule("rain", "rain_1", story_title="雨夜合租", episode_status="completed",
+                    ending_title="雨中相守", episode_summary="守住了住处。",
+                    run_index=1, story_run_count=1, ending_titles_seen=["雨中相守"]),
+            AIMessage(content="早呀"),
+            capsule("rain", "rain_2", story_title="《雨夜合租》", episode_status="completed",
+                    ending_title="雨停之后", episode_summary="一起等到了天晴。",
+                    run_index=2, story_run_count=2,
+                    ending_titles_seen=["雨中相守", "雨停之后", "雨停之后", " "]),
+            capsule("lamp", "lamp_1", story_title="月台尽头的猫灯", episode_status="paused",
+                    episode_summary="灯还亮着。", run_index=1, story_run_count=3),
+            HumanMessage(content="继续吧"),
+        ],
+        "out_of_order_runs_and_session_updates": [
+            capsule("rain", "rain_3", story_title="雨夜合租", run_index=3, story_run_count=3,
+                    ending_titles_seen=["甲", "乙"]),
+            capsule("rain", "rain_1", story_title="雨夜合租", run_index=1, story_run_count=1),
+            legacy_body,
+            capsule("rain", "rain_1", story_title="雨夜合租", episode_status="completed",
+                    ending_summary="最后补上的结局。", run_index=1, story_run_count=1),
+            capsule("rain", "rain_3", story_title="雨夜合租", episode_status="completed",
+                    ending_title="", episode_summary="未命名结局。", run_index=3,
+                    story_run_count=3, ending_titles_seen=["甲", "乙", "丙"]),
+        ],
+        "missing_and_invalid_metadata": [
+            capsule("odd", "odd_1"),
+            capsule("odd", "odd_2", story_title=None, episode_status=None, run_index=True,
+                    story_run_count=True, ending_titles_seen="甲"),
+            capsule("odd", "odd_3", run_index=-4, story_run_count=-2, ending_titles_seen=None),
+            capsule("odd", "odd_4", run_index="5", story_run_count=0),
+            capsule("neg", "neg_1", run_index=0, story_run_count=-7, ending_titles_seen=["x"]),
+            capsule("", "", story_title="无剧本", run_index=2, story_run_count=2),
+        ],
+        "ordinary_only": [
+            HumanMessage(content="你好"),
+            AIMessage(content=[{"type": "text", "text": "嗯"}]),
+        ],
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru"])
+@pytest.mark.parametrize("case", sorted(_golden_theater_histories()))
+def test_shared_theater_capsule_render_matches_legacy_inline_loops(lang, case):
+    """Golden: the shared helper reproduces the two former inline loops exactly."""
+    from app.memory_server.routes import _iter_theater_rendered_history
+
+    history = _golden_theater_histories()[case]
+    expected = _legacy_theater_render(history, lang=lang, name="小葵", master="哥哥")
+    actual = list(_iter_theater_rendered_history(
+        history, lang=lang, name="小葵", master="哥哥",
+    ))
+
+    assert [(id(message), text) for message, text in actual] == [
+        (id(message), text) for message, text in expected
+    ]
+    if case != "ordinary_only":
+        assert any(text for _message, text in actual)
+
+
+@pytest.mark.unit
+def test_theater_render_passes_only_positive_run_counters():
+    """run_index and story_run_count share the positive-int rule."""
+    from app.memory_server.routes import _iter_theater_rendered_history
+    from utils.llm_client import SystemMessage
+
+    history = [SystemMessage(content="x", metadata={
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "story_id": "s",
+        "session_id": "s1",
+        "story_title": "雨夜合租",
+        "run_index": -1,
+        "story_run_count": -3,
+    })]
+    with patch("app.memory_server.routes.get_theater_memory_context") as render:
+        list(_iter_theater_rendered_history(history, lang="zh", name="n", master="m"))
+
+    assert render.call_args.kwargs["story_run_count"] == 0
+    assert render.call_args.kwargs["run_index"] == 0
