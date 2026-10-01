@@ -95,64 +95,6 @@ def is_theater_episode_summary(message: Any) -> bool:
     )
 
 
-def _message_text_content(message: Any) -> str:
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
-        return str(content or "").strip()
-    return "\n".join(
-        str(part.get("text") or "").strip()
-        for part in content
-        if isinstance(part, dict)
-        and part.get("type") == "text"
-        and str(part.get("text") or "").strip()
-    )
-
-
-def render_theater_memory_message_lines(
-    message: Any,
-    *,
-    player_name: str,
-    catgirl_name: str,
-) -> list[str]:
-    """按结构化片段渲染剧场记忆；正文中不注入旁白或转场标签。"""  # noqa: DOCSTRING_CJK
-
-    # 单集摘要已经由可信元数据渲染成剧场记忆上下文，不能再伪装成玩家或猫娘对白。
-    if is_theater_episode_summary(message):
-        return []
-
-    if getattr(message, "type", "") == "human":
-        text = _message_text_content(message)
-        return [f"{player_name} | {text}"] if text else []
-    metadata = message_metadata(message)
-    raw_parts = metadata.get("parts")
-    if not isinstance(raw_parts, list):
-        text = _message_text_content(message)
-        return [f"{catgirl_name} | {text}"] if text else []
-    lines: list[str] = []
-    performance_parts: list[str] = []
-
-    def flush_performance() -> None:
-        text = "".join(performance_parts).strip()
-        performance_parts.clear()
-        if text:
-            lines.append(f"{catgirl_name} | {text}")
-
-    for raw_part in raw_parts:
-        if not isinstance(raw_part, dict):
-            continue
-        text = str(raw_part.get("text") or "").strip()
-        if not text:
-            continue
-        if raw_part.get("kind") == "scene_narration":
-            flush_performance()
-            lines.append(text)
-        else:
-            performance_parts.append(text)
-    flush_performance()
-    return lines
-
 _TYPE_CLS: dict[str, type[BaseMessage]] = {
     "human": HumanMessage,
     "ai": AIMessage,

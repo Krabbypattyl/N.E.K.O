@@ -95,7 +95,6 @@ from .messages import (
     message_metadata,
     messages_from_dict,
     messages_to_dict,
-    render_theater_memory_message_lines,
     theater_memory_episode_key,
 )
 from .openai_client import ChatOpenAI
