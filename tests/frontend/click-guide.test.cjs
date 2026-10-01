@@ -1214,7 +1214,7 @@ test('model boot waits for click state before predicting either tutorial', async
     choice = { choice: 'click', pending: true };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false);
     choice = { choice: 'click', pending: false };
-    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false, 'finished click replay cannot boot a stale seven-day reset');
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true, 'finished click replay preserves normal seven-day prediction');
     choice = { choice: 'seven-day', pending: false };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
     choice = null;
@@ -1229,7 +1229,7 @@ test('model boot waits for click state before predicting either tutorial', async
 test('existing seven-day users and completed click users do not see the chooser', async () => {
     for (const choice of ['seven-day', 'click']) {
         const ctx = startup({ choice, status: 'completed', pending: false, revision: 1 });
-        assert.equal(await ctx.api.handleStartup(ctx.manager), choice === 'click');
+        assert.equal(await ctx.api.handleStartup(ctx.manager), false);
         assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
         assert.ok(!ctx.calls.includes('choose'));
         ctx.dom.window.close();
@@ -1364,6 +1364,39 @@ test('only a newer explicit seven-day reset overrides a click replay mode', asyn
         assert.equal(await ctx.api.handleStartup(ctx.manager), !overrides);
     }
     assert.equal(root.NekoClickGuideState.isSevenDayOverride({ resetHistory: [{ resetAt: '2026-10-01T04:00:00Z' }] }), false);
+    ctx.dom.window.close();
+});
+
+test('committed seven-day replay remains successful when auxiliary choice save fails', async () => {
+    const ctx = startup({ choice: 'click', pending: true });
+    const root = ctx.dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+    const selectedAt = Date.parse('2026-10-01T03:00:00Z');
+    root.fetch = async () => ({ ok: true, json: async () => ({ choice: 'click', pending: true, selectedAt }) });
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
+    await root.NekoClickGuideState.ready();
+    const sevenDay = { completedRounds: [1, 2], manualResetRound: null };
+    root.NekoSevenDayTutorialState.loadState = () => sevenDay;
+    root.NekoClickGuideState.update = async () => { throw new Error('save conflict or offline'); };
+    root.AvatarFloatingGuideReset = { resetAllAvatarFloatingGuideDays: async () => {
+        Object.assign(sevenDay, { completedRounds: [], manualResetRound: 1,
+            resetHistory: [{ day: 'all', resetAt: '2026-10-01T03:01:00Z' }] });
+    } };
+    const notices = [];
+    root.translate = key => key;
+    root.getTutorialHomeAllResetSuccessMessage = () => 'seven-day-reset-success';
+    root.showTutorialResetNotice = async message => { notices.push(message); };
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/memory_browser.js'), 'utf8');
+    root.eval(source.slice(source.indexOf('    async function resetClickGuide()'),
+        source.indexOf('    async function resetSelectedTutorial()')) + '\nwindow.resetClickGuide = resetClickGuide;');
+    const result = root.resetClickGuide();
+    ctx.doc.querySelectorAll('.click-guide-choice button')[1].click();
+    await result;
+    assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
+    assert.deepEqual(notices, ['seven-day-reset-success']);
+    assert.equal(root.NekoClickGuideState.isSevenDayOverride(sevenDay), true);
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false, 'seven-day reset owns next startup');
     ctx.dom.window.close();
 });
 

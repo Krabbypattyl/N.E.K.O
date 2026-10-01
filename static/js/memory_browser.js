@@ -2491,6 +2491,15 @@
                         || window.resetAllAvatarFloatingGuideDays;
                     if (!reset) throw new Error('Seven-day reset unavailable');
                     await reset({ source: 'memory_browser_reactivate' });
+                    // The authoritative seven-day reset has committed. Its newer
+                    // resetHistory supersedes the old click mode even if this
+                    // auxiliary mode write fails; do not offer a misleading cancel.
+                    try {
+                        await window.NekoClickGuideState.update('choose', { choice });
+                    } catch (error) {
+                        console.warn('[MemoryBrowser] Seven-day replay activated; mode sync failed:', error);
+                    }
+                    return;
                 }
                 // Commit the selected mode only after its reset succeeds.
                 await window.NekoClickGuideState.update('choose', { choice });

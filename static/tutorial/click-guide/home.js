@@ -202,9 +202,10 @@
                 manager.setHomeTutorialPending(false);
                 return false;
             }
-            // An explicit replay choice remains authoritative after completion.
-            // A later seven-day reset switches the mode back before requesting a round.
+            // Preserve normal daily progression after replay, while suppressing
+            // only a superseded manual restart of the seven-day tutorial.
             if (!state.pending) {
+                if (!root.NekoSevenDayTutorialState?.loadState()?.manualResetRound) return false;
                 manager.dispatchStartupGreetingRelease('click-guide-already-seen');
                 return true;
             }
