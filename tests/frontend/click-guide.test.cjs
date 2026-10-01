@@ -1363,7 +1363,13 @@ test('only a newer explicit seven-day reset overrides a click replay mode', asyn
         root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
         assert.equal(await ctx.api.handleStartup(ctx.manager), !overrides);
     }
-    assert.equal(root.NekoClickGuideState.isSevenDayOverride({ resetHistory: [{ resetAt: '2026-10-01T04:00:00Z' }] }), false);
+    const completedReset = { manualResetRound: null, completedRounds: [3],
+        resetHistory: [{ day: 3, resetAt: '2026-10-01T04:00:00Z' }] };
+    assert.equal(root.NekoClickGuideState.isSevenDayOverride(completedReset), true, 'completed reset remains the latest tutorial selection');
+    root.NekoSevenDayTutorialState.loadState = () => completedReset;
+    root.NekoClickGuideState.get().pending = true;
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false, 'completion cannot revive the old click choice');
+    assert.equal(root.NekoClickGuideState.isSevenDayOverride({ resetHistory: [] }), false);
     ctx.dom.window.close();
 });
 

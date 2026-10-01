@@ -36,7 +36,7 @@
         return state;
     }
     function isSevenDayOverride(sevenDay) {
-        if (!sevenDay?.manualResetRound || !Number.isFinite(state?.selectedAt)) return false;
+        if (!Number.isFinite(state?.selectedAt)) return false;
         const latestReset = sevenDay.resetHistory?.at(-1);
         return Date.parse(latestReset?.resetAt) > state.selectedAt;
     }
