@@ -700,6 +700,56 @@ def test_theater_episode_upsert_caps_all_stories_to_thirty():
     assert normal_message in history
 
 
+def _wire_theater_capsule(story_id: str, session_id: str, summary: str, **extra):
+    """Build a capsule exactly as /cache receives it from build_numeric_v2_memory_messages."""
+    from utils.llm_client import convert_to_messages
+
+    metadata = {
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": story_id,
+        "session_id": session_id,
+        "story_title": f"title {story_id}",
+        "episode_status": "completed",
+        "ending_summary": summary,
+        "episode_summary": summary,
+        **extra,
+    }
+    return convert_to_messages([{
+        "role": "system",
+        "content": [{"type": "text", "text": summary}],
+        "metadata": metadata,
+    }])[0]
+
+
+@pytest.mark.unit
+def test_theater_upsert_keeps_other_stories_capsules_byte_identical():
+    """Archiving story B must not rewrite story A's capsule (content shape or long summary)."""
+    from memory.recent import _compute_review_capacity, _merge_theater_episode_summary
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    # An authored ending summary is token-bounded, not 360-char-bounded.
+    long_ending = "Story A ended with a long authored epilogue. " * 12
+    assert len(long_ending) > 360
+    history, _ = _merge_theater_episode_summary(
+        [HumanMessage(content="ordinary chat")],
+        _wire_theater_capsule("story_a", "session_a", long_ending),
+    )
+    history.append(HumanMessage(content="more ordinary chat"))
+    before = messages_to_dict(history)
+    snapshot = list(history)
+
+    merged, _ = _merge_theater_episode_summary(
+        history, _wire_theater_capsule("story_b", "session_b", "Story B ended."),
+    )
+
+    assert messages_to_dict(merged)[:len(before)] == before
+    assert isinstance(before[1]["data"]["content"], list)
+    capacity, cutoff = _compute_review_capacity(snapshot, merged)
+    assert (capacity, cutoff) == (len(snapshot), len(snapshot) - 1)
+
+
 @pytest.mark.unit
 def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, monkeypatch):
     """时间索引重建应删除旧剧场全文，同时保留普通对话。"""  # noqa: DOCSTRING_CJK

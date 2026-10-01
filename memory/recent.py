@@ -639,7 +639,15 @@ def _collapse_theater_episode_messages(history: list) -> list:
             slots[key] = len(collapsed)
             collapsed.append(None)
     for key, slot in slots.items():
-        collapsed[slot] = _theater_episode_capsule(groups[key])
+        group = groups[key]
+        if len(group) == 1 and is_theater_episode_summary(group[0]):
+            # An already-folded capsule stays byte-identical: rebuilding it would
+            # turn list content into a string and truncate long ending summaries,
+            # which resets the story's time-index timestamp and breaks in-flight
+            # compression/review snapshots whenever another story is archived.
+            collapsed[slot] = group[0]
+        else:
+            collapsed[slot] = _theater_episode_capsule(group)
     return [message for message in collapsed if message is not None]
 
 
