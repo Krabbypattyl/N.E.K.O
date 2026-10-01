@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并小剧场（含剧场期间普通语音不可用、演绎中断与补推荐文案）与主分支屏幕共享来源面板、头像互动流程、社区账号设置、独立/本地 ASR、声纹、插件 HTML 卡片与配置 schema、唤醒词、免费服务拒绝访问与智谱声音复刻提示，递增版本刷新网页和 Electron 的语言包缓存。
-    const LOCALE_VERSION = '2026-10-01-theater-ordinary-chat-unavailable';
+    // 合并小剧场（含剧场期间普通语音不可用、演绎中断与补推荐文案）与主分支点击引导、记忆重新激活、屏幕共享来源面板、头像互动流程、社区账号设置、独立/本地 ASR、声纹、插件 HTML 卡片与配置 schema、唤醒词、免费服务拒绝访问与智谱声音复刻提示，递增版本刷新网页和 Electron 的语言包缓存。
+    const LOCALE_VERSION = '2026-10-01-theater-click-guide-memory-reactivation';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

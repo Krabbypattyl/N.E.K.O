@@ -378,7 +378,9 @@ class TurnMixin:
 
         A bound reply (``reply_turn``) carries the meta it was started with
         instead: it never takes a ``_pending_turn_meta`` another reply staged,
-        and clears the shared field only while that still holds its own."""
+        and clears the shared field only while that still holds its own. Its
+        ``turn_ended`` is set once the turn end is queued, so the completion
+        that follows a final discard does not end the turn again."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
         pending_meta = (
             self._pending_turn_meta if reply_turn is None else reply_turn.meta
@@ -390,6 +392,8 @@ class TurnMixin:
         if active_request_id:
             turn_end_msg['request_id'] = active_request_id
         self.sync_message_queue.put(turn_end_msg)
+        if reply_turn is not None:
+            reply_turn.turn_ended = True
         # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
         # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
         # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
@@ -565,12 +569,21 @@ class TurnMixin:
         and meta rather than whatever the shared fields hold when it finally
         runs, and when a newer turn already owns the host
         (``_reply_turn_is_current``) it leaves every shared effect (TTS done,
-        turn end, AI text flush, wrap-up) to that turn. Unbound completions read
-        the shared fields as they stand: realtime clients, which guard their own
-        turn ends, and the Offline replies Core does not bind (independent-ASR
-        voice turns, whose completion runs inside ``close()`` rather than after
-        it, and proactive replies without ``on_proactive_done``).
+        turn end, AI text flush, wrap-up) to that turn. When a final discard
+        already ended its turn (``_ReplyTurn.turn_ended``) it does nothing: the
+        discard sent that turn end and has already settled the wrap-up.
+
+        Unbound completions read the shared fields as they stand: realtime
+        clients, which guard their own turn ends, and the Offline replies Core
+        does not bind (independent-ASR voice turns, whose completion runs inside
+        ``close()`` rather than after it, and proactive replies without
+        ``on_proactive_done``). An unbound reply keeps no record of a discard's
+        turn end, so after a final discard it still ends the turn a second
+        time. Skipping the completion on the client side instead would lose the
+        only close whenever the discard stood down without ending the turn.
         """
+        if reply_turn is not None and reply_turn.turn_ended:
+            return
         # 先于接管清理：已经不拥有这一轮的迟到回调也不该去清接管方自己的
         # TTS（镜像台词）和簿记。
         if reply_turn is not None and not self._reply_turn_is_current(reply_turn):
@@ -802,8 +815,19 @@ class TurnMixin:
         # 门控（#2534 合并时留的路标就是指这里）：文本请求由 websocket_router
         # 作为各自独立的后台任务分发，旧请求 A 的迟到 discard 可以落在新请求 B
         # 已经开始 publish 之后，无门控地清会连 B 的前缀一起抹掉。
+        #
+        # cross_server 的 response_discarded_clear 也是同一份共享输出，同步地
+        # 和 buffer 一起清，必须赶在任何 await 之前：下面的 recovery 会先发正文
+        # 和 turn end，再 compare-and-clear 掉 request id，等它跑完再判产权就
+        # 恒为 False，clear 永远发不出去，cross_server 会把丢弃版和恢复正文
+        # 一起写进记忆。
         if may_clear_shared_output():
             self._current_ai_turn_text = ''
+            if self.sync_message_queue:
+                self.sync_message_queue.put({
+                    'type': 'system',
+                    'data': 'response_discarded_clear'
+                })
             await self._clear_tts_pipeline()
 
         # A request-bound discard is only relevant while that request still owns
@@ -948,12 +972,6 @@ class TurnMixin:
                 # Compare-and-clear：见函数顶部 active_request_id 快照说明。
                 if self._active_text_request_id == active_request_id:
                     self._active_text_request_id = None
-
-        if self.sync_message_queue and may_clear_shared_output():
-            self.sync_message_queue.put({
-                'type': 'system',
-                'data': 'response_discarded_clear'
-            })
 
         if not will_retry and not _is_too_long_final and _truncated_text is None:
             # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
