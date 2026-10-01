@@ -751,6 +751,15 @@ def test_theater_upsert_keeps_other_stories_capsules_byte_identical():
 
 
 @pytest.mark.unit
+def test_theater_run_counters_share_one_parser_for_storage_and_prompt():
+    """Stored and rendered run_index / story_run_count must use the same parser."""
+    from app.memory_server import routes
+    from memory import recent
+
+    assert routes._positive_metadata_int is recent._positive_metadata_int
+
+
+@pytest.mark.unit
 def test_theater_upsert_retry_keeps_slot_and_changed_capsule_moves_last():
     """An unchanged retry keeps its index; a real update is the newest event."""
     from memory.recent import _compute_review_capacity, _merge_theater_episode_summary

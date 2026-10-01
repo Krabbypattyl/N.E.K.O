@@ -78,7 +78,11 @@ from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
-from memory.recent import TheaterEpisodeRetracted, is_retracted_theater_episode
+from memory.recent import (
+    TheaterEpisodeRetracted,
+    _positive_metadata_int,
+    is_retracted_theater_episode,
+)
 from .runtime import app
 
 
@@ -142,13 +146,6 @@ def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[s
         )
         for story_id, story_messages in grouped.items()
     }
-
-
-def _positive_metadata_int(value) -> int:
-    """Read a theater counter from capsule metadata; anything but a positive int is 0."""
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return 0
 
 
 def _theater_memory_render_state(history: list):

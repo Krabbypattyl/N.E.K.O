@@ -431,6 +431,11 @@ def _copy_message_metadata(message, metadata):
 
 
 def _positive_metadata_int(value) -> int:
+    """Read a theater counter from capsule metadata; anything but a positive int is 0.
+
+    Shared with the memory server's prompt rendering so the stored and rendered
+    run_index / story_run_count can never disagree.
+    """
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return 0
