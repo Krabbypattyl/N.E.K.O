@@ -4,6 +4,9 @@
     const stateApi = root.NekoClickGuideState;
     const t = key => root.t('clickGuide.' + key);
     const isChat = ['/chat', '/chat_full'].includes(location.pathname.replace(/\/$/, ''));
+    // The home replay targets the compact /chat window. Full chat is passive
+    // so the shared channel cannot run two copies of the same chat stage.
+    const receivesChatGuide = location.pathname.replace(/\/$/, '') === '/chat';
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('neko_click_guide') : null;
     let active = false;
     let runId = null;
@@ -59,7 +62,7 @@
     }
     async function receive(message) {
         if (!message || message.action !== 'click_guide' || typeof message.runId !== 'string') return;
-        if (isChat && message.type === 'start' && !active && lastRemoteRun !== message.runId) {
+        if (receivesChatGuide && message.type === 'start' && !active && lastRemoteRun !== message.runId) {
             if (root.isInTutorial || root.isNekoHomeTutorialPending) return;
             lastRemoteRun = runId = message.runId;
             remoteStopped = false;

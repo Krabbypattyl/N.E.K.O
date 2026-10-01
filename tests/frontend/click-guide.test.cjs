@@ -279,7 +279,7 @@ test('page tutorial starts after inspection ends without an interrupted step', (
     pageGuide.checkAndStartTutorial();
     assert.equal(pageGuide._clickGuideDeferredStart, true);
     let checks = 0;
-    pageGuide.checkAndStartTutorial = () => { checks++; };
+    pageGuide.checkAndStartTutorial = () => { checks++; pageGuide._clickGuideDeferredStart = false; };
     root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
     assert.equal(checks, 0);
     delete root.__nekoClickGuideWindowInspection;
@@ -298,6 +298,36 @@ test('page tutorial starts after inspection ends without an interrupted step', (
     root.document.dispatchEvent(new root.Event('visibilitychange'));
     assert.equal(checks, 1, 'ordinary focus must not consume newly reset manual intent');
     assert.equal(root.localStorage.getItem('neko_tutorial_memory_browser_manual_intent'), 'true');
+    dom.window.close();
+});
+
+test('deferred inspection startup survives busy and handoff barriers until it can check intent', () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    const manager = root.pageTutorialManager = new root.PageTutorialManager();
+    manager.currentPage = 'memory_browser';
+    root.driver = {};
+    manager.shouldManageCurrentPage = () => true;
+    let handoff = true;
+    manager.hasActiveYuiHandoff = () => handoff;
+    manager.hasSeenTutorial = () => true;
+    let intentChecks = 0;
+    manager.consumeManualIntent = () => { intentChecks++; return false; };
+    manager._clickGuideDeferredStart = true;
+    root.isInTutorial = true;
+    root.dispatchEvent(new root.Event('focus'));
+    assert.equal(manager._clickGuideDeferredStart, true);
+    root.isInTutorial = false;
+    root.dispatchEvent(new root.Event('focus'));
+    assert.equal(manager._clickGuideDeferredStart, true);
+    assert.equal(intentChecks, 0);
+    handoff = false;
+    root.dispatchEvent(new root.Event('focus'));
+    assert.equal(manager._clickGuideDeferredStart, false);
+    assert.equal(intentChecks, 1);
+    root.dispatchEvent(new root.Event('focus'));
+    assert.equal(intentChecks, 1);
     dom.window.close();
 });
 
@@ -1610,6 +1640,36 @@ test('direct model prediction projects stale manual intent without saving unsync
     assert.equal(progress.manualResetRound, 3);
     assert.equal(progress.pendingRound, 3);
     dom.window.close();
+});
+
+test('only compact chat receives the shared start while full chat stays passive', async () => {
+    const contexts = ['/chat', '/chat_full'].map(chatPath => {
+        const ctx = setup();
+        const root = ctx.dom.window;
+        root.history.replaceState(null, '', chatPath);
+        root.t = key => key;
+        root.NekoClickGuideState = {};
+        let preparations = 0;
+        ctx.api.prepareChat = async () => { preparations++; return () => {}; };
+        ctx.api.chatSteps = () => [];
+        ctx.api.createNativePresentation = () => null;
+        ctx.api.createRunner = () => ({ start: async () => {}, stop: async () => {} });
+        root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
+        return { ...ctx, preparations: () => preparations };
+    });
+    try {
+        for (const ctx of contexts) {
+            const root = ctx.dom.window;
+            root.dispatchEvent(new root.CustomEvent('neko:tutorial-overlay-relay', {
+                detail: { action: 'click_guide', type: 'start', runId: 'shared-run' }
+            }));
+        }
+        await delay(10);
+        assert.equal(contexts[0].preparations(), 1);
+        assert.equal(contexts[1].preparations(), 0);
+        assert.equal(contexts[0].dom.window.isNekoClickGuideActive, true);
+        assert.notEqual(contexts[1].dom.window.isNekoClickGuideActive, true);
+    } finally { contexts.forEach(ctx => ctx.dom.window.close()); }
 });
 
 for (const chatPath of ['/chat', '/chat_full']) {

@@ -351,12 +351,12 @@
                 this._clickGuideDeferredStart = true;
                 return;
             }
-            this._clickGuideDeferredStart = false;
             if (!window.driver) return;
             if (!this.shouldManageCurrentPage()) return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
 
+            this._clickGuideDeferredStart = false;
             const manual = this.consumeManualIntent();
             if (!manual && this.hasSeenTutorial()) return;
 
@@ -1247,7 +1247,6 @@
         const manager = window.pageTutorialManager;
         if (!Number.isInteger(manager?._clickGuideInterruptedStep)) {
             if (manager?._clickGuideDeferredStart) {
-                manager._clickGuideDeferredStart = false;
                 manager.checkAndStartTutorial();
             }
             return;
