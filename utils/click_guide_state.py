@@ -1,11 +1,11 @@
 """Independent click-guide progress. Never changes the seven-day tutorial state."""
 
+import json
 from pathlib import Path
 from threading import RLock
 from time import time
 
 from utils.file_utils import atomic_write_json
-from utils.prompt_state.core import load_state_file
 
 _LOCK = RLock()
 
@@ -16,7 +16,11 @@ def _path(config_manager):
 
 def get_click_guide_state(*, config_manager):
     with _LOCK:
-        state = load_state_file(_path(config_manager))
+        try:
+            with _path(config_manager).open("r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+            state = None
         if (isinstance(state, dict) and type(state.get("version")) is int
                 and state["version"] == 1
                 and type(state.get("revision")) is int and state["revision"] >= 0

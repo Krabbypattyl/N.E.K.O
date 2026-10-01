@@ -37,8 +37,22 @@
     }
     function isSevenDayOverride(sevenDay) {
         if (!Number.isFinite(state?.selectedAt)) return false;
-        const latestReset = sevenDay.resetHistory?.at(-1);
+        const latestReset = sevenDay?.resetHistory?.at(-1);
         return Date.parse(latestReset?.resetAt) > state.selectedAt;
     }
-    root.NekoClickGuideState = { ready: () => ready, isReady: () => settled, refresh, update, get: () => state, isSevenDayOverride };
+    function resumeSevenDay() {
+        const sevenDay = root.NekoSevenDayTutorialState;
+        const progress = sevenDay?.loadState();
+        if (state?.choice === 'click' && !state.pending && progress?.manualResetRound
+                && !isSevenDayOverride(progress)) {
+            // Retire the old replay request once; keep dates and settled rounds
+            // so normal daily scheduling can proceed after the click replay.
+            progress.manualResetRound = null;
+            progress.pendingRound = null;
+            progress.updatedAt = new Date().toISOString();
+            sevenDay.saveState(progress);
+        }
+        return progress;
+    }
+    root.NekoClickGuideState = { ready: () => ready, isReady: () => settled, refresh, update, get: () => state, isSevenDayOverride, resumeSevenDay };
 })(window);

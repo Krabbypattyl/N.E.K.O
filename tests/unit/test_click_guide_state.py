@@ -69,6 +69,30 @@ def test_invalid_action_does_not_write(tmp_path):
 
 
 @pytest.mark.unit
+def test_read_error_preserves_pending_choice_and_revision(tmp_path, monkeypatch):
+    config = Config(tmp_path)
+    update_click_guide_state(
+        {"action": "choose", "choice": "click", "expectedRevision": 0}, config_manager=config,
+    )
+    path = tmp_path / "click_guide_state.json"
+    before = path.read_bytes()
+    original_open = type(path).open
+
+    def locked_open(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("temporarily locked")
+        return original_open(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(path), "open", locked_open)
+        with pytest.raises(PermissionError):
+            get_click_guide_state(config_manager=config)
+        with pytest.raises(PermissionError):
+            update_click_guide_state({"action": "reset", "expectedRevision": 1}, config_manager=config)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("invalid", [
     {"revision": "broken"}, {"revision": True}, {"revision": -1},
     {"choice": "invalid"}, {"status": "invalid"}, {"pending": "true"},

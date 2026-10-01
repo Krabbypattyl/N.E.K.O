@@ -205,9 +205,10 @@
             // Preserve normal daily progression after replay, while suppressing
             // only a superseded manual restart of the seven-day tutorial.
             if (!state.pending) {
-                if (!root.NekoSevenDayTutorialState?.loadState()?.manualResetRound) return false;
-                manager.dispatchStartupGreetingRelease('click-guide-already-seen');
-                return true;
+                await root.NekoSevenDayTutorialState?.ready?.();
+                stateApi.resumeSevenDay?.();
+                await root.NekoSevenDayTutorialState?.flush?.();
+                return false;
             }
             const languageWait = new AbortController();
             await api.waitUntil(() => manager.isI18nReady(), languageWait.signal, 15000);

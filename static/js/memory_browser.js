@@ -2426,13 +2426,12 @@
 
     async function performSelectedTutorialReset() {
         const selection = resolveSelectedTutorialReset();
-        if (selection.type === 'home-day' || selection.type === 'home-all'
-                || (selection.type === 'page' && selection.pageKey === 'all')) {
+        async function syncSevenDayChoice() {
             try {
                 await window.NekoClickGuideState.refresh();
                 await window.NekoClickGuideState.update('choose', { choice: 'seven-day' });
             } catch (error) {
-                console.warn('[MemoryBrowser] Click mode update failed; continuing seven-day reset:', error);
+                console.warn('[MemoryBrowser] Seven-day reset committed; mode sync failed:', error);
             }
         }
         if (selection.type === 'home-day') {
@@ -2449,6 +2448,7 @@
                     source: 'memory_browser_reset_select',
                 });
             }
+            await syncSevenDayChoice();
             return;
         }
         if (selection.type === 'home-all') {
@@ -2461,6 +2461,7 @@
                     source: 'memory_browser_reset_home_all',
                 });
             }
+            await syncSevenDayChoice();
             await showTutorialResetNotice(getTutorialHomeAllResetSuccessMessage());
             return;
         }
@@ -2477,6 +2478,7 @@
                 }
             }
             await window.resetTutorialForPage(selection.pageKey);
+            if (selection.pageKey === 'all') await syncSevenDayChoice();
         }
     }
 

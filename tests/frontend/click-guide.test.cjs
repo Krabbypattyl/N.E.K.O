@@ -1297,7 +1297,42 @@ test('explicit click reactivation takes precedence over stale seven-day manual i
     const ctx = startup({ choice: 'click', pending: true }, { manualResetRound: 1 });
     assert.equal(await ctx.api.handleStartup(ctx.manager), true);
     assert.ok(ctx.calls.includes('finish'));
-    assert.equal(await ctx.api.handleStartup(ctx.manager), true, 'completed replay never falls through to stale seven-day intent');
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false, 'completed replay returns to daily scheduling');
+    ctx.dom.window.close();
+});
+
+test('completed click replay clears only superseded manual intent and resumes daily prediction', async () => {
+    const ctx = startup({ choice: 'click', pending: true });
+    const root = ctx.dom.window;
+    const sevenDay = require('../../static/tutorial/core/seven-day-state.js');
+    const options = { storage: root.localStorage, syncServer: false };
+    const reset = sevenDay.resetAll(options);
+    const clickState = root.NekoClickGuideState.get();
+    clickState.selectedAt = Date.parse(reset.resetHistory.at(-1).resetAt) + 1;
+    root.NekoSevenDayTutorialState = {
+        ...sevenDay,
+        ready: async () => {}, isReady: () => true, flush: async () => {},
+        loadState: () => sevenDay.loadState(options),
+        saveState: state => sevenDay.saveState(state, options)
+    };
+    assert.equal(await ctx.api.handleStartup(ctx.manager), true);
+    assert.equal(clickState.pending, false);
+    root.fetch = async () => ({ ok: true, json: async () => clickState });
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
+    await root.NekoClickGuideState.ready();
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+    const resumed = root.NekoSevenDayTutorialState.loadState();
+    assert.equal(resumed.manualResetRound, null);
+    assert.equal(resumed.pendingRound, null);
+    assert.deepEqual(resumed.completedRounds, reset.completedRounds);
+    assert.deepEqual(resumed.resetHistory, reset.resetHistory);
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/avatar-floating-boot-predictor.js'), 'utf8'));
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
+    const newer = sevenDay.resetRound(3, options);
+    clickState.selectedAt = Date.parse(newer.resetHistory.at(-1).resetAt) - 1;
+    root.NekoClickGuideState.resumeSevenDay();
+    assert.equal(root.NekoSevenDayTutorialState.loadState().manualResetRound, 3);
     ctx.dom.window.close();
 });
 
@@ -1345,6 +1380,10 @@ test('seven-day reset continues after either click API failure but retains its o
         if (failure === 'reset') await assert.rejects(root.performReset(), error => error === expected);
         else await root.performReset();
         assert.equal(resets, 1);
+        if (failure === 'reset') {
+            assert.equal(root.NekoClickGuideState.get().pending, true);
+            assert.ok(!ctx.calls.includes('choose'));
+        }
         ctx.dom.window.close();
     }
 });
@@ -1361,7 +1400,7 @@ test('only a newer explicit seven-day reset overrides a click replay mode', asyn
         assert.equal(root.NekoClickGuideState.isSevenDayOverride(sevenDay), overrides);
         root.NekoSevenDayTutorialState.loadState = () => sevenDay;
         root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
-        assert.equal(await ctx.api.handleStartup(ctx.manager), !overrides);
+        assert.equal(await ctx.api.handleStartup(ctx.manager), false);
     }
     const completedReset = { manualResetRound: null, completedRounds: [3],
         resetHistory: [{ day: 3, resetAt: '2026-10-01T04:00:00Z' }] };

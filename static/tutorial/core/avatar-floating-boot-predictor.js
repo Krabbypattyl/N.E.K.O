@@ -39,11 +39,11 @@
     }
 
     function computePredictedRound() {
-        const guideState = loadGuideState();
         const clickGuide = window.NekoClickGuideState;
+        const guideState = clickGuide?.resumeSevenDay?.() || loadGuideState();
         if (clickGuide) {
             const choice = clickGuide.get();
-            if (choice?.choice === 'click' && (choice.pending || guideState.manualResetRound)
+            if (choice?.choice === 'click' && choice.pending
                     && !clickGuide.isSevenDayOverride?.(guideState)) return null;
         }
         return sevenDayState.getNextAutoRound(
