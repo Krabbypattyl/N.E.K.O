@@ -41,9 +41,9 @@
     function computePredictedRound() {
         const guideState = loadGuideState();
         const clickGuide = window.NekoClickGuideState;
-        if (clickGuide && !guideState.manualResetRound) {
+        if (clickGuide) {
             const choice = clickGuide.get();
-            if (choice && (choice.pending || choice.choice !== 'seven-day')) return null;
+            if (choice?.choice === 'click' && choice.pending) return null;
         }
         return sevenDayState.getNextAutoRound(
             guideState,

@@ -139,7 +139,7 @@ def prompt_flow_client(tmp_path, monkeypatch):
 def test_click_guide_choice_reset_and_stale_finish_are_independent(prompt_flow_client):
     client, config = prompt_flow_client
     initial = client.get('/api/click-guide/state').json()
-    assert initial['choice'] is None
+    assert initial['choice'] == 'seven-day'
     chosen = client.post('/api/click-guide/state', json={
         'action': 'choose', 'choice': 'click', 'expectedRevision': initial['revision'],
     })

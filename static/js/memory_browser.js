@@ -2426,6 +2426,11 @@
 
     async function performSelectedTutorialReset() {
         const selection = resolveSelectedTutorialReset();
+        if (selection.type === 'home-day' || selection.type === 'home-all'
+                || (selection.type === 'page' && selection.pageKey === 'all')) {
+            await window.NekoClickGuideState.refresh();
+            await window.NekoClickGuideState.update('choose', { choice: 'seven-day' });
+        }
         if (selection.type === 'home-day') {
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
                 await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
@@ -2475,9 +2480,19 @@
         const button = document.getElementById('click-guide-reset-btn');
         if (button) button.disabled = true;
         try {
-            await window.NekoClickGuideState.refresh();
-            await window.NekoClickGuideState.update('reset');
-            await showTutorialResetNotice(translate('clickGuide.resetSuccess', '点击引导已重置，刷新主页即可开始。七天教程进度保持不变。'));
+            const choice = await window.NekoTutorialReactivation.open(async choice => {
+                await window.NekoClickGuideState.refresh();
+                await window.NekoClickGuideState.update('choose', { choice });
+                if (choice === 'seven-day') {
+                    const reset = window.AvatarFloatingGuideReset?.resetAllAvatarFloatingGuideDays
+                        || window.resetAllAvatarFloatingGuideDays;
+                    if (!reset) throw new Error('Seven-day reset unavailable');
+                    await reset({ source: 'memory_browser_reactivate' });
+                }
+            });
+            if (choice) await showTutorialResetNotice(choice === 'click'
+                ? translate('clickGuide.resetSuccess', '点击引导已重置，刷新主页即可开始。七天教程进度保持不变。')
+                : getTutorialHomeAllResetSuccessMessage());
         } catch (error) {
             console.error('[MemoryBrowser] Click guide reset failed:', error);
             await showTutorialResetNotice(translate('clickGuide.saveFailed', '保存失败，请重试。'), { variant: 'error' });

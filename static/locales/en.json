@@ -5861,11 +5861,11 @@
         "finishButton": "Finish",
         "close": "Close",
         "saveFailed": "Could not save. Please try again.",
-        "resetButton": "Reset click guide",
+        "resetButton": "Reactivate tutorial",
         "resetSuccess": "Click guide reset. Reload the home page to start. Your seven-day progress is unchanged.",
         "choice": {
-            "title": "How would you like to start?",
-            "body": "Choose a quick tour of the controls or the seven-day story tutorial. Both can be restarted from the memory browser.",
+            "title": "Which tutorial would you like to replay?",
+            "body": "Choose the click guide or restart the seven-day story tutorial. The click guide keeps your seven-day progress.",
             "click": "Click guide",
             "sevenDay": "Seven-day tutorial"
         },

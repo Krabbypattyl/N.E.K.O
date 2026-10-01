@@ -1111,8 +1111,8 @@ test('Escape and IME Escape preserve the guide and reach menu handlers', async (
 });
 
 test('startup state and i18n failures clear pending without releasing greetings before fallback', async () => {
-    for (const failure of ['i18n', 'state', 'choose', 'refresh']) {
-        const ctx = startup({ choice: null, pending: false }, { completedRounds: [1] });
+    for (const failure of ['i18n', 'state', 'refresh']) {
+        const ctx = startup({ choice: 'click', pending: true }, { completedRounds: [1] });
         ctx.manager.dispatchStartupGreetingRelease = () => {
             ctx.dom.window.isNekoHomeTutorialPending = false;
             ctx.calls.push('released');
@@ -1155,19 +1155,20 @@ test('failed chat preparation falls back for this session and retries the same c
     ctx.dom.window.close();
 });
 
-test('failed chooser save offers an exit and releases startup', async () => {
+test('memory reactivation save failure keeps retry and cancel available', async () => {
     const ctx = startup({ choice: null, pending: false });
-    ctx.dom.window.NekoClickGuideState.update = async () => { throw new Error('save_failed'); };
-    const pending = ctx.api.handleStartup(ctx.manager);
-    await delay(20);
+    ctx.dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+    const pending = ctx.dom.window.NekoTutorialReactivation.open(async () => { throw new Error('save_failed'); });
     ctx.doc.querySelector('.click-guide-choice button').click();
     await delay(20);
     const buttons = ctx.doc.querySelectorAll('.click-guide-choice button');
     assert.equal(buttons.length, 3);
+    assert.equal(buttons[0].disabled, false);
+    assert.equal(ctx.doc.querySelector('.click-guide-choice p').textContent, 'clickGuide.saveFailed');
     buttons[2].click();
-    assert.equal(await pending, false);
+    assert.equal(await pending, null);
     assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
-    assert.ok(!ctx.calls.includes('released'), 'closing the chooser hands greeting ownership to seven-day');
+    assert.deepEqual(ctx.calls, []);
     ctx.dom.window.close();
 });
 
@@ -1207,7 +1208,7 @@ test('model boot waits for click state before predicting either tutorial', async
     settled = true;
     release(choice);
     await wait;
-    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false, 'new users load their own model before choosing');
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true, 'new users preserve original seven-day role prediction');
     choice = { choice: 'click', pending: true };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false);
     choice = { choice: 'seven-day', pending: false };
@@ -1224,40 +1225,74 @@ test('model boot waits for click state before predicting either tutorial', async
 test('existing seven-day users and completed click users do not see the chooser', async () => {
     for (const choice of ['seven-day', 'click']) {
         const ctx = startup({ choice, status: 'completed', pending: false, revision: 1 });
-        assert.equal(await ctx.api.handleStartup(ctx.manager), choice === 'click');
+        assert.equal(await ctx.api.handleStartup(ctx.manager), false);
         assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
         assert.ok(!ctx.calls.includes('choose'));
         ctx.dom.window.close();
     }
 });
 
-test('first user can choose either flow, with independent completion and cleanup', async () => {
-    for (const choice of ['seven-day', 'click']) {
-        const old = {};
-        const state = { choice: null, status: 'unseen', pending: false, revision: 0 };
-        const ctx = startup(state, old);
-        const result = ctx.api.handleStartup(ctx.manager);
-        await delay(20);
-        const buttons = ctx.doc.querySelectorAll('.click-guide-choice button');
-        assert.equal(buttons.length, 2);
-        buttons[choice === 'click' ? 0 : 1].click();
-        assert.equal(await result, choice === 'click');
-        assert.equal(state.choice, choice);
-        assert.deepEqual(old, {}, 'seven-day progress is untouched');
-        assert.equal(ctx.calls.includes('finish'), choice === 'click');
-        if (choice === 'click') {
-            assert.equal(ctx.dom.window.isNekoClickGuideActive, false);
-            assert.ok(ctx.calls.includes('chat-restored'));
-            assert.ok(ctx.calls.includes('floating-restored'));
-        }
+test('new users always hand startup to seven-day without a choice or click-state writes', async () => {
+    for (const choice of [null, 'seven-day']) {
+        const state = { choice, status: 'unseen', pending: false, revision: 0 };
+        const ctx = startup(state);
+        ctx.api.waitUntil = async () => { throw new Error('click i18n must not gate seven-day'); };
+        assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+        assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
+        assert.deepEqual(ctx.calls, []);
+        assert.equal(state.revision, 0);
         ctx.dom.window.close();
     }
 });
 
-test('a requested seven-day manual reset still takes precedence', async () => {
+test('memory reactivation offers both flows and starts only an explicitly chosen click guide', async () => {
+    for (const choice of ['seven-day', 'click']) {
+        const old = { completedRounds: [1, 2] };
+        const ctx = startup({ choice: 'seven-day', status: 'completed', pending: false, revision: 0 }, old);
+        ctx.dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+        const result = ctx.dom.window.NekoTutorialReactivation.open(selected => ctx.dom.window.NekoClickGuideState.update('choose', { choice: selected }));
+        const buttons = ctx.doc.querySelectorAll('.click-guide-choice button');
+        buttons[choice === 'click' ? 0 : 1].click();
+        assert.equal(await result, choice);
+        assert.equal(await ctx.api.handleStartup(ctx.manager), choice === 'click');
+        assert.deepEqual(old, { completedRounds: [1, 2] });
+        assert.equal(ctx.calls.includes('finish'), choice === 'click');
+        ctx.dom.window.close();
+    }
+});
+
+test('memory browser reactivation saves the choice and resets only the selected progress', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/memory_browser.js'), 'utf8');
+    const start = source.indexOf('    async function resetClickGuide()');
+    const end = source.indexOf('    async function resetSelectedTutorial()', start);
+    for (const choice of ['click', 'seven-day', null]) {
+        const ctx = startup({ choice: 'seven-day', pending: false });
+        const root = ctx.dom.window;
+        root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+        const calls = [];
+        root.translate = key => key;
+        root.showTutorialResetNotice = async message => { calls.push(message); };
+        root.getTutorialHomeAllResetSuccessMessage = () => 'seven-day-reset';
+        root.AvatarFloatingGuideReset = {
+            resetAllAvatarFloatingGuideDays: async () => { calls.push('reset-seven-day'); }
+        };
+        root.eval(source.slice(start, end) + '\nwindow.resetClickGuide = resetClickGuide;');
+        const pending = root.resetClickGuide();
+        const buttons = ctx.doc.querySelectorAll('.click-guide-choice button');
+        buttons[choice === 'click' ? 0 : choice === 'seven-day' ? 1 : 2].click();
+        await pending;
+        assert.equal(calls.includes('reset-seven-day'), choice === 'seven-day');
+        assert.equal(ctx.calls.includes('choose'), choice !== null);
+        assert.equal(root.NekoClickGuideState.get().pending, choice === 'click');
+        if (!choice) assert.deepEqual(calls, []);
+        ctx.dom.window.close();
+    }
+});
+
+test('explicit click reactivation takes precedence over stale seven-day manual intent', async () => {
     const ctx = startup({ choice: 'click', pending: true }, { manualResetRound: 1 });
-    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
-    assert.deepEqual(ctx.calls, []);
+    assert.equal(await ctx.api.handleStartup(ctx.manager), true);
+    assert.ok(ctx.calls.includes('finish'));
     ctx.dom.window.close();
 });
 

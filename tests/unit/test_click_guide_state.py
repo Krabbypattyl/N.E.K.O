@@ -14,10 +14,10 @@ class Config:
 
 
 @pytest.mark.unit
-def test_new_user_can_choose_and_complete_without_settling_seven_days(tmp_path):
+def test_default_seven_day_and_explicit_click_reactivation_preserve_seven_days(tmp_path):
     config = Config(tmp_path)
     state = get_click_guide_state(config_manager=config)
-    assert state["choice"] is None
+    assert state["choice"] == "seven-day"
     choice = update_click_guide_state({"action": "choose", "choice": "click", "expectedRevision": 0}, config_manager=config)
     assert choice["state"]["pending"]
     done = update_click_guide_state({"action": "finish", "status": "completed", "expectedRevision": 1}, config_manager=config)
@@ -38,7 +38,7 @@ def test_existing_user_is_not_prompted_and_reset_is_independent(tmp_path, settle
     assert not state["pending"]
     reset = update_click_guide_state({"action": "reset", "expectedRevision": 0}, config_manager=config)
     assert reset["state"]["pending"]
-    assert reset["state"]["choice"] == "seven-day"
+    assert reset["state"]["choice"] == "click"
     assert old.read_bytes() == before
 
 
@@ -92,5 +92,5 @@ def test_corrupt_store_recovers_and_remains_writable(tmp_path, invalid):
 def test_missing_fields_recover(tmp_path):
     (tmp_path / "click_guide_state.json").write_text('{"version": 1}')
     state = get_click_guide_state(config_manager=Config(tmp_path))
-    assert state == {"version": 1, "revision": 0, "choice": None,
+    assert state == {"version": 1, "revision": 0, "choice": "seven-day",
                      "status": "unseen", "pending": False}

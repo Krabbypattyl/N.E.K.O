@@ -191,107 +191,23 @@
             }
         }
     }
-    async function choose() {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'click-guide-choice';
-        const card = document.createElement('section');
-        card.className = 'click-guide-card';
-        card.setAttribute('role', 'dialog');
-        card.setAttribute('aria-modal', 'true');
-        card.setAttribute('aria-label', t('choice.title'));
-        const title = document.createElement('h2');
-        title.textContent = t('choice.title');
-        const description = document.createElement('p');
-        description.textContent = t('choice.body');
-        const actions = document.createElement('div');
-        actions.className = 'click-guide-actions';
-        card.append(title, description, actions);
-        wrapper.append(card);
-        document.body.append(wrapper);
-        const presentation = api.createNativePresentation();
-        return new Promise(resolve => {
-            const render = disabled => presentation?.update({ step: 0, rect: null, title: title.textContent,
-                body: description.textContent, status: '', progress: '', nextDisabled: disabled, backDisabled: true,
-                labels: { tour: t('choice.title'), skip: t('choice.sevenDay') }, nextLabel: t('choice.click') });
-            ['click', 'seven-day'].forEach((choice, index) => {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.textContent = t(index === 0 ? 'choice.click' : 'choice.sevenDay');
-                if (index === 0) button.className = 'click-guide-next';
-                button.onclick = async () => {
-                    const buttons = [...actions.children];
-                    buttons.forEach(item => { item.disabled = true; });
-                    render(true);
-                    try {
-                        await stateApi.update('choose', { choice });
-                        await presentation?.close();
-                        wrapper.remove();
-                        resolve(choice);
-                    } catch (error) {
-                        description.textContent = t('saveFailed');
-                        buttons.forEach(item => { item.disabled = false; });
-                        // A failed save must never trap the user behind the modal.
-                        if (actions.children.length === 2) {
-                            const later = document.createElement('button');
-                            later.type = 'button';
-                            later.textContent = t('close');
-                            later.onclick = async () => {
-                                await presentation?.close();
-                                wrapper.remove();
-                                resolve(null);
-                            };
-                            actions.append(later);
-                        }
-                        void presentation?.close();
-                        wrapper.style.visibility = '';
-                    }
-                };
-                actions.append(button);
-            });
-            actions.firstElementChild.focus();
-            if (presentation) {
-                wrapper.style.visibility = 'hidden';
-                presentation.bind({ next: () => actions.children[0].click(), skip: () => actions.children[1].click(),
-                    failed: () => { void presentation.close(); wrapper.style.visibility = ''; } });
-                render(false);
-            }
-            wrapper.addEventListener('keydown', event => {
-                if (event.key === 'Tab') {
-                    event.preventDefault();
-                    const buttons = [...actions.children];
-                    buttons[(buttons.indexOf(document.activeElement) + 1) % buttons.length].focus();
-                }
-            });
-        });
-    }
     api.handleStartup = async function (manager) {
         if (isChat || manager.currentPage !== 'home') return false;
         try {
+            const state = await stateApi.ready();
+            // Only an explicit reactivation from the memory browser starts the click guide.
+            // New and legacy unset states always continue the original seven-day flow.
+            if (!state || state.choice !== 'click' || !state.pending) {
+                manager.setHomeTutorialPending(false);
+                return false;
+            }
             const languageWait = new AbortController();
             await api.waitUntil(() => manager.isI18nReady(), languageWait.signal, 15000);
-            const old = root.NekoSevenDayTutorialState?.loadState();
-            if (old?.manualResetRound) return false;
-            let state = await stateApi.ready();
-            if (!state) { manager.setHomeTutorialPending(false); return false; }
-            if (!state.choice && !state.pending) {
-                // Also respect old browser progress which the seven-day authority has just imported.
-                if (old?.completedRounds?.length || old?.skippedRounds?.length || old?.lastAutoShownRound) {
-                    state = await stateApi.update('choose', { choice: 'seven-day' });
-                } else {
-                    manager.setHomeTutorialPending(true);
-                    if (!await choose()) {
-                        manager.setHomeTutorialPending(false);
-                        return false;
-                    }
-                    state = stateApi.get();
-                }
-            }
             if (state.pending) {
                 if (await start({ startup: true })) return true;
                 // Retry the user's choice next time; only this session falls back.
                 return false;
             }
-            if (state.choice === 'click') { manager.dispatchStartupGreetingRelease('click-guide-already-seen'); return true; }
             return false;
         } catch (error) {
             console.warn('[ClickGuide] Startup:', error);

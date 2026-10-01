@@ -5861,11 +5861,11 @@
         "finishButton": "Concluir",
         "close": "Fechar",
         "saveFailed": "Não foi possível salvar. Tente novamente.",
-        "resetButton": "Reiniciar guia interativo",
+        "resetButton": "Reativar tutorial",
         "resetSuccess": "Guia reiniciado. Recarregue o início para começar. O progresso de sete dias permanece igual.",
         "choice": {
-            "title": "Como quer começar?",
-            "body": "Escolha uma apresentação dos botões ou o tutorial de sete dias. Ambos podem ser reiniciados separadamente no navegador de memórias.",
+            "title": "Qual tutorial você quer repetir?",
+            "body": "Escolha o guia de cliques ou reinicie o tutorial de história de sete dias. O guia de cliques mantém seu progresso de sete dias.",
             "click": "Guia interativo",
             "sevenDay": "Tutorial de sete dias"
         },
