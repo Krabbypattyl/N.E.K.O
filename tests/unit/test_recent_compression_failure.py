@@ -632,6 +632,43 @@ def test_compression_skips_summary_when_head_is_only_existing_memo(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    ("max_history_length", "compress_threshold", "head"),
+    [
+        # keep > threshold: the compressible head is just the existing memo.
+        (5, 4, [SystemMessage(content="先前对话的备忘录: 旧摘要")]),
+        # keep == 1: history[:-1+1] is history[:0], so only leading capsules.
+        (1, 3, []),
+    ],
+)
+def test_empty_or_memo_only_head_falls_back_to_hard_cap(
+    tmp_path, max_history_length, compress_threshold, head,
+):
+    """Configs that make the guard reachable skip the summary and only hard-cap."""
+    from unittest.mock import AsyncMock
+
+    mgr, name = _make_manager(tmp_path)
+    mgr.max_history_length = max_history_length
+    mgr.compress_threshold = compress_threshold
+    original = [
+        *head,
+        *[_theater_capsule(index) for index in range(2)],
+        HumanMessage(content="h1"),
+        AIMessage(content="a1"),
+        HumanMessage(content="h2"),
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    calls = _record_compress_inputs(mgr)
+    hard_cap = AsyncMock()
+    setattr(mgr, "enforce_hard_cap", hard_cap)
+
+    _run(mgr.update_history([AIMessage(content="a2")], name, compress=True))
+
+    assert calls == []
+    hard_cap.assert_awaited_once()
+    assert hard_cap.await_args.args[0] == name
+
+
 def test_repeated_idle_compression_with_capsules_summarises_once(tmp_path):
     """IdleMaint-style update_history([]) must not re-compress after one pass."""
     mgr, name = _make_manager(tmp_path)

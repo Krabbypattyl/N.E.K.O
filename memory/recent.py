@@ -1617,6 +1617,12 @@ class CompressedRecentHistoryManager:
                 ):
                     # 当前可压缩头部全是剧场胶囊（或只剩已有备忘录），再调摘要模型只会
                     # 反复改写 memo；只能交给保留胶囊的硬上限裁剪。
+                    # Unreachable with the shipped constants (threshold 20, keep 10:
+                    # the head holds >= threshold - keep + 2 = 12 ordinary messages),
+                    # but reachable whenever max_history_length > compress_threshold
+                    # (the head shrinks to at most one message, e.g. the memo) or
+                    # max_history_length == 1 (the
+                    # [:-max_history_length+1] slice is [:0], so the head is empty).
                     await self.enforce_hard_cap(
                         lanlan_name,
                         admission_generation,
