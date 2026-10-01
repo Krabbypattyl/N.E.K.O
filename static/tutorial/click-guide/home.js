@@ -285,8 +285,7 @@
             }
             if (state.pending) {
                 if (await start()) return true;
-                // Keep seven-day startup available on unsupported/broken guide hosts.
-                await stateApi.update('choose', { choice: 'seven-day' }, state.revision);
+                // Retry the user's choice next time; only this session falls back.
                 return false;
             }
             if (state.choice === 'click') { manager.dispatchStartupGreetingRelease('click-guide-already-seen'); return true; }

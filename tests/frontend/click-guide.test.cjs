@@ -1110,7 +1110,7 @@ test('startup state and i18n failures fall back and release personality onboardi
     }
 });
 
-test('failed chat preparation falls back without reporting a save failure or repeating next boot', async () => {
+test('failed chat preparation falls back for this session and retries the same choice next boot', async () => {
     const state = { choice: 'click', pending: true, revision: 1 };
     const ctx = startup(state);
     let notice;
@@ -1118,10 +1118,14 @@ test('failed chat preparation falls back without reporting a save failure or rep
     ctx.api.prepareChat = async () => { throw new Error('host_timeout'); };
     assert.equal(await ctx.api.handleStartup(ctx.manager), false);
     assert.equal(notice, 'clickGuide.connection.body');
-    assert.equal(state.pending, false);
-    assert.equal(state.choice, 'seven-day');
-    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+    assert.equal(state.pending, true);
+    assert.equal(state.choice, 'click');
     assert.ok(!ctx.calls.includes('finish'), 'failed guide is never completed');
+    assert.ok(!ctx.calls.includes('choose'), 'a transient failure never overwrites the choice');
+    ctx.api.prepareChat = async () => () => ctx.calls.push('chat-restored');
+    assert.equal(await ctx.api.handleStartup(ctx.manager), true);
+    assert.equal(state.choice, 'click');
+    assert.ok(ctx.calls.includes('finish'));
     ctx.dom.window.close();
 });
 
@@ -1141,21 +1145,39 @@ test('failed chooser save offers an exit and releases startup', async () => {
     ctx.dom.window.close();
 });
 
-test('unloaded click state preserves the existing seven-day boot prediction', () => {
+test('model boot waits for click state before predicting either tutorial', async () => {
     const { dom } = setup();
     const root = dom.window;
     let choice = null;
-    root.NekoClickGuideState = { get: () => choice };
+    let settled = false;
+    let release;
+    const ready = new Promise(resolve => { release = resolve; });
+    root.NekoClickGuideState = { get: () => choice, isReady: () => settled, ready: () => ready };
     root.NekoSevenDayTutorialState = {
         isReady: () => true, loadState: () => ({}), getNextAutoRound: () => 2,
         getTodayLocalDate: () => '2026-10-01', normalizeRound: value => value,
     };
     root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/avatar-floating-boot-predictor.js'), 'utf8'));
-    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false);
+    let bootReady = false;
+    const wait = root.NekoAvatarFloatingBoot.waitForAuthoritativeState().then(() => { bootReady = true; });
+    await delay(10);
+    assert.equal(bootReady, false);
+    choice = { choice: null, pending: false };
+    settled = true;
+    release(choice);
+    await wait;
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false, 'new users load their own model before choosing');
     choice = { choice: 'click', pending: true };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false);
     choice = { choice: 'seven-day', pending: false };
     assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
+    choice = null;
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true, 'settled API failure falls back to seven-day prediction');
+    for (const file of ['js/index.js', 'live2d/live2d-init.js', 'vrm/vrm-init.js', 'mmd/mmd-init.js']) {
+        const source = fs.readFileSync(path.join(__dirname, '../../static', file), 'utf8');
+        assert.match(source, /await window\.NekoAvatarFloatingBoot\?\.waitForAuthoritativeState\?\.\(\)/);
+    }
     dom.window.close();
 });
 
