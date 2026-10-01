@@ -217,6 +217,7 @@
                 await root.NekoSevenDayTutorialState?.ready?.();
                 stateApi.resumeSevenDay?.();
                 await root.NekoSevenDayTutorialState?.flush?.();
+                manager.setHomeTutorialPending(false);
                 return false;
             }
             const languageWait = new AbortController();

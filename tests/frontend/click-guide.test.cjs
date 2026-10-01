@@ -1249,7 +1249,15 @@ test('model boot waits for click state before predicting either tutorial', async
 test('existing seven-day users and completed click users do not see the chooser', async () => {
     for (const choice of ['seven-day', 'click']) {
         const ctx = startup({ choice, status: 'completed', pending: false, revision: 1 });
+        ctx.dom.window.isNekoHomeTutorialPending = true;
+        const recovery = [];
+        ctx.dom.window.NekoSevenDayTutorialState.ready = async () => { recovery.push('ready'); };
+        ctx.dom.window.NekoClickGuideState.resumeSevenDay = () => { recovery.push('resume'); };
+        ctx.dom.window.NekoSevenDayTutorialState.flush = async () => { recovery.push('flush'); };
         assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false);
+        assert.deepEqual(recovery, choice === 'click' ? ['ready', 'resume', 'flush'] : []);
+        assert.ok(!ctx.calls.includes('released'), 'seven-day startup still owns greeting release');
         assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
         assert.ok(!ctx.calls.includes('choose'));
         ctx.dom.window.close();
