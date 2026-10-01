@@ -34,13 +34,13 @@
     }
 
     async function waitForAuthoritativeState() {
-        await sevenDayState.ready?.();
-        await window.NekoClickGuideState?.ready?.();
+        await Promise.all([sevenDayState.ready?.(), window.NekoClickGuideState?.ready?.()]);
     }
 
     function computePredictedRound() {
         const clickGuide = window.NekoClickGuideState;
-        const guideState = clickGuide?.resumeSevenDay?.() || loadGuideState();
+        const progress = loadGuideState();
+        const guideState = clickGuide?.projectSevenDay?.(progress) || progress;
         if (clickGuide) {
             const choice = clickGuide.get();
             if (choice?.choice === 'click' && choice.pending

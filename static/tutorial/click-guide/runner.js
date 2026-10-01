@@ -1,6 +1,8 @@
 (function (root) {
     'use strict';
     const api = root.NekoClickGuide = root.NekoClickGuide || {};
+    api.createRunId = prefix => prefix + (typeof root.crypto?.randomUUID === 'function'
+        ? root.crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
     api.createRunner = function ({ steps, labels, onEnd, onStep, presentation,
         startIndex = 0, initialHistory = [], initialSkipped = [], backAtStart = false }) {
         let index = -1;

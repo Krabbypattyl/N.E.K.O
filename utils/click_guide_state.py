@@ -21,6 +21,10 @@ def get_click_guide_state(*, config_manager):
                 state = json.load(handle)
         except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
             state = None
+        if isinstance(state, dict) and type(state.get("version")) is int and state["version"] > 1:
+            # An older app must not downgrade a store written by a newer app.
+            return {"version": 1, "revision": 0, "choice": "seven-day",
+                    "status": "unseen", "pending": False, "readOnly": True}
         if (isinstance(state, dict) and type(state.get("version")) is int
                 and state["version"] == 1
                 and type(state.get("revision")) is int and state["revision"] >= 0
@@ -40,6 +44,8 @@ def get_click_guide_state(*, config_manager):
 def update_click_guide_state(payload, *, config_manager):
     with _LOCK:
         state = get_click_guide_state(config_manager=config_manager)
+        if state.get("readOnly"):
+            raise ValueError("Unsupported click-guide state version")
         revision = payload.get("expectedRevision")
         if type(revision) is not int or revision != state["revision"]:
             return {"ok": False, "state": state}

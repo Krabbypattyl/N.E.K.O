@@ -12,6 +12,7 @@
     let lastRemoteRun = null;
     let remoteStopped = false;
     let lastPing = 0;
+    let pageHidden = false;
 
     function send(type, id, reason, details = {}) {
         const message = { action: 'click_guide', type, runId: id, reason, ...details };
@@ -30,6 +31,7 @@
             nativeFallback: t('nativeFallback') };
     }
     function run(steps, section, options = {}) {
+        if (pageHidden) return Promise.resolve({ reason: 'failed' });
         return new Promise((resolve, reject) => {
             const runner = api.createRunner({ steps, labels: { ...labels(), section }, ...options,
                 onEnd: reason => resolve({ reason, history: runner.history, skipped: runner.skipped }),
@@ -42,7 +44,7 @@
         let restore;
         try {
             restore = await api.prepareChat();
-            if (isChat && remoteStopped) return { reason: 'failed' };
+            if (pageHidden || (isChat && remoteStopped)) return { reason: 'failed' };
             const steps = api.chatSteps();
             if (steps[resume?.startIndex]?.id === 'restore') {
                 root.reactChatWindowHost.setChatSurfaceMode('minimized');
@@ -83,7 +85,7 @@
             if (isChat && message.type === 'heartbeat') lastPing = Date.now();
             if (message.type === 'stop' && isChat) {
                 remoteStopped = true;
-                await currentRunner?.stop('skipped');
+                await currentRunner?.stop(message.reason === 'failed' ? 'failed' : 'skipped');
             }
             if (!isChat) remoteResolve?.(message);
         }
@@ -97,9 +99,12 @@
         else if (data?.action === '__nekoTutorialOverlayRelay') void receive(data.detail);
     });
     root.addEventListener('pagehide', () => {
-        if (runId) send(isChat ? 'done' : 'stop', runId, 'skipped');
-        void currentRunner?.stop('skipped');
+        pageHidden = true;
+        if (runId) send(isChat ? 'done' : 'stop', runId, 'failed');
+        remoteResolve?.({ type: 'done', reason: 'failed' });
+        void currentRunner?.stop('failed');
     });
+    root.addEventListener('pageshow', () => { pageHidden = false; });
 
     async function remoteChat(resume) {
         return new Promise(resolve => {
@@ -129,7 +134,7 @@
             root.universalTutorialManager?.setHomeTutorialPending(false);
             return false;
         }
-        runId = 'click-' + crypto.randomUUID();
+        runId = api.createRunId('click-');
         setActive(true);
         const manager = root.universalTutorialManager;
         manager?.clearStartupGreetingRelease('click-guide-start');
@@ -151,7 +156,7 @@
                 if (floating.reason === 'back') {
                     const path = chatResult.history || [];
                     if (!path.length) { outcome = 'failed'; break; }
-                    runId = 'click-' + crypto.randomUUID();
+                    runId = api.createRunId('click-');
                     chatResult = await chat({ startIndex: path.at(-1), initialHistory: path.slice(0, -1),
                         initialSkipped: chatResult.skipped || [] });
                     continue;
@@ -164,10 +169,12 @@
                 break;
             }
             if (chatResult.reason === 'failed' || outcome === 'failed') {
+                if (pageHidden) return false;
                 // A missing peer must not count as a completed chat tutorial.
                 await run([{ title: t('connection.title'), body: t('connection.body'), nextLabel: t('close') }]);
                 return false;
             }
+            if (pageHidden) return false;
             saving = true;
             await stateApi.update('finish', { status: outcome }, state.revision);
             finished = true;

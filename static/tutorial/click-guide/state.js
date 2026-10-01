@@ -19,18 +19,27 @@
             clearTimeout(timer);
         }
     }
-    const ready = refresh().catch(error => { console.warn('[ClickGuide]', error); return null; })
+    const isChat = root.location.pathname.replace(/\/$/, '') === '/chat';
+    const ready = (isChat ? Promise.resolve(null) : refresh()).catch(error => { console.warn('[ClickGuide]', error); return null; })
         .finally(() => { settled = true; });
     async function update(action, values = {}, expectedRevision = state?.revision) {
-        const configResponse = await fetch('/api/config/page_config', { cache: 'no-store' });
-        if (!configResponse.ok) throw new Error('click_guide_config_unavailable');
-        const config = await configResponse.json();
-        const response = await fetch('/api/click-guide/state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': config.autostart_csrf_token || '' },
-            body: JSON.stringify({ action, ...values, expectedRevision })
-        });
-        const result = await response.json();
+        const security = root.nekoLocalMutationSecurity;
+        if (!security) throw new Error('click_guide_security_unavailable');
+        const body = JSON.stringify({ action, ...values, expectedRevision });
+        async function submit() {
+            return fetch('/api/click-guide/state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...await security.getMutationHeaders() },
+                body
+            });
+        }
+        let response = await submit();
+        let result = await response.json();
+        if (response.status === 403 && result.error_code === 'csrf_validation_failed') {
+            await security.refreshToken();
+            response = await submit();
+            result = await response.json();
+        }
         if (result.state) state = result.state;
         if (!response.ok) throw new Error(response.status === 409 ? 'click_guide_state_conflict' : 'click_guide_save_failed');
         return state;
@@ -40,19 +49,23 @@
         const latestReset = sevenDay?.resetHistory?.at(-1);
         return Date.parse(latestReset?.resetAt) > state.selectedAt;
     }
-    function resumeSevenDay() {
-        const sevenDay = root.NekoSevenDayTutorialState;
-        const progress = sevenDay?.loadState();
+    function projectSevenDay(progress) {
         if (state?.choice === 'click' && !state.pending && progress?.manualResetRound
                 && !isSevenDayOverride(progress)) {
-            // Retire the old replay request once; keep dates and settled rounds
-            // so normal daily scheduling can proceed after the click replay.
-            progress.manualResetRound = null;
-            progress.pendingRound = null;
-            progress.updatedAt = new Date().toISOString();
-            sevenDay.saveState(progress);
+            return { ...progress, manualResetRound: null, pendingRound: null };
         }
         return progress;
     }
-    root.NekoClickGuideState = { ready: () => ready, isReady: () => settled, refresh, update, get: () => state, isSevenDayOverride, resumeSevenDay };
+    function resumeSevenDay() {
+        const sevenDay = root.NekoSevenDayTutorialState;
+        const progress = sevenDay?.loadState();
+        const resumed = projectSevenDay(progress);
+        if (resumed !== progress) {
+            // Called only after authoritative state is ready in home startup.
+            resumed.updatedAt = new Date().toISOString();
+            sevenDay.saveState(resumed);
+        }
+        return resumed;
+    }
+    root.NekoClickGuideState = { ready: () => ready, isReady: () => settled, refresh, update, get: () => state, isSevenDayOverride, projectSevenDay, resumeSevenDay };
 })(window);

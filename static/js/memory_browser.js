@@ -2487,7 +2487,6 @@
         if (button) button.disabled = true;
         try {
             const choice = await window.NekoTutorialReactivation.open(async choice => {
-                await window.NekoClickGuideState.refresh();
                 if (choice === 'seven-day') {
                     const reset = window.AvatarFloatingGuideReset?.resetAllAvatarFloatingGuideDays
                         || window.resetAllAvatarFloatingGuideDays;
@@ -2497,6 +2496,7 @@
                     // resetHistory supersedes the old click mode even if this
                     // auxiliary mode write fails; do not offer a misleading cancel.
                     try {
+                        await window.NekoClickGuideState.refresh();
                         await window.NekoClickGuideState.update('choose', { choice });
                     } catch (error) {
                         console.warn('[MemoryBrowser] Seven-day replay activated; mode sync failed:', error);
@@ -2504,6 +2504,7 @@
                     return;
                 }
                 // Commit the selected mode only after its reset succeeds.
+                await window.NekoClickGuideState.refresh();
                 await window.NekoClickGuideState.update('choose', { choice });
             });
             if (choice) await showTutorialResetNotice(choice === 'click'

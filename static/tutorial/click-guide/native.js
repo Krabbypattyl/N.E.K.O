@@ -4,7 +4,7 @@
     api.createNativePresentation = function () {
         const bridge = root.nekoTutorialOverlay;
         if (!bridge?.clickGuideUpdate) return null;
-        const runId = 'click-view-' + crypto.randomUUID();
+        const runId = api.createRunId('click-view-');
         let sequence = 0;
         let frame;
         let callbacks;

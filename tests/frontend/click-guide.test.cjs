@@ -33,6 +33,7 @@ test('locking PNGTuber preserves guide controls while retaining normal hiding ru
 
 function setup() {
     const dom = new JSDOM('<button id="target">Target</button><button id="outside">Outside</button>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/app/app-prompt-shared.js'), 'utf8'));
     for (const module of ['mask', 'highlight', 'target', 'advance', 'opened-window', 'runner']) {
         dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide', module + '.js'), 'utf8'));
     }
@@ -1443,6 +1444,118 @@ test('committed seven-day replay remains successful when auxiliary choice save f
     root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
     assert.equal(await ctx.api.handleStartup(ctx.manager), false, 'seven-day reset owns next startup');
     ctx.dom.window.close();
+});
+
+test('seven-day reactivation commits even when click refresh fails', async () => {
+    const ctx = startup({ choice: 'click', pending: true });
+    const root = ctx.dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+    root.NekoClickGuideState.refresh = async () => { throw new Error('click state offline'); };
+    let reset = false;
+    root.AvatarFloatingGuideReset = { resetAllAvatarFloatingGuideDays: async () => { reset = true; } };
+    const notices = [];
+    root.translate = key => key;
+    root.getTutorialHomeAllResetSuccessMessage = () => 'seven-day-success';
+    root.showTutorialResetNotice = async message => notices.push(message);
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/memory_browser.js'), 'utf8');
+    root.eval(source.slice(source.indexOf('    async function resetClickGuide()'),
+        source.indexOf('    async function resetSelectedTutorial()')) + '\nwindow.resetClickGuide = resetClickGuide;');
+    const result = root.resetClickGuide();
+    ctx.doc.querySelectorAll('.click-guide-choice button')[1].click();
+    await result;
+    assert.equal(reset, true);
+    assert.deepEqual(notices, ['seven-day-success']);
+    assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
+    assert.ok(!ctx.calls.includes('choose'));
+    ctx.dom.window.close();
+});
+
+test('insecure HTTP without randomUUID can start a guide and native presentation', async () => {
+    const ctx = startup({ choice: 'click', pending: true });
+    const root = ctx.dom.window;
+    Object.defineProperty(root.crypto, 'randomUUID', { value: undefined });
+    assert.equal(await ctx.api.handleStartup(ctx.manager), true);
+    assert.ok(ctx.calls.includes('finish'));
+    let closedId;
+    root.nekoTutorialOverlay = { clickGuideUpdate: async () => ({ ok: true }),
+        clickGuideClose: async ({ runId }) => { closedId = runId; } };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/native.js'), 'utf8'));
+    const presentation = ctx.api.createNativePresentation();
+    await presentation.close();
+    assert.match(closedId, /^click-view-.+/);
+    ctx.dom.window.close();
+});
+
+test('pagehide interrupts a pending replay without recording finish or skip', async () => {
+    const state = { choice: 'click', pending: true };
+    const ctx = startup(state);
+    let started = false;
+    ctx.api.createRunner = ({ onEnd }) => ({ history: [], skipped: [],
+        start: async () => { started = true; }, stop: async reason => onEnd(reason) });
+    const result = ctx.api.handleStartup(ctx.manager);
+    while (!started) await delay(1);
+    ctx.dom.window.dispatchEvent(new ctx.dom.window.Event('pagehide'));
+    assert.equal(await result, false);
+    assert.equal(state.pending, true);
+    assert.ok(!ctx.calls.includes('finish'));
+    ctx.dom.window.close();
+});
+
+test('direct model prediction projects stale manual intent without saving unsynchronized state', async () => {
+    const { dom } = setup();
+    const root = dom.window;
+    const progress = { manualResetRound: 3, pendingRound: 3, resetHistory: [] };
+    root.fetch = async () => ({ ok: true, json: async () => ({ choice: 'click', pending: false, selectedAt: 10 }) });
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
+    await root.NekoClickGuideState.ready();
+    root.NekoSevenDayTutorialState = { isReady: () => false, loadState: () => progress,
+        saveState: () => { throw new Error('prediction must never save'); },
+        getNextAutoRound: projected => projected.manualResetRound || 2,
+        getTodayLocalDate: () => '2026-10-01', normalizeRound: value => value };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/avatar-floating-boot-predictor.js'), 'utf8'));
+    assert.equal(root.NekoAvatarFloatingBoot.claimDirectTutorialBoot(), true);
+    assert.equal(root.NekoAvatarFloatingBoot.getPredictedRound(), 2);
+    assert.equal(progress.manualResetRound, 3);
+    assert.equal(progress.pendingRound, 3);
+    dom.window.close();
+});
+
+test('chat state module makes no startup request', async () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.history.replaceState(null, '', '/chat');
+    root.fetch = () => { throw new Error('chat must not read guide state'); };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
+    assert.equal(await root.NekoClickGuideState.ready(), null);
+    assert.equal(root.NekoClickGuideState.isReady(), true);
+    dom.window.close();
+});
+
+test('click mutations reuse CSRF token and retry a CSRF rejection exactly once', async () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.pageConfigReady = Promise.resolve({ autostart_csrf_token: 'initial' });
+    const saved = { choice: 'click', pending: true, revision: 1 };
+    const tokens = [];
+    let configReads = 0;
+    root.fetch = async (url, options = {}) => {
+        if (url === '/api/config/page_config') {
+            configReads++;
+            return { ok: true, json: async () => ({ autostart_csrf_token: 'refreshed' }) };
+        }
+        if (options.method !== 'POST') return { ok: true, json: async () => saved };
+        tokens.push(options.headers['X-CSRF-Token']);
+        if (tokens.length === 1) return { ok: false, status: 403,
+            json: async () => ({ error_code: 'csrf_validation_failed' }) };
+        return { ok: true, status: 200, json: async () => ({ state: saved }) };
+    };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
+    await root.NekoClickGuideState.ready();
+    await root.NekoClickGuideState.update('reset');
+    await root.NekoClickGuideState.update('reset');
+    assert.deepEqual(tokens, ['initial', 'refreshed', 'refreshed']);
+    assert.equal(configReads, 1);
+    dom.window.close();
 });
 
 test('the input lesson keeps focus on the composer instead of collapsing it', async () => {

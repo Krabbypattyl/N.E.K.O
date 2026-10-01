@@ -93,6 +93,20 @@ def test_read_error_preserves_pending_choice_and_revision(tmp_path, monkeypatch)
 
 
 @pytest.mark.unit
+def test_future_version_is_read_only_and_never_downgraded(tmp_path):
+    config = Config(tmp_path)
+    path = tmp_path / "click_guide_state.json"
+    path.write_text(json.dumps({"version": 2, "choice": "click", "future": {"progress": 7}}))
+    before = path.read_bytes()
+    state = get_click_guide_state(config_manager=config)
+    assert state["choice"] == "seven-day" and state["readOnly"]
+    assert path.read_bytes() == before
+    with pytest.raises(ValueError, match="Unsupported"):
+        update_click_guide_state({"action": "reset", "expectedRevision": 0}, config_manager=config)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("invalid", [
     {"revision": "broken"}, {"revision": True}, {"revision": -1},
     {"choice": "invalid"}, {"status": "invalid"}, {"pending": "true"},
