@@ -4,13 +4,14 @@ The frontend already suppresses proactive chat and blocks the ordinary
 microphone while a theater performance runs. These tests pin the server-side
 backstop: a TTL-bounded in-memory activity signal fed by successful theater
 session requests, consulted by the proactive-chat router and by the WebSocket
-voice start, failing open once the signal expires.
+voice start and PCM frames, failing open once the signal expires.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -179,6 +180,94 @@ async def test_ordinary_voice_start_is_declined_while_theater_is_active(monkeypa
     _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
     await websocket_router.websocket_endpoint(websocket, "Lan")
     assert [name for name, _ in manager.calls if name == "start_session"] == ["start_session"]
+    assert websocket.sent_text == []
+
+
+class _LiveVoiceManager(_ProtocolManager):
+    """An ordinary audio session that is live until the server ends it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.is_active = True
+        self.release_end = asyncio.Event()
+
+    async def send_session_ended_by_server(self) -> None:
+        self.calls.append(("session_ended_by_server", None))
+
+    async def end_session(self, *_args, **kwargs) -> None:
+        self.calls.append(("end_session", kwargs))
+        await self.release_end.wait()
+        self.is_active = False
+
+
+_AUDIO_FRAME = {"action": "stream_data", "input_type": "audio", "data": [0, 1, -1, 0]}
+
+
+@pytest.mark.asyncio
+async def test_ordinary_audio_frames_are_dropped_and_live_voice_ended_while_theater_is_active(monkeypatch):
+    """A mic opened before the theater (e.g. the Electron Pet window) cannot keep feeding ordinary turns."""
+    theater_activity.mark_theater_activity("Lan")
+    manager = _LiveVoiceManager()
+    websocket = _EventWebSocket([dict(_AUDIO_FRAME) for _ in range(4)])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    names = [name for name, _ in manager.calls]
+    assert "stream_data" not in names, "no ordinary PCM may reach the manager mid-theater"
+    assert "begin" not in names, "a dropped frame must not claim the voice connection"
+    # The burst ends the live session exactly once, the way other server-side ends do.
+    assert names.count("session_ended_by_server") == 1
+    ends = [kwargs for name, kwargs in manager.calls if name == "end_session"]
+    assert ends == [{"by_server": True, "expected_session": manager.session}]
+    manager.release_end.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert manager.is_active is False
+    sent = [json.loads(payload) for payload in websocket.sent_text]
+    statuses = [json.loads(item["message"]) for item in sent if item.get("type") == "status"]
+    assert statuses == [
+        {"code": "THEATER_SESSION_ACTIVE", "details": {"reason": "theater_session_active", "input_type": "audio"}}
+    ]
+    assert websocket_router._theater_voice_end_tasks == {}
+
+    # Frames after the session is gone are dropped without another teardown.
+    manager.calls.clear()
+    websocket = _EventWebSocket([dict(_AUDIO_FRAME)])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    assert [name for name, _ in manager.calls if name in {"stream_data", "end_session", "begin"}] == []
+
+    # The game route keeps its own voice path while a theater signal lingers.
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([dict(_AUDIO_FRAME)])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket, game_active=True)
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    assert [name for name, _ in manager.calls if name == "stream_data"] == ["stream_data"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release", ["cleared", "expired"])
+async def test_ordinary_audio_frames_flow_once_the_theater_signal_is_gone(monkeypatch, release):
+    """Ended or TTL-expired theater activity leaves ordinary voice untouched."""
+    if release == "expired":
+        stale = time.monotonic() - theater_activity.THEATER_ACTIVITY_TTL_SECONDS - 1
+        theater_activity.mark_theater_activity("Lan", now=stale)
+    else:
+        theater_activity.mark_theater_activity("Lan")
+        theater_activity.clear_theater_activity("Lan")
+    manager = _LiveVoiceManager()
+    websocket = _EventWebSocket([dict(_AUDIO_FRAME), dict(_AUDIO_FRAME)])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    names = [name for name, _ in manager.calls]
+    assert names.count("stream_data") == 2
+    assert "begin" in names
+    assert "end_session" not in names and "session_ended_by_server" not in names
     assert websocket.sent_text == []
 
 

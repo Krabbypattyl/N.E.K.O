@@ -276,6 +276,56 @@ async def _decline_ordinary_input_for_theater(websocket, lanlan_name: str, input
         logger.debug("[%s] theater input decline notice failed: %s", lanlan_name, exc)
 
 
+# lanlan_name -> in-flight task ending an ordinary voice session because PCM
+# kept arriving mid-theater; the frames that follow in the same burst must not
+# schedule a second teardown.
+_theater_voice_end_tasks: dict[str, asyncio.Task] = {}
+
+
+def _drop_ordinary_audio_for_theater(websocket, manager, lanlan_name: str) -> None:
+    """Drop one ordinary PCM frame while a theater runs, ending a live voice session once.
+
+    Server-side backstop for the frontend theater voice guard: a microphone
+    opened before the performance in another window (the Electron Pet floating
+    mic) keeps streaming after the theater starts, and those frames would
+    still produce ordinary turns and TTS interleaved with the theater lines.
+    The frame is dropped before it claims the voice connection or counts as
+    engagement. If an ordinary audio session is still live it is ended the
+    same way other server-side terminations end it, so the recorder that holds
+    the microphone tears it down and the user sees the theater voice notice.
+    The theater never sends PCM over this socket, so its own path is untouched.
+    """
+    pending = _theater_voice_end_tasks.get(lanlan_name)
+    if pending is not None and not pending.done():
+        return
+    if getattr(manager, "is_active", False) is not True or getattr(manager, "input_mode", None) != "audio":
+        return
+    logger.info("[%s] theater session active: ending ordinary voice session still streaming audio", lanlan_name)
+    expected_session = getattr(manager, "session", None)
+
+    async def _end() -> None:
+        try:
+            notify_session_ended = getattr(manager, "send_session_ended_by_server", None)
+            if callable(notify_session_ended):
+                await notify_session_ended()
+            if expected_session is None:
+                await manager.end_session(by_server=True)
+            else:
+                await manager.end_session(by_server=True, expected_session=expected_session)
+        except Exception as exc:
+            logger.warning("[%s] ending ordinary voice for theater failed: %s", lanlan_name, exc)
+        await _decline_ordinary_input_for_theater(websocket, lanlan_name, "audio")
+
+    task = _fire_task(_end())
+    _theater_voice_end_tasks[lanlan_name] = task
+
+    def _forget(done: asyncio.Task) -> None:
+        if _theater_voice_end_tasks.get(lanlan_name) is done:
+            _theater_voice_end_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_forget)
+
+
 def _reserve_avatar_interaction_ingress(
     manager,
     message: dict,
@@ -1101,6 +1151,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # Decline before stamping ingress so a dropped turn never
                     # counts as user engagement.
                     await _decline_ordinary_input_for_theater(websocket, lanlan_name, input_type)
+                    continue
+                if (
+                    input_type == "audio"
+                    and is_theater_active(lanlan_name)
+                    and not is_game_route_active(lanlan_name)
+                ):
+                    # The game route owns its own voice (see the start_session
+                    # game branch above, which also runs before the theater
+                    # check), so only ordinary PCM is dropped here.
+                    _drop_ordinary_audio_for_theater(websocket, session_manager[lanlan_name], lanlan_name)
                     continue
                 if input_type == "audio":
                     # PCM (JSON or decoded binary frame) is a voice engagement:

@@ -354,6 +354,12 @@
         }
         return true;
     }
+    function stopPeerOrdinaryVoiceInput() {
+        // stopOrdinaryVoiceInput only sees this window's appState. In Electron the
+        // floating mic lives in the Pet window, so a voice chat opened there before
+        // the theater would keep streaming; ask every other window to stop it too.
+        postMessage({ action: 'theater:ordinary-voice-stop' });
+    }
     var TYPEWRITER_INTERVAL_MS = 32;
     function historyEntry(id, type, text, author, displayKind, status) {
         return {
@@ -806,6 +812,7 @@
         var nextSessionId = String(message.session_id);
         // 普通主动搭话只在小剧场运行期间暂停，退出时恢复进入前的用户状态。
         lockProactiveChatForTheater();
+        stopPeerOrdinaryVoiceInput();
         // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
         if (!await stopOrdinaryVoiceInput() || launchToken !== launchEpoch) {
             restoreProactiveChatAfterTheater();
@@ -1410,6 +1417,7 @@
             }
             // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
             lockProactiveChatForTheater();
+            stopPeerOrdinaryVoiceInput();
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {
@@ -1464,6 +1472,11 @@
             else launch(message);
         }
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
+        else if (message.action === 'theater:ordinary-voice-stop' && !state.active) {
+            // A theater started in another window: stop this window's ordinary mic or
+            // voice session, exactly as the theater window stops its own before launch.
+            stopOrdinaryVoiceInput().catch(function () {});
+        }
         else if (message.action === 'theater:speech-allowlist') applyPeerSpeechAllowlist(message);
         else if (message.action === 'theater:speech-event' && state.active && message.turn_id) {
             var relayedEvent = { type: String(message.event || ''), detail: { turnId: String(message.turn_id) } };

@@ -56,13 +56,22 @@ function createRuntime(options = {}) {
     const theater = window.nekoTheaterRuntime;
     refreshes.push(typeof theater.suppressesProactiveChat === 'function' ? theater.suppressesProactiveChat() : 'missing');
   } };
+  // Opt-in: record what the runtime broadcasts to other windows.
+  const broadcasts = [];
+  if (options.recordBroadcasts) {
+    window.BroadcastChannel = class {
+      addEventListener() {}
+      postMessage(data) { broadcasts.push(JSON.parse(JSON.stringify(data))); }
+      close() {}
+    };
+  }
   window.window = window;
   vm.createContext(window);
   for (const path of ['static/js/theater_transport.js', 'static/app/app-theater-runtime.js']) {
     vm.runInContext(fs.readFileSync(path, 'utf8'), window, { filename: path });
   }
   const runtime = window.nekoTheaterRuntime;
-  return { window, appState, requests, listeners, refreshes, runtime };
+  return { window, appState, requests, listeners, refreshes, runtime, broadcasts };
 }
 function snapshot(sessionId = 'session_a', revision = 4) {
   return { ok: true, session: { story_package_id: 'story_' + sessionId, session_id: sessionId,
@@ -140,6 +149,25 @@ RUNTIME_SCENARIOS = (
       ctx.runtime.clear('test_exit');
       assert.equal(ctx.runtime.suppressesProactiveChat(), false);
       assert.equal(ctx.refreshes.at(-1), false);
+    """),
+    ("launch_and_restore_ask_other_windows_to_stop_ordinary_voice", r"""
+      // stopOrdinaryVoiceInput only sees this window; the Electron Pet mic must be
+      // told over the shared page channel, on launch and on a reload restore.
+      const stops = ctx => ctx.broadcasts.filter(message => message.action === 'theater:ordinary-voice-stop');
+      const ctx = createRuntime({ recordBroadcasts: true });
+      sendLaunch(ctx);
+      await respond(ctx.requests.shift(), snapshot());
+      assert.equal(ctx.runtime.getState().active, true);
+      const sent = stops(ctx);
+      assert.equal(sent.length, 1, 'launch must ask other windows to stop their ordinary voice');
+      assert.equal(sent[0].schema, ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA);
+      ctx.runtime.clear('test_exit');
+
+      const restored = createRuntime({ recordBroadcasts: true, pointer: { story_id: 'story_session_a', session_id: 'session_a' } });
+      await respond(restored.requests.shift(), snapshot());
+      assert.equal(restored.runtime.getState().active, true);
+      assert.equal(stops(restored).length, 1, 'a restored session must also stop ordinary voice elsewhere');
+      restored.runtime.clear('test_exit');
     """),
     ("exit_releases_server_theater_activity_only_when_active", r"""
       // 服务端兜底按最近剧场请求计时；退出未结束的演绎必须显式释放，未激活的 clear 不得发请求。

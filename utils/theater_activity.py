@@ -16,9 +16,9 @@
 
 This is a cheap server-side backstop for the frontend's own theater guards
 (``isProactiveChatSuppressed`` / ``blocksOrdinaryVoice``): proactive chat and
-ordinary voice start consult :func:`is_theater_active` so a client that missed
-the frontend suppression still cannot interleave ordinary chat with a running
-performance.
+ordinary voice (start and PCM frames) consult :func:`is_theater_active` so a
+client that missed the frontend suppression still cannot interleave ordinary
+chat with a running performance.
 
 The signal is deliberately lossy and fails open:
 

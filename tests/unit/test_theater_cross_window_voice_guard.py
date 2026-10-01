@@ -146,6 +146,30 @@ SCENARIOS = (
       assert.equal(pet.runtime.blocksOrdinaryVoice(), false);
       assert.equal(await micReachesCapture(pet), true);
     """),
+    ("theater_start_stops_mic_already_open_in_pet", r"""
+      // The Pet mic was opened before the theater: blocking new starts is not
+      // enough, the theater window's start broadcast must stop the live one.
+      const { pet } = setupPair();
+      const stops = [];
+      pet.window.appAudioCapture.stopMicCapture = async () => { stops.push('stop'); pet.appState.isRecording = false; };
+      const theaterWindow = new FakeBroadcastChannel('neko_page_channel');
+      const transport = pet.window.nekoTheaterTransport;
+      // A forged message without the theater schema is ignored.
+      theaterWindow.postMessage({ action: 'theater:ordinary-voice-stop' });
+      pet.appState.isRecording = true;
+      flush(); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(stops, []);
+      // An idle Pet has nothing to stop.
+      pet.appState.isRecording = false;
+      theaterWindow.postMessage(transport.createMessage('theater-runtime', { action: 'theater:ordinary-voice-stop' }));
+      flush(); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(stops, []);
+      pet.appState.isRecording = true;
+      theaterWindow.postMessage(transport.createMessage('theater-runtime', { action: 'theater:ordinary-voice-stop' }));
+      flush(); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(stops, ['stop'], 'the Pet must stop the ordinary mic it opened before the theater');
+      assert.equal(pet.appState.isRecording, false);
+    """),
     ("closed_theater_window_goodbye_releases_mic", r"""
       const { pet, chat } = setupPair();
       setChatTheater(chat, true);
