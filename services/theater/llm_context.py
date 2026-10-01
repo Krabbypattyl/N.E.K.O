@@ -96,14 +96,21 @@ def _load_character_profile(
     return profile
 
 
-def _load_player_address(config_manager: Any | None) -> str:
+def _load_player_address(
+    config_manager: Any | None,
+    *,
+    characters: Any | None = None,
+) -> str:
     """读取当前猫娘对玩家的结构化称呼。"""  # noqa: DOCSTRING_CJK
-    if config_manager is None:
-        return ""
-    try:
-        characters = config_manager.load_characters()
-    except Exception:
-        return ""
+    # Callers that already hold a characters snapshot pass it in, so one
+    # request does not pay a second stat + deepcopy of the whole config.
+    if characters is None:
+        if config_manager is None:
+            return ""
+        try:
+            characters = config_manager.load_characters()
+        except Exception:
+            return ""
     master = characters.get("主人") if isinstance(characters, dict) else None
     if not isinstance(master, dict):
         return ""

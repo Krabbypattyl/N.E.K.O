@@ -110,6 +110,22 @@ def test_authoring_names_use_current_card_and_master_nickname_only():
     assert numeric_v2_authoring_names(_NameConfig()) == {"player_name": "小明，二号", "catgirl_name": "霜月"}
 
 
+def test_catgirl_binding_loads_the_character_config_once():
+    from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+
+    class _CountingConfig(_NameConfig):
+        calls = 0
+
+        def load_characters(self):
+            type(self).calls += 1
+            return super().load_characters()
+
+    binding = numeric_v2_catgirl_binding(_CountingConfig())
+    assert binding["player_address"] == "小明，二号"
+    assert binding["catgirl_name"] == "霜月"
+    assert _CountingConfig.calls == 1
+
+
 def test_authoring_names_cli_returns_only_names(monkeypatch, capsys):
     import json
     from scripts import validate_numeric_v2_story as cli
