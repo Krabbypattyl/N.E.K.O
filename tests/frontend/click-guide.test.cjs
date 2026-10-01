@@ -7,6 +7,30 @@ const { JSDOM } = createRequire(path.resolve(__dirname, '../../frontend/react-ne
 const labels = { tour: 'Tour', next: 'Next', skip: 'Skip', unavailable: 'Unavailable', nativeFallback: 'Click Next if blocked' };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+test('locking PNGTuber preserves guide controls while retaining normal hiding rules', () => {
+    const { dom } = setup();
+    const root = dom.window;
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/pngtuber-core.js'), 'utf8'));
+    const manager = Object.create(root.PNGTuberManager.prototype);
+    manager.updateLockIconPosition = () => {};
+    manager.updateFloatingButtonsPosition = () => {};
+    manager._floatingButtonsContainer = root.document.createElement('div');
+    manager._pngtuberFloatingControlsVisible = false;
+    const toolbar = manager._floatingButtonsContainer;
+    toolbar.dataset.inTutorial = 'true';
+    manager.setLocked(true);
+    assert.equal(toolbar.style.display, 'flex');
+    delete toolbar.dataset.inTutorial;
+    manager.setLocked(true);
+    assert.equal(toolbar.style.display, 'none');
+    manager.setLocked(false);
+    assert.equal(toolbar.style.display, 'none', 'user-hidden controls remain hidden after unlocking');
+    manager._pngtuberFloatingControlsVisible = true;
+    manager.setLocked(false);
+    assert.equal(toolbar.style.display, 'flex');
+    dom.window.close();
+});
+
 function setup() {
     const dom = new JSDOM('<button id="target">Target</button><button id="outside">Outside</button>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
     for (const module of ['mask', 'highlight', 'target', 'advance', 'opened-window', 'runner']) {

@@ -2710,9 +2710,9 @@
                 this.container.classList.remove('locked-hover-fade');
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                const shouldHideButtons = this.isLocked
-                    || isYuiGuideFloatingToolbarSuppressed()
-                    || this._pngtuberFloatingControlsVisible === false;
+                const inTutorial = this._floatingButtonsContainer.dataset.inTutorial === 'true';
+                const shouldHideButtons = isYuiGuideFloatingToolbarSuppressed()
+                    || (!inTutorial && (this.isLocked || this._pngtuberFloatingControlsVisible === false));
                 this._floatingButtonsContainer.style.display = shouldHideButtons ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
