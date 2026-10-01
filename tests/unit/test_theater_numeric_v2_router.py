@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 import pytest
 
 from main_routers import numeric_theater_router
-from memory.recent import CompressedRecentHistoryManager
 from services.theater.numeric_v2_actor import NumericV2ActorError
 from services.theater.numeric_v2_archive import (
     NumericV2ArchiveError,
@@ -5103,37 +5102,6 @@ def test_sql_history_replaces_theater_story_event_atomically(tmp_path):
     assert "旧周目摘要" not in "\n".join(row[0] for row in rows)
     assert "新周目一" in rows[0][0]
     assert "新周目二" in rows[1][0]
-
-
-def test_recent_compression_prompt_uses_theater_episode_context_only():
-    """摘要提示只引用剧场单集上下文，不重新展开完整演绎正文。"""  # noqa: DOCSTRING_CJK
-
-    manager = CompressedRecentHistoryManager.__new__(CompressedRecentHistoryManager)
-    manager.name_mapping = {"human": "哥哥"}
-    message = AIMessage(
-        content="雨点敲在窗沿。\n\n（抬起头）你来了。",
-        metadata={
-            "source": THEATER_MEMORY_SOURCE,
-            "session_id": "memory_projection",
-            "archive_from_revision": 1,
-            "archive_through_revision": 1,
-            "story_title": "雨夜合租",
-            "episode_status": "paused",
-            "parts": [
-                {"kind": "scene_narration", "phase": "opening", "text": "雨点敲在窗沿。"},
-                {"kind": "action", "phase": "opening", "text": "（抬起头）"},
-                {"kind": "dialogue", "phase": "opening", "text": "你来了。"},
-            ],
-        },
-    )
-
-    rendered = manager._render_messages_to_text([message], "测试猫娘")
-
-    assert "共同演绎小剧场《雨夜合租》" in rendered
-    assert "属于虚构剧情，不代表现实经历" in rendered
-    assert "雨点敲在窗沿。" not in rendered
-    assert "测试猫娘 | （抬起头）你来了。" not in rendered
-    assert "【旁白】" not in rendered
 
 
 def test_numeric_archive_retries_transient_windows_permission_error(monkeypatch):

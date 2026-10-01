@@ -43,7 +43,6 @@ from config.prompts.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
     get_further_summarize_prompt, get_history_review_prompt,
     get_summary_stale_hint,
-    get_theater_memory_context,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import (
@@ -1809,69 +1808,7 @@ class CompressedRecentHistoryManager:
         name_mapping = self.name_mapping.copy()
         name_mapping['ai'] = lanlan_name
         lines = []
-        theater_episodes: set[tuple[str, str]] = set()
-        latest_theater_metadata = {
-            theater_memory_episode_key(message): message_metadata(message)
-            for message in messages
-            if is_theater_memory_message(message)
-        }
-        latest_episode_by_story: dict[str, tuple[str, str]] = {}
-        latest_rank_by_story: dict[str, tuple[int, int]] = {}
-        for position, (episode_key, metadata) in enumerate(
-            latest_theater_metadata.items()
-        ):
-            run_index = _positive_metadata_int(metadata.get('run_index'))
-            rank = (run_index, position)
-            if rank >= latest_rank_by_story.get(episode_key[0], (-1, -1)):
-                latest_rank_by_story[episode_key[0]] = rank
-                latest_episode_by_story[episode_key[0]] = episode_key
-        # Locale detection truncates and tokenizes every message; only theater
-        # capsules need it, and _split_messages_by_budget renders per message.
-        theater_lang = (
-            _detect_recent_prompt_language(self._summary_prompt_locale_text(messages))
-            if latest_theater_metadata
-            else None
-        )
         for msg in messages:
-            if is_theater_memory_message(msg):
-                episode_key = theater_memory_episode_key(msg)
-                if episode_key not in theater_episodes:
-                    metadata = latest_theater_metadata[episode_key]
-                    is_latest_story_run = (
-                        latest_episode_by_story.get(episode_key[0]) == episode_key
-                    )
-                    lines.append(get_theater_memory_context(
-                        theater_lang,
-                        name=lanlan_name,
-                        master=self.name_mapping['human'],
-                        title=str(metadata.get('story_title') or ''),
-                        status=str(metadata.get('episode_status') or 'paused'),
-                        ending=str(metadata.get('ending_title') or ''),
-                        summary=str(
-                            metadata.get('episode_summary')
-                            or metadata.get('ending_summary')
-                            or ''
-                        ),
-                        run_index=(
-                            metadata.get('run_index')
-                            if isinstance(metadata.get('run_index'), int)
-                            and not isinstance(metadata.get('run_index'), bool)
-                            else 0
-                        ),
-                        story_run_count=(
-                            _positive_metadata_int(metadata.get('story_run_count'))
-                            if is_latest_story_run
-                            else 0
-                        ),
-                        ending_titles=(
-                            metadata.get('ending_titles_seen')
-                            if is_latest_story_run
-                            and isinstance(metadata.get('ending_titles_seen'), list)
-                            else []
-                        ),
-                    ))
-                    theater_episodes.add(episode_key)
-                continue
             role = name_mapping.get(getattr(msg, 'type', ''), getattr(msg, 'type', ''))
             lines.append(f"{role} | {self._render_message_content(msg)}")
         return "\n".join(lines)
