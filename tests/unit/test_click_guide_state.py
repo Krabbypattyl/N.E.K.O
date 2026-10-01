@@ -66,3 +66,31 @@ def test_invalid_action_does_not_write(tmp_path):
     with pytest.raises(ValueError):
         update_click_guide_state({"action": "finish", "status": "anything", "expectedRevision": 0}, config_manager=config)
     assert get_click_guide_state(config_manager=config) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid", [
+    {"revision": "broken"}, {"revision": True}, {"revision": -1},
+    {"choice": "invalid"}, {"status": "invalid"}, {"pending": "true"},
+    {"version": True},
+])
+def test_corrupt_store_recovers_and_remains_writable(tmp_path, invalid):
+    state = {"version": 1, "revision": 0, "choice": None,
+             "status": "unseen", "pending": False, **invalid}
+    (tmp_path / "click_guide_state.json").write_text(json.dumps(state))
+    config = Config(tmp_path)
+    recovered = get_click_guide_state(config_manager=config)
+    assert recovered["revision"] == 0
+    result = update_click_guide_state(
+        {"action": "choose", "choice": "click", "expectedRevision": 0},
+        config_manager=config,
+    )
+    assert result["ok"] and result["state"]["pending"]
+
+
+@pytest.mark.unit
+def test_missing_fields_recover(tmp_path):
+    (tmp_path / "click_guide_state.json").write_text('{"version": 1}')
+    state = get_click_guide_state(config_manager=Config(tmp_path))
+    assert state == {"version": 1, "revision": 0, "choice": None,
+                     "status": "unseen", "pending": False}

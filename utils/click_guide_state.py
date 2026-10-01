@@ -17,7 +17,12 @@ def _path(config_manager):
 def get_click_guide_state(*, config_manager):
     with _LOCK:
         state = load_state_file(_path(config_manager))
-        if isinstance(state, dict) and state.get("version") == 1:
+        if (isinstance(state, dict) and type(state.get("version")) is int
+                and state["version"] == 1
+                and type(state.get("revision")) is int and state["revision"] >= 0
+                and "choice" in state and state["choice"] in (None, "click", "seven-day")
+                and state.get("status") in ("unseen", "completed", "skipped")
+                and type(state.get("pending")) is bool):
             return state
         old = load_seven_day_tutorial_store(config_manager).get("state") or {}
         existing = bool(old.get("completedRounds") or old.get("skippedRounds")

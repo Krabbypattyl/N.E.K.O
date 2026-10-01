@@ -125,15 +125,19 @@
         });
     }
     async function start() {
-        if (active || root.isInTutorial || root.universalTutorialManager?.isTutorialRunning) return false;
-        const state = await stateApi.refresh();
+        if (active || root.isInTutorial || root.universalTutorialManager?.isTutorialRunning) {
+            root.universalTutorialManager?.dispatchStartupGreetingRelease('click-guide-start-deferred');
+            return false;
+        }
         runId = 'click-' + crypto.randomUUID();
         setActive(true);
         const manager = root.universalTutorialManager;
         manager?.clearStartupGreetingRelease('click-guide-start');
         let outcome = 'skipped';
         let restoreFloating;
+        let saving = false;
         try {
+            const state = await stateApi.refresh();
             const localChat = api.resolveTarget('#react-chat-window-shell');
             const native = root.nekoTutorialOverlay;
             const chat = resume => !localChat && native?.relayToChat ? remoteChat(resume) : runChat(null, resume);
@@ -163,20 +167,24 @@
                 await run([{ title: t('connection.title'), body: t('connection.body'), nextLabel: t('close') }]);
                 return false;
             }
+            saving = true;
             await stateApi.update('finish', { status: outcome }, state.revision);
             return true;
         } catch (error) {
             console.warn('[ClickGuide] Session:', error);
-            root.showStatusToast?.(t('saveFailed'), 5000);
+            root.showStatusToast?.(t(saving ? 'saveFailed' : 'connection.body'), 5000);
             return false;
         } finally {
-            send('stop', runId);
-            await currentRunner?.stop('skipped');
-            try { await restoreFloating?.(); }
-            finally {
-                setActive(false);
-                runId = null;
-                manager?.dispatchStartupGreetingRelease('click-guide-ended');
+            try {
+                send('stop', runId);
+                await currentRunner?.stop('skipped');
+            } finally {
+                try { await restoreFloating?.(); }
+                finally {
+                    setActive(false);
+                    runId = null;
+                    manager?.dispatchStartupGreetingRelease('click-guide-ended');
+                }
             }
         }
     }
@@ -219,7 +227,20 @@
                     } catch (error) {
                         description.textContent = t('saveFailed');
                         buttons.forEach(item => { item.disabled = false; });
-                        render(false);
+                        // A failed save must never trap the user behind the modal.
+                        if (actions.children.length === 2) {
+                            const later = document.createElement('button');
+                            later.type = 'button';
+                            later.textContent = t('close');
+                            later.onclick = async () => {
+                                await presentation?.close();
+                                wrapper.remove();
+                                resolve(null);
+                            };
+                            actions.append(later);
+                        }
+                        void presentation?.close();
+                        wrapper.style.visibility = '';
                     }
                 };
                 actions.append(button);
@@ -242,25 +263,39 @@
     }
     api.handleStartup = async function (manager) {
         if (isChat || manager.currentPage !== 'home') return false;
-        const languageWait = new AbortController();
-        await api.waitUntil(() => manager.isI18nReady(), languageWait.signal, 15000);
-        const old = root.NekoSevenDayTutorialState?.loadState();
-        if (old?.manualResetRound) return false;
-        let state = await stateApi.ready();
-        if (!state) { manager.dispatchStartupGreetingRelease('click-guide-state-unavailable'); return true; }
-        if (!state.choice && !state.pending) {
-            // Also respect old browser progress which the seven-day authority has just imported.
-            if (old?.completedRounds?.length || old?.skippedRounds?.length || old?.lastAutoShownRound) {
-                state = await stateApi.update('choose', { choice: 'seven-day' });
-            } else {
-                manager.setHomeTutorialPending(true);
-                await choose();
-                state = stateApi.get();
+        try {
+            const languageWait = new AbortController();
+            await api.waitUntil(() => manager.isI18nReady(), languageWait.signal, 15000);
+            const old = root.NekoSevenDayTutorialState?.loadState();
+            if (old?.manualResetRound) return false;
+            let state = await stateApi.ready();
+            if (!state) { manager.dispatchStartupGreetingRelease('click-guide-state-unavailable'); return false; }
+            if (!state.choice && !state.pending) {
+                // Also respect old browser progress which the seven-day authority has just imported.
+                if (old?.completedRounds?.length || old?.skippedRounds?.length || old?.lastAutoShownRound) {
+                    state = await stateApi.update('choose', { choice: 'seven-day' });
+                } else {
+                    manager.setHomeTutorialPending(true);
+                    if (!await choose()) {
+                        manager.dispatchStartupGreetingRelease('click-guide-choice-deferred');
+                        return false;
+                    }
+                    state = stateApi.get();
+                }
             }
+            if (state.pending) {
+                if (await start()) return true;
+                // Keep seven-day startup available on unsupported/broken guide hosts.
+                await stateApi.update('choose', { choice: 'seven-day' }, state.revision);
+                return false;
+            }
+            if (state.choice === 'click') { manager.dispatchStartupGreetingRelease('click-guide-already-seen'); return true; }
+            return false;
+        } catch (error) {
+            console.warn('[ClickGuide] Startup:', error);
+            manager.dispatchStartupGreetingRelease('click-guide-startup-failed');
+            return false;
         }
-        if (state.pending) { await start(); return true; }
-        if (state.choice === 'click') { manager.dispatchStartupGreetingRelease('click-guide-already-seen'); return true; }
-        return false;
     };
     api.startHome = start;
 })(window);

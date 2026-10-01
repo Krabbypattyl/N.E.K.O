@@ -177,7 +177,7 @@
                     host().setCompactToolFanOpen(false, 'click-guide-tools');
                 },
                 onAdvance({ by }) {
-                    if (by === 'next') skipTools = true;
+                    skipTools = by === 'next';
                 },
                 // A draft can hide the tool button. Clearing it is the user's choice.
                 nextLabel: t('skipTools')

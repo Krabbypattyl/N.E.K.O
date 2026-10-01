@@ -84,7 +84,8 @@
         }
         const windowSkip = () => void finish('skipped');
         function escape(event) {
-            if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); void finish('skipped'); }
+            // Escape belongs to the composer and open menus; skipping is explicit.
+            if (event.isComposing || event.key === 'Escape') return;
             if (event.key === 'Tab') {
                 const target = api.resolveTarget(view()?.target);
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';

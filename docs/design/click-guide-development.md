@@ -126,7 +126,7 @@ NekoClickGuide.createRunner({
 ```sh
 # N.E.K.O
 uv run pytest tests/unit/test_click_guide_state.py tests/unit/test_seven_day_tutorial_state.py tests/unit/test_prompt_flow_router.py -q
-node --test --test-force-exit static/click-guide.test.cjs static/tutorial-seven-day-state.test.cjs
+node --test --test-force-exit tests/frontend/click-guide.test.cjs tests/frontend/tutorial-seven-day-state.test.cjs
 
 # N.E.K.O.-PC
 node --test test/click-guide-overlay.test.js

@@ -3,14 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createRequire } = require('node:module');
-const { JSDOM } = createRequire(path.resolve(__dirname, '../frontend/react-neko-chat/package.json'))('jsdom');
+const { JSDOM } = createRequire(path.resolve(__dirname, '../../frontend/react-neko-chat/package.json'))('jsdom');
 const labels = { tour: 'Tour', next: 'Next', skip: 'Skip', unavailable: 'Unavailable', nativeFallback: 'Click Next if blocked' };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function setup() {
     const dom = new JSDOM('<button id="target">Target</button><button id="outside">Outside</button>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
     for (const module of ['mask', 'highlight', 'target', 'advance', 'opened-window', 'runner']) {
-        dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide', module + '.js'), 'utf8'));
+        dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide', module + '.js'), 'utf8'));
     }
     const target = dom.window.document.querySelector('#target');
     target.getBoundingClientRect = () => ({ left: 100, top: 100, right: 140, bottom: 140, width: 40, height: 40 });
@@ -194,7 +194,7 @@ test(`nested browser pages preserve their parent and clean up (${closeFrom})`, a
 test('page tutorials pause for inspection and resume the interrupted step after the guide leaves', () => {
     const { dom } = setup();
     const root = dom.window;
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/page-tutorial-manager.js'), 'utf8'));
     const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
     pageGuide.currentPage = 'memory_browser';
     root.localStorage.setItem('neko_tutorial_memory_browser_manual_intent', 'true');
@@ -231,7 +231,7 @@ test('page tutorials pause for inspection and resume the interrupted step after 
 test('inspection ending before Driver loads keeps manual page tutorial intent', () => {
     const { dom } = setup();
     const root = dom.window;
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/page-tutorial-manager.js'), 'utf8'));
     const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
     pageGuide.currentPage = 'memory_browser';
     root.localStorage.setItem('neko_tutorial_memory_browser_manual_intent', 'true');
@@ -243,7 +243,7 @@ test('inspection ending before Driver loads keeps manual page tutorial intent', 
 test('page tutorial starts after inspection ends without an interrupted step', () => {
     const { dom } = setup();
     const root = dom.window;
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/page-tutorial-manager.js'), 'utf8'));
     const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
     pageGuide.currentPage = 'memory_browser';
     root.__nekoClickGuideWindowInspection = true;
@@ -260,7 +260,7 @@ test('page tutorial starts after inspection ends without an interrupted step', (
 test('manual page tutorial intent survives an inspection during delayed startup', async () => {
     const { dom } = setup();
     const root = dom.window;
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/core/page-tutorial-manager.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/page-tutorial-manager.js'), 'utf8'));
     const pageGuide = root.pageTutorialManager = new root.PageTutorialManager();
     pageGuide.currentPage = 'memory_browser';
     root.i18nReady = true;
@@ -436,7 +436,7 @@ test('history lessons focus the visible blue bar instead of its transparent butt
     root.getComputedStyle = (element, pseudo) => pseudo === '::before'
         ? { width: lineWidth, height: '3px' } : originalStyle(element);
     target.className = 'compact-history-visibility-handle';
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const [, open, close] = api.chatSteps();
     for (const lesson of [open, close]) {
         assert.equal(lesson.catEars, true);
@@ -475,7 +475,7 @@ test('chat guide opens an initially unmounted host before waiting for its mount'
         await delay(10);
         if (!predicate()) throw new Error('target_not_ready');
     };
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     try {
         const restore = await api.prepareChat();
         assert.equal(mounted, true);
@@ -501,7 +501,7 @@ test('chat guide restores a collapsed native window if React host mounting fails
     api.waitUntil = async predicate => {
         if (!predicate()) throw new Error('target_not_ready');
     };
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     try {
         await assert.rejects(api.prepareChat(), /target_not_ready/);
         assert.equal(restores, 1);
@@ -555,7 +555,7 @@ test('the chat tour stays in one area and preserves a draft or attachment', () =
     frame.className = 'compact-chat-surface-frame';
     frame.innerHTML = '<textarea class="composer-input"></textarea>';
     doc.body.append(frame);
-    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const steps = api.chatSteps();
     assert.deepEqual(Array.from(steps, step => step.id), [
         'chatOverview', 'history', 'historyClose', 'tools', 'screenshot', 'avatar', 'translate',
@@ -573,6 +573,12 @@ test('the chat tour stays in one area and preserves a draft or attachment', () =
     dom.window.reactChatWindowHost.setCompactChatState = value => { reopened = value; };
     steps.find(step => step.id === 'tools').enter();
     assert.equal(reopened, 'input', 'the real send collapses the composer, so tools reopen it');
+    const toolsStep = steps.find(step => step.id === 'tools');
+    const avatarStep = steps.find(step => step.id === 'avatar');
+    toolsStep.onAdvance({ by: 'next' });
+    assert.equal(avatarStep.when(), false);
+    toolsStep.onAdvance({ by: 'target' });
+    assert.equal(avatarStep.when(), true, 'returning and hovering restores the tool lessons');
     assert.equal(steps.find(step => step.id === 'restore').when(), false);
     mode = 'minimized';
     assert.equal(steps.find(step => step.id === 'restore').when(), true);
@@ -598,7 +604,7 @@ test('the chat tour stays in one area and preserves a draft or attachment', () =
 test('history reveal covers the panel, then the close lesson focuses the bar', () => {
     const { dom, api, doc } = setup();
     dom.window.t = key => key;
-    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const handle = doc.createElement('button');
     handle.className = 'compact-history-visibility-handle';
     handle.getBoundingClientRect = () => ({ left: 200, right: 320, top: 500, bottom: 526, width: 120, height: 26 });
@@ -642,7 +648,7 @@ test('history close step puts the ghost cursor on the blue bar after the panel r
     panel.getBoundingClientRect = () => ({ left: 50, right: 250, top: 200, bottom: 510, width: 200, height: 310 });
     anchor.append(panel); doc.body.append(handle, anchor);
     root.reactChatWindowHost = { setCompactHistoryOpen() {} };
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const [, open, close] = api.chatSteps();
     const nativeFrames = [];
     const presentation = { bind() {}, update(frame) { nativeFrames.push(frame); }, async close() {} };
@@ -694,7 +700,7 @@ test('hover lesson advances when the real wheel opens without a click event', as
 test('floating tour covers main buttons once and recalls only after actual goodbye click', () => {
     const { dom, api, doc } = setup();
     dom.window.t = key => key;
-    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const steps = api.floatingSteps();
     assert.deepEqual(Array.from(steps, step => step.id), [
         'floatingOverview', 'mic', 'agent', 'social', 'settings', 'goodbye', 'return', 'lock', 'finish'
@@ -728,7 +734,7 @@ test('floating overview bounds include the first and last actual buttons', () =>
         group.append(button);
     }
     doc.body.append(group);
-    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const overview = api.floatingSteps()[0];
     assert.equal(overview.target(), group);
     assert.deepEqual({ ...overview.focusRect(group) }, { left: 112, top: 110, right: 142, bottom: 280 });
@@ -790,7 +796,7 @@ test('chapter progress counts visited lessons without evaluating future conditio
 test('each highlighted chat tool advances without executing its action', async () => {
     const { dom, api, doc } = setup();
     dom.window.t = key => key;
-    dom.window.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const ids = ['screenshot', 'avatar', 'translate', 'jukebox', 'import', 'export', 'galgame'];
     const actions = Object.fromEntries(ids.map(id => [id, 0]));
     dom.window.reactChatWindowHost = {
@@ -1059,9 +1065,99 @@ function startup(state, old = {}) {
         prepareChat: async () => () => calls.push('chat-restored'),
         prepareFloating: async () => () => calls.push('floating-restored')
     });
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
     return { ...context, manager, calls };
 }
+
+test('Escape and IME Escape preserve the guide and reach menu handlers', async () => {
+    const { dom, api, doc } = setup();
+    let reason;
+    let escapes = 0;
+    doc.addEventListener('keydown', event => { if (event.key === 'Escape') escapes++; });
+    const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    for (const isComposing of [false, true]) {
+        doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing, bubbles: true }));
+    }
+    await delay(20);
+    assert.equal(reason, undefined);
+    assert.equal(escapes, 2);
+    assert.ok(doc.querySelector('.click-guide-layer'));
+    await runner.stop(); dom.window.close();
+});
+
+test('startup state and i18n failures fall back and release personality onboarding', async () => {
+    for (const failure of ['i18n', 'state', 'choose', 'refresh']) {
+        const ctx = startup({ choice: null, pending: false }, { completedRounds: [1] });
+        ctx.manager.dispatchStartupGreetingRelease = () => {
+            ctx.dom.window.isNekoHomeTutorialPending = false;
+            ctx.calls.push('released');
+        };
+        ctx.dom.window.isNekoHomeTutorialPending = true;
+        const fail = async () => { throw new Error('offline'); };
+        if (failure === 'i18n') ctx.api.waitUntil = fail;
+        if (failure === 'state') ctx.dom.window.NekoClickGuideState.ready = async () => null;
+        if (failure === 'choose') ctx.dom.window.NekoClickGuideState.update = fail;
+        if (failure === 'refresh') {
+            ctx.dom.window.NekoClickGuideState.get().pending = true;
+            ctx.dom.window.NekoClickGuideState.refresh = fail;
+        }
+        assert.equal(await ctx.api.handleStartup(ctx.manager), false, failure);
+        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false, failure);
+        assert.ok(ctx.calls.includes('released'));
+        assert.equal(ctx.dom.window.isNekoClickGuideActive === true, false);
+        ctx.dom.window.close();
+    }
+});
+
+test('failed chat preparation falls back without reporting a save failure or repeating next boot', async () => {
+    const state = { choice: 'click', pending: true, revision: 1 };
+    const ctx = startup(state);
+    let notice;
+    ctx.dom.window.showStatusToast = message => { notice = message; };
+    ctx.api.prepareChat = async () => { throw new Error('host_timeout'); };
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+    assert.equal(notice, 'clickGuide.connection.body');
+    assert.equal(state.pending, false);
+    assert.equal(state.choice, 'seven-day');
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+    assert.ok(!ctx.calls.includes('finish'), 'failed guide is never completed');
+    ctx.dom.window.close();
+});
+
+test('failed chooser save offers an exit and releases startup', async () => {
+    const ctx = startup({ choice: null, pending: false });
+    ctx.dom.window.NekoClickGuideState.update = async () => { throw new Error('save_failed'); };
+    const pending = ctx.api.handleStartup(ctx.manager);
+    await delay(20);
+    ctx.doc.querySelector('.click-guide-choice button').click();
+    await delay(20);
+    const buttons = ctx.doc.querySelectorAll('.click-guide-choice button');
+    assert.equal(buttons.length, 3);
+    buttons[2].click();
+    assert.equal(await pending, false);
+    assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
+    assert.ok(ctx.calls.includes('released'));
+    ctx.dom.window.close();
+});
+
+test('unloaded click state preserves the existing seven-day boot prediction', () => {
+    const { dom } = setup();
+    const root = dom.window;
+    let choice = null;
+    root.NekoClickGuideState = { get: () => choice };
+    root.NekoSevenDayTutorialState = {
+        isReady: () => true, loadState: () => ({}), getNextAutoRound: () => 2,
+        getTodayLocalDate: () => '2026-10-01', normalizeRound: value => value,
+    };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/avatar-floating-boot-predictor.js'), 'utf8'));
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
+    choice = { choice: 'click', pending: true };
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), false);
+    choice = { choice: 'seven-day', pending: false };
+    assert.equal(root.NekoAvatarFloatingBoot.shouldSkipUserModelBoot(), true);
+    dom.window.close();
+});
 
 test('existing seven-day users and completed click users do not see the chooser', async () => {
     for (const choice of ['seven-day', 'click']) {
@@ -1139,7 +1235,7 @@ test('history close keeps the panel and the blue collapse bar lit separately', a
     panel.className = 'compact-export-history-panel';
     panel.getBoundingClientRect = () => ({ left: 50, right: 250, top: 200, bottom: 490, width: 200, height: 290 });
     anchor.append(panel); doc.body.append(handle, anchor);
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const guide = api.createRunner({ labels, steps: [api.chatSteps()[2]] });
     try {
         await guide.start();
@@ -1173,7 +1269,7 @@ test('floating overview consumes only a real button click and keeps the cursor o
         group.append(button);
     }
     doc.body.append(group);
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     try {
         for (const name of Object.keys(actions)) {
             const guide = api.createRunner({ labels, steps: [api.floatingSteps()[0], { title: 'Mic' }] });
@@ -1259,7 +1355,7 @@ test('floating adaptation isolates the overlapping lock and restores presence on
     root.t = key => key;
     root.universalTutorialManager = { constructor: { detectModelPrefix: () => 'live2d' } };
     root.live2dManager = { _goodbyeClicked: false, closeAllPopups() {} };
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const cleanup = await api.prepareFloating();
     const lock = doc.querySelector('#live2d-lock-icon');
     assert.ok(lock.classList.contains('click-guide-hidden-control'));
@@ -1287,7 +1383,7 @@ test('an initially away character is recalled for the toolbar and returned after
     root.live2dManager = { _goodbyeClicked: true, closeAllPopups() {} };
     recall.onclick = () => { root.live2dManager._goodbyeClicked = false; };
     doc.querySelector('#live2d-btn-goodbye').onclick = () => { root.live2dManager._goodbyeClicked = true; };
-    root.eval(fs.readFileSync(path.join(__dirname, 'tutorial/click-guide/home-steps.js'), 'utf8'));
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
     const cleanup = await api.prepareFloating();
     assert.equal(root.live2dManager._goodbyeClicked, false);
     await cleanup();
