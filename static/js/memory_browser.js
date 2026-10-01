@@ -2428,8 +2428,12 @@
         const selection = resolveSelectedTutorialReset();
         if (selection.type === 'home-day' || selection.type === 'home-all'
                 || (selection.type === 'page' && selection.pageKey === 'all')) {
-            await window.NekoClickGuideState.refresh();
-            await window.NekoClickGuideState.update('choose', { choice: 'seven-day' });
+            try {
+                await window.NekoClickGuideState.refresh();
+                await window.NekoClickGuideState.update('choose', { choice: 'seven-day' });
+            } catch (error) {
+                console.warn('[MemoryBrowser] Click mode update failed; continuing seven-day reset:', error);
+            }
         }
         if (selection.type === 'home-day') {
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {

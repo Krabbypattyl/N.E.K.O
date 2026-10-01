@@ -94,3 +94,24 @@ def test_missing_fields_recover(tmp_path):
     state = get_click_guide_state(config_manager=Config(tmp_path))
     assert state == {"version": 1, "revision": 0, "choice": "seven-day",
                      "status": "unseen", "pending": False}
+
+
+@pytest.mark.unit
+def test_choice_timestamp_survives_completion_and_legacy_click_is_migrated(tmp_path, monkeypatch):
+    config = Config(tmp_path)
+    monkeypatch.setattr("utils.click_guide_state.time", lambda: 1000)
+    chosen = update_click_guide_state(
+        {"action": "choose", "choice": "click", "expectedRevision": 0}, config_manager=config,
+    )["state"]
+    assert chosen["selectedAt"] == 1000000
+    monkeypatch.setattr("utils.click_guide_state.time", lambda: 2000)
+    done = update_click_guide_state(
+        {"action": "finish", "status": "completed", "expectedRevision": 1}, config_manager=config,
+    )["state"]
+    assert done["selectedAt"] == 1000000
+    del done["selectedAt"]
+    (tmp_path / "click_guide_state.json").write_text(json.dumps(done))
+    migrated = get_click_guide_state(config_manager=config)
+    assert migrated["selectedAt"] == 2000000
+    assert migrated["revision"] == 3
+    assert get_click_guide_state(config_manager=config) == migrated

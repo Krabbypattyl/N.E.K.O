@@ -35,5 +35,10 @@
         if (!response.ok) throw new Error(response.status === 409 ? 'click_guide_state_conflict' : 'click_guide_save_failed');
         return state;
     }
-    root.NekoClickGuideState = { ready: () => ready, isReady: () => settled, refresh, update, get: () => state };
+    function isSevenDayOverride(sevenDay) {
+        if (!sevenDay?.manualResetRound || !Number.isFinite(state?.selectedAt)) return false;
+        const latestReset = sevenDay.resetHistory?.at(-1);
+        return Date.parse(latestReset?.resetAt) > state.selectedAt;
+    }
+    root.NekoClickGuideState = { ready: () => ready, isReady: () => settled, refresh, update, get: () => state, isSevenDayOverride };
 })(window);

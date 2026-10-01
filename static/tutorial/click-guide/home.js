@@ -197,7 +197,8 @@
             const state = await stateApi.ready();
             // Only an explicit reactivation from the memory browser starts the click guide.
             // New and legacy unset states always continue the original seven-day flow.
-            if (!state || state.choice !== 'click') {
+            if (!state || state.choice !== 'click'
+                    || stateApi.isSevenDayOverride?.(root.NekoSevenDayTutorialState?.loadState())) {
                 manager.setHomeTutorialPending(false);
                 return false;
             }

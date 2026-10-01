@@ -40,14 +40,18 @@
                         if (!choice) { close(null); return; }
                         saving = true;
                         [...actions.children].forEach(item => { item.disabled = true; });
+                        let failed = false;
                         try {
                             await save(choice);
                             close(choice);
                         } catch (_) {
+                            failed = true;
+                            description.setAttribute('role', 'alert');
                             description.textContent = t('saveFailed');
                         } finally {
                             saving = false;
                             [...actions.children].forEach(item => { item.disabled = false; });
+                            if (failed) button.focus();
                         }
                     };
                     actions.append(button);

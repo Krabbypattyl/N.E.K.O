@@ -1165,6 +1165,8 @@ test('memory reactivation save failure keeps retry and cancel available', async 
     assert.equal(buttons.length, 3);
     assert.equal(buttons[0].disabled, false);
     assert.equal(ctx.doc.querySelector('.click-guide-choice p').textContent, 'clickGuide.saveFailed');
+    assert.equal(ctx.doc.querySelector('.click-guide-choice p').getAttribute('role'), 'alert');
+    assert.equal(ctx.doc.activeElement, buttons[0]);
     buttons[2].click();
     assert.equal(await pending, null);
     assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
@@ -1321,6 +1323,47 @@ test('failed seven-day replay reset then cancel preserves the pending click choi
     ctx.doc.querySelectorAll('.click-guide-choice button')[2].click();
     await result;
     assert.deepEqual(state, { choice: 'click', pending: true, revision: 7 });
+    ctx.dom.window.close();
+});
+
+test('seven-day reset continues after either click API failure but retains its own errors', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/memory_browser.js'), 'utf8');
+    const start = source.indexOf('    async function performSelectedTutorialReset()');
+    const end = source.indexOf('    async function resetClickGuide()', start);
+    for (const failure of ['refresh', 'update', 'reset']) {
+        const ctx = startup({ choice: 'click', pending: true });
+        const root = ctx.dom.window;
+        root.resolveSelectedTutorialReset = () => ({ type: 'home-day', day: 3 });
+        const expected = new Error(failure);
+        if (failure !== 'reset') root.NekoClickGuideState[failure] = async () => { throw expected; };
+        let resets = 0;
+        root.AvatarFloatingGuideReset = { resetAvatarFloatingGuideDay: async () => {
+            resets++;
+            if (failure === 'reset') throw expected;
+        } };
+        root.eval(source.slice(start, end) + '\nwindow.performReset = performSelectedTutorialReset;');
+        if (failure === 'reset') await assert.rejects(root.performReset(), error => error === expected);
+        else await root.performReset();
+        assert.equal(resets, 1);
+        ctx.dom.window.close();
+    }
+});
+
+test('only a newer explicit seven-day reset overrides a click replay mode', async () => {
+    const ctx = startup({ choice: 'click', pending: false });
+    const root = ctx.dom.window;
+    const selectedAt = Date.parse('2026-10-01T03:00:00Z');
+    root.fetch = async () => ({ ok: true, json: async () => ({ choice: 'click', pending: false, selectedAt }) });
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/state.js'), 'utf8'));
+    await root.NekoClickGuideState.ready();
+    for (const [time, overrides] of [['02:59:00', false], ['03:01:00', true]]) {
+        const sevenDay = { manualResetRound: 3, resetHistory: [{ day: 3, resetAt: `2026-10-01T${time}Z` }] };
+        assert.equal(root.NekoClickGuideState.isSevenDayOverride(sevenDay), overrides);
+        root.NekoSevenDayTutorialState.loadState = () => sevenDay;
+        root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home.js'), 'utf8'));
+        assert.equal(await ctx.api.handleStartup(ctx.manager), !overrides);
+    }
+    assert.equal(root.NekoClickGuideState.isSevenDayOverride({ resetHistory: [{ resetAt: '2026-10-01T04:00:00Z' }] }), false);
     ctx.dom.window.close();
 });
 
