@@ -451,6 +451,31 @@ def test_update_history_preserves_legacy_theater_message_before_migration(tmp_pa
     )
 
 
+def test_hard_cap_treats_legacy_theater_messages_like_compression(tmp_path, monkeypatch):
+    """The hard cap must keep legacy theater messages, and never pick one as memo head."""
+    mgr, name = _make_manager(tmp_path)
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
+    legacy_metadata = {
+        "source": "theater_numeric_v2",
+        "story_id": "legacy_story",
+        "session_id": "legacy_session",
+    }
+    legacy_system = SystemMessage(content="legacy theater opening", metadata=legacy_metadata)
+    legacy_ai = AIMessage(content="legacy theater performance", metadata=legacy_metadata)
+    memo = SystemMessage(content="memo of earlier ordinary chat")
+    body = [HumanMessage(content=f"original message {i} with some length") for i in range(12)]
+    _write_recent(mgr.log_file_path[name], [legacy_system, memo, legacy_ai] + body)
+
+    _run(mgr.enforce_hard_cap(name))
+
+    kept = _read_recent(mgr.log_file_path[name])
+    assert [message.content for message in kept[:3]] == [
+        legacy_system.content, memo.content, legacy_ai.content,
+    ]
+    assert len(kept) < 3 + len(body)
+    assert kept[-1].content == body[-1].content
+
+
 def test_review_commit_preserves_capsule_position_between_ordinary_ranges(tmp_path):
     """通用 review 跨过剧场胶囊提交时只能改普通消息槽位。"""  # noqa: DOCSTRING_CJK
 

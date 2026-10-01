@@ -2116,10 +2116,12 @@ class CompressedRecentHistoryManager:
             if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
                 return None  # 未超，不动
             # 剧场胶囊带有独立来源和周目语义，不能被普通聊天硬裁剪吞掉。
+            # Same predicate as compression and review: every theater memory
+            # message is outside the ordinary body and can never be the memo head.
             theater_indices = {
                 index
                 for index, message in enumerate(history)
-                if is_theater_episode_summary(message)
+                if is_theater_memory_message(message)
             }
             ordinary_indices = [
                 index
