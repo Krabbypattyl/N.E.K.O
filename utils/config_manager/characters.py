@@ -26,21 +26,6 @@ from copy import deepcopy
 from utils.file_utils import atomic_write_json
 
 from ._shared import logger
-
-
-def _characters_file_signature(path):
-    """Return the cache-validation signature of a characters file.
-
-    A float mtime alone misses a rewrite that lands in the same timestamp tick
-    (coarse on Windows), so the cache would keep serving the previous content.
-    The nanosecond mtime plus the size catches every rewrite that changes the
-    length and narrows same-length collisions to the filesystem's real
-    resolution. ``os.path.getmtime`` is still consulted first so its errors (a
-    missing or unreadable source) keep driving the dirty-identity fallbacks.
-    """
-    mtime = os.path.getmtime(path)
-    stat_result = os.stat(path)
-    return (mtime, stat_result.st_mtime_ns, stat_result.st_size)
 from .persona_payload import (
     _append_persona_guidance_to_prompt,
     _build_effective_character_payload,
@@ -51,6 +36,21 @@ from .reserved_schema import (
     migrate_catgirl_reserved,
     validate_reserved_schema,
 )
+
+
+def _characters_file_signature(path):
+    """Return the cache-validation signature of a characters file.
+
+    A float mtime alone misses a rewrite that lands in the same timestamp tick
+    (coarse on Windows), so the cache would keep serving the previous content.
+    The nanosecond mtime plus the size catches every rewrite that changes the
+    length and narrows same-length collisions to the filesystem's real
+    resolution. One ``os.stat`` runs on every cached read; its errors
+    (``FileNotFoundError`` for a missing source, another ``OSError`` for an
+    unreadable one) drive the dirty-identity fallbacks.
+    """
+    stat_result = os.stat(path)
+    return (stat_result.st_mtime_ns, stat_result.st_size)
 
 
 class CharactersMixin:

@@ -197,13 +197,14 @@ def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_pa
     assert cm._characters_dirty
     if failure in {"mtime", "stat_missing"}:
         error = FileNotFoundError("missing") if failure == "stat_missing" else OSError("unreadable")
-        with patch("utils.config_manager.characters.os.path.getmtime", side_effect=error), \
+        with patch("utils.config_manager.characters._characters_file_signature", side_effect=error), \
              patch.object(cm, "save_characters") as save:
             loaded = cm.load_characters()
             save.assert_not_called()
     else:
         error = FileNotFoundError("missing") if failure == "missing" else OSError("unreadable")
-        with patch("utils.config_manager.characters.os.path.getmtime", return_value=-1), \
+        # A changed signature forces a re-read, which then fails.
+        with patch("utils.config_manager.characters._characters_file_signature", return_value=(-1, -1)), \
              patch("builtins.open", side_effect=error):
             loaded = cm.load_characters()
     assert loaded == first
@@ -276,8 +277,10 @@ def test_missing_character_file_retries_dirty_identity_after_write_recovers(tmp_
             numeric_v2_character_ids(cm)
         assert cm.load_characters() == first
     # A stat permission failure does not establish that the source is absent.
-    with patch("utils.config_manager.characters.os.path.getmtime", side_effect=PermissionError("unreadable")), \
-         patch.object(cm, "save_characters") as save:
+    with patch(
+        "utils.config_manager.characters._characters_file_signature",
+        side_effect=PermissionError("unreadable"),
+    ), patch.object(cm, "save_characters") as save:
         assert cm.load_characters() == first
         with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
             numeric_v2_character_ids(cm)
@@ -7003,6 +7006,23 @@ async def test_character_preflight_without_theater_data_skips_maintenance(tmp_pa
 
     maintain.assert_not_called()
     assert not (crud.theater_root(cm) / "numeric_v2").exists()
+
+
+@pytest.mark.unit
+def test_characters_file_signature_costs_one_stat(tmp_path):
+    """The cached read path validates the cache with a single stat syscall."""
+    from utils.config_manager.characters import _characters_file_signature
+
+    path = tmp_path / "characters.json"
+    path.write_text("{}", encoding="utf-8")
+    real_stat = os.stat
+    with patch.object(os, "stat", wraps=real_stat) as stat:
+        signature = _characters_file_signature(str(path))
+    assert stat.call_count == 1
+    expected = real_stat(path)
+    assert signature == (expected.st_mtime_ns, expected.st_size)
+    with pytest.raises(FileNotFoundError):
+        _characters_file_signature(str(tmp_path / "missing.json"))
 
 
 @pytest.mark.unit
