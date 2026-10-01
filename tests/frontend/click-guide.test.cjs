@@ -1110,7 +1110,7 @@ test('Escape and IME Escape preserve the guide and reach menu handlers', async (
     await runner.stop(); dom.window.close();
 });
 
-test('startup state and i18n failures fall back and release personality onboarding', async () => {
+test('startup state and i18n failures clear pending without releasing greetings before fallback', async () => {
     for (const failure of ['i18n', 'state', 'choose', 'refresh']) {
         const ctx = startup({ choice: null, pending: false }, { completedRounds: [1] });
         ctx.manager.dispatchStartupGreetingRelease = () => {
@@ -1128,7 +1128,7 @@ test('startup state and i18n failures fall back and release personality onboardi
         }
         assert.equal(await ctx.api.handleStartup(ctx.manager), false, failure);
         assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false, failure);
-        assert.ok(ctx.calls.includes('released'));
+        assert.ok(!ctx.calls.includes('released'), 'seven-day fallback owns greeting release');
         assert.equal(ctx.dom.window.isNekoClickGuideActive === true, false);
         ctx.dom.window.close();
     }
@@ -1146,10 +1146,12 @@ test('failed chat preparation falls back for this session and retries the same c
     assert.equal(state.choice, 'click');
     assert.ok(!ctx.calls.includes('finish'), 'failed guide is never completed');
     assert.ok(!ctx.calls.includes('choose'), 'a transient failure never overwrites the choice');
+    assert.ok(!ctx.calls.includes('released'), 'failure cannot release greetings before seven-day startup');
     ctx.api.prepareChat = async () => () => ctx.calls.push('chat-restored');
     assert.equal(await ctx.api.handleStartup(ctx.manager), true);
     assert.equal(state.choice, 'click');
     assert.ok(ctx.calls.includes('finish'));
+    assert.ok(ctx.calls.includes('released'), 'successful completion still releases greetings');
     ctx.dom.window.close();
 });
 
@@ -1165,7 +1167,21 @@ test('failed chooser save offers an exit and releases startup', async () => {
     buttons[2].click();
     assert.equal(await pending, false);
     assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);
-    assert.ok(ctx.calls.includes('released'));
+    assert.ok(!ctx.calls.includes('released'), 'closing the chooser hands greeting ownership to seven-day');
+    ctx.dom.window.close();
+});
+
+test('busy startup defers greetings while an isolated manual failure still releases them', async () => {
+    const ctx = startup({ choice: 'click', pending: true, revision: 1 });
+    ctx.manager.isTutorialRunning = true;
+    ctx.dom.window.isNekoHomeTutorialPending = true;
+    assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+    assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false);
+    assert.ok(!ctx.calls.includes('released'));
+    ctx.manager.isTutorialRunning = false;
+    ctx.api.prepareChat = async () => { throw new Error('manual_host_timeout'); };
+    assert.equal(await ctx.api.startHome(), false);
+    assert.ok(ctx.calls.includes('released'), 'manual runs have no seven-day fallback to release greetings');
     ctx.dom.window.close();
 });
 

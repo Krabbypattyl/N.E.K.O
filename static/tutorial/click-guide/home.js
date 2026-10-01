@@ -124,9 +124,9 @@
             send('start', runId, undefined, { resume });
         });
     }
-    async function start() {
+    async function start({ startup = false } = {}) {
         if (active || root.isInTutorial || root.universalTutorialManager?.isTutorialRunning) {
-            root.universalTutorialManager?.dispatchStartupGreetingRelease('click-guide-start-deferred');
+            root.universalTutorialManager?.setHomeTutorialPending(false);
             return false;
         }
         runId = 'click-' + crypto.randomUUID();
@@ -136,6 +136,7 @@
         let outcome = 'skipped';
         let restoreFloating;
         let saving = false;
+        let finished = false;
         try {
             const state = await stateApi.refresh();
             const localChat = api.resolveTarget('#react-chat-window-shell');
@@ -169,6 +170,7 @@
             }
             saving = true;
             await stateApi.update('finish', { status: outcome }, state.revision);
+            finished = true;
             return true;
         } catch (error) {
             console.warn('[ClickGuide] Session:', error);
@@ -183,7 +185,8 @@
                 finally {
                     setActive(false);
                     runId = null;
-                    manager?.dispatchStartupGreetingRelease('click-guide-ended');
+                    if (finished || !startup) manager?.dispatchStartupGreetingRelease('click-guide-ended');
+                    else manager?.setHomeTutorialPending(false);
                 }
             }
         }
@@ -269,7 +272,7 @@
             const old = root.NekoSevenDayTutorialState?.loadState();
             if (old?.manualResetRound) return false;
             let state = await stateApi.ready();
-            if (!state) { manager.dispatchStartupGreetingRelease('click-guide-state-unavailable'); return false; }
+            if (!state) { manager.setHomeTutorialPending(false); return false; }
             if (!state.choice && !state.pending) {
                 // Also respect old browser progress which the seven-day authority has just imported.
                 if (old?.completedRounds?.length || old?.skippedRounds?.length || old?.lastAutoShownRound) {
@@ -277,14 +280,14 @@
                 } else {
                     manager.setHomeTutorialPending(true);
                     if (!await choose()) {
-                        manager.dispatchStartupGreetingRelease('click-guide-choice-deferred');
+                        manager.setHomeTutorialPending(false);
                         return false;
                     }
                     state = stateApi.get();
                 }
             }
             if (state.pending) {
-                if (await start()) return true;
+                if (await start({ startup: true })) return true;
                 // Retry the user's choice next time; only this session falls back.
                 return false;
             }
@@ -292,7 +295,7 @@
             return false;
         } catch (error) {
             console.warn('[ClickGuide] Startup:', error);
-            manager.dispatchStartupGreetingRelease('click-guide-startup-failed');
+            manager.setHomeTutorialPending(false);
             return false;
         }
     };
