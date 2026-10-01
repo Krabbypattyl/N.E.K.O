@@ -144,6 +144,8 @@
         let finished = false;
         try {
             const state = await stateApi.refresh();
+            if (!state || state.choice !== 'click' || !state.pending
+                    || stateApi.isSevenDayOverride?.(root.NekoSevenDayTutorialState?.loadState())) return false;
             const localChat = api.resolveTarget('#react-chat-window-shell');
             const native = root.nekoTutorialOverlay;
             const chat = resume => !localChat && native?.relayToChat ? remoteChat(resume) : runChat(null, resume);
@@ -219,11 +221,8 @@
             }
             const languageWait = new AbortController();
             await api.waitUntil(() => manager.isI18nReady(), languageWait.signal, 15000);
-            if (state.pending) {
-                if (await start({ startup: true })) return true;
-                // Retry the user's choice next time; only this session falls back.
-                return false;
-            }
+            if (await start({ startup: true })) return true;
+            // Retry the user's choice next time; only this session falls back.
             return false;
         } catch (error) {
             console.warn('[ClickGuide] Startup:', error);

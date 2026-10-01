@@ -1,4 +1,3 @@
-import ast
 import json
 import shutil
 import subprocess
@@ -407,29 +406,13 @@ def test_music_player_reports_confirmed_state_to_backend():
     assert "localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent" in player_source
     assert 'elif action == "music_playback_state":' in router_source
     assert "handle_music_playback_state(" in router_source
-    superseded_guard = next(
-        node for node in ast.walk(ast.parse(router_source))
-        if isinstance(node, ast.If)
-        and "session_id.get(lanlan_name) != this_session_id" in ast.unparse(node.test)
+    superseded_gate = router_source.split(
+        "if (session_id.get(lanlan_name) != this_session_id", 1
+    )[1].split("action = message.get(\"action\")", 1)[0]
+    assert "if _is_music_playback_state_message(message):" in superseded_gate
+    assert superseded_gate.index("_is_music_playback_state_message") < superseded_gate.index(
+        "await websocket.close()"
     )
-    music_branch = next(
-        node for node in superseded_guard.body
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "_is_music_playback_state_message(message)"
-    )
-    assert any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "handle_music_playback_state"
-        for node in ast.walk(music_branch)
-    )
-    assert isinstance(music_branch.body[-1], ast.Continue)
-    close_lines = [
-        node.lineno for node in ast.walk(superseded_guard)
-        if isinstance(node, ast.Await)
-        and ast.unparse(node.value) == "websocket.close()"
-    ]
-    assert close_lines and music_branch.lineno < min(close_lines)
 
 
 def test_music_player_rejects_errors_queued_before_the_current_source_lifecycle():

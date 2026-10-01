@@ -1135,6 +1135,25 @@ test('startup state and i18n failures clear pending without releasing greetings 
     }
 });
 
+test('startup rechecks replay intent after waiting for i18n', async () => {
+    for (const latest of [{ choice: 'seven-day', pending: false }, { choice: 'click', pending: false }]) {
+        const ctx = startup({ choice: 'click', pending: true, revision: 1 });
+        let languageReady = false;
+        ctx.api.waitUntil = async () => { languageReady = true; };
+        ctx.dom.window.NekoClickGuideState.refresh = async () => {
+            assert.equal(languageReady, true);
+            return latest;
+        };
+        ctx.api.prepareChat = async () => { assert.fail('superseded replay must not prepare chat'); };
+        assert.equal(await ctx.api.handleStartup(ctx.manager), false);
+        assert.equal(ctx.dom.window.isNekoClickGuideActive, false);
+        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false);
+        assert.ok(!ctx.calls.includes('finish'));
+        assert.ok(!ctx.calls.includes('released'), 'seven-day startup owns greeting release');
+        ctx.dom.window.close();
+    }
+});
+
 test('failed chat preparation falls back for this session and retries the same choice next boot', async () => {
     const state = { choice: 'click', pending: true, revision: 1 };
     const ctx = startup(state);
