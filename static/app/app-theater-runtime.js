@@ -354,11 +354,26 @@
         }
         return true;
     }
-    function stopPeerOrdinaryVoiceInput() {
+    function ownLanlanName() {
+        var config = window.lanlan_config;
+        return config && typeof config.lanlan_name === 'string' ? config.lanlan_name.trim() : '';
+    }
+    function stopPeerOrdinaryVoiceInput(catgirlName) {
         // stopOrdinaryVoiceInput only sees this window's appState. In Electron the
         // floating mic lives in the Pet window, so a voice chat opened there before
-        // the theater would keep streaming; ask every other window to stop it too.
-        postMessage({ action: 'theater:ordinary-voice-stop' });
+        // the theater would keep streaming; ask the other windows to stop it too.
+        // Theater activity is per character (/{lanlan_name} pages for different
+        // characters share this channel), so the broadcast names the character the
+        // theater is bound to and only that character's windows stop their voice.
+        var name = String(catgirlName || '').trim() || ownLanlanName();
+        postMessage({ action: 'theater:ordinary-voice-stop', catgirl_name: name });
+    }
+    function isOrdinaryVoiceStopForThisWindow(message) {
+        var target = typeof message.catgirl_name === 'string' ? message.catgirl_name.trim() : '';
+        var own = ownLanlanName();
+        // Without a name on either side this cannot tell the characters apart, so it
+        // keeps stopping: an ordinary mic left live mid-theater is the worse failure.
+        return !target || !own || target === own;
     }
     var TYPEWRITER_INTERVAL_MS = 32;
     function historyEntry(id, type, text, author, displayKind, status) {
@@ -807,12 +822,12 @@
             && state.storyId === storyId
             && state.sessionId === sessionId;
     }
-    async function prepareLaunchSurface(message, launchToken) {
+    async function prepareLaunchSurface(message, launchToken, boundCatgirlName) {
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
         // 普通主动搭话只在小剧场运行期间暂停，退出时恢复进入前的用户状态。
         lockProactiveChatForTheater();
-        stopPeerOrdinaryVoiceInput();
+        stopPeerOrdinaryVoiceInput(boundCatgirlName);
         // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
         if (!await stopOrdinaryVoiceInput() || launchToken !== launchEpoch) {
             restoreProactiveChatAfterTheater();
@@ -915,7 +930,8 @@
             return false;
         }
         message.story_title = snapshot.story_title || message.story_title;
-        if (!await prepareLaunchSurface(message, launchToken) || !await completeLaunch(message, launchToken, snapshot)) {
+        var boundCatgirlName = snapshot.participants && snapshot.participants.catgirl_name;
+        if (!await prepareLaunchSurface(message, launchToken, boundCatgirlName) || !await completeLaunch(message, launchToken, snapshot)) {
             releaseAbandonedLaunchActivity(snapshot, launchToken);
             return false;
         }
@@ -954,6 +970,10 @@
             render();
             return false;
         }
+        // The start broadcast went out before the binding was known and named this
+        // window's character; repeat it for the bound character if that differs.
+        var startedCatgirlName = String(snapshot.participants && snapshot.participants.catgirl_name || '').trim();
+        if (startedCatgirlName && startedCatgirlName !== ownLanlanName()) stopPeerOrdinaryVoiceInput(startedCatgirlName);
         message.token_usage = snapshot.token_usage || null;
         message.launch_action = snapshot.resumed ? 'continue' : (message.replace_existing === true ? 'restart' : 'start');
         message.revision = Number(snapshot.session.revision);
@@ -1417,7 +1437,7 @@
             }
             // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
             lockProactiveChatForTheater();
-            stopPeerOrdinaryVoiceInput();
+            stopPeerOrdinaryVoiceInput(state.activityCatgirlName);
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {
@@ -1474,8 +1494,9 @@
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
         else if (message.action === 'theater:ordinary-voice-stop' && !state.active) {
             // A theater started in another window: stop this window's ordinary mic or
-            // voice session, exactly as the theater window stops its own before launch.
-            stopOrdinaryVoiceInput().catch(function () {});
+            // voice session, exactly as the theater window stops its own before launch,
+            // unless this window talks to a different character.
+            if (isOrdinaryVoiceStopForThisWindow(message)) stopOrdinaryVoiceInput().catch(function () {});
         }
         else if (message.action === 'theater:speech-allowlist') applyPeerSpeechAllowlist(message);
         else if (message.action === 'theater:speech-event' && state.active && message.turn_id) {

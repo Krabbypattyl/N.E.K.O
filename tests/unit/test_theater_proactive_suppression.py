@@ -161,13 +161,35 @@ RUNTIME_SCENARIOS = (
       const sent = stops(ctx);
       assert.equal(sent.length, 1, 'launch must ask other windows to stop their ordinary voice');
       assert.equal(sent[0].schema, ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA);
+      // Windows of other characters share the channel; the stop names the bound character.
+      assert.equal(sent[0].catgirl_name, '猫娘');
       ctx.runtime.clear('test_exit');
 
       const restored = createRuntime({ recordBroadcasts: true, pointer: { story_id: 'story_session_a', session_id: 'session_a' } });
       await respond(restored.requests.shift(), snapshot());
       assert.equal(restored.runtime.getState().active, true);
       assert.equal(stops(restored).length, 1, 'a restored session must also stop ordinary voice elsewhere');
+      assert.equal(stops(restored)[0].catgirl_name, '猫娘');
       restored.runtime.clear('test_exit');
+    """),
+    ("start_names_the_bound_character_in_the_ordinary_voice_stop", r"""
+      // A fresh start broadcasts before the server binding is known, so it names this
+      // window's character, then repeats the stop for the bound character if it differs.
+      const stops = ctx => ctx.broadcasts.filter(message => message.action === 'theater:ordinary-voice-stop');
+      for (const [ownName, expected] of [['猫娘', ['猫娘']], ['Other', ['Other', '猫娘']]]) {
+        const ctx = createRuntime({ recordBroadcasts: true });
+        ctx.window.lanlan_config = { lanlan_name: ownName };
+        ctx.listeners.message({ origin: 'https://local.test', data: {
+          schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:start-request',
+          launch_id: 'launch_start', story_id: 'story_session_a', session_id: 'session_a', character_id: 'char_a',
+        } });
+        await tick(); await tick();
+        assert.deepEqual(stops(ctx).map(message => message.catgirl_name), [ownName]);
+        await respond(ctx.requests.shift(), Object.assign(snapshot(), { resumed: true }));
+        assert.equal(ctx.runtime.getState().active, true);
+        assert.deepEqual(stops(ctx).map(message => message.catgirl_name), expected);
+        ctx.runtime.clear('test_exit');
+      }
     """),
     ("exit_releases_server_theater_activity_only_when_active", r"""
       // 服务端兜底按最近剧场请求计时；退出未结束的演绎必须显式释放，未激活的 clear 不得发请求。

@@ -138,7 +138,7 @@ def test_capsule_runtime_restores_the_pre_theater_chat_surface():
     render = runtime.index("function render()")
     render_capture = runtime.index("captureChatSurfaceMode(chatHost);", render)
     force_compact = runtime.index("chatSurfaceMode: 'compact'", render)
-    prepare = runtime.index("async function prepareLaunchSurface(message, launchToken)")
+    prepare = runtime.index("async function prepareLaunchSurface(message, launchToken, boundCatgirlName)")
     capture = runtime.index("captureChatSurfaceMode(chatHost);", prepare)
     launch_render = runtime.index("render();", capture)
     launch = runtime.index("async function performLaunch(message, launchToken)", launch_render)
@@ -457,7 +457,7 @@ def test_capsule_runtime_requires_chat_host_before_launch_ready():
     """React 胶囊未挂载时不能发送启动成功回执或保留不可见运行态。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken)")
+    prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken, boundCatgirlName)")
     host_wait = runtime.index("var hostReady = await waitForHost();", prepare_start)
     host_guard = runtime.index("if (!hostReady)", host_wait)
     clear_runtime = runtime.index("clear('launch-host-unavailable');", host_guard)
@@ -500,7 +500,7 @@ def test_capsule_runtime_stops_old_audio_before_every_launch():
     """同一 Session 再次启动也必须先停止旧播放协程与语音。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken)")
+    prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken, boundCatgirlName)")
     switch_guard = runtime.index("if (state.active)", prepare_start)
     clear_audio = runtime.index("claimAudioPlayback();", switch_guard)
     loading = runtime.index(

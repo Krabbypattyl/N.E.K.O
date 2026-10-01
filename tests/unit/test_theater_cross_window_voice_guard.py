@@ -170,6 +170,25 @@ SCENARIOS = (
       assert.deepEqual(stops, ['stop'], 'the Pet must stop the ordinary mic it opened before the theater');
       assert.equal(pet.appState.isRecording, false);
     """),
+    ("ordinary_voice_stop_only_reaches_the_theater_character", r"""
+      // /{lanlan_name} pages for different characters share the page channel; a
+      // theater for one character must not stop another character's voice chat.
+      const { pet } = setupPair();
+      pet.window.lanlan_config = { lanlan_name: 'Mochi' };
+      const stops = [];
+      pet.window.appAudioCapture.stopMicCapture = async () => { stops.push('stop'); pet.appState.isRecording = false; };
+      const theaterWindow = new FakeBroadcastChannel('neko_page_channel');
+      const transport = pet.window.nekoTheaterTransport;
+      pet.appState.isRecording = true;
+      theaterWindow.postMessage(transport.createMessage('theater-runtime', { action: 'theater:ordinary-voice-stop', catgirl_name: 'Lanlan' }));
+      flush(); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(stops, [], 'a window for another character keeps recording');
+      assert.equal(pet.appState.isRecording, true);
+      theaterWindow.postMessage(transport.createMessage('theater-runtime', { action: 'theater:ordinary-voice-stop', catgirl_name: 'Mochi' }));
+      flush(); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(stops, ['stop'], 'a window for the theater character stops its ordinary voice');
+      assert.equal(pet.appState.isRecording, false);
+    """),
     ("closed_theater_window_goodbye_releases_mic", r"""
       const { pet, chat } = setupPair();
       setChatTheater(chat, true);
