@@ -1235,8 +1235,12 @@
 
     window.PageTutorialManager = PageTutorialManager;
     function resumeInterruptedPageTutorial() {
+        if (document.visibilityState !== 'visible' || isClickGuideInspectingPage()) return;
         const manager = window.pageTutorialManager;
-        if (!Number.isInteger(manager?._clickGuideInterruptedStep) || isClickGuideInspectingPage()) return;
+        if (!Number.isInteger(manager?._clickGuideInterruptedStep)) {
+            manager?.checkAndStartTutorial();
+            return;
+        }
         const index = manager._clickGuideInterruptedStep;
         if (!manager.startTutorial()) return;
         manager._clickGuideInterruptedStep = null;
@@ -1247,8 +1251,7 @@
     window.addEventListener('neko:click-guide-window-inspection', () => {
         const manager = window.pageTutorialManager;
         if (!isClickGuideInspectingPage()) {
-            if (Number.isInteger(manager?._clickGuideInterruptedStep)) resumeInterruptedPageTutorial();
-            else manager?.checkAndStartTutorial();
+            resumeInterruptedPageTutorial();
             return;
         }
         if (!manager?.isTutorialRunning) return;

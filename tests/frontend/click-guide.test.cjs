@@ -248,6 +248,10 @@ test('page tutorials pause for inspection and resume the interrupted step after 
     root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
     assert.equal(resumedStep, -1, 'the opener is still guiding another window');
     root.opener.isNekoClickGuideActive = false;
+    Object.defineProperty(root.document, 'visibilityState', { configurable: true, value: 'hidden' });
+    root.document.dispatchEvent(new root.Event('visibilitychange'));
+    assert.equal(resumedStep, -1, 'hidden pages must wait until visible');
+    Object.defineProperty(root.document, 'visibilityState', { configurable: true, value: 'visible' });
     root.dispatchEvent(new root.Event('focus'));
     assert.equal(resumedStep, 2);
     dom.window.close();
@@ -277,7 +281,15 @@ test('page tutorial starts after inspection ends without an interrupted step', (
     root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
     assert.equal(checks, 0);
     delete root.__nekoClickGuideWindowInspection;
+    root.opener = { isNekoClickGuideActive: true };
     root.dispatchEvent(new root.CustomEvent('neko:click-guide-window-inspection'));
+    assert.equal(checks, 0);
+    root.opener.isNekoClickGuideActive = false;
+    Object.defineProperty(root.document, 'visibilityState', { configurable: true, value: 'hidden' });
+    root.document.dispatchEvent(new root.Event('visibilitychange'));
+    assert.equal(checks, 0);
+    Object.defineProperty(root.document, 'visibilityState', { configurable: true, value: 'visible' });
+    root.dispatchEvent(new root.Event('focus'));
     assert.equal(checks, 1);
     dom.window.close();
 });
@@ -1094,6 +1106,50 @@ function startup(state, old = {}) {
     return { ...context, manager, calls };
 }
 
+test('authoritative seven-day reset wins before startup and refreshed replay', async () => {
+    for (const direct of [false, true]) {
+        const ctx = startup({ choice: 'click', pending: true, revision: 1 });
+        let authoritative = false;
+        ctx.dom.window.NekoSevenDayTutorialState.ready = async () => { authoritative = true; };
+        ctx.dom.window.NekoClickGuideState.isSevenDayOverride = () => authoritative;
+        ctx.api.prepareChat = async () => { assert.fail('new seven-day reset owns startup'); };
+        assert.equal(await (direct ? ctx.api.startHome({ startup: true }) : ctx.api.handleStartup(ctx.manager)), false);
+        assert.equal(authoritative, true);
+        assert.ok(!ctx.calls.includes('finish'));
+        ctx.dom.window.close();
+    }
+});
+
+test('remote preparation heartbeats extend the lease but retain a total deadline', async () => {
+    const ctx = startup({ choice: 'click', pending: true, revision: 1 });
+    const root = ctx.dom.window;
+    let now = 0;
+    let nextId = 0;
+    const timers = new Map();
+    root.Date.now = () => now;
+    root.setTimeout = (callback, ms) => { const id = ++nextId; timers.set(id, { callback, ms }); return id; };
+    root.clearTimeout = id => timers.delete(id);
+    root.setInterval = () => ++nextId;
+    root.clearInterval = () => {};
+    const emit = (type, runId, reason) => root.dispatchEvent(new root.CustomEvent('neko:tutorial-overlay-relay', {
+        detail: { action: 'click_guide', type, runId, reason }
+    }));
+    root.nekoTutorialOverlay = { relayToChat(message) {
+        if (message.type !== 'start') return;
+        now = 14000;
+        emit('heartbeat', message.runId);
+        assert.deepEqual([...timers.values()].map(timer => timer.ms), [6000]);
+        now = 29000;
+        emit('heartbeat', message.runId);
+        assert.deepEqual([...timers.values()].map(timer => timer.ms), [1000]);
+        emit('done', message.runId, 'skipped');
+    } };
+    try {
+        assert.equal(await ctx.api.startHome(), true);
+        assert.equal(timers.size, 0);
+    } finally { root.close(); }
+});
+
 test('Escape and IME Escape preserve the guide and reach menu handlers', async () => {
     const { dom, api, doc } = setup();
     let reason;
@@ -1128,7 +1184,7 @@ test('startup state and i18n failures clear pending without releasing greetings 
             ctx.dom.window.NekoClickGuideState.refresh = fail;
         }
         assert.equal(await ctx.api.handleStartup(ctx.manager), false, failure);
-        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false, failure);
+        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, failure === 'state', failure);
         assert.ok(!ctx.calls.includes('released'), 'seven-day fallback owns greeting release');
         assert.equal(ctx.dom.window.isNekoClickGuideActive === true, false);
         ctx.dom.window.close();
@@ -1255,7 +1311,7 @@ test('existing seven-day users and completed click users do not see the chooser'
         ctx.dom.window.NekoClickGuideState.resumeSevenDay = () => { recovery.push('resume'); };
         ctx.dom.window.NekoSevenDayTutorialState.flush = async () => { recovery.push('flush'); };
         assert.equal(await ctx.api.handleStartup(ctx.manager), false);
-        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, false);
+        assert.equal(ctx.dom.window.isNekoHomeTutorialPending, choice !== 'click');
         assert.deepEqual(recovery, choice === 'click' ? ['ready', 'resume', 'flush'] : []);
         assert.ok(!ctx.calls.includes('released'), 'seven-day startup still owns greeting release');
         assert.equal(ctx.doc.querySelector('.click-guide-choice'), null);

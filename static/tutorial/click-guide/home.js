@@ -109,6 +109,7 @@
     async function remoteChat(resume) {
         return new Promise(resolve => {
             let ready = false;
+            const preparationDeadline = Date.now() + 30000;
             let timer = setTimeout(() => finish('failed'), 15000);
             const heartbeat = setInterval(() => send('heartbeat', runId), 1000);
             function finish(reason, result = {}) {
@@ -119,9 +120,10 @@
             }
             remoteResolve = message => {
                 if (message.type === 'ready') ready = true;
-                if (ready && ['ready', 'heartbeat'].includes(message.type)) {
+                if (['ready', 'heartbeat'].includes(message.type)) {
                     clearTimeout(timer);
-                    timer = setTimeout(() => finish('failed'), 6000);
+                    const remaining = ready ? 6000 : Math.min(6000, preparationDeadline - Date.now());
+                    timer = setTimeout(() => finish('failed'), Math.max(0, remaining));
                 }
                 if (message.type === 'done') finish(message.reason,
                     { history: message.history, skipped: message.skipped });
@@ -144,6 +146,7 @@
         let finished = false;
         try {
             const state = await stateApi.refresh();
+            await root.NekoSevenDayTutorialState?.ready?.();
             if (!state || state.choice !== 'click' || !state.pending
                     || stateApi.isSevenDayOverride?.(root.NekoSevenDayTutorialState?.loadState())) return false;
             const localChat = api.resolveTarget('#react-chat-window-shell');
@@ -206,15 +209,12 @@
             const state = await stateApi.ready();
             // Only an explicit reactivation from the memory browser starts the click guide.
             // New and legacy unset states always continue the original seven-day flow.
-            if (!state || state.choice !== 'click'
-                    || stateApi.isSevenDayOverride?.(root.NekoSevenDayTutorialState?.loadState())) {
-                manager.setHomeTutorialPending(false);
-                return false;
-            }
+            if (!state || state.choice !== 'click') return false;
+            await root.NekoSevenDayTutorialState?.ready?.();
+            if (stateApi.isSevenDayOverride?.(root.NekoSevenDayTutorialState?.loadState())) return false;
             // Preserve normal daily progression after replay, while suppressing
             // only a superseded manual restart of the seven-day tutorial.
             if (!state.pending) {
-                await root.NekoSevenDayTutorialState?.ready?.();
                 stateApi.resumeSevenDay?.();
                 await root.NekoSevenDayTutorialState?.flush?.();
                 manager.setHomeTutorialPending(false);
