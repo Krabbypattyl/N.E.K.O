@@ -249,6 +249,35 @@ async def test_ordinary_audio_frames_are_dropped_and_live_voice_ended_while_thea
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["replaced", "ended", "text_mode"])
+async def test_theater_voice_teardown_leaves_a_session_that_changed_before_it_ran(monkeypatch, change):
+    """session_ended_by_server is not session-scoped: a session changed meanwhile gets neither it nor an end."""
+    theater_activity.mark_theater_activity("Lan")
+    manager = _LiveVoiceManager()
+    websocket = _EventWebSocket([])
+    seen_session = manager.session
+
+    websocket_router._drop_ordinary_audio_for_theater(websocket, manager, "Lan")
+    # The teardown is scheduled; before it runs another start installs a new
+    # session (or the old one ends / turns into a text session).
+    if change == "replaced":
+        manager.session = object()
+    elif change == "ended":
+        manager.is_active = False
+    else:
+        manager.input_mode = "text"
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    names = [name for name, _ in manager.calls]
+    assert "session_ended_by_server" not in names, "the current session's client must not be told it ended"
+    assert "end_session" not in names
+    assert websocket_router._theater_voice_end_tasks == {}
+    if change == "replaced":
+        assert manager.session is not seen_session and manager.is_active is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("release", ["cleared", "expired"])
 async def test_ordinary_audio_frames_flow_once_the_theater_signal_is_gone(monkeypatch, release):
     """Ended or TTL-expired theater activity leaves ordinary voice untouched."""

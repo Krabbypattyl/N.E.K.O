@@ -305,13 +305,25 @@ def _drop_ordinary_audio_for_theater(websocket, manager, lanlan_name: str) -> No
 
     async def _end() -> None:
         try:
-            notify_session_ended = getattr(manager, "send_session_ended_by_server", None)
-            if callable(notify_session_ended):
-                await notify_session_ended()
-            if expected_session is None:
-                await manager.end_session(by_server=True)
+            # The task runs after the frame handler returns, so the session may
+            # have been ended or replaced meanwhile. session_ended_by_server is not
+            # scoped to a session and would make the client drop whatever session
+            # is current, so notify only while the one seen above is still the live
+            # ordinary voice session; no await separates this check from the send.
+            if (
+                getattr(manager, "session", None) is not expected_session
+                or getattr(manager, "is_active", False) is not True
+                or getattr(manager, "input_mode", None) != "audio"
+            ):
+                logger.info("[%s] ordinary voice session changed before the theater teardown; leaving it", lanlan_name)
             else:
-                await manager.end_session(by_server=True, expected_session=expected_session)
+                notify_session_ended = getattr(manager, "send_session_ended_by_server", None)
+                if callable(notify_session_ended):
+                    await notify_session_ended()
+                if expected_session is None:
+                    await manager.end_session(by_server=True)
+                else:
+                    await manager.end_session(by_server=True, expected_session=expected_session)
         except Exception as exc:
             logger.warning("[%s] ending ordinary voice for theater failed: %s", lanlan_name, exc)
         await _decline_ordinary_input_for_theater(websocket, lanlan_name, "audio")
