@@ -35,6 +35,8 @@
         card.setAttribute('role', 'dialog');
         card.setAttribute('aria-label', labels.tour);
         card.tabIndex = -1;
+        // Keep business outside-press handlers from hiding the target before click.
+        card.addEventListener('pointerdown', event => event.stopPropagation());
         const progress = document.createElement('div');
         progress.className = 'click-guide-progress';
         const title = document.createElement('h2');

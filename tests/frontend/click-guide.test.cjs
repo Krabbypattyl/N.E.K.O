@@ -42,6 +42,35 @@ function setup() {
     return { dom, api: dom.window.NekoClickGuide, target, doc: dom.window.document };
 }
 
+test('guide card pointerdown keeps its target open until the next click advances', async () => {
+    const { dom, api, target, doc } = setup();
+    let closed = 0;
+    doc.addEventListener('pointerdown', event => {
+        if (!target.contains(event.target)) {
+            closed++;
+            target.style.display = 'none';
+        }
+    });
+    const guide = api.createRunner({ labels, steps: [
+        { title: 'First tool', target: '#target' },
+        { title: 'Next tool', target: '#target' },
+    ] });
+    await guide.start();
+    const next = doc.querySelector('.click-guide-next');
+    next.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    // Allow geometry tracking to run between press and release, as with a real mouse.
+    await delay(40);
+    assert.equal(closed, 0);
+    assert.equal(doc.querySelector('.click-guide-card').style.display, '');
+    next.click();
+    await delay(40);
+    assert.equal(guide.index, 1);
+    await guide.stop();
+    doc.querySelector('#outside').dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    assert.equal(closed, 1, 'normal outside presses still reach the business listener');
+    dom.window.close();
+});
+
 test('opened inline panels guide the real close action before advancing', async () => {
     const { dom, api, target, doc } = setup();
     const close = doc.createElement('button'); close.id = 'close';
