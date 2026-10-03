@@ -76,9 +76,11 @@
         async function finish(reason) {
             if (ended) return;
             ended = true;
+            root.removeEventListener('keydown', rememberEscapeOwner, true);
+            root.removeEventListener('keydown', escape);
+            document.removeEventListener('keydown', trapTab);
             try { await cleanupStep(); }
             finally {
-                document.removeEventListener('keydown', escape, true);
                 root.removeEventListener('neko:click-guide-window-skip', windowSkip);
                 layer.remove();
                 try { await presentation?.close(); }
@@ -89,15 +91,41 @@
             }
         }
         const windowSkip = () => void finish('skipped');
+        const ownedEscapes = new WeakSet();
+        const editableSelector = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+        const overlaySelector = '[role="dialog"], [role="menu"], [aria-modal="true"], '
+            + '.modal-overlay, .neko-social-embed-backdrop, .composer-icon-popover, '
+            + '[data-compact-input-tool-fan-open="true"], '
+            + '[id*="-popup-"], .mmd-popup';
+        function hasKeyboardOwner(event) {
+            if (event.target?.closest?.(editableSelector)
+                || document.activeElement?.closest?.(editableSelector)) return true;
+            return [...document.querySelectorAll(overlaySelector)].some(element => {
+                if (layer.contains(element) || element.closest('[hidden], [aria-hidden="true"]')) return false;
+                // Test ancestors too: many menus keep their children mounted while hidden.
+                for (let node = element; node; node = node.parentElement) {
+                    const style = root.getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden') return false;
+                }
+                return true;
+            });
+        }
+        function rememberEscapeOwner(event) {
+            // Observe before an owner removes its UI; never consume the event here.
+            if (!ended && event.key === 'Escape' && hasKeyboardOwner(event)) ownedEscapes.add(event);
+        }
         function escape(event) {
-            if (event.isComposing) return;
+            if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Escape') {
+                if (ownedEscapes.has(event) || hasKeyboardOwner(event)) return;
                 event.preventDefault();
-                event.stopImmediatePropagation();
-                void finish('skipped');
-                return;
+                windowSkip();
             }
+        }
+        function trapTab(event) {
+            if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Tab') {
+                if (hasKeyboardOwner(event) && !layer.contains(document.activeElement)) return;
                 const target = api.resolveTarget(view()?.target);
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
                 const controls = [...card.querySelectorAll(selector)];
@@ -380,7 +408,9 @@
                         returned: () => void advance(),
                         skip: () => void finish('skipped'), failed: () => void finish('failed') });
                 }
-                document.addEventListener('keydown', escape, true);
+                root.addEventListener('keydown', rememberEscapeOwner, true);
+                root.addEventListener('keydown', escape);
+                document.addEventListener('keydown', trapTab);
                 root.addEventListener('neko:click-guide-window-skip', windowSkip);
                 return show(startIndex, startIndex !== 0);
             },

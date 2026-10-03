@@ -1317,22 +1317,155 @@ test('remote preparation heartbeats extend the lease but retain a total deadline
     } finally { root.close(); }
 });
 
-test('Escape ends the guide while IME Escape keeps composing', async () => {
-    const { dom, api, doc } = setup();
+test('unclaimed Escape from a focused child ends the guide while IME Escape keeps composing', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
     let reason;
     let escapes = 0;
     doc.addEventListener('keydown', event => { if (event.key === 'Escape') escapes++; });
     const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
     await runner.start();
-    doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+    target.focus();
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', keyCode: 229, bubbles: true }));
     assert.ok(doc.querySelector('.click-guide-layer'));
     assert.equal(reason, undefined);
-    doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     await delay(20);
     assert.equal(reason, 'skipped');
-    assert.equal(escapes, 1);
+    assert.equal(escapes, 3, 'business handlers run before the guide');
     assert.equal(doc.querySelector('.click-guide-layer'), null);
-    dom.window.close();
+});
+
+for (const tag of ['input', 'textarea', 'select', 'div']) {
+    test(`Escape from focused ${tag} belongs to editing, including IME`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Input' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const input = doc.createElement(tag);
+        if (tag === 'div') { input.contentEditable = 'true'; input.setAttribute('contenteditable', 'true'); input.tabIndex = 0; }
+        doc.body.append(input);
+        input.focus();
+        let received = 0;
+        input.addEventListener('keydown', () => received++);
+        for (const options of [{}, { isComposing: true }, { keyCode: 229 }]) {
+            input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...options }));
+        }
+        await delay(0);
+        assert.equal(received, 3);
+        assert.equal(reason, undefined);
+        assert.ok(doc.querySelector('.click-guide-layer'));
+        await runner.stop('stopped');
+    });
+}
+
+for (const consume of ['preventDefault', 'stopPropagation']) {
+    test(`Escape consumed by a child via ${consume} does not end the guide`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        target.addEventListener('keydown', event => event[consume]());
+        target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, undefined);
+        assert.ok(doc.querySelector('.click-guide-layer'));
+        await runner.stop('stopped');
+    });
+}
+
+for (const markup of ['<section role="dialog"><button>Close</button></section>',
+    '<div class="composer-icon-popover"><button>Close</button></div>',
+    '<div data-compact-input-tool-fan-open="true"><button>Close</button></div>',
+    '<div id="live2d-popup-mic"><button>Close</button></div>',
+    '<div class="neko-social-embed-backdrop"><button>Close</button></div>']) {
+    test(`Escape closes its owner without skipping the tutorial: ${markup}`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const container = doc.createElement('div');
+        container.innerHTML = markup;
+        doc.body.append(container);
+        const button = container.querySelector('button');
+        button.focus();
+        // Like common_dialogs: removes the UI synchronously without preventDefault.
+        const close = () => container.remove();
+        doc.addEventListener('keydown', close);
+        button.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(container.isConnected, false);
+        assert.equal(reason, undefined);
+        assert.ok(doc.querySelector('.click-guide-layer'));
+        doc.removeEventListener('keydown', close);
+        await runner.stop('stopped');
+    });
+}
+
+test('late social embed capture handler still receives Escape', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    let reason;
+    const runner = api.createRunner({ labels, steps: [{ title: 'Social' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/social-embed.js'), 'utf8'));
+    dom.window.openSocialEmbed('https://example.com');
+    assert.ok(doc.querySelector('.neko-social-embed-backdrop'));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.equal(doc.querySelector('.neko-social-embed-backdrop'), null);
+    assert.equal(reason, undefined);
+    await runner.stop('stopped');
+});
+
+test('hidden menus do not own Escape and native presentation closes once', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const hidden = doc.createElement('div');
+    hidden.style.display = 'none';
+    hidden.innerHTML = '<section role="dialog"><button>Hidden</button></section>';
+    doc.body.append(hidden);
+    let closes = 0;
+    const reasons = [];
+    const runner = api.createRunner({ labels, steps: [{ title: 'Native' }],
+        presentation: { bind() {}, update() {}, async close() { closes++; } },
+        onEnd: reason => reasons.push(reason) });
+    await runner.start();
+    target.focus();
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.deepEqual(reasons, ['skipped']);
+    assert.equal(closes, 1);
+    assert.equal(doc.querySelector('.click-guide-layer'), null);
+});
+
+test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    let release;
+    const cleanup = new Promise(resolve => { release = resolve; });
+    const runner = api.createRunner({ labels, steps: [{ title: 'Menu', enter: () => () => cleanup }] });
+    await runner.start();
+    target.focus();
+    target.addEventListener('keydown', event => {
+        if (event.key === 'Tab') { event.preventDefault(); doc.querySelector('#outside').focus(); }
+    });
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    assert.equal(doc.activeElement.id, 'outside');
+    const stopped = runner.stop('stopped');
+    for (const key of ['Escape', 'Tab']) {
+        const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        doc.querySelector('#outside').dispatchEvent(event);
+        assert.equal(event.defaultPrevented, false);
+        assert.equal(doc.activeElement.id, 'outside');
+    }
+    release();
+    await stopped;
 });
 
 test('startup state and i18n failures clear pending without releasing greetings before fallback', async () => {
