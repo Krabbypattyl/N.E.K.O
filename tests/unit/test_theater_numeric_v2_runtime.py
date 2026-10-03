@@ -2580,6 +2580,9 @@ def test_numeric_v2_exclusive_publication_is_atomic_across_processes(tmp_path, m
 import json, os, sys
 from pathlib import Path
 from types import SimpleNamespace
+# Cold initialization can exceed a Windows pipe buffer before reaching pause().
+print('startup diagnostic ' * 512, flush=True)
+print('startup diagnostic ' * 512, file=sys.stderr, flush=True)
 from services.theater.numeric_v2_store import NumericV2SessionStore, NumericV2StoredSession, NumericV2SessionExistsError
 root, mode, marker, writer_id = sys.argv[1:]
 store = NumericV2SessionStore(Path(root), None)
@@ -2614,13 +2617,23 @@ except NumericV2SessionExistsError:
     print('exists', flush=True)
 '''
     processes = []
+    log_streams = []
+    log_paths = []
     final = tmp_path / 'numeric_v2/sessions/publication.json'
     try:
         for i in range(1 if mode == 'terminate' else 2):
             marker = tmp_path / f'writer-{i}.ready'
+            stdout_path = tmp_path / f'writer-{i}.stdout.log'
+            stderr_path = tmp_path / f'writer-{i}.stderr.log'
+            stdout_log = stdout_path.open('w', encoding='utf-8')
+            stderr_log = stderr_path.open('w', encoding='utf-8')
+            log_streams.extend([stdout_log, stderr_log])
+            log_paths.append((stdout_path, stderr_path))
+            # Waiting for marker while leaving PIPE unread can deadlock a
+            # verbose child before publication. Files impose no pipe capacity.
             process = subprocess.Popen([sys.executable, '-c', worker, str(tmp_path), mode, str(marker), str(i)],
                 cwd=Path(__file__).resolve().parents[2], stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout=stdout_log, stderr=stderr_log, text=True)
             processes.append(process)
             # Cold imports may exceed 10 seconds on a fully loaded Windows
             # xdist runner; the publication/termination assertions stay exact.
@@ -2642,7 +2655,13 @@ except NumericV2SessionExistsError:
             for process in processes:
                 process.stdin.write('publish\n')
                 process.stdin.flush()
-            outputs = [process.communicate(timeout=10) for process in processes]
+            for process in processes:
+                process.communicate(timeout=10)
+            outputs = [
+                (stdout_path.read_text(encoding='utf-8', errors='replace'),
+                 stderr_path.read_text(encoding='utf-8', errors='replace'))
+                for stdout_path, stderr_path in log_paths
+            ]
             assert all(process.returncode == 0 for process in processes), outputs
             # Cold imports may log; the final line is the worker's result.
             results = [out.strip().splitlines()[-1] for out, _ in outputs]
@@ -2654,6 +2673,8 @@ except NumericV2SessionExistsError:
             if process.poll() is None:
                 process.kill()
             process.communicate(timeout=5)
+        for stream in log_streams:
+            stream.close()
 
 
 def test_maintenance_quarantines_unparseable_public_archives_without_trimming(tmp_path, monkeypatch):
