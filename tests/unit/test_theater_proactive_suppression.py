@@ -93,6 +93,9 @@ function sendLaunch(ctx, sessionId = 'session_a', revision = 4) {
 async function launch(ctx, sessionId = 'session_a', revision = 4) {
   sendLaunch(ctx, sessionId, revision);
   await respond(ctx.requests.shift(), snapshot(sessionId, revision));
+  const claim = ctx.requests.shift();
+  assert.ok(claim && !/claim_activity=false/.test(claim.url));
+  await respond(claim, snapshot(sessionId, revision));
   assert.equal(ctx.runtime.getState().phase, 'awaiting_player');
 }
 """

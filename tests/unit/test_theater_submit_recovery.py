@@ -63,7 +63,12 @@ async function launch(ctx, sessionId = 'session_a', revision = 4) {
   } });
   const request = ctx.requests.shift();
   assert.match(request.url, /\/session\//);
+  assert.match(request.url, /claim_activity=false/);
   await respond(request, snapshot(sessionId, revision));
+  const claim = ctx.requests.shift();
+  assert.match(claim.url, /\/session\//);
+  assert.doesNotMatch(claim.url, /claim_activity=false/);
+  await respond(claim, snapshot(sessionId, revision));
   assert.equal(ctx.runtime.getState().phase, 'awaiting_player');
 }
 async function submit(ctx, source = 'freeform', text = '询问细节。') {
@@ -87,7 +92,7 @@ function assertRecovery(ctx, before, buttons, draft) {
 """
 
 SCENARIOS = (
-    ("abandoned_revision_does_not_leave_activity_claim", r"""
+    ("abandoned_revision_neither_claims_nor_releases_peer_activity", r"""
       for (const alreadyActive of [false, true]) {
         const ctx = createContext();
         if (alreadyActive) await launch(ctx);
@@ -97,10 +102,11 @@ SCENARIOS = (
           revision: 7, launch_action: 'continue',
         } });
         const request = ctx.requests.shift();
+        assert.match(request.url, /claim_activity=false/);
         await respond(request, snapshot('session_b', 8));
         const release = ctx.requests.find(r => /\/session\/release/.test(r.url));
-        assert.equal(!!release, !alreadyActive, '不能残留无人接管的锁，也不能释放健康演绎');
-        if (release) assert.equal(JSON.parse(release.options.body).catgirl_name, '猫娘');
+        assert.equal(!!release, false, '预检不领取锁，放弃不得释放其他窗口的角色守卫');
+        assert.equal(ctx.requests.length, 0, '未接管不能发送领取活动的请求');
       }
     """),
     # 失败请求和缺报必须展示，幂等重放清零，新会话不能沿用上一份用量。
