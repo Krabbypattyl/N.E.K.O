@@ -9680,6 +9680,38 @@ describe('App', () => {
     expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
   });
 
+  it.each([false, true])('preserves native guide input and tools across desktop outside events (wheel open: %s)', async (wheelOpen) => {
+    vi.useFakeTimers();
+    const onCompactChatStateChange = vi.fn();
+    const layer = document.createElement('div');
+    layer.className = 'click-guide-layer click-guide-native';
+    layer.style.visibility = 'hidden';
+    document.body.appendChild(layer);
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange} />);
+      const input = screen.getByPlaceholderText('Type a message...');
+      input.focus();
+      if (wheelOpen) fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      onCompactChatStateChange.mockClear();
+      fireEvent.blur(input);
+      fireEvent(window, new Event('blur'));
+      fireEvent(window, new CustomEvent('neko:desktop-compact-pointer-outside'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', String(wheelOpen));
+      layer.remove();
+      fireEvent(window, new Event('blur'));
+      fireEvent(window, new CustomEvent('neko:desktop-compact-pointer-outside'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+      expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      layer.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['click-guide-card', 'click-guide-mask'])('keeps empty compact input open during a press and focus transfer to %s', async (className) => {
     const onCompactChatStateChange = vi.fn();
     const layer = document.createElement('div');

@@ -46,7 +46,7 @@ for (const selector of ['.click-guide-next', '.click-guide-card p', '.click-guid
     test(`guide presses on ${selector} keep its target open until the next click advances`, async t => {
         const { dom, api, target, doc } = setup();
         t.after(() => dom.window.close());
-        const closed = { pointerdown: 0, mousedown: 0, click: 0 };
+        const closed = { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 };
         for (const type of Object.keys(closed)) {
             doc.addEventListener(type, event => {
                 if (!target.contains(event.target)) {
@@ -64,14 +64,16 @@ for (const selector of ['.click-guide-next', '.click-guide-card p', '.click-guid
         const pressed = doc.querySelector(selector);
         pressed.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
         pressed.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        const touch = new dom.window.Event('touchstart', { bubbles: true, cancelable: true });
+        assert.equal(pressed.dispatchEvent(touch), true, 'touch default behavior remains available');
         // Allow geometry tracking to run between press and release, as with a real mouse.
         await delay(40);
-        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, click: 0 });
+        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 });
         assert.notEqual(target.style.display, 'none');
         assert.equal(doc.querySelector('.click-guide-card').style.display, '');
         pressed.click();
         await delay(40);
-        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, click: 0 });
+        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 });
         if (pressed !== next) {
             assert.equal(guide.index, 0, 'mask and card text clicks do not advance');
             next.click();
@@ -81,8 +83,9 @@ for (const selector of ['.click-guide-next', '.click-guide-card p', '.click-guid
         await guide.stop();
         doc.querySelector('#outside').dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
         doc.querySelector('#outside').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        doc.querySelector('#outside').dispatchEvent(new dom.window.Event('touchstart', { bubbles: true }));
         doc.querySelector('#outside').click();
-        assert.deepEqual(closed, { pointerdown: 1, mousedown: 1, click: 1 }, 'normal outside presses still reach the business listeners');
+        assert.deepEqual(closed, { pointerdown: 1, mousedown: 1, touchstart: 1, click: 1 }, 'normal outside presses still reach the business listeners');
 });
 }
 

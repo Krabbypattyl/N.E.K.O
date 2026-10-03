@@ -28,7 +28,7 @@
         const layer = document.createElement('div');
         layer.className = 'click-guide-layer';
         // Guide controls and mask panes are not outside actions on the business UI.
-        for (const type of ['pointerdown', 'mousedown', 'click']) {
+        for (const type of ['pointerdown', 'mousedown', 'touchstart', 'click']) {
             layer.addEventListener(type, event => event.stopPropagation());
         }
         const mask = api.createMask(layer);
