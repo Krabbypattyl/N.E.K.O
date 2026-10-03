@@ -82,8 +82,9 @@ def test_carrying_prop_does_not_turn_author_plan_into_permanent_state(name, purp
     ('（点头）哟，你？好久不见。', False, False, True),
 ])
 @pytest.mark.parametrize('question_field', ['source_performance', 'bridge_scene_narration', 'target_performance'])
+@pytest.mark.parametrize('long_source', [False, True])
 async def test_terminal_question_check_does_not_replace_full_review_or_commit_unknown(
-    tmp_path, monkeypatch, text, requires_reply, timeout, full_review_rejects, question_field,
+    tmp_path, monkeypatch, text, requires_reply, timeout, full_review_rejects, question_field, long_source,
 ):
     engine = _engine()
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -98,7 +99,10 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
 
     async def generate(self, **kwargs):
         calls['actor'] += 1
-        candidate = {**_candidate(), question_field: text}
+        candidate = _candidate()
+        if long_source:
+            candidate['source_performance'] = ''.join(f'（点头）已经确认第{i}条消息。' for i in range(8))
+        candidate[question_field] = text
         return engine.finalize_transition_performance(kwargs['outcome'], candidate, target_opening='雨后的长街。')
 
     async def narrow(self, **kwargs):
@@ -107,7 +111,10 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
         assert len(boundaries) == 1
         assert '下一轮回答' in boundaries[0]
         # Inspect the real model-input projection, not merely the raw candidate.
-        visible = json.dumps(evaluator._context_content(kwargs['actor_performance']), ensure_ascii=False)
+        assert kwargs['include_all_segments'] is True
+        visible = json.dumps(evaluator._context_content(
+            kwargs['actor_performance'], include_all_segments=kwargs['include_all_segments'],
+        ), ensure_ascii=False)
         assert text.split('）')[-1] in visible
         if timeout:
             raise evaluator.NumericV2EvaluatorError('numeric_v2_contract_check_timeout')

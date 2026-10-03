@@ -854,7 +854,8 @@ def test_contract_check_accepts_only_authored_boundary_items():
 
 
 @pytest.mark.asyncio
-async def test_boundary_check_reads_author_boundaries_and_reports_violation(monkeypatch):
+@pytest.mark.parametrize('include_all_segments', [False, True])
+async def test_boundary_check_reads_author_boundaries_and_reports_violation(monkeypatch, include_all_segments):
     """窄判定必须真的读到作者禁令，并把逐字命中的违规返回给调用方。"""  # noqa: DOCSTRING_CJK
 
     captured = {}
@@ -886,13 +887,22 @@ async def test_boundary_check_reads_author_boundaries_and_reports_violation(monk
     }}
     worker = evaluator.NumericV2MetricEvaluator(object())
     violated = await worker.verify_contract_boundaries(
-        node=node, actor_performance={'performance': '两人抵达观景坡顶端的平台。'},
+        node=node, actor_performance={'segments': [
+            {'phase': 'source_response', 'performance': ''.join(
+                f'（点头）这是第{i}条已经确认的消息。' for i in range(8)
+            )},
+            {'phase': 'transition_bridge', 'scene_narration': '走过林间小径。'},
+            {'phase': 'target_opening', 'performance': '两人抵达观景坡顶端的平台。'},
+        ]},
+        include_all_segments=include_all_segments,
         player_input='（加快步伐走完最后几级台阶）呼，终于到了！')
 
     assert violated == ('不得直接到达最高处平台',)
     sent = captured['messages'][0].content + captured['messages'][1].content
     assert '不得直接到达最高处平台' in sent
     assert '不得描述已到达终点平台' in sent
+    assert '两人抵达观景坡顶端的平台。' in sent
+    assert ('这是第0条已经确认的消息。' in sent) == include_all_segments
     # 没有禁令的幕不发请求，直接返回空。
     captured.clear()
     assert await worker.verify_contract_boundaries(

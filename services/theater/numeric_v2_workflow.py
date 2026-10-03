@@ -1778,7 +1778,8 @@ async def _execute_numeric_v2_turn(
                 ]}},
                 # This check covers the whole delivered ending, unlike the
                 # next-scene evaluator's target-opening-only history projection.
-                actor_performance={"content": performance_content_blocks(candidate)},
+                actor_performance=candidate,
+                include_all_segments=True,
                 player_input=turn.message,
             )
         except NumericV2EvaluatorError as exc:
