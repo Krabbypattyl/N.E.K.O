@@ -587,13 +587,13 @@
         setBusy(true);
         try {
             var result = kind === 'paused'
-                ? await requestJson(api.resume, { method: 'POST', body: {
+                ? await requestJson(api.resume + '?claim_activity=false', { method: 'POST', body: {
                     story_id: continueStoryId,
                     session_id: state.session.session_id,
                     base_revision: state.session.revision,
                     base_lifecycle_revision: state.session.lifecycle_revision
                 }})
-                : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?story_id=' + encodeURIComponent(continueStoryId));
+                : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?claim_activity=false&story_id=' + encodeURIComponent(continueStoryId));
             if (continueCharacterEpoch !== characterEpoch || continueStoryId !== state.storyId || continueSelectionEpoch !== storySelectionEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'restore_failed');
             state.session = result.session;

@@ -117,7 +117,8 @@ def _track_theater_activity(handler):
     @functools.wraps(handler)
     async def wrapper(*args, **kwargs):
         response = await handler(*args, **kwargs)
-        note_theater_session_response(response)
+        if kwargs.get("claim_activity", True):
+            note_theater_session_response(response)
         return response
 
     return wrapper
@@ -998,7 +999,7 @@ async def get_active_numeric_session(story_id: str):
 
 @router.get("/session/{session_id}")
 @_track_theater_activity
-async def get_numeric_session(session_id: str, story_id: str):
+async def get_numeric_session(session_id: str, story_id: str, claim_activity: bool = True):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
@@ -1310,7 +1311,7 @@ async def end_numeric_session(request: Request):
 
 @router.post("/session/resume")
 @_track_theater_activity
-async def resume_numeric_session(request: Request):
+async def resume_numeric_session(request: Request, claim_activity: bool = True):
     """继续玩家主动退出的演绎；剧情自然结局不能从该入口恢复。"""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)

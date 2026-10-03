@@ -87,6 +87,22 @@ function assertRecovery(ctx, before, buttons, draft) {
 """
 
 SCENARIOS = (
+    ("abandoned_revision_does_not_leave_activity_claim", r"""
+      for (const alreadyActive of [false, true]) {
+        const ctx = createContext();
+        if (alreadyActive) await launch(ctx);
+        ctx.listeners.message({ origin: 'https://local.test', data: {
+          schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+          launch_id: 'mismatched', story_id: 'story_session_b', session_id: 'session_b',
+          revision: 7, launch_action: 'continue',
+        } });
+        const request = ctx.requests.shift();
+        await respond(request, snapshot('session_b', 8));
+        const release = ctx.requests.find(r => /\/session\/release/.test(r.url));
+        assert.equal(!!release, !alreadyActive, '不能残留无人接管的锁，也不能释放健康演绎');
+        if (release) assert.equal(JSON.parse(release.options.body).catgirl_name, '猫娘');
+      }
+    """),
     # 失败请求和缺报必须展示，幂等重放清零，新会话不能沿用上一份用量。
     ("usage_failure_replay_and_new_session", r"""
       const ctx = createContext(); await launch(ctx);

@@ -923,10 +923,12 @@
         // 多个选剧页可能交错启动；候选快照通过世代与 revision 校验后才有权接管当前运行态。
         if (launchToken !== launchEpoch) {
             delete launchReplyTargets[message.launch_id];
+            releaseAbandonedLaunchActivity(snapshot, launchToken);
             return false;
         }
         if (!snapshot.ok || !snapshot.session || Number(snapshot.session.revision) !== Number(message.revision)) {
             delete launchReplyTargets[message.launch_id];
+            releaseAbandonedLaunchActivity(snapshot, launchToken);
             return false;
         }
         message.story_title = snapshot.story_title || message.story_title;

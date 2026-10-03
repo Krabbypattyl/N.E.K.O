@@ -90,7 +90,14 @@ def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatc
         assert client.get(f"/api/theater-numeric/session/missing?story_id={story}").status_code == 404
         assert active() is False
 
+        assert client.get(f"/api/theater-numeric/session/activity?story_id={story}&claim_activity=false").status_code == 200
+        assert active() is False
+
         assert client.get(f"/api/theater-numeric/session/activity?story_id={story}").status_code == 200
+        assert active() is True
+
+        # A selector preview must not clear another window's existing claim.
+        assert client.get(f"/api/theater-numeric/session/activity?story_id={story}&claim_activity=false").status_code == 200
         assert active() is True
 
         theater_activity.clear_theater_activity(name)
@@ -107,10 +114,13 @@ def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatc
         assert ended.status_code == 200
         assert active() is False
 
-        resumed = client.post("/api/theater-numeric/session/resume", json={
+        resumed = client.post("/api/theater-numeric/session/resume?claim_activity=false", json={
             "story_id": story, "session_id": "activity", "base_revision": 1, "base_lifecycle_revision": 1,
         })
         assert resumed.status_code == 200
+        assert active() is False
+        # Only the body runtime's read after handoff claims ordinary-chat blocking.
+        assert client.get(f"/api/theater-numeric/session/activity?story_id={story}").status_code == 200
         assert active() is True
 
         # Another window performing with a different character keeps its guard:

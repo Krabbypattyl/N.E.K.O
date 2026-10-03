@@ -124,7 +124,8 @@ async def test_memory_list_does_not_wait_for_settle_lock(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_state_migrates_known_total_and_fails_closed_on_corruption(tmp_path):
+@pytest.mark.parametrize('corruption', ['{', '', '[]', '{"story":{"sessions":{},"total":0}}'])
+async def test_run_state_migrates_known_total_and_quarantines_corruption(tmp_path, corruption):
     from pathlib import Path
     from utils import recent_file
     from memory.recent import THEATER_RUNS_FILENAME
@@ -136,10 +137,57 @@ async def test_run_state_migrates_known_total_and_fails_closed_on_corruption(tmp
     result = await manager.upsert_theater_episode(_capsule("story", "new"), name)
     assert result.metadata["run_index"] == 11
     before = Path(path).read_bytes()
-    Path(recent_file.recent_sidecar_path(path, THEATER_RUNS_FILENAME)).write_text("{", encoding="utf-8")
-    with pytest.raises(json.JSONDecodeError):
-        await manager.upsert_theater_episode(_capsule("story", "next"), name)
+    runs_path = Path(recent_file.recent_sidecar_path(path, THEATER_RUNS_FILENAME))
+    runs_path.write_text(corruption, encoding="utf-8")
+    result = await manager.upsert_theater_episode(_capsule("story", "next"), name)
+    assert result.metadata["run_index"] == 12
+    backups = list(runs_path.parent.glob("theater_runs.json.*.corrupt"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == corruption
+    assert Path(path).read_bytes() != before
+    # Corruption must not make explicit forgetting impossible either.
+    runs_path.write_text(corruption, encoding="utf-8")
+    await manager.record_theater_story_forget(name, "story")
+    await manager.forget_theater_story("story", name)
+    assert not await manager.aget_recent_history(name)
+
+
+@pytest.mark.asyncio
+async def test_legacy_capsules_share_the_durable_number_allocator(tmp_path):
+    from utils import recent_file
+
+    manager, name, path = _manager(tmp_path)
+    old = _capsule("story", "old")
+    old.metadata["ending_title"] = "Old ending"
+    recent_file.write_recent_payload(path, messages_to_dict([old]))
+    result = await manager.upsert_theater_episode(_capsule("story", "new"), name)
+    assert result.metadata["run_index"] == 2
+    assert [m.metadata["run_index"] for m in await manager.aget_recent_history(name)] == [1, 2]
+    old.metadata["archive_through_revision"] = 10
+    result = await manager.upsert_theater_episode(old, name)
+    assert result.metadata["run_index"] == 1
+    assert "Old ending" in result.metadata["ending_titles_seen"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_run_state_does_not_publish_a_forget_marker(tmp_path, monkeypatch):
+    import builtins
+    from pathlib import Path
+
+    manager, name, path = _manager(tmp_path)
+    await manager.upsert_theater_episode(_capsule("story", "session"), name)
+    before = Path(path).read_bytes()
+    original_open = builtins.open
+
+    def locked_open(file, *args, **kwargs):
+        if str(file).endswith('theater_runs.json'):
+            raise PermissionError('sharing violation')
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', locked_open)
+    with pytest.raises(PermissionError):
+        await manager.record_theater_story_forget(name, 'story')
     assert Path(path).read_bytes() == before
+    assert not (Path(path).parent / 'theater_retractions.json').exists()
 
 
 def test_run_numbers_are_included_in_character_cloud_snapshot(tmp_path):

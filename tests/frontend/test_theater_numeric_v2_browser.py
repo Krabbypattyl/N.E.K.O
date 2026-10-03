@@ -571,7 +571,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
     expect(mock_page.locator("#theater-session-badge")).to_have_text("已退出")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("继续原进度")
     expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
-    with mock_page.expect_request("**/api/theater-numeric/session/resume") as request_info:
+    with mock_page.expect_request("**/api/theater-numeric/session/resume?claim_activity=false") as request_info:
         mock_page.locator("#theater-continue-btn").click()
     assert json.loads(request_info.value.post_data or "{}") == {
         "story_id": STORY["story_id"],

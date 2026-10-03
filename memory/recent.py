@@ -493,21 +493,30 @@ def restored_theater_history(history, story_id, session_id, through):
 
 
 def _load_theater_runs_unlocked(recent_path):
-    """Read durable session numbers; malformed or unreadable state fails closed."""
+    """Read durable numbers, quarantining malformed data but propagating I/O errors."""
     path = recent_file.recent_sidecar_path(recent_path, THEATER_RUNS_FILENAME)
     try:
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except FileNotFoundError:
         return {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
     if not isinstance(payload, dict) or any(
         not isinstance(story, dict)
         or not isinstance(story.get("sessions"), dict)
+        or not isinstance(story.get("total"), int)
         or not _positive_metadata_int(story.get("total"))
-        or any(not _positive_metadata_int(number) for number in story["sessions"].values())
+        or any(not isinstance(number, int) or not _positive_metadata_int(number)
+               for number in story["sessions"].values())
+        or story["total"] < max(story["sessions"].values(), default=0)
         for story in payload.values()
     ):
-        raise RuntimeError("theater_run_numbers_invalid")
+        # Preserve the damaged file, then let the caller seed only verifiable
+        # numbers from recent. I/O errors still propagate without resetting it.
+        os.replace(path, f"{path}.{secrets.token_hex(8)}.corrupt")
+        logger.warning("[RecentHistory] quarantined invalid theater run numbers: %s", path)
+        return {}
     return payload
 
 
@@ -772,6 +781,9 @@ def _merge_theater_episode_summary(history: list, incoming):
         normalized = str(title or "").strip()
         if normalized and normalized not in ending_titles:
             ending_titles.append(normalized)
+    previous_ending = str(previous_metadata.get("ending_title") or "").strip()
+    if previous_ending and previous_ending not in ending_titles:
+        ending_titles.append(previous_ending)
     current_ending = str(incoming_metadata.get("ending_title") or "").strip()
     if current_ending and current_ending not in ending_titles:
         ending_titles.append(current_ending)
@@ -1222,7 +1234,8 @@ class CompressedRecentHistoryManager:
                 raise RuntimeError("theater_episode_persist_failed")
 
             runs = _load_theater_runs_unlocked(file_path)
-            for message in history:
+            current = list(history) + list(pending)
+            for message in current:
                 metadata = message_metadata(message)
                 story, session = theater_memory_episode_key(message)
                 if story and session and _positive_metadata_int(metadata.get("run_index")):
@@ -1230,6 +1243,21 @@ class CompressedRecentHistoryManager:
                     record["sessions"].setdefault(session, int(metadata["run_index"]))
                     record["total"] = max(record["total"], int(metadata["run_index"]),
                                           _positive_metadata_int(metadata.get("story_run_count")))
+            # Allocate old unnumbered capsules from the same durable registry
+            # before allocating incoming, rather than giving both position 1.
+            for position, message in enumerate(current):
+                if not is_theater_episode_summary(message):
+                    continue
+                metadata = dict(message_metadata(message))
+                if _positive_metadata_int(metadata.get("run_index")):
+                    continue
+                story, session = theater_memory_episode_key(message)
+                record = runs.setdefault(story, {"sessions": {}, "total": 0})
+                number = record["sessions"].get(session) or record["total"] + 1
+                record["sessions"][session] = number
+                record["total"] = max(record["total"], number)
+                metadata.update(run_index=number, story_run_count=record["total"])
+                current[position] = _copy_message_metadata(message, metadata)
             metadata = dict(message_metadata(incoming))
             story, session = theater_memory_episode_key(incoming)
             record = runs.setdefault(story, {"sessions": {}, "total": 0})
@@ -1240,7 +1268,7 @@ class CompressedRecentHistoryManager:
             metadata.update(run_index=number, story_run_count=record["total"])
             incoming = _copy_message_metadata(incoming, metadata)
             merged, stored_incoming = _merge_theater_episode_summary(
-                list(history) + list(pending),
+                current,
                 incoming,
             )
             try:
@@ -1449,10 +1477,10 @@ class CompressedRecentHistoryManager:
                 "forgotten_at": forgotten_at,
                 "forget_marker": forget_marker,
             })
-            _write_theater_retraction_state_unlocked(file_path, entries, kept)
             runs = _load_theater_runs_unlocked(file_path)
             runs.pop(story_id, None)
             recent_file.write_recent_sidecar_unlocked(file_path, THEATER_RUNS_FILENAME, runs)
+            _write_theater_retraction_state_unlocked(file_path, entries, kept)
 
     async def record_theater_story_forget(self, lanlan_name, story_id) -> str:
         """Durably drop every later-arriving write of this story issued before now.
