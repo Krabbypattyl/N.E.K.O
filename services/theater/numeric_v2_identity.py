@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any
 
-from utils.config_manager import get_reserved, normalize_character_id
+from utils.config_manager import delete_reserved, get_reserved, normalize_character_id
 
 from .llm_context import _load_player_address
 
@@ -62,11 +62,7 @@ def numeric_v2_catgirl_binding(
     # character_id 是存储身份，不属于人格内容；排除它可让既有角色补 ID 时
     # 继续匹配迁移前的 profile_hash。
     profile_for_hash = deepcopy(profile)
-    reserved = profile_for_hash.get("_reserved")
-    if isinstance(reserved, dict):
-        reserved.pop("character_id", None)
-        if not reserved:
-            profile_for_hash.pop("_reserved", None)
+    delete_reserved(profile_for_hash, "character_id")
     canonical = json.dumps(
         profile_for_hash,
         ensure_ascii=False,

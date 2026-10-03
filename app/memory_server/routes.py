@@ -1214,6 +1214,52 @@ async def list_theater_memory_stories(lanlan_name: str):
     return {"ok": True, "stories": list(stories.values())}
 
 
+async def _drop_theater_memory_reindexed(
+    lanlan_name: str,
+    current: list,
+    should_drop,
+    drop_recent,
+    operation: str,
+):
+    """Remove theater capsules from the time index, then from recent.
+
+    The caller holds the character's settle lock and passes the recent history
+    it read under it. The recallable index goes first, so a failed recent write
+    still leaves the original summary in place. When ``drop_recent`` fails the
+    index is rebuilt from what recent actually holds: the drop may have been
+    partly persisted, and rolling back to ``current`` would put removed
+    capsules back into the recallable index.
+    """
+
+    remaining = [message for message in current if not should_drop(message)]
+    reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
+        _theater_index_events(lanlan_name, remaining),
+        lanlan_name,
+    )
+    try:
+        removed_recent = await drop_recent()
+    except Exception:
+        try:
+            try:
+                actual = await runtime.recent_history_manager.aget_recent_history(
+                    lanlan_name,
+                )
+            except Exception:
+                logger.exception(
+                    "[MemoryServer] %s: recent re-read failed; restoring index from snapshot",
+                    operation,
+                )
+                actual = current
+            await runtime.time_manager.areconcile_theater_conversations(
+                _theater_index_events(lanlan_name, actual),
+                lanlan_name,
+            )
+        except Exception:
+            logger.exception("[MemoryServer] %s: time index rollback failed", operation)
+        raise
+    return removed_recent, reconcile_result
+
+
 @app.post("/internal/memory/{lanlan_name}/theater/forget")
 async def forget_theater_memory(
     lanlan_name: str,
@@ -1241,41 +1287,19 @@ async def forget_theater_memory(
             current = await runtime.recent_history_manager.aget_recent_history(
                 lanlan_name,
             )
-            remaining = [
-                message for message in current
-                if not (
+            removed_recent, reconcile_result = await _drop_theater_memory_reindexed(
+                lanlan_name,
+                current,
+                lambda message: (
                     is_theater_memory_message(message)
                     and str(message_metadata(message).get("story_id") or "") == story_id
-                )
-            ]
-            # 先移除可召回索引，再删除 recent；索引失败时原始摘要仍在。
-            reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
-                _theater_index_events(lanlan_name, remaining),
-                lanlan_name,
-            )
-            try:
-                removed_recent = await runtime.recent_history_manager.forget_theater_story(
+                ),
+                lambda: runtime.recent_history_manager.forget_theater_story(
                     story_id,
                     lanlan_name,
-                )
-            except Exception:
-                # recent 删除失败时按 recent 的实际内容恢复索引：删除可能已部分落盘，
-                # 直接用删除前快照回滚会把已删掉的剧本重新写回可召回索引。
-                try:
-                    try:
-                        actual = await runtime.recent_history_manager.aget_recent_history(
-                            lanlan_name,
-                        )
-                    except Exception:
-                        logger.exception("[MemoryServer] 剧本遗忘失败后重读 recent 失败，按删除前快照回滚索引")
-                        actual = current
-                    await runtime.time_manager.areconcile_theater_conversations(
-                        _theater_index_events(lanlan_name, actual),
-                        lanlan_name,
-                    )
-                except Exception:
-                    logger.exception("[MemoryServer] 剧本遗忘失败后时间索引回滚失败")
-                raise
+                ),
+                "theater story forget",
+            )
         return {
             "ok": True,
             "removed_recent": removed_recent,
@@ -1342,36 +1366,18 @@ async def retract_theater_episode(
             )
             if not any(is_target(message) for message in current):
                 return {"ok": True, "removed_recent": 0, "removed_time_index": 0}
-            remaining = [message for message in current if not is_target(message)]
-            # Same order as story forget: drop the recallable index first, so a
-            # failed recent write still leaves the original summary in place.
-            reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
-                _theater_index_events(lanlan_name, remaining),
+            removed_recent, reconcile_result = await _drop_theater_memory_reindexed(
                 lanlan_name,
-            )
-            try:
-                removed_recent = await runtime.recent_history_manager.retract_theater_episode(
+                current,
+                is_target,
+                lambda: runtime.recent_history_manager.retract_theater_episode(
                     story_id,
                     session_id,
                     through,
                     lanlan_name,
-                )
-            except Exception:
-                try:
-                    try:
-                        actual = await runtime.recent_history_manager.aget_recent_history(
-                            lanlan_name,
-                        )
-                    except Exception:
-                        logger.exception("[MemoryServer] theater episode retract: recent re-read failed; restoring index from snapshot")
-                        actual = current
-                    await runtime.time_manager.areconcile_theater_conversations(
-                        _theater_index_events(lanlan_name, actual),
-                        lanlan_name,
-                    )
-                except Exception:
-                    logger.exception("[MemoryServer] theater episode retract: time index rollback failed")
-                raise
+                ),
+                "theater episode retract",
+            )
         return {
             "ok": True,
             "removed_recent": removed_recent,

@@ -504,12 +504,6 @@ def _load_theater_retraction_state_unlocked(recent_path) -> tuple[list[dict], li
     return lists[0], lists[1]
 
 
-def _load_theater_retractions_unlocked(recent_path) -> list[dict]:
-    """Read the per-attempt retraction tombstones; the caller holds the file lock."""
-
-    return _load_theater_retraction_state_unlocked(recent_path)[0]
-
-
 def _write_theater_retraction_state_unlocked(
     recent_path, entries: list[dict], forgotten: list[dict],
 ) -> None:
