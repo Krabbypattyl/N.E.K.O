@@ -78,7 +78,7 @@
             ended = true;
             try { await cleanupStep(); }
             finally {
-                document.removeEventListener('keydown', escape);
+                document.removeEventListener('keydown', escape, true);
                 root.removeEventListener('neko:click-guide-window-skip', windowSkip);
                 layer.remove();
                 try { await presentation?.close(); }
@@ -90,8 +90,13 @@
         }
         const windowSkip = () => void finish('skipped');
         function escape(event) {
-            // Escape belongs to the composer and open menus; skipping is explicit.
-            if (event.isComposing || event.key === 'Escape') return;
+            if (event.isComposing) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                void finish('skipped');
+                return;
+            }
             if (event.key === 'Tab') {
                 const target = api.resolveTarget(view()?.target);
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
@@ -375,7 +380,7 @@
                         returned: () => void advance(),
                         skip: () => void finish('skipped'), failed: () => void finish('failed') });
                 }
-                document.addEventListener('keydown', escape);
+                document.addEventListener('keydown', escape, true);
                 root.addEventListener('neko:click-guide-window-skip', windowSkip);
                 return show(startIndex, startIndex !== 0);
             },

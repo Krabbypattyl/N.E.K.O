@@ -1317,21 +1317,22 @@ test('remote preparation heartbeats extend the lease but retain a total deadline
     } finally { root.close(); }
 });
 
-test('Escape and IME Escape preserve the guide and reach menu handlers', async () => {
+test('Escape ends the guide while IME Escape keeps composing', async () => {
     const { dom, api, doc } = setup();
     let reason;
     let escapes = 0;
     doc.addEventListener('keydown', event => { if (event.key === 'Escape') escapes++; });
     const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
     await runner.start();
-    for (const isComposing of [false, true]) {
-        doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing, bubbles: true }));
-    }
-    await delay(20);
-    assert.equal(reason, undefined);
-    assert.equal(escapes, 2);
+    doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
     assert.ok(doc.querySelector('.click-guide-layer'));
-    await runner.stop(); dom.window.close();
+    assert.equal(reason, undefined);
+    doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await delay(20);
+    assert.equal(reason, 'skipped');
+    assert.equal(escapes, 1);
+    assert.equal(doc.querySelector('.click-guide-layer'), null);
+    dom.window.close();
 });
 
 test('startup state and i18n failures clear pending without releasing greetings before fallback', async () => {
