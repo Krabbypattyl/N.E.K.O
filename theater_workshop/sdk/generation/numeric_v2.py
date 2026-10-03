@@ -23,7 +23,7 @@ from ..numeric_v2 import (
     scene_turn_budget,
 )
 
-from .runtime_rules import GOAL_METADATA_RULE
+from .runtime_rules import GOAL_METADATA_RULE, PUBLIC_TEXT_RULE
 
 # 用户要求用具体行为代替抽象的“难度”；所有生成、完善和续写入口共用作者合同。
 # 沿用现有叙事和边界字段，由模型按事实编写；程序不扫描关键词，也不新增运行时门槛。
@@ -276,7 +276,7 @@ _SCENE_PROCESS_AUTHORING_RULE = (
     "事件按对象、时点和实际结果区分，不以玩家对白字面相同与否判断是否重复。"
     "按每轮两点估算是规划参考，不保证每段闲聊都有收益；到支线入口前要有足够互不重复且符合依据条件的行为机会。"
     "阈值、回合数和路线结构仍遵守本次修改权限；正文完善不得擅改数值来掩盖节奏问题。"
-)
+) + "\n\n" + PUBLIC_TEXT_RULE
 
 
 # 主线输出与续写路径共享同一份结构/枚举示例，避免缺失整段时让模型猜字段。
@@ -2502,12 +2502,11 @@ class NumericV2Generator(ModelAgent):
                 exit_plan["carry_props"],
                 chapter_index=index + 1,
             )
-            # 名称和固定用途仍是作者资料；本幕末的换主等变化只进入出幕合同。
+            # 道具规划不是已提交事实；携带项只保留名称与用途，状态约束由作者显式声明。
             scene_prop_facts = self._key_prop_facts(
                 key_props,
                 [prop["id"] for prop in key_props],
                 chapter_index=index + 1,
-                include_planned_state=False,
             )
             if index + 1 < len(chapters):
                 target = chapters[index + 1]
@@ -2833,20 +2832,13 @@ class NumericV2Generator(ModelAgent):
         prop_ids: list[Any],
         *,
         chapter_index: int,
-        include_planned_state: bool = True,
     ) -> list[str]:
-        """Distinguish fixed prop information from planned exit states; chapter changes are not chapter entrance facts."""
+        """Project fixed prop information without promoting lifecycle plans to runtime facts."""
 
         props_by_id = {
             str(prop.get("id") or "").strip(): prop
             for prop in key_props
             if isinstance(prop, Mapping) and str(prop.get("id") or "").strip()
-        }
-        owner_labels = {
-            "catgirl": "女主",
-            "player": "男主",
-            "environment": "现场",
-            "shared": "双方共同",
         }
         facts: list[str] = []
         # 调用方明确选择本幕资料或出幕携带项，均不能暴露以后章节才出现的道具。
@@ -2865,23 +2857,12 @@ class NumericV2Generator(ModelAgent):
                     active_state = raw_state
             if active_state is None:
                 continue
-            # 入幕上下文保留不随互动变化的定义，不据生命周期规划预写持有人和结果。
+            # 生命周期仍留在作者稿；持有人、位置和结果须由实际演出建立。
             description = (
                 f"关键道具“{str(prop.get('name') or '').strip()}”[{prop_id}]："
                 f"用途为{str(prop.get('purpose') or '').strip()}"
             )
-            if not include_planned_state:
-                facts.append(f"{description}。")
-                continue
-            owner = owner_labels.get(
-                str(active_state.get("owner") or ""),
-                str(active_state.get("owner") or ""),
-            )
-            facts.append(
-                f"{description}；"
-                f"当前归属为{owner}；"
-                f"状态为{str(active_state.get('state') or '').strip()}。"
-            )
+            facts.append(f"{description}。")
         return facts
 
     @staticmethod

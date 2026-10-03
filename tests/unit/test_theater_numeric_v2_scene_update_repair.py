@@ -60,7 +60,7 @@ def test_unresolved_conflicts_and_dependencies_keep_the_original_repair_path(cha
 
 
 @pytest.mark.parametrize("change", [
-    {"performance": ""}, {"scene_narration": "另一稿的旁白。"}, {"suggested_inputs": []},
+    {"performance": ""}, {"scene_narration": "另一稿的旁白。"},
     {"performance": _candidate()["scene_narration"]},
     {"segments": [{"phase": "target_opening", "performance": "到了。"}]},
     {"fixed_narrations": [{"id": "letter", "text": "信件内容。"}]},
@@ -215,7 +215,7 @@ async def test_narration_crop_commits_once_without_rewrite_or_new_invitation(
     )
     assert calls == {"actor": 1, "review": 1}
     assert result.performance["performance"] == dialogue
-    assert result.performance["suggested_inputs"] == _candidate()["suggested_inputs"]
+    assert result.performance["suggested_inputs"] == []
     assert "scene_narration" not in result.performance
     assert result.diagnostics["invalid_scene_update_local_crops"] == 1
     assert result.diagnostics["semantic_rewrite_attempts"] == 0

@@ -277,7 +277,7 @@ async def test_workflow_traces_retries_reviews_history_and_atomic_commit(tmp_pat
             stored = result.stored
             assert await runtime.restore_session("same") == stored
             assert result.performance["performance"] == "最终正文"
-            assert result.performance["suggested_inputs"] == ["安全按钮"]
+            assert result.performance["suggested_inputs"] == []
         outcomes.append(stored)
         call_counts.append(counts)
     assert outcomes[0] == outcomes[1]

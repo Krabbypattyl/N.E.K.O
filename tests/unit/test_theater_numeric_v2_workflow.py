@@ -304,7 +304,7 @@ def test_boundary_repair_uses_updated_route_and_preserves_its_proposal() -> None
 
 
 def test_unsafe_suggestion_drop_preserves_all_visible_body_fields() -> None:
-    """Targeted suggestion removal must not alter body text, scene updates or offer flags."""
+    """Withdraw an unsafe batch without altering body text, scene updates or offer flags."""
 
     candidate = {
         "performance": "（望向门边）我们还在屋内。",
@@ -314,9 +314,34 @@ def test_unsafe_suggestion_drop_preserves_all_visible_body_fields() -> None:
     }
     filtered, removed = _drop_reported_unsafe_suggestions(candidate, (1,))
 
-    assert removed == 1
-    assert filtered == {**candidate, "suggested_inputs": ["继续追问。", "再等等。"]}
+    assert removed == 3
+    assert filtered == {**candidate, "suggested_inputs": []}
     assert candidate["suggested_inputs"] == ["继续追问。", "已经抵达了。", "再等等。"]
+
+
+@pytest.mark.parametrize("body,suggestions", [
+    ("按这三步分类，你贴步骤号，我写说明。", [
+        "（接过标签纸）那明早在门口见？", "（看向草案）先别急着定见面时间。",
+    ]),
+    ("检验报告还没出来，我们先整理已有记录。", [
+        "（收起记录）既然检验合格，现在启动设备。", "（指向设备）虽然合格了，也先别启动。",
+    ]),
+], ids=["daily-life", "science-fiction"])
+def test_unsafe_suggestion_does_not_leave_a_sibling_with_the_same_false_premise(body, suggestions):
+    candidate = {"performance": body, "scene_narration": "现场没有变化。",
+                 "suggested_inputs": suggestions, "transition_offered": False}
+    filtered, removed = _drop_reported_unsafe_suggestions(candidate, (0,))
+    assert filtered == {**candidate, "suggested_inputs": []}
+    assert removed == len(suggestions)
+    assert candidate["suggested_inputs"] == suggestions
+
+
+@pytest.mark.parametrize("suggestions", [[], ["（点头）我来贴标签。"], ["先看看报告。", "再等一会儿。"]])
+def test_suggestion_batch_without_reported_errors_is_preserved(suggestions):
+    candidate = {"performance": "我们继续。", "suggested_inputs": suggestions}
+    filtered, removed = _drop_reported_unsafe_suggestions(candidate, ())
+    assert filtered == candidate
+    assert removed == 0
 
 
 def test_invalid_unsafe_suggestion_index_drops_buttons_without_touching_body() -> None:
@@ -638,6 +663,9 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
     calls = []
 
     async def verify_contract(self, **kwargs):
+        boundaries = kwargs["node"]["story_beat"].get("must_not_happen") or []
+        if any("必须由玩家下一轮回答" in item for item in boundaries):
+            return tuple(boundaries)
         calls.append(kwargs)
         return ("不得提前离开",) if len(calls) == 1 else ()
 

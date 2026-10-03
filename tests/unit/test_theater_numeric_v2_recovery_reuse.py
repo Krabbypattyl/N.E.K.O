@@ -190,8 +190,8 @@ async def test_rejected_recovery_reuses_only_the_same_approved_ordinary_draft(
         assert result.outcome.ledger_event == prepare_calls[0].ledger_event
         assert result.stored.session.current_node_id == "start"
         if scenario == "unsafe_button":
-            assert result.performance["suggested_inputs"] == ["（安静等待）"]
-            assert diagnostics["unsafe_suggestions_removed"] == 1
+            assert result.performance["suggested_inputs"] == []
+            assert diagnostics["unsafe_suggestions_removed"] == 2
         if scenario == "phantom_offer":
             assert diagnostics["phantom_transition_flags_cleared"] == 1
         if scenario == "completed_scene":

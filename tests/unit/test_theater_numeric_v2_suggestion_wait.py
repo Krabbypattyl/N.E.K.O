@@ -90,7 +90,7 @@ async def test_repeated_input_is_removed_before_deciding_to_fill(monkeypatch, re
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['ordinary', 'formal', 'cancelled'])
-@pytest.mark.parametrize('kept_count', [0, 1, 2])
+@pytest.mark.parametrize('kept_count', [0, 1, 2, 3])
 @pytest.mark.parametrize('fill_enabled', [False, True])
 @pytest.mark.parametrize('action_only', [False, True])
 async def test_review_filter_never_generates_unreviewed_replacements(
@@ -154,7 +154,7 @@ async def test_review_filter_never_generates_unreviewed_replacements(
         ensure_current_binding=lambda _: _binding(),
     )
     assert len(generations) == len(reviews) == (2 if phase == 'cancelled' else 1)
-    assert result.performance['suggested_inputs'] == suggestions[:kept_count]
+    assert result.performance['suggested_inputs'] == (suggestions if kept_count == len(suggestions) else [])
     assert result.diagnostics['actor_suggestion_refill_after_review_attempts'] == 0
     assert result.stored.session.current_node_id == ('ending_leave' if phase == 'formal' else 'start')
     assert result.stored.session.revision == 1

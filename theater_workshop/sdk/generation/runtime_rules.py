@@ -1,5 +1,14 @@
 """Share runtime semantics and creative direction between assessment and repair without adding plot conditions for the author."""
 
+PUBLIC_TEXT_RULE = (
+    "公开文案与创作要求分开：opening_scene、entry_bridge、transition_contract.bridge_scene_narration、fallback_offer "
+    "和新生成的 fixed_narrations.text 是玩家可读的文字，只写故事里的场景、可见行动或角色发言。"
+    "约束承接历史、保持道具状态、不替玩家决定等创作要求放在已有 character_state、must_not_happen、"
+    "acting_contract 或转场 must_preserve 中，不写进公开文案。"
+    "可变的持有者、位置或行为结果尚不能确定时，公开文案省略该细节，不能用让演员自行填入实际状态的调度语代替叙事，"
+    "也不补造一个确定结果。已有 fixed_narrations 原文仍按本次编辑权限保留，发现问题报告具体字段，不擅自改写或删除原文。"
+)
+
 # 依据 N.E.K.O services/theater/numeric_v2_runtime.py 的 resolve_turn（选路、拒绝、自然结束）
 # 及 numeric_v2_evaluator.py 的 _build_messages（目标为素材、同轮收束、行动主体）。
 # 此合同供事实、证据、文学及修订四个入口共用；运行机制变化时一处同步，避免各阶段自行猜测。

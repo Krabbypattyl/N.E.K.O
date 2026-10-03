@@ -648,8 +648,8 @@ async def test_all_modules_off_keeps_only_the_actor_call(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_review_budget_skips_later_rechecks_and_uses_existing_fallback(tmp_path, monkeypatch):
-    """预算是等待上限：首次快检仍执行，改写后的复检被跳过并走既有末稿兜底。"""  # noqa: DOCSTRING_CJK
+async def test_review_budget_skips_later_rechecks_without_committing_unreviewed_rewrite(tmp_path, monkeypatch):
+    """首次快检执行，预算不足以复检新稿时保留原事务，不复用旧稿判定。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -684,17 +684,19 @@ async def test_review_budget_skips_later_rechecks_and_uses_existing_fallback(tmp
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS', 0.0)
 
     diagnostics = {}
-    result = await numeric_v2_workflow.execute_numeric_v2_turn(
-        config_manager=object(), runtime=runtime, current=current,
-        turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
-        ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
+    with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
+        await numeric_v2_workflow.execute_numeric_v2_turn(
+            config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
+            ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
 
-    # 首次快检执行一次，改写后的复检按预算跳过，且走既有末稿兜底而不是无限等待。
+    # 不加调用；新稿没有被审查，原数值、位置、邀请、正文和Ledger一并保留。
     assert len(reviews) == 1
     assert len(generations) == 2
     assert diagnostics['review_budget_skips'] == 1
-    assert diagnostics['semantic_review_fallback'] is True
-    assert result.stored.session.revision == current.session.revision + 1
+    assert diagnostics['semantic_review_fallback'] is False
+    assert diagnostics['review_timeout_aborted'] is True
+    assert await runtime.restore_session('review_budget') == current
 
 
 @pytest.mark.asyncio

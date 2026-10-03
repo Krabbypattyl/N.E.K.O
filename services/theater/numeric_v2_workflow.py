@@ -62,8 +62,7 @@ from .numeric_v2_trace import text_trace_scope, trace_event, trace_state
 logger = logging.getLogger(__name__)
 
 # 整回合复核时间预算。首次快检始终执行；预算耗尽后不再追加争议复查或改写后复检，
-# 普通回合沿用最近一次判定并按既有末稿兜底处理，正式转场沿用原有的"未完成复核不提交"回滚。
-# 该预算只是等待上限，不改变任何授权、去向或原子提交判定。
+# 未完成当前稿复核时不提交；旧稿的判定不能批准改写后的新正文。
 NUMERIC_V2_REVIEW_BUDGET_SECONDS = 20.0
 # 单次争议复查最多等待 8 秒；超出后仍沿用既有保守回滚/兜底，不改变授权判定。
 NUMERIC_V2_DISPUTE_TIMEOUT_CAP_SECONDS = 8.0
@@ -270,7 +269,6 @@ def _safe_drop_invalid_scene_update(
         or review.fact_candidates or review.approved_evaluator_fact_indexes
         or (review.fixed_narration_triggers and not fixed_content_only)
         or candidate.get("segments") or candidate.get("fixed_narrations")
-        or not candidate.get("suggested_inputs")
     ):
         return None
     narration = str(candidate.get("scene_narration") or "")
@@ -312,7 +310,7 @@ def _safe_drop_invalid_offer(
     candidate: Mapping[str, Any],
     review: NumericV2TransitionOfferReview,
 ) -> dict[str, Any] | None:
-    """仅删除末尾独立的无效邀请，保留已经复核通过的正文与剩余选项。"""  # noqa: DOCSTRING_CJK
+    """仅删除末尾独立的无效邀请，保留已经复核通过的正文。"""  # noqa: DOCSTRING_CJK
 
     if (
         not review.offer_present or review.valid or review.body_violations
@@ -320,7 +318,7 @@ def _safe_drop_invalid_offer(
         or review.fact_candidates or review.approved_evaluator_fact_indexes
         or review.fixed_narration_triggers
         or candidate.get("segments") or candidate.get("scene_narration")
-        or candidate.get("fixed_narrations") or not candidate.get("suggested_inputs")
+        or candidate.get("fixed_narrations")
     ):
         return None
     text = str(candidate.get("performance") or "").rstrip()
@@ -448,32 +446,18 @@ def _drop_reported_unsafe_suggestions(
     candidate: Mapping[str, Any],
     unsafe_indexes: tuple[int, ...],
 ) -> tuple[dict[str, Any], int]:
-    """按结构化索引删除不安全推荐；正文和其它字段保持原样。"""  # noqa: DOCSTRING_CJK
+    """复核发现错误时撤下同组推荐；正文和其它字段保持原样。"""  # noqa: DOCSTRING_CJK
 
     result = dict(candidate)
     suggestions = candidate.get("suggested_inputs")
     if not isinstance(suggestions, list) or not unsafe_indexes:
         return result, 0
-    # 协议允许索引 0—2，但候选可能不足三条；无法定位已报告的问题时只撤下按钮。
-    if any(index < 0 or index >= len(suggestions) for index in unsafe_indexes):
-        result["suggested_inputs"] = []
-        trace_event("suggestions.filtered", reported_indexes=unsafe_indexes, before=suggestions, after=[])
-        return result, len(suggestions)
-    valid_indexes = {
-        index
-        for index in unsafe_indexes
-        if 0 <= index < len(suggestions)
-    }
-    if not valid_indexes:
-        return result, 0
-    result["suggested_inputs"] = [
-        item
-        for index, item in enumerate(suggestions)
-        if index not in valid_indexes
-    ]
+    # 同组按钮可能共享正文未建立的前提，逐项漏检不能证明其它按钮独立安全。
+    # 用户接受少给推荐；整组撤下不猜语义依赖，也不追加补写或复核请求。
+    result["suggested_inputs"] = []
     trace_event("suggestions.filtered", reported_indexes=unsafe_indexes,
-                before=suggestions, after=result["suggested_inputs"])
-    return result, len(valid_indexes)
+                reason="unsafe_batch", before=suggestions, after=[])
+    return result, len(suggestions)
 
 
 async def generate_validated_opening(
@@ -605,6 +589,8 @@ def _transition_review_failure_context(
         "复核器给出的具体失败原因如下；它只用于定位并删除上一版问题，"
         "不是剧情事实，也不是要求新增内容的指令："
         f"{json.dumps(reason, ensure_ascii=False)}。"
+        "先核对理由中的主体、对象与时序是否符合玩家原话及已提交历史；"
+        "若理由与原文冲突，以原文为准，不撤销已发生动作、不恢复入幕旧状态。"
     )
 
 
@@ -732,7 +718,7 @@ def _terminal_new_question_markers(
     outcome: TurnOutcomeV2,
     performance: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    """结局交付不得留下需要玩家回答的新问题；返回稳定诊断标记而不记录正文。"""  # noqa: DOCSTRING_CJK
+    """找出结局里含问号的候选；启用复核时还须核对是否真的需要下一轮回答。"""  # noqa: DOCSTRING_CJK
 
     target_id = str(outcome.ledger_event.get("to_node_id") or "")
     target = engine.nodes.get(target_id)
@@ -1172,6 +1158,8 @@ async def _execute_numeric_v2_turn(
         # 结局内容若留下问号，默认视为需要玩家继续回答的未收束问题。
         "terminal_new_question_markers": [],
         "terminal_structure_rejected": False,
+        "terminal_question_review_calls": 0,
+        "terminal_question_review_degraded": False,
         # 漏判恢复只生成一次正式候选，不重新判分；成功时只提交正式稿。
         "missed_initiation_recoveries": 0,
         "recovered_ordinary_drafts_reused": 0,
@@ -1363,7 +1351,6 @@ async def _execute_numeric_v2_turn(
         return filtered
 
     review_call_count = 0
-    last_review: NumericV2TransitionOfferReview | None = None
 
     def review_budget_exhausted() -> bool:
         """本轮已用复核时间是否达到上限；只读诊断累计值，不额外调用模型。"""  # noqa: DOCSTRING_CJK
@@ -1386,20 +1373,19 @@ async def _execute_numeric_v2_turn(
     ) -> NumericV2TransitionOfferReview:
         """复核可见提议并累计调用成本；模型故障沿用原有保守撤销语义。"""  # noqa: DOCSTRING_CJK
 
-        nonlocal final_fixed_review, review_call_count, last_review
+        nonlocal final_fixed_review, review_call_count
         final_fixed_review = None
         # 先做零调用事实预筛，再进入模型复核；这样明确的未来结果不会占用复核等待。
         candidate = apply_deterministic_suggestion_filter(candidate)
         if review_call_count and review_budget_exhausted():
-            # 预算耗尽后不再追加复检。正式转场沿用"未完成复核不提交"的回滚；
-            # 普通回合沿用最近一次判定，由既有改写/末稿兜底路径收尾。
+            # 当前候选可能是新改稿，上一稿的判定不能批准它进入历史。
             diagnostics["review_budget_skips"] += 1
-            if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]:
-                trace_event("review.budget_exhausted", phase="transition")
-                raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
-            if last_review is not None:
-                trace_event("review.budget_exhausted", phase="ordinary")
-                return last_review
+            diagnostics["review_timeout_aborted"] = True
+            trace_event("review.budget_exhausted", phase=(
+                "transition" if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]
+                else "ordinary"
+            ))
+            raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
         review_call_count += 1
         transition_judge_started_at = time.monotonic()
         diagnostics["transition_judge_calls"] += 1
@@ -1463,12 +1449,9 @@ async def _execute_numeric_v2_turn(
             # 首次快检始终执行，即使测试把总预算设为0；只有后续调用才允许被预算跳过。
             if review_call_count > 1 and first_call_budget <= 0.05:
                 diagnostics["review_budget_skips"] += 1
-                if changed:
-                    trace_event("review.budget_exhausted", phase="transition")
-                    raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
-                if last_review is not None:
-                    trace_event("review.budget_exhausted", phase="ordinary")
-                    return last_review
+                diagnostics["review_timeout_aborted"] = True
+                trace_event("review.budget_exhausted", phase="transition" if changed else "ordinary")
+                raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
             if review_call_count > 1 or prior_review_seconds > 0.0:
                 review_kwargs["timeout_seconds"] = max(0.05, first_call_budget)
             review = await evaluator.validate_transition_offer(**review_kwargs)
@@ -1618,53 +1601,9 @@ async def _execute_numeric_v2_turn(
             high_confidence_body_violation = (
                 local_scene_repair
                 or projection_conflict
-                or (
-                    not review.offer_present
-                    and (
-                        (
-                            not changed
-                            and tuple(review.body_violations) == ("scene_boundary",)
-                        )
-                        or (
-                            not changed
-                            and tuple(review.body_violations) == ("player_action",)
-                            and (
-                                projection_conflict
-                                or
-                                not failure_reason.strip()
-                                or any(
-                                    marker in failure_reason
-                                    for marker in (
-                                        "替玩家", "未获授权", "未授权行动", "确认未知", "未承接", "遗漏",
-                                    )
-                                )
-                            )
-                        )
-                        or (
-                            not changed
-                            and tuple(review.body_violations) == ("author_boundary",)
-                            and any(
-                                marker in failure_reason
-                                for marker in (
-                                    "hard_boundaries", "authoritative_state", "作者禁令", "禁令", "不得另找",
-                                )
-                            )
-                        )
-                    )
-                )
-                or (
-                    # 正式转场或已公开邀请也可能由复核明确指出硬边界／权威状态冲突；
-                    # 这类主体证据足够驱动一次 Actor 修复，不再为同一问题发争议复查。
-                    tuple(review.body_violations) == ("player_action",)
-                    and any(
-                        marker in failure_reason
-                        for marker in ("hard_boundaries", "authoritative_state", "作者禁令", "禁令")
-                    )
-                )
             )
             if high_confidence_body_violation:
-                # 这类快检结果已经有明确的主体/授权证据；争议复查只会重复发送同一证据，
-                # 压测显示它经常白等到超时，再叠加一次演员重写。保留快检拒绝并进入一次修复。
+                # 只有程序核验的冲突或可安全裁剪的定位能跳过争议；理由措辞不是置信证据。
                 diagnostics["dispute_review_skipped_high_confidence_body"] += 1
                 trace_event("review.dispute_skipped", reason=(
                     "verified_scene_update_removal" if local_scene_repair else "high_confidence_body_violation"
@@ -1680,7 +1619,7 @@ async def _execute_numeric_v2_turn(
                 and not review.valid
                 and review.unsafe_suggestion_indexes
             ):
-                # 正文没有违规，复核只指出按钮越界；按钮会按索引删除，第二次争议无法改变正文结论。
+                # 正文没有违规，复核只指出按钮越界；整组按钮会撤下，第二次争议无法改变正文结论。
                 diagnostics["dispute_review_skipped_unsafe_offer_buttons"] += 1
                 trace_event("review.dispute_skipped", reason="unsafe_offer_buttons_only")
             elif (
@@ -1760,7 +1699,6 @@ async def _execute_numeric_v2_turn(
                         failure_reason=" ".join(part for part in (review.failure_reason.strip(), note) if part),
                     )
             final_fixed_review = review
-            last_review = review
             return review
         except NumericV2EvaluatorError as exc:
             trace_event("review.failed", mode="fast", error_code=str(exc))
@@ -1770,22 +1708,13 @@ async def _execute_numeric_v2_turn(
                 "failure_reason": str(exc),
             })
             logger.warning(
-                "Numeric v2 transition judge degraded to reject: reason=%s session_id=%s revision=%s",
+                "Numeric v2 review failed; turn remains uncommitted: reason=%s session_id=%s revision=%s",
                 str(exc),
                 current.session.session_id,
                 current.session.revision,
             )
-            if changed:
-                # 动态旁白不能再依赖静态作者原文兜底；未完成复核就不提交换场，保留完整事务回滚。
-                raise NumericV2ActorOutputError("numeric_v2_transition_review_failed") from exc
-            # 服务或协议故障不是正文违规证据：保留既有降级，但不凭新提议换幕，也不为服务故障改稿。
-            last_review = NumericV2TransitionOfferReview(
-                offer_present=False,
-                valid=False,
-                body_violations=(),
-                unsafe_suggestion_indexes=(),
-            )
-            return last_review
+            # 普通稿也可能已经演到下一地点；未核完不能将未知当成无违规并污染历史。
+            raise NumericV2ActorOutputError("numeric_v2_transition_review_failed") from exc
         finally:
             _add_elapsed_ms(
                 diagnostics,
@@ -1833,6 +1762,32 @@ async def _execute_numeric_v2_turn(
         NumericV2EvaluationResult,
     ] | None = None
 
+    async def review_terminal_question_markers(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+        markers = _terminal_new_question_markers(
+            engine=runtime.engine, outcome=outcome, performance=candidate)
+        if not markers or not (module_options.get("review") or module_options.get("review_contract")):
+            return markers
+        # 问号不能证明留下新互动；复用窄边界核对，完整的动作、路线与状态复核仍照常执行。
+        started_at = time.monotonic()
+        diagnostics["terminal_question_review_calls"] += 1
+        try:
+            violated = await evaluator.verify_contract_boundaries(
+                node={"story_beat": {"must_not_happen": [
+                    "不得在结局提出必须由玩家下一轮回答或选择的新问题或任务；"
+                    "认人招呼、修辞反问、自问自答及引用旧问题不需玩家回应时不受此限。"
+                ]}},
+                actor_performance=candidate,
+                player_input=turn.message,
+            )
+        except NumericV2EvaluatorError as exc:
+            # 未核完不能把未知当成合法，也不为超时追加一份 Actor 稿。
+            diagnostics["terminal_question_review_degraded"] = True
+            trace_event("transition.terminal_question_check_failed", error=str(exc))
+            raise NumericV2ActorOutputError("numeric_v2_transition_review_failed") from exc
+        finally:
+            _add_elapsed_ms(diagnostics, "terminal_question_check_work", started_at)
+        return markers if violated else ()
+
     def transition_bridge_leaks(candidate: Mapping[str, Any]) -> tuple[str, ...]:
         """Return target-opening facts that the candidate's bridge segment already narrates.
 
@@ -1872,7 +1827,7 @@ async def _execute_numeric_v2_turn(
             )
         ))
 
-    def verify_later_transition_draft(candidate: Mapping[str, Any], *, stage: str) -> None:
+    async def verify_later_transition_draft(candidate: Mapping[str, Any], *, stage: str) -> None:
         """Re-run the deterministic transition checks on a regenerated formal draft.
 
         Only the first formal draft gets a repair attempt; any later draft (missed
@@ -1886,8 +1841,8 @@ async def _execute_numeric_v2_turn(
             diagnostics["transition_structure_rejected"] = True
             trace_event("transition.bridge_target_leak_unresolved", markers=list(leaks), stage=stage)
             raise NumericV2ActorOutputError("numeric_v2_transition_segment_overlap")
-        questions = _terminal_new_question_markers(
-            engine=runtime.engine, outcome=outcome, performance=candidate)
+        questions = await review_terminal_question_markers(candidate)
+        diagnostics["terminal_new_question_markers"] = list(questions)
         if questions:
             diagnostics["terminal_new_question_markers"] = list(questions)
             diagnostics["terminal_structure_rejected"] = True
@@ -1912,11 +1867,7 @@ async def _execute_numeric_v2_turn(
                 diagnostics["transition_structure_rejected"] = True
                 trace_event("transition.bridge_target_leak_unresolved", markers=list(remaining_leaks))
                 raise NumericV2ActorOutputError("numeric_v2_transition_segment_overlap")
-        terminal_question_markers = _terminal_new_question_markers(
-            engine=runtime.engine,
-            outcome=outcome,
-            performance=performance,
-        )
+        terminal_question_markers = await review_terminal_question_markers(performance)
         if terminal_question_markers:
             diagnostics["terminal_new_question_markers"] = list(terminal_question_markers)
             trace_event("transition.terminal_new_question", markers=list(terminal_question_markers))
@@ -1930,15 +1881,9 @@ async def _execute_numeric_v2_turn(
                         "不得追加新邀约、选择或等待玩家输入。"
                     ),
                 )
-                terminal_question_markers = _terminal_new_question_markers(
-                    engine=runtime.engine,
-                    outcome=outcome,
-                    performance=performance,
-                )
-                diagnostics["terminal_new_question_markers"] = list(terminal_question_markers)
-                if not terminal_question_markers:
-                    # 结局改写稿也是新正文，桥段溯源检查不能只看首稿。
-                    verify_later_transition_draft(performance, stage="terminal_rewrite")
+                # 改写稿只核一次问句，同时保留桥段溯源检查。
+                await verify_later_transition_draft(performance, stage="terminal_rewrite")
+                terminal_question_markers = ()
             if terminal_question_markers:
                 diagnostics["terminal_structure_rejected"] = True
                 trace_event(
@@ -1979,7 +1924,7 @@ async def _execute_numeric_v2_turn(
                 "本轮换场前的合同核对发现问题：" + "；".join(problems)
                 + "。请按实际历史与作者边界改写：删除尚未发生或越界的内容，缺的道具自然写出，"
                 "其余已获准内容保持不变。"))
-            verify_later_transition_draft(performance, stage="contract_rewrite")
+            await verify_later_transition_draft(performance, stage="contract_rewrite")
             if module_options.get("review_delivery"):
                 still_missing = missing_contract_names(source_node, target_node_id, performance, current.session)
                 diagnostics["contract_missing_after_rewrite"] = list(still_missing)
@@ -2095,7 +2040,7 @@ async def _execute_numeric_v2_turn(
                     evaluation, outcome = recovered_evaluation, recovered_outcome
                     route_changed = True
                     performance = await generate_actor_turn(outcome)
-                    verify_later_transition_draft(performance, stage="missed_initiation_recovery")
+                    await verify_later_transition_draft(performance, stage="missed_initiation_recovery")
                     break
             performance, removed_suggestions = _drop_reported_unsafe_suggestions(
                 performance, transition_review.unsafe_suggestion_indexes,
@@ -2158,7 +2103,7 @@ async def _execute_numeric_v2_turn(
                 transition_review.offer_present and not transition_review.valid
             )
             if not transition_review.body_violations and not invalid_offer:
-                # 推荐只影响按钮本身；定点删除后不重审已判定的正文，也不再次为凑数量调用模型。
+                # 撤下错误推荐整组后不重审已判定的正文，也不再为凑数量调用模型。
                 reviewed_transition_offered = (
                     transition_review.offer_present and transition_review.valid
                 )
@@ -2171,6 +2116,9 @@ async def _execute_numeric_v2_turn(
                 }
                 break
             if rewrite_attempt:
+                if set(transition_review.body_violations) & {"scene_boundary", "target_opening_leak"}:
+                    trace_event("review.ordinary_scene_delivery_rejected")
+                    raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
                 # 用户允许持续语义否定后继续演绎：末稿走原子提交并进入真实历史，不另造展示副本。
                 diagnostics["semantic_review_fallback"] = True
                 diagnostics["semantic_review_fallback_phase"] = "ordinary"
@@ -2270,7 +2218,7 @@ async def _execute_numeric_v2_turn(
                         diagnostics["phantom_transition_flags_cleared"] += 1
                     performance = {**performance, "transition_offered": False}
                     reviewed_transition_offered = False
-                    final_fixed_review = last_review = approved_review
+                    final_fixed_review = approved_review
                     diagnostics["recovered_ordinary_drafts_reused"] += 1
                     trace_event("transition.approved_ordinary_draft_reused")
                     break
@@ -2290,6 +2238,9 @@ async def _execute_numeric_v2_turn(
                 performance, removed = _drop_reported_unsafe_suggestions(performance, review.unsafe_suggestion_indexes)
                 diagnostics["unsafe_suggestions_removed"] += removed
                 if review.body_violations or (review.offer_present and not review.valid):
+                    if set(review.body_violations) & {"scene_boundary", "target_opening_leak"}:
+                        trace_event("review.ordinary_scene_delivery_rejected")
+                        raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
                     diagnostics["semantic_review_fallback"] = True
                     diagnostics["semantic_review_fallback_phase"] = "ordinary"
                 # 取消正式转场后的留幕稿同样只能锁存复核有效的新邀请；旧邀请是否保留由
@@ -2315,10 +2266,21 @@ async def _execute_numeric_v2_turn(
                 + _transition_review_failure_context(review)
                 + ("" if review.delivery_matches_route is False else _actor_rewrite_candidate_context(performance))
             ))
-            verify_later_transition_draft(performance, stage="review_rewrite")
+            await verify_later_transition_draft(performance, stage="review_rewrite")
         if route_changed and final_fixed_review is not None and final_fixed_review.delivery_matches_route is False:
             # 授权有效不等于正文兑现正确；同一改稿额度用尽后仍在错误场景就回滚，不能入历史。
             trace_event("review.transition_delivery_rejected")
+            raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+    if not route_changed:
+        # 复核关闭时，唯一改稿也必须重新通过确定性场景检查；未修掉的越幕事实不能兜底入历史。
+        leaked = tuple(dict.fromkeys((
+            *premature_target_markers(
+                runtime.engine, current.session, outcome, performance, player_input=turn.message),
+            *premature_target_scene_facts(
+                runtime.engine, current.session, outcome, performance, player_input=turn.message),
+        )))
+        if leaked:
+            trace_event("review.target_opening_leak_unresolved", markers=list(leaked))
             raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
     # 待交付原文回合仍有作者边界冲突时不能采用末稿；缺少精确定位只意味着
     # 无法安全裁剪，不意味着可以放行。成功裁剪已经清空正文违规。
@@ -2536,6 +2498,7 @@ async def _execute_numeric_v2_turn(
             _insert_verified_offer_acceptance_suggestion(
                 filtered_performance,
                 accept_input=authored_accept_input,
+                consumed_inputs=(turn.message,),
             )
         )
         if acceptance_inserted:

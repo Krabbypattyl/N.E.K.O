@@ -735,7 +735,9 @@ def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_t
     if opening_transfer:
         assert key_props == project["authoring"]["key_props"]
     else:
-        assert "当前归属为双方共同" in branch_node["route_gates"][0]["transition_contract"]["must_preserve"][-1]
+        assert not any("当前归属为双方共同" in item for item in
+                       branch_node["route_gates"][0]["transition_contract"]["must_preserve"])
+        assert "保存带日期的旧照片" in branch_node["route_gates"][0]["transition_contract"]["must_preserve"][-1]
         assert key_props[0]["states"][-1] == {
             "node_id": "node_branch_scene",
             "owner": "shared",

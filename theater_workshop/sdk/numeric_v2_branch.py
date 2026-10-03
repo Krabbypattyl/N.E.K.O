@@ -1923,23 +1923,15 @@ class NumericV2BranchService:
 
     @staticmethod
     def _key_prop_facts(key_props: list[Mapping[str, Any]]) -> list[str]:
-        owner_labels = {
-            "catgirl": "女主",
-            "player": "男主",
-            "environment": "现场",
-            "shared": "双方共同",
-        }
+        """Keep fixed prop definitions; author lifecycle states are not committed history."""
         facts: list[str] = []
         for prop in key_props:
             states = [state for state in prop.get("states") or [] if isinstance(state, Mapping)]
             if not states:
                 continue
-            state = states[-1]
-            owner = owner_labels.get(str(state.get("owner") or ""), str(state.get("owner") or ""))
             facts.append(
                 f"关键道具“{str(prop.get('name') or '').strip()}”[{str(prop.get('id') or '').strip()}]："
-                f"用途为{str(prop.get('purpose') or '').strip()}；当前归属为{owner}；"
-                f"状态为{str(state.get('state') or '').strip()}。"
+                f"用途为{str(prop.get('purpose') or '').strip()}。"
             )
         return facts
 

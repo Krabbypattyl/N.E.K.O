@@ -437,7 +437,7 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('followup', current.session.revision, '我先问个细节。'), ensure_current_binding=lambda _: _binding())
-    if mode == 'actor_failure':
+    if mode in {'actor_failure', 'fast_failure'}:
         with pytest.raises(NumericV2ActorOutputError):
             await workflow.execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session(current.session.session_id) == current

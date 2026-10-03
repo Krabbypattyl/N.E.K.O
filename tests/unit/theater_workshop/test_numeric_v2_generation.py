@@ -447,7 +447,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "男主身体状态正常" in story["nodes"][0]["story_beat"]["catgirl_situation"]
     assert story["nodes"][0]["route_gates"][0]["transition_contract"]["must_preserve"] == [
         "当年离开时间仍存在待解矛盾",
-        "关键道具“写有日期的旧信”[dated_old_letter]：用途为核对当年离开时间与收信记录；当前归属为女主；状态为由女主保管，纸面日期可直接核验。",
+        "关键道具“写有日期的旧信”[dated_old_letter]：用途为核对当年离开时间与收信记录。",
         "旧信仍由女主保管",
     ]
     assert story["nodes"][0]["story_beat"]["transition_goal"] == (
@@ -600,10 +600,10 @@ def test_numeric_v2_generator_does_not_publish_planned_prop_change_as_entry_stat
     assert "核对当年离开时间与收信记录" in beat["catgirl_situation"]
     assert "尚未替他预设新的选择或行动" in beat["catgirl_situation"]
     assert beat["opening_scene"] == candidate["mainline_chapters"][0]["opening_scene"]
-    # 作者规划继续留在作者侧，出幕携带合同仍可承接本幕达成后的状态。
+    # 作者规划继续留在作者侧，不能自动变成跨幕永久事实。
     assert result["key_props"][0]["states"][0]["state"] == "玩家完成签收，旧信已交给玩家保管"
-    assert any("玩家完成签收" in item for item in
-               result["story"]["nodes"][0]["route_gates"][0]["transition_contract"]["must_preserve"])
+    assert not any("玩家完成签收" in item for item in
+                   result["story"]["nodes"][0]["route_gates"][0]["transition_contract"]["must_preserve"])
 
 
 def test_numeric_v2_generator_projects_multiple_atomic_mainline_events():

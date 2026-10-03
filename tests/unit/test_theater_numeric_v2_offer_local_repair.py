@@ -43,10 +43,17 @@ def test_only_the_final_complete_dialogue_block_is_removed():
     {"performance": "（点头）你的说明我听到了。（停顿）明天一起去见面。"},
     {"scene_narration": "另外一段场景变化。"},
     {"segments": [{"phase": "source_response", "performance": "原文。"}]},
-    {"suggested_inputs": []},
 ])
 def test_partial_stale_or_dependent_output_cannot_use_local_crop(change):
     assert workflow._safe_drop_invalid_offer(_candidate(**change), _review()) is None
+
+
+def test_withdrawn_suggestion_batch_does_not_force_a_body_rewrite():
+    candidate, _ = workflow._drop_reported_unsafe_suggestions(_candidate(), (0,))
+    repaired = workflow._safe_drop_invalid_offer(candidate, _review())
+    assert repaired["suggested_inputs"] == []
+    assert repaired["performance"] == "（点头）你的说明我听到了。（停顿）"
+    assert not repaired["transition_offered"]
 
 
 @pytest.mark.parametrize("change", [
@@ -128,7 +135,7 @@ async def test_local_offer_repair_commits_once_without_rewrite_or_fallback(
     )
     assert calls == {"actor": 1, "review": 1}
     assert result.performance["performance"] == prefix + "（停顿）"
-    assert result.performance["suggested_inputs"] == ["（安静地等候）", "（询问现状）现在如何？"]
+    assert result.performance["suggested_inputs"] == []
     assert not result.stored.session.transition_offered
     assert result.stored.session.current_node_id == current.session.current_node_id
     assert result.stored.session.metrics == current.session.metrics

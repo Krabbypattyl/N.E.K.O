@@ -96,7 +96,7 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
     if scenario == "budget_skip":
         monkeypatch.setattr(workflow, "NUMERIC_V2_REVIEW_BUDGET_SECONDS", 0)
     turn = TurnRequestV2("confirmation", current.session.revision, message)
-    if scenario == "formal_timeout":
+    if scenario in {"timeout", "formal_timeout", "budget_skip"}:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_review_failed"):
             await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
                                                   turn=turn, ensure_current_binding=lambda _: _binding())
@@ -108,7 +108,7 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
     )
     accepted = scenario in {"approve", "review_off", "global", "formal", "fallback"}
     assert result.diagnostics["semantic_review_fallback"] is (
-        scenario in {"budget_skip", "fallback", "fallback_veto"}
+        scenario in {"fallback", "fallback_veto"}
     )
     assert (key in result.stored.session.story_state["facts"]) == accepted
     assert result.stored.ledger_events[-1].get("fact_operations", []) == ([operation] if accepted else [])

@@ -378,9 +378,13 @@ def _client(
     async def evaluate(*args, **kwargs):
         return NumericV2EvaluationResult(metric_changes=(), scene_complete=False)
 
+    async def review(*args, **kwargs):
+        return NumericV2TransitionOfferReview(False, False, (), ())
+
     monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_opening", opening)
     monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
     monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "validate_transition_offer", review)
     app = FastAPI()
     app.include_router(numeric_theater_router.router)
 
@@ -1027,7 +1031,7 @@ def test_numeric_v2_filters_unsafe_future_suggestions_without_body_rereview(
     assert submitted.json()["suggested_inputs"] == []
 
 
-def test_numeric_v2_removes_only_reported_unsafe_suggestion(
+def test_numeric_v2_withdraws_batch_with_reported_unsafe_suggestion(
     tmp_path,
     monkeypatch,
 ):
@@ -1101,10 +1105,7 @@ def test_numeric_v2_removes_only_reported_unsafe_suggestion(
     assert submitted.status_code == 200
     assert actor_calls == 1
     assert review_calls == 1
-    assert submitted.json()["suggested_inputs"] == [
-        "（凑近桌面）我再看看边缘。",
-        "（退后一步）先记录现有结果。",
-    ]
+    assert submitted.json()["suggested_inputs"] == []
 
 
 def test_numeric_v2_reviews_and_filters_target_opening_suggestions(
@@ -1224,10 +1225,7 @@ def test_numeric_v2_reviews_and_filters_target_opening_suggestions(
     assert offered.status_code == 200
     assert advanced.status_code == 200, advanced.text
     assert advanced.json()["resolved_turn"]["route_changed"] is True
-    assert advanced.json()["suggested_inputs"] == [
-        "（观察四周）先看看眼前环境。",
-        "（留在原地）先听她说明情况。",
-    ]
+    assert advanced.json()["suggested_inputs"] == []
     assert advanced.json()["performance"]["segments"][0]["performance"] == "（点头）那就走吧。"
 
 
@@ -1908,8 +1906,12 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
 
     assert actor_calls == 2
     # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
-    assert review_calls == (2 if remaining_violation is None else 3)
+    assert review_calls == 3
     assert unsafe_body_only_reviews == 0
+    if remaining_violation == "scene_boundary":
+        assert submitted.status_code == 502
+        assert session_path.read_bytes() == before_bytes
+        return
     assert submitted.status_code == 200
     if remaining_violation:
         assert session_path.read_bytes() != before_bytes
@@ -2189,7 +2191,7 @@ def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
     assert review_calls == (1 if offer_valid else 2)
     assert submitted.json()["performance"]["transition_offered"] is offer_valid
     assert submitted.json()["suggested_inputs"] == (
-        ["（点头确认）好，就按这个安排。", "（退后一步）先不下去。"]
+        ["（点头确认）好，就按这个安排。"]
         if offer_valid
         else ["先说说现在的情况。"]
     )
@@ -2271,7 +2273,7 @@ def test_numeric_v2_offer_uses_one_guard_and_never_rewrites_service_failure(
     actor_flag,
     review_failed,
 ):
-    """Valid offers do not depend on the Actor flag; Guard failure withdraws only the signal, without resampling the body."""
+    """Valid offers ignore the Actor flag; technical failure keeps the previous transaction without resampling."""
 
     actor_calls = 0
     review_calls = 0
@@ -2329,9 +2331,18 @@ def test_numeric_v2_offer_uses_one_guard_and_never_rewrites_service_failure(
             },
         )
 
-    assert submitted.status_code == 200
     assert actor_calls == 1
     assert review_calls == 1
+    if review_failed:
+        assert submitted.status_code == 502
+        persisted = json.loads(
+            (tmp_path / "theater/numeric_v2/sessions/actor_offer.json").read_text(encoding="utf-8")
+        )
+        assert persisted["session"]["revision"] == 0
+        assert persisted["session"]["performance_history"] == []
+        assert persisted["session"]["transition_offered"] is False
+        return
+    assert submitted.status_code == 200
     assert submitted.json()["performance"]["performance"] == first_performance
     assert submitted.json()["performance"]["transition_offered"] is (not review_failed)
     persisted = json.loads(
