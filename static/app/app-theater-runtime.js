@@ -1017,6 +1017,7 @@
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) clear('launch-request-failed');
             return false;
         }).finally(function () {
+            delete launchReplyTargets[launchId];
             if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
         });
         launchRequests[launchId] = request;
@@ -1041,6 +1042,7 @@
             }
             return false;
         }).finally(function () {
+            delete launchReplyTargets[launchId];
             if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
         });
         launchRequests[launchId] = request;
@@ -1189,6 +1191,7 @@
         var releasedCatgirlName = state.activityCatgirlName;
         var releasedClaim = state.activityClaimId;
         if (pendingLaunch && pendingLaunch.activityClaimId) {
+            launchEpoch += 1;
             pendingLaunch.cancelled = true;
             releaseServerTheaterActivity(pendingLaunch.catgirlName || '', pendingLaunch.activityClaimId);
         }

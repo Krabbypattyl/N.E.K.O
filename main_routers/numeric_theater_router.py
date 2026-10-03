@@ -779,7 +779,7 @@ async def delete_numeric_story(story_id: str, request: Request):
 
 @router.post("/session/start")
 @_track_theater_activity
-async def start_numeric_session(request: Request):
+async def start_numeric_session(request: Request, claim_activity: bool = True):
     # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
     with numeric_v2_usage_scope() as calls, text_trace_scope("opening"):
         response = await _start_numeric_session(request)

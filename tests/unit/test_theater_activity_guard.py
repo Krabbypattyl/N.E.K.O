@@ -114,6 +114,86 @@ def test_route_activity_claims_are_isolated_and_release_is_a_fence(tmp_path, mon
         assert not theater_activity.is_theater_active(name)
 
 
+@pytest.mark.parametrize('ending_headers', [{}, {'X-Neko-Theater-Activity': 'restored-window'}])
+def test_end_releases_orphaned_and_legacy_owners_of_the_session(tmp_path, monkeypatch, ending_headers):
+    """Selector end and post-reload capsule end both unblock ordinary chat."""
+    client = _client(tmp_path, monkeypatch)
+    name = numeric_theater_router._current_catgirl_binding(numeric_theater_router.get_config_manager())['catgirl_name']
+    with client:
+        # Standalone selector start does not own the stage or create a legacy guard.
+        start = client.post('/api/theater-numeric/session/start?claim_activity=false',
+                            json={'story_id': 'numeric_v2_contract', 'session_id': 'reload',
+                                  'character_id': 'character_' + '1' * 32})
+        assert start.status_code == 200, start.json()
+        assert not theater_activity.is_theater_active(name)
+        url = '/api/theater-numeric/session/reload?story_id=numeric_v2_contract'
+        for owner in ('old-window', 'restored-window'):
+            assert client.get(url, headers={'X-Neko-Theater-Activity': owner}).json()['activity_claimed']
+        # Compatibility clients are scoped too, so end can clear their signal.
+        assert client.get(url).status_code == 200
+        assert theater_activity.is_theater_active(name)
+        ended = client.post('/api/theater-numeric/session/end', headers=ending_headers, json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'reload',
+            'base_revision': 0, 'base_lifecycle_revision': 0,
+        })
+        assert ended.status_code == 200
+        assert not theater_activity.is_theater_active(name)
+        assert not theater_activity._activity_claims.get(name)
+        assert name not in theater_activity._last_activity
+        # A resumed lifecycle can acquire a fresh owner despite the ending fence.
+        resumed = client.post('/api/theater-numeric/session/resume?claim_activity=false', json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'reload',
+            'base_revision': 0, 'base_lifecycle_revision': 1,
+        })
+        assert resumed.status_code == 200
+        assert client.get(url, headers={'X-Neko-Theater-Activity': 'resumed-window'}).json()['activity_claimed']
+        assert theater_activity.is_theater_active(name)
+
+
+def _scoped_response(session_id, lifecycle=0, status='active', story_id='story'):
+    response = _ok(status)
+    response['session'].update(session_id=session_id, story_package_id=story_id, lifecycle_revision=lifecycle)
+    return response
+
+
+def test_session_end_preserves_other_sessions_and_newer_resumed_lifecycle():
+    for owner, session_id in [('a', 'one'), ('orphan', 'one'), ('peer', 'two')]:
+        assert theater_activity.note_theater_session_response(_scoped_response(session_id), activity_claim_id=owner)
+    # A legacy compatibility request in another Session must also survive.
+    assert theater_activity.note_theater_session_response(_scoped_response('two'))
+    ended = _scoped_response('one', 1, 'ended')
+    assert theater_activity.note_theater_session_response(ended)
+    assert set(theater_activity._activity_claims['Lan']) == {'peer'}
+    assert 'Lan' in theater_activity._last_activity
+    assert not theater_activity.note_theater_session_response(_scoped_response('one'), activity_claim_id='late')
+    assert theater_activity.note_theater_session_response(_scoped_response('one', 2), activity_claim_id='resumed')
+    # A delayed ended snapshot for the old lifecycle cannot clear the resumed owner.
+    assert theater_activity.note_theater_session_response(ended, activity_claim_id='resumed')
+    assert set(theater_activity._activity_claims['Lan']) == {'peer', 'resumed'}
+    theater_activity.clear_theater_activity('Lan', activity_claim_id='peer')
+    theater_activity.clear_theater_activity('Lan')
+    assert theater_activity.is_theater_active('Lan')
+
+
+@pytest.mark.asyncio
+async def test_session_end_fences_active_response_that_arrives_after_end():
+    ready, finish = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        ready.set()
+        await finish.wait()
+        return _scoped_response('one')
+
+    tracked = numeric_theater_router._track_theater_activity(handler)
+    task = asyncio.create_task(tracked(request=SimpleNamespace(headers={'X-Neko-Theater-Activity': 'late'})))
+    await ready.wait()
+    theater_activity.note_theater_session_response(_scoped_response('one', 1, 'ended'))
+    finish.set()
+    result = await task
+    assert result['activity_claimed'] is False
+    assert not theater_activity.is_theater_active('Lan')
+
+
 def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatch):
     """Launch, input and resume mark the character; end and release clear it; browsing does not mark."""
     client = _client(tmp_path, monkeypatch)

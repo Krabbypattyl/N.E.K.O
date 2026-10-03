@@ -24,8 +24,8 @@ The signal is deliberately lossy and fails open:
 
 - it is refreshed by successful theater session requests (launch, restore,
   input, resume) and cleared by end, by an ended snapshot, and by the capsule's
-  explicit release on exit (which names only the character that window
-  performed with, so other characters keep their guard);
+  explicit owner release on exit. Ending clears all owners of that Session's
+  lifecycle, including old windows, while other Sessions keep their guard;
 - every entry expires ``THEATER_ACTIVITY_TTL_SECONDS`` after the last refresh,
   so a crashed or closed theater window can never block ordinary voice or
   proactive chat for longer than that;
@@ -48,6 +48,11 @@ THEATER_ACTIVITY_TTL_SECONDS = 120.0
 _last_activity: dict[str, float] = {}
 _activity_claims: dict[str, dict[str, float]] = {}
 _released_claims: dict[str, float] = {}
+# Session identity and lifecycle fence keep an ended Session from leaving
+# orphaned owners, without releasing a different Session of the same character.
+_claim_sessions: dict[str, tuple[str, str, int]] = {}
+_legacy_sessions: dict[str, tuple[str, str, int]] = {}
+_ended_sessions: dict[tuple[str, str], tuple[int, float]] = {}
 
 
 def _key(lanlan_name: Any) -> str:
@@ -66,8 +71,10 @@ def mark_theater_activity(lanlan_name: Any, *, now: float | None = None, activit
         return False
     if key:
         if activity_claim_id:
+            _claim_sessions.pop(activity_claim_id, None)
             _activity_claims.setdefault(key, {})[activity_claim_id] = current
         else:
+            _legacy_sessions.pop(key, None)
             _last_activity[key] = current
         return True
     return False
@@ -83,12 +90,14 @@ def clear_theater_activity(lanlan_name: Any, *, activity_claim_id: str = "") -> 
             if now - stamp >= THEATER_ACTIVITY_TTL_SECONDS * 5:
                 _released_claims.pop(claim, None)
         _released_claims[activity_claim_id] = now
+        _claim_sessions.pop(activity_claim_id, None)
         for key, claims in list(_activity_claims.items()):
             claims.pop(activity_claim_id, None)
             if not claims:
                 _activity_claims.pop(key, None)
         return
     _last_activity.pop(_key(lanlan_name), None)
+    _legacy_sessions.pop(_key(lanlan_name), None)
 
 
 def clear_all_theater_activity() -> None:
@@ -97,6 +106,9 @@ def clear_all_theater_activity() -> None:
     _last_activity.clear()
     _activity_claims.clear()
     _released_claims.clear()
+    _claim_sessions.clear()
+    _legacy_sessions.clear()
+    _ended_sessions.clear()
 
 
 def is_theater_active(lanlan_name: Any, *, now: float | None = None) -> bool:
@@ -108,6 +120,7 @@ def is_theater_active(lanlan_name: Any, *, now: float | None = None) -> bool:
     for claim, stamp in list(claims.items()):
         if current - stamp >= THEATER_ACTIVITY_TTL_SECONDS:
             claims.pop(claim, None)
+            _claim_sessions.pop(claim, None)
     if claims:
         return True
     _activity_claims.pop(key, None)
@@ -119,6 +132,7 @@ def is_theater_active(lanlan_name: Any, *, now: float | None = None) -> bool:
         return True
     # Expired entries are dropped so stale state can never outlive its TTL.
     _last_activity.pop(key, None)
+    _legacy_sessions.pop(key, None)
     return False
 
 
@@ -139,11 +153,45 @@ def note_theater_session_response(response: Any, *, activity_claim_id: str = "")
     name = _key(participants.get("catgirl_name"))
     if not name:
         return False
+    story_id = _key(session.get("story_package_id"))
+    session_id = _key(session.get("session_id"))
+    lifecycle = session.get("lifecycle_revision", 0)
+    if not isinstance(lifecycle, int) or isinstance(lifecycle, bool):
+        lifecycle = 0
+    scope = (story_id, session_id, lifecycle)
+    identity = (story_id, session_id)
+    now = time.monotonic()
+    for ended_identity, (_, stamp) in list(_ended_sessions.items()):
+        if now - stamp >= THEATER_ACTIVITY_TTL_SECONDS * 5:
+            _ended_sessions.pop(ended_identity, None)
     if session.get("status") == "ended":
+        if session_id:
+            previous = _ended_sessions.get(identity)
+            _ended_sessions[identity] = (max(lifecycle, previous[0] if previous else lifecycle), now)
+            for claim, owned in list(_claim_sessions.items()):
+                if owned[:2] == identity and owned[2] <= lifecycle:
+                    clear_theater_activity(name, activity_claim_id=claim)
+            for legacy_name, owned in list(_legacy_sessions.items()):
+                if owned[:2] == identity and owned[2] <= lifecycle:
+                    clear_theater_activity(legacy_name)
+            # Fence the ending request's owner even if its GET is still in
+            # flight, but do not clear a newer lifecycle or another Session.
+            owned = _claim_sessions.get(activity_claim_id)
+            if activity_claim_id and (owned is None or (owned[:2] == identity and owned[2] <= lifecycle)):
+                clear_theater_activity(name, activity_claim_id=activity_claim_id)
+            return True
         clear_theater_activity(name, activity_claim_id=activity_claim_id)
         return True
-    else:
-        return mark_theater_activity(name, activity_claim_id=activity_claim_id)
+    ended = _ended_sessions.get(identity) if session_id else None
+    if ended and lifecycle <= ended[0]:
+        return False
+    claimed = mark_theater_activity(name, activity_claim_id=activity_claim_id)
+    if claimed and session_id:
+        if activity_claim_id:
+            _claim_sessions[activity_claim_id] = scope
+        else:
+            _legacy_sessions[name] = scope
+    return claimed
 
 
 __all__ = [

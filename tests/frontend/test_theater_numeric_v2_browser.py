@@ -614,7 +614,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
     mock_page.locator("#theater-modal-cancel").click()
     expect(mock_page.locator("#theater-start-btn")).to_be_focused()
     mock_page.locator("#theater-start-btn").click()
-    with mock_page.expect_request("**/api/theater-numeric/session/start") as request_info:
+    with mock_page.expect_request("**/api/theater-numeric/session/start?claim_activity=false") as request_info:
         mock_page.locator("#theater-modal-confirm").click()
 
     start_payload = json.loads(request_info.value.post_data or "{}")

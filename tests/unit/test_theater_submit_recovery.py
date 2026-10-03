@@ -92,6 +92,28 @@ function assertRecovery(ctx, before, buttons, draft) {
 """
 
 SCENARIOS = (
+    ("clear_during_voice_teardown_cannot_finish_a_pending_launch", r"""
+      const ctx = createContext();
+      let voiceStopped;
+      ctx.window.appState = { isRecording: true };
+      ctx.window.appAudioCapture = { stopMicCapture: () => new Promise(resolve => { voiceStopped = resolve; }) };
+      ctx.listeners.message({ origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+        launch_id: 'voice-await', story_id: 'story_session_a', session_id: 'session_a', revision: 4,
+        launch_action: 'continue',
+      } });
+      await respond(ctx.requests.shift(), snapshot());
+      const claim = ctx.requests.shift();
+      const id = claim.options.headers['X-Neko-Theater-Activity'];
+      await respond(claim, { ...snapshot(), activity_claimed: true });
+      assert.equal(typeof voiceStopped, 'function');
+      ctx.runtime.clear('cancel_during_voice_stop');
+      voiceStopped(true);
+      await tick(); await tick();
+      assert.equal(ctx.runtime.getState().active, false);
+      assert.ok(ctx.requests.some(r => /\/session\/release$/.test(r.url)
+        && JSON.parse(r.options.body).activity_claim_id === id));
+    """),
     ("slow_host_is_waited_for_only_after_activity_claim", r"""
       const ctx = createContext();
       ctx.listeners.message({ origin: 'https://local.test', data: {

@@ -561,7 +561,7 @@
                 window.close();
                 return;
             }
-            var result = await requestJson(api.start, { method: 'POST', body: {
+            var result = await requestJson(api.start + '?claim_activity=false', { method: 'POST', body: {
                 story_id: startStoryId,
                 session_id: startSessionId,
                 character_id: startCharacterId,
