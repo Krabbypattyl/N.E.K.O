@@ -134,6 +134,7 @@ RUNTIME_SCENARIOS = (
       const ctx = createRuntime({ appState: { isRecording: true } });
       sendLaunch(ctx);
       await respond(ctx.requests.shift(), snapshot());
+      await respond(ctx.requests.shift(), snapshot());
       assert.equal(ctx.runtime.getState().active, false);
       assert.equal(ctx.runtime.suppressesProactiveChat(), false);
       assert.ok(ctx.refreshes.includes(true), '启动阶段应先登记抑制');
@@ -159,6 +160,7 @@ RUNTIME_SCENARIOS = (
       const stops = ctx => ctx.broadcasts.filter(message => message.action === 'theater:ordinary-voice-stop');
       const ctx = createRuntime({ recordBroadcasts: true });
       sendLaunch(ctx);
+      await respond(ctx.requests.shift(), snapshot());
       await respond(ctx.requests.shift(), snapshot());
       assert.equal(ctx.runtime.getState().active, true);
       const sent = stops(ctx);
@@ -204,7 +206,8 @@ RUNTIME_SCENARIOS = (
       assert.ok(release && /\/api\/theater-numeric\/session\/release$/.test(release.url), '退出必须释放服务端剧场信号');
       assert.equal(release.options.method, 'POST');
       // 只释放本窗口演绎的角色（服务端按响应里的原始猫娘名登记），不得清掉其他角色的兜底。
-      assert.deepEqual(JSON.parse(release.options.body), { catgirl_name: '猫娘' });
+      assert.equal(JSON.parse(release.options.body).catgirl_name, '猫娘');
+      assert.match(JSON.parse(release.options.body).activity_claim_id, /^theater_activity_/);
       await respond(release, { ok: true });
       ctx.runtime.clear('again');
       for (let i = 0; i < 5; i += 1) await tick();

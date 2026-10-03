@@ -92,6 +92,45 @@ function assertRecovery(ctx, before, buttons, draft) {
 """
 
 SCENARIOS = (
+    ("slow_host_is_waited_for_only_after_activity_claim", r"""
+      const ctx = createContext();
+      ctx.listeners.message({ origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+        launch_id: 'slow-host', story_id: 'story_session_a', session_id: 'session_a', revision: 4,
+        launch_action: 'continue',
+      } });
+      await respond(ctx.requests.shift(), snapshot());
+      const claim = ctx.requests.shift();
+      const id = claim.options.headers['X-Neko-Theater-Activity'];
+      ctx.window.reactChatWindowHost = null;
+      await respond(claim, { ...snapshot(), activity_claimed: true });
+      assert.equal(ctx.runtime.getState().phase, 'loading');
+      assert.equal(ctx.runtime.getState().activityClaimId, id);
+      ctx.runtime.clear('cancel_slow_host');
+      await tick(); await tick();
+      assert.ok(ctx.requests.some(r => /\/session\/release$/.test(r.url)
+        && JSON.parse(r.options.body).activity_claim_id === id));
+    """),
+    ("released_pending_claim_cannot_restore_a_cleared_launch", r"""
+      const ctx = createContext();
+      ctx.listeners.message({ origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
+        launch_id: 'race', story_id: 'story_session_a', session_id: 'session_a', revision: 4,
+        launch_action: 'continue',
+      } });
+      await respond(ctx.requests.shift(), snapshot());
+      const claim = ctx.requests.shift();
+      const id = claim.options.headers['X-Neko-Theater-Activity'];
+      assert.match(id, /^theater_activity_/);
+      assert.equal(ctx.runtime.getState().active, false, '领取服务端守卫完成前不能展示接管');
+      ctx.runtime.clear('cancel_pending_claim');
+      await tick(); await tick();
+      const release = ctx.requests.shift();
+      assert.equal(JSON.parse(release.options.body).activity_claim_id, id);
+      await respond(claim, { ...snapshot(), activity_claimed: false });
+      assert.equal(ctx.runtime.getState().active, false);
+      assert.ok(ctx.requests.every(r => /\/session\/release$/.test(r.url)));
+    """),
     ("abandoned_revision_neither_claims_nor_releases_peer_activity", r"""
       for (const alreadyActive of [false, true]) {
         const ctx = createContext();

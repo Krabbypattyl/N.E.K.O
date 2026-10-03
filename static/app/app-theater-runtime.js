@@ -16,12 +16,17 @@
     if (!transport) throw new Error('numeric_theater_transport_unavailable');
     var MESSAGE_SCHEMA = transport.MESSAGE_SCHEMA;
     var createId = transport.createId;
-    var requestJson = transport.requestJson;
+    function requestJson(url, options) {
+        var opts = Object.assign({}, options || {});
+        var claim = opts.activityClaimId || state.activityClaimId;
+        if (claim) opts.headers = Object.assign({}, opts.headers || {}, { 'X-Neko-Theater-Activity': claim });
+        return transport.requestJson(url, opts);
+    }
     // 旧 Session 可能已保存过去的空桥段占位句；只在转场桥段中精确隐藏，不改写正式演绎记录。
     var LEGACY_EMPTY_TRANSITION_BRIDGE = '时间向前流转，现场随之转换。';
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
-        playerName: '', catgirlName: '', activityCatgirlName: '',
+        playerName: '', catgirlName: '', activityCatgirlName: '', activityClaimId: '',
         sessionStatus: '', scene: null, history: [], suggestedInputs: [],
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
@@ -834,6 +839,12 @@
             delete launchReplyTargets[message.launch_id];
             return false;
         }
+        if (pendingLaunch && pendingLaunch.token === launchToken && pendingLaunch.activityClaimId) {
+            if (state.activityClaimId && state.activityClaimId !== pendingLaunch.activityClaimId) {
+                releaseServerTheaterActivity(state.activityCatgirlName, state.activityClaimId);
+            }
+            state.activityClaimId = pendingLaunch.activityClaimId;
+        }
         var chatHost = host();
         captureOrdinaryDraft(chatHost);
         captureChatSurfaceMode(chatHost);
@@ -931,27 +942,34 @@
         }
         message.story_title = snapshot.story_title || message.story_title;
         var boundCatgirlName = snapshot.participants && snapshot.participants.catgirl_name;
-        if (!await prepareLaunchSurface(message, launchToken, boundCatgirlName) || !await completeLaunch(message, launchToken, snapshot)) {
-            return false;
+        if (!pendingLaunch || pendingLaunch.cancelled) return false;
+        var claim = createId('theater_activity_');
+        if (pendingLaunch && pendingLaunch.token === launchToken) {
+            pendingLaunch.activityClaimId = claim;
+            pendingLaunch.catgirlName = boundCatgirlName;
         }
-        if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
-            // Claim only after takeover. An abandoned preview must never release
-            // the character-wide guard owned by a different performing window.
-            try {
-                await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId));
-            } catch (_) {
-                // Keep the accepted performance; its next turn refreshes the
-                // existing TTL backstop, which already fails open on transport loss.
-            }
+        var accepted = false;
+        try {
+            var claimed = await requestJson(api.session + '/' + encodeURIComponent(nextSessionId) + '?story_id=' + encodeURIComponent(nextStoryId), { activityClaimId: claim });
+            if (claimed.activity_claimed === false || launchToken !== launchEpoch || !pendingLaunch || pendingLaunch.cancelled) return false;
+            if (!claimed.ok || !claimed.session || Number(claimed.session.revision) !== Number(message.revision)) return false;
+            snapshot = claimed;
+            boundCatgirlName = snapshot.participants && snapshot.participants.catgirl_name;
+            message.story_title = snapshot.story_title || message.story_title;
+            if (!await prepareLaunchSurface(message, launchToken, boundCatgirlName)) return false;
+            accepted = await completeLaunch(message, launchToken, snapshot);
+            return accepted;
+        } finally {
+            if (!accepted) releaseServerTheaterActivity(boundCatgirlName, claim);
         }
-        return true;
     }
     async function performStart(message, launchToken) {
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
+        var startClaim = pendingLaunch && pendingLaunch.activityClaimId;
         if (!await prepareLaunchSurface(message, launchToken)) return false;
         // 胶囊接管完成后即可关闭选剧页；模型生成继续由本体持有，不受选剧窗口生命周期影响。
-        var startPromise = requestJson(api.start, { method: 'POST', body: {
+        var startPromise = requestJson(api.start, { method: 'POST', activityClaimId: startClaim, body: {
             story_id: nextStoryId,
             session_id: nextSessionId,
             character_id: String(message.character_id),
@@ -968,7 +986,7 @@
         }
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
             // 开场生成期间已退出或被新启动取代：迟到的开场结果只丢弃，不能重新接管胶囊。
-            releaseAbandonedLaunchActivity(snapshot, launchToken);
+            releaseServerTheaterActivity('', startClaim);
             return false;
         }
         if (!snapshot.ok || !snapshot.session) {
@@ -994,7 +1012,7 @@
         var launchToken = ++launchEpoch;
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
-        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
+        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId, activityClaimId: createId('theater_activity_') };
         var request = performLaunch(message, launchToken).catch(function () {
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) clear('launch-request-failed');
             return false;
@@ -1012,7 +1030,7 @@
         var launchToken = ++launchEpoch;
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
-        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
+        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId, activityClaimId: createId('theater_activity_') };
         var request = performStart(message, launchToken).catch(function () {
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
                 state.phase = 'ended';
@@ -1153,32 +1171,31 @@
         }
         return true;
     }
-    function releaseServerTheaterActivity(catgirlName) {
+    function releaseServerTheaterActivity(catgirlName, activityClaimId) {
         // 服务端对主动搭话和普通语音的兜底按最近一次剧场请求计时（TTL 到期自动失效）；
         // 退出而未结束演绎时显式释放本窗口演绎的角色，避免 TTL 内把已恢复的普通语音误拦，
         // 也不影响其他窗口正在演绎的角色。失败只等 TTL。
-        if (!catgirlName) return;
+        if (!catgirlName && !activityClaimId) return;
+        var payload = { catgirl_name: catgirlName || '' };
+        if (activityClaimId) payload.activity_claim_id = activityClaimId;
         try {
             Promise.resolve(requestJson(api.release, {
-                method: 'POST', body: { catgirl_name: catgirlName }
+                method: 'POST', body: payload
             })).catch(function () {});
         } catch (_) {}
-    }
-    function releaseAbandonedLaunchActivity(snapshot, launchToken) {
-        // 被放弃的启动可能已在服务端登记剧场信号（开场或快照请求成功即登记）；否则普通对话会被兜底拦到 TTL。
-        // 本窗口仍在演绎或正在启动时不释放，避免误清正在进行的演绎。
-        var participants = snapshot && snapshot.ok === true ? snapshot.participants : null;
-        var name = String(participants && participants.catgirl_name || '').trim();
-        if (!name || state.active || (pendingLaunch && pendingLaunch.token !== launchToken)) return;
-        releaseServerTheaterActivity(name);
     }
     function clear(reason) {
         var wasActive = state.active === true;
         var releasedCatgirlName = state.activityCatgirlName;
+        var releasedClaim = state.activityClaimId;
+        if (pendingLaunch && pendingLaunch.activityClaimId) {
+            pendingLaunch.cancelled = true;
+            releaseServerTheaterActivity(pendingLaunch.catgirlName || '', pendingLaunch.activityClaimId);
+        }
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.history = []; state.suggestedInputs = [];
-        state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.windowClaimed = false;
+        state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.activityClaimId = ''; state.windowClaimed = false;
         state.endInFlight = null;
         if (wasActive) publishSpeechAllowlist();
         restoreProactiveChatAfterTheater();
@@ -1204,7 +1221,7 @@
             });
         }
         window.dispatchEvent(new CustomEvent('neko:theater-cleared', { detail: { reason: reason || 'clear' } }));
-        if (wasActive) releaseServerTheaterActivity(releasedCatgirlName);
+        if (wasActive || releasedClaim) releaseServerTheaterActivity(releasedCatgirlName, releasedClaim);
     }
     function openSelector(receipt) {
         state.pendingEnd = receipt || state.pendingEnd;
@@ -1420,11 +1437,12 @@
         var restoreLaunchEpoch = launchEpoch;
         // Refresh restoration is a pending launch too: end/delete notifications
         // can arrive before its GET resolves, while the runtime is still inactive.
-        pendingLaunch = { token: restoreLaunchEpoch, storyId: pointer.story_id, sessionId: pointer.session_id };
+        var restoreClaim = createId('theater_activity_');
+        pendingLaunch = { token: restoreLaunchEpoch, storyId: pointer.story_id, sessionId: pointer.session_id, activityClaimId: restoreClaim };
         try {
             var snapshot;
             try {
-                snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
+                snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id), { activityClaimId: restoreClaim });
             } catch (_) {
                 // 暂时性网络失败保留指针供下次恢复，但不让启动 Promise 产生未处理拒绝。
                 return;
@@ -1447,6 +1465,7 @@
             // 刷新恢复的会话同样要暂停普通主动搭话，与正常启动保持一致。
             lockProactiveChatForTheater();
             stopPeerOrdinaryVoiceInput(state.activityCatgirlName);
+            state.activityClaimId = restoreClaim;
             var hostReady = await waitForHost();
             if (restoreLaunchEpoch !== launchEpoch) return;
             if (!hostReady) {
@@ -1456,6 +1475,7 @@
             }
             render();
         } finally {
+            if (!state.active || state.activityClaimId !== restoreClaim) releaseServerTheaterActivity('', restoreClaim);
             if (pendingLaunch && pendingLaunch.token === restoreLaunchEpoch) pendingLaunch = null;
         }
     }

@@ -65,6 +65,55 @@ def test_activity_signal_expires_and_only_successful_payloads_count():
     assert theater_activity.is_theater_active("Lan") is False
 
 
+def test_owner_release_preserves_peer_and_fences_late_responses():
+    theater_activity.clear_all_theater_activity()
+    assert theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='owner-a')
+    assert theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='owner-b')
+    theater_activity.clear_theater_activity('Lan', activity_claim_id='owner-a')
+    assert theater_activity.is_theater_active('Lan')
+    assert not theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='owner-a')
+    theater_activity.clear_theater_activity('Lan', activity_claim_id='owner-b')
+    assert not theater_activity.is_theater_active('Lan')
+    # Release before the delayed GET has registered anything at all.
+    theater_activity.clear_theater_activity('', activity_claim_id='pending')
+    assert not theater_activity.note_theater_session_response(_ok('active'), activity_claim_id='pending')
+    assert not theater_activity.is_theater_active('Lan')
+
+
+@pytest.mark.asyncio
+async def test_release_overtakes_an_in_flight_activity_response():
+    ready, finish = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        ready.set()
+        await finish.wait()
+        return _ok('active')
+
+    tracked = numeric_theater_router._track_theater_activity(handler)
+    task = asyncio.create_task(tracked(request=SimpleNamespace(headers={'X-Neko-Theater-Activity': 'pending'})))
+    await ready.wait()
+    theater_activity.clear_theater_activity('', activity_claim_id='pending')
+    finish.set()
+    result = await task
+    assert result['activity_claimed'] is False
+    assert not theater_activity.is_theater_active('Lan')
+
+
+def test_route_activity_claims_are_isolated_and_release_is_a_fence(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    name = numeric_theater_router._current_catgirl_binding(numeric_theater_router.get_config_manager())['catgirl_name']
+    with client:
+        assert client.post('/api/theater-numeric/session/start', headers={'X-Neko-Theater-Activity': 'a'},
+                           json={'story_id': 'numeric_v2_contract', 'session_id': 'leases'}).status_code == 200
+        url = '/api/theater-numeric/session/leases?story_id=numeric_v2_contract'
+        assert client.get(url, headers={'X-Neko-Theater-Activity': 'b'}).json()['activity_claimed']
+        assert client.post('/api/theater-numeric/session/release', json={'activity_claim_id': 'a'}).status_code == 200
+        assert theater_activity.is_theater_active(name)
+        assert not client.get(url, headers={'X-Neko-Theater-Activity': 'a'}).json()['activity_claimed']
+        assert client.post('/api/theater-numeric/session/release', json={'activity_claim_id': 'b'}).status_code == 200
+        assert not theater_activity.is_theater_active(name)
+
+
 def test_theater_session_requests_drive_the_activity_signal(tmp_path, monkeypatch):
     """Launch, input and resume mark the character; end and release clear it; browsing does not mark."""
     client = _client(tmp_path, monkeypatch)

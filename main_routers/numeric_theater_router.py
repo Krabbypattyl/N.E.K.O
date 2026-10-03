@@ -116,9 +116,15 @@ def _track_theater_activity(handler):
 
     @functools.wraps(handler)
     async def wrapper(*args, **kwargs):
+        request = kwargs.get("request")
+        claim = str(request.headers.get("X-Neko-Theater-Activity", "")).strip() if request else ""
+        if len(claim) > 160:
+            return _error("numeric_activity_claim_invalid", 400)
         response = await handler(*args, **kwargs)
         if kwargs.get("claim_activity", True):
-            note_theater_session_response(response)
+            claimed = note_theater_session_response(response, activity_claim_id=claim)
+            if claim and isinstance(response, dict):
+                response["activity_claimed"] = bool(claimed)
         return response
 
     return wrapper
@@ -999,7 +1005,7 @@ async def get_active_numeric_session(story_id: str):
 
 @router.get("/session/{session_id}")
 @_track_theater_activity
-async def get_numeric_session(session_id: str, story_id: str, claim_activity: bool = True):
+async def get_numeric_session(request: Request, session_id: str, story_id: str, claim_activity: bool = True):
     config_manager = get_config_manager()
     try:
         runtime = await _runtime_for_story(config_manager, str(story_id or "").strip())
@@ -1401,9 +1407,10 @@ async def release_numeric_session_activity(request: Request):
         return validation_error
     raw_name = payload.get("catgirl_name")
     catgirl_name = raw_name.strip() if isinstance(raw_name, str) else ""
-    if not catgirl_name or len(catgirl_name) > 256:
+    claim = str(payload.get("activity_claim_id") or "").strip()
+    if len(claim) > 160 or (not catgirl_name and not claim) or len(catgirl_name) > 256:
         return _error("numeric_release_character_required", 400)
-    clear_theater_activity(catgirl_name)
+    clear_theater_activity(catgirl_name, activity_claim_id=claim)
     return {"ok": True}
 
 

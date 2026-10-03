@@ -46,23 +46,48 @@ THEATER_ACTIVITY_TTL_SECONDS = 120.0
 # lanlan_name -> monotonic timestamp of the last theater request that proved a
 # client was driving that character's session.
 _last_activity: dict[str, float] = {}
+_activity_claims: dict[str, dict[str, float]] = {}
+_released_claims: dict[str, float] = {}
 
 
 def _key(lanlan_name: Any) -> str:
     return str(lanlan_name or "").strip()
 
 
-def mark_theater_activity(lanlan_name: Any, *, now: float | None = None) -> None:
+def mark_theater_activity(lanlan_name: Any, *, now: float | None = None, activity_claim_id: str = "") -> bool:
     """Record that a client is currently driving ``lanlan_name``'s theater session."""
 
     key = _key(lanlan_name)
+    current = time.monotonic() if now is None else now
+    for claim, stamp in list(_released_claims.items()):
+        if current - stamp >= THEATER_ACTIVITY_TTL_SECONDS * 5:
+            _released_claims.pop(claim, None)
+    if activity_claim_id and activity_claim_id in _released_claims:
+        return False
     if key:
-        _last_activity[key] = time.monotonic() if now is None else now
+        if activity_claim_id:
+            _activity_claims.setdefault(key, {})[activity_claim_id] = current
+        else:
+            _last_activity[key] = current
+        return True
+    return False
 
 
-def clear_theater_activity(lanlan_name: Any) -> None:
-    """Forget one character's theater activity."""
+def clear_theater_activity(lanlan_name: Any, *, activity_claim_id: str = "") -> None:
+    """Release one owner, or the legacy unowned signal; preserve peer owners."""
 
+    if activity_claim_id:
+        # Fence a release that overtakes the corresponding GET/start response.
+        now = time.monotonic()
+        for claim, stamp in list(_released_claims.items()):
+            if now - stamp >= THEATER_ACTIVITY_TTL_SECONDS * 5:
+                _released_claims.pop(claim, None)
+        _released_claims[activity_claim_id] = now
+        for key, claims in list(_activity_claims.items()):
+            claims.pop(activity_claim_id, None)
+            if not claims:
+                _activity_claims.pop(key, None)
+        return
     _last_activity.pop(_key(lanlan_name), None)
 
 
@@ -70,12 +95,22 @@ def clear_all_theater_activity() -> None:
     """Forget every character's theater activity (process reset and test isolation only)."""
 
     _last_activity.clear()
+    _activity_claims.clear()
+    _released_claims.clear()
 
 
 def is_theater_active(lanlan_name: Any, *, now: float | None = None) -> bool:
     """Return True while ``lanlan_name`` had theater activity within the TTL."""
 
     key = _key(lanlan_name)
+    current = time.monotonic() if now is None else now
+    claims = _activity_claims.get(key, {})
+    for claim, stamp in list(claims.items()):
+        if current - stamp >= THEATER_ACTIVITY_TTL_SECONDS:
+            claims.pop(claim, None)
+    if claims:
+        return True
+    _activity_claims.pop(key, None)
     last = _last_activity.get(key) if key else None
     if last is None:
         return False
@@ -87,7 +122,7 @@ def is_theater_active(lanlan_name: Any, *, now: float | None = None) -> bool:
     return False
 
 
-def note_theater_session_response(response: Any) -> None:
+def note_theater_session_response(response: Any, *, activity_claim_id: str = "") -> bool:
     """Update the registry from a successful theater session payload.
 
     Only dict payloads with ``ok: True`` carrying both ``session`` and
@@ -96,18 +131,19 @@ def note_theater_session_response(response: Any) -> None:
     """
 
     if not isinstance(response, Mapping) or response.get("ok") is not True:
-        return
+        return False
     session = response.get("session")
     participants = response.get("participants")
     if not isinstance(session, Mapping) or not isinstance(participants, Mapping):
-        return
+        return False
     name = _key(participants.get("catgirl_name"))
     if not name:
-        return
+        return False
     if session.get("status") == "ended":
-        clear_theater_activity(name)
+        clear_theater_activity(name, activity_claim_id=activity_claim_id)
+        return True
     else:
-        mark_theater_activity(name)
+        return mark_theater_activity(name, activity_claim_id=activity_claim_id)
 
 
 __all__ = [
