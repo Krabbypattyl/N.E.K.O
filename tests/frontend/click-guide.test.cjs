@@ -1486,6 +1486,49 @@ for (const nested of [false, true]) {
     });
 }
 
+test('real tool lesson keeps Tab in its wheel target and guide controls, but yields to other dialogs', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const root = dom.window;
+    root.t = key => key;
+    const fan = doc.createElement('div');
+    fan.className = 'compact-input-tool-fan';
+    fan.innerHTML = '<button class="compact-input-tool-item-screenshot">Screenshot</button>';
+    const tool = fan.querySelector('button');
+    tool.getBoundingClientRect = target.getBoundingClientRect;
+    doc.body.append(fan);
+    root.reactChatWindowHost = {
+        getChatSurfaceMode: () => 'compact', setAvatarToolMenuOpen() {}, deactivateAvatarTool() {},
+        setCompactToolFanOpen: open => { fan.dataset.compactInputToolFanOpen = String(open); },
+        setCompactToolWheelIndex() {},
+    };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
+    const runner = api.createRunner({ labels, steps: [api.chatSteps().find(step => step.id === 'screenshot')] });
+    await runner.start();
+    assert.equal(fan.dataset.compactInputToolFanOpen, 'true');
+    const skip = doc.querySelector('.click-guide-actions button');
+    const last = doc.querySelector('.click-guide-next');
+    const press = shiftKey => {
+        const event = new root.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+        doc.activeElement.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+    last.focus();
+    assert.equal(press(false), true);
+    assert.equal(doc.activeElement, tool);
+    assert.equal(press(false), true);
+    assert.equal(doc.activeElement, skip);
+    assert.equal(press(true), true);
+    assert.equal(doc.activeElement, tool);
+    const dialog = doc.createElement('section');
+    dialog.setAttribute('role', 'dialog');
+    doc.body.append(dialog);
+    last.focus();
+    assert.equal(press(false), false, 'an unrelated dialog still owns Tab');
+    assert.equal(doc.activeElement, last);
+    await runner.stop('stopped');
+});
+
 test('visible business dialog releases Tab even while focus remains on the guide card', async t => {
     const { dom, api, doc } = setup();
     t.after(() => dom.window.close());

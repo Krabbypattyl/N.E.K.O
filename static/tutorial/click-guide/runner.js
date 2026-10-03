@@ -102,9 +102,12 @@
                 || document.activeElement?.closest?.(editableSelector)) return true;
             return hasOverlayOwner();
         }
-        function hasOverlayOwner() {
+        function hasOverlayOwner(guideTarget) {
             return [...document.querySelectorAll(overlaySelector)].some(element => {
                 if (layer.contains(element) || element.closest('[hidden], [aria-hidden="true"]')) return false;
+                // For Tab only, an overlay containing this lesson's target is
+                // part of the guided controls (for example, the tool wheel).
+                if (guideTarget && element.contains(guideTarget)) return false;
                 // Test ancestors too: many menus keep their children mounted while hidden.
                 for (let node = element; node; node = node.parentElement) {
                     const style = root.getComputedStyle(node);
@@ -131,7 +134,7 @@
                 const target = api.resolveTarget(view()?.target);
                 // The lesson's own editable target participates in its focus loop.
                 // External editors and business overlays retain their own Tab handling.
-                if (hasOverlayOwner() || (!layer.contains(document.activeElement)
+                if (hasOverlayOwner(target) || (!layer.contains(document.activeElement)
                     && hasKeyboardOwner(event) && !target?.contains(document.activeElement))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
                 const controls = [...card.querySelectorAll(selector)];
