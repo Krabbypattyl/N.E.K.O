@@ -1486,6 +1486,30 @@ for (const nested of [false, true]) {
     });
 }
 
+test('visible business dialog releases Tab even while focus remains on the guide card', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }] });
+    await runner.start();
+    const last = doc.querySelector('.click-guide-next');
+    last.focus();
+    const press = () => {
+        const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        doc.activeElement.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+    const dialog = doc.createElement('section');
+    dialog.setAttribute('role', 'dialog');
+    dialog.innerHTML = '<button>Business action</button>';
+    doc.body.append(dialog);
+    assert.equal(press(), false, 'allow browser or dialog handler to move focus out of the card');
+    assert.equal(doc.activeElement, last, 'runner must not move focus');
+    dialog.remove();
+    assert.equal(press(), true, 'ordinary guide focus loop resumes when dialog closes');
+    assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+    await runner.stop('stopped');
+});
+
 test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
     const { dom, api, doc, target } = setup();
     t.after(() => dom.window.close());

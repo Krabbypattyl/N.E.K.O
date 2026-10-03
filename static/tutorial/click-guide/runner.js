@@ -131,8 +131,8 @@
                 const target = api.resolveTarget(view()?.target);
                 // The lesson's own editable target participates in its focus loop.
                 // External editors and business overlays retain their own Tab handling.
-                if (!layer.contains(document.activeElement) && (hasOverlayOwner()
-                    || (hasKeyboardOwner(event) && !target?.contains(document.activeElement)))) return;
+                if (hasOverlayOwner() || (!layer.contains(document.activeElement)
+                    && hasKeyboardOwner(event) && !target?.contains(document.activeElement))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
                 const controls = [...card.querySelectorAll(selector)];
                 if (target?.matches(selector)) controls.unshift(target);
