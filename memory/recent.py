@@ -774,7 +774,12 @@ def _merge_theater_episode_summary(history: list, incoming):
             if index not in global_drop_indexes
         ]
     from memory.theater_budget import bound_theater_history
-    return bound_theater_history(merged), stored_incoming
+    bounded = bound_theater_history(merged)
+    if not any(message is stored_incoming for message in bounded):
+        # Reject before persistence: the caller must retain its archive receipt
+        # rather than acknowledge a capsule that never entered hot memory.
+        raise ValueError("theater_episode_budget_exceeded")
+    return bounded, stored_incoming
 
 
 class CompressedRecentHistoryManager:
@@ -2121,12 +2126,12 @@ class CompressedRecentHistoryManager:
             return total
 
         def _trim(history):
-            from memory.theater_budget import bound_theater_history
-            bounded = bound_theater_history(history)
-            ordinary = [message for message in bounded if not is_theater_memory_message(message)]
+            # Theater eviction belongs to /cache's locked recent/index commit.
+            # Background chat trimming cannot remove capsules without updating
+            # their time index. Prompt rendering independently bounds old data.
+            ordinary = [message for message in history if not is_theater_memory_message(message)]
             if _raw_tokens(ordinary) <= RECENT_HARD_CAP_TOKENS:
-                return bounded if len(bounded) < len(history) else None
-            history = bounded
+                return None
             # 剧场胶囊带有独立来源和周目语义，不能被普通聊天硬裁剪吞掉。
             # Same predicate as compression and review: every theater memory
             # message is outside the ordinary body and can never be the memo head.

@@ -158,6 +158,34 @@ def test_prompt_budget_includes_rendered_metadata_and_preserves_ordinary(monkeyp
     assert rendered == [(ordinary, None), (new, "newer")]
 
 
+def test_background_hard_cap_does_not_evict_indexed_theater_capsules(tmp_path, monkeypatch):
+    from tests.unit.test_recent_compression_failure import _make_manager, _write_recent, _read_recent
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 80)
+    monkeypatch.setattr("utils.tokenize.count_tokens", len)
+    monkeypatch.setattr("memory.theater_budget.THEATER_MEMORY_BUDGET_TOKENS", 1)
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *a, **kw: None)
+    manager, name = _make_manager(tmp_path)
+    capsule = _capsule("indexed", content="old summary" * 100)
+    ordinary = [HumanMessage(content=str(i) * 20) for i in range(12)]
+    _write_recent(manager.log_file_path[name], [capsule, *ordinary])
+    asyncio.run(manager.enforce_hard_cap(name))
+    retained = _read_recent(manager.log_file_path[name])
+    assert messages_to_dict(retained[:1]) == messages_to_dict([capsule])
+    assert len(retained) < 13
+
+
+def test_oversized_episode_upsert_rejects_before_changing_recent(tmp_path, monkeypatch):
+    from tests.unit.test_recent_compression_failure import _make_manager, _write_recent, _read_recent
+    monkeypatch.setattr("memory.theater_budget.THEATER_MEMORY_BUDGET_TOKENS", 1)
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *a, **kw: None)
+    manager, name = _make_manager(tmp_path)
+    previous = [HumanMessage(content="ordinary chat"), _capsule("existing")]
+    _write_recent(manager.log_file_path[name], previous)
+    with pytest.raises(ValueError, match="theater_episode_budget_exceeded"):
+        asyncio.run(manager.upsert_theater_episode(_capsule("too-large", "summary" * 1000), name))
+    assert messages_to_dict(_read_recent(manager.log_file_path[name])) == messages_to_dict(previous)
+
+
 @pytest.mark.asyncio
 async def test_live_clocks_survive_restore_and_actor_cannot_forge_turn_clock(tmp_path):
     from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening, _branch_story
