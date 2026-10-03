@@ -1776,7 +1776,9 @@ async def _execute_numeric_v2_turn(
                     "不得在结局提出必须由玩家下一轮回答或选择的新问题或任务；"
                     "认人招呼、修辞反问、自问自答及引用旧问题不需玩家回应时不受此限。"
                 ]}},
-                actor_performance=candidate,
+                # This check covers the whole delivered ending, unlike the
+                # next-scene evaluator's target-opening-only history projection.
+                actor_performance={"content": performance_content_blocks(candidate)},
                 player_input=turn.message,
             )
         except NumericV2EvaluatorError as exc:
