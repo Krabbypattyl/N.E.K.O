@@ -24,7 +24,6 @@ _TYPE_TO_ROLE = {"human": "user", "ai": "assistant", "system": "system"}
 
 _ROLE_TO_TYPE = {"user": "human", "assistant": "ai", "system": "system"}
 
-THEATER_MEMORY_SOURCE = "theater_numeric_v2"
 
 @dataclass
 class BaseMessage:
@@ -69,30 +68,6 @@ def message_metadata(message: Any) -> dict[str, Any]:
     if isinstance(data, dict) and isinstance(data.get("metadata"), dict):
         return data["metadata"]
     return {}
-
-
-def is_theater_memory_message(message: Any) -> bool:
-    return message_metadata(message).get("source") == THEATER_MEMORY_SOURCE
-
-
-def theater_memory_episode_key(message: Any) -> tuple[str, str]:
-    """同一剧本 Session 的分段归档属于同一次演绎。"""  # noqa: DOCSTRING_CJK
-
-    metadata = message_metadata(message)
-    return (
-        str(metadata.get("story_id") or ""),
-        str(metadata.get("session_id") or ""),
-    )
-
-
-def is_theater_episode_summary(message: Any) -> bool:
-    """判断消息是否为剧场写入日常记忆的单集摘要胶囊。"""  # noqa: DOCSTRING_CJK
-
-    metadata = message_metadata(message)
-    return (
-        metadata.get("source") == THEATER_MEMORY_SOURCE
-        and metadata.get("memory_tier") == "episode_summary"
-    )
 
 
 _TYPE_CLS: dict[str, type[BaseMessage]] = {

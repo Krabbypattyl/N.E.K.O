@@ -34,7 +34,7 @@ from config import (
 )
 from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
-from utils.llm_client import is_theater_memory_message
+from memory.message_sources import is_theater_memory_message
 
 from . import gates, review, runtime
 from .locale_state import (

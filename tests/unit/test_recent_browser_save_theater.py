@@ -7,11 +7,11 @@ import json
 import pytest
 
 from utils import recent_file
+from memory.message_sources import is_theater_episode_summary
 from utils.llm_client import (
     AIMessage,
     HumanMessage,
     SystemMessage,
-    is_theater_episode_summary,
     messages_from_dict,
     messages_to_dict,
 )

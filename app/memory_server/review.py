@@ -43,7 +43,7 @@ from .gates import (
     REVIEW_MIN_INTERVAL,
     REVIEW_SKIP_HISTORY_LEN,
 )
-from utils.llm_client import is_theater_memory_message
+from memory.message_sources import is_theater_memory_message
 from utils.recent_file import capture_recent_generation
 
 

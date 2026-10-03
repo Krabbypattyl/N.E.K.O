@@ -115,7 +115,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
 async def test_cache_preserves_theater_metadata_in_recent_and_time_index():
     """剧场来源与片段类型必须同时进入近期记忆和时间索引。"""  # noqa: DOCSTRING_CJK
     from app import memory_server
-    from utils.llm_client import is_theater_memory_message
+    from memory.message_sources import is_theater_memory_message
 
     metadata = {
         "source": "theater_numeric_v2",

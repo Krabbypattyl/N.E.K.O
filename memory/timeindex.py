@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from memory.message_sources import THEATER_MEMORY_SOURCE, is_theater_memory_message
 from utils.llm_client import (
     SQLChatMessageHistory,
     SystemMessage,
-    THEATER_MEMORY_SOURCE,
-    is_theater_memory_message,
     message_metadata,
     messages_from_dict,
     messages_to_dict,

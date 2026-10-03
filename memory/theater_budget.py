@@ -2,7 +2,8 @@
 
 import json
 
-from utils.llm_client import is_theater_memory_message, messages_to_dict
+from memory.message_sources import is_theater_memory_message
+from utils.llm_client import messages_to_dict
 from utils.tokenize import count_tokens
 
 

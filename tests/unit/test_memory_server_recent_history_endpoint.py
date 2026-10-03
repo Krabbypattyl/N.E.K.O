@@ -276,10 +276,9 @@ async def test_get_recent_history_merges_incremental_theater_archives_by_session
 def _legacy_theater_render(history, *, lang, name, master):
     """Verbatim theater-capsule loop that get_recent_history and _new_dialog each inlined."""
     from config.prompts.prompts_memory import get_theater_memory_context
+    from memory.message_sources import is_theater_memory_message, theater_memory_episode_key
     from utils.llm_client import (
-        is_theater_memory_message,
         message_metadata,
-        theater_memory_episode_key,
     )
 
     latest_theater_metadata = {

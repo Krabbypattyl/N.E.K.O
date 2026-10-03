@@ -30,11 +30,11 @@ from services.theater.numeric_v2_registry import NumericV2PackageError, NumericV
 from services.theater.numeric_v2_runtime import MetricChangeV2
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from utils.cloudsave_runtime import MaintenanceModeError
+from memory.message_sources import THEATER_MEMORY_SOURCE
 from utils.llm_client import (
     AIMessage,
     HumanMessage,
     SystemMessage,
-    THEATER_MEMORY_SOURCE,
     convert_to_messages,
     messages_to_dict,
 )

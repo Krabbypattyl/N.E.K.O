@@ -33,7 +33,7 @@ from memory.event_log import (
     EVIDENCE_SOURCE_USER_REBUT,
 )
 from memory.outbox import OP_POST_TURN_SIGNALS
-from utils.llm_client import is_theater_memory_message
+from memory.message_sources import is_theater_memory_message
 
 from . import gates, locale_state, outbox_infra, runtime, signal_extraction
 from ._shared import logger

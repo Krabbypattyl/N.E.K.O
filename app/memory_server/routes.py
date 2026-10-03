@@ -55,13 +55,15 @@ from utils.language_utils import (
     language_context,
     normalize_language_code,
 )
-from utils.llm_client import (
-    convert_to_messages,
+from memory.message_sources import (
     is_theater_episode_summary,
     is_theater_memory_message,
+    theater_memory_episode_key,
+)
+from utils.llm_client import (
+    convert_to_messages,
     message_metadata,
     messages_to_dict,
-    theater_memory_episode_key,
 )
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable

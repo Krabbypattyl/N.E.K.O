@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from weakref import WeakValueDictionary
 
-from utils.llm_client import THEATER_MEMORY_SOURCE
+from memory.message_sources import THEATER_MEMORY_SOURCE
 
 from .numeric_v2_performance import content_blocks, mixed_performance_blocks
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation

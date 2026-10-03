@@ -866,7 +866,7 @@ def _merge_browser_payload_with_theater(
     stand for a theater message are dropped. Without theater messages the
     payload is returned unchanged.
     """
-    from utils.llm_client import is_theater_memory_message
+    from memory.message_sources import is_theater_memory_message
 
     try:
         current = json.loads(current_text)

@@ -29,7 +29,7 @@ No module state, no imports from sibling submodules. Precedent:
 import json
 from datetime import datetime
 
-from utils.llm_client import is_theater_memory_message
+from memory.message_sources import is_theater_memory_message
 
 
 def _coerce_db_ts(ts) -> datetime | None:
