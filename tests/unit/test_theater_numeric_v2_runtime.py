@@ -2622,7 +2622,9 @@ except NumericV2SessionExistsError:
                 cwd=Path(__file__).resolve().parents[2], stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             processes.append(process)
-            deadline = time.monotonic() + 10
+            # Cold imports may exceed 10 seconds on a fully loaded Windows
+            # xdist runner; the publication/termination assertions stay exact.
+            deadline = time.monotonic() + 30
             while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert marker.exists(), f'writer failed to reach publication: {process.poll()}'
@@ -2642,8 +2644,10 @@ except NumericV2SessionExistsError:
                 process.stdin.flush()
             outputs = [process.communicate(timeout=10) for process in processes]
             assert all(process.returncode == 0 for process in processes), outputs
-            assert sorted(out.strip() for out, _ in outputs) == ['created', 'exists']
-            winner = next(str(i) for i, (out, _) in enumerate(outputs) if out.strip() == 'created')
+            # Cold imports may log; the final line is the worker's result.
+            results = [out.strip().splitlines()[-1] for out, _ in outputs]
+            assert sorted(results) == ['created', 'exists']
+            winner = str(results.index('created'))
             assert json.loads(final.read_text(encoding='utf-8'))['session']['writer_id'] == winner
     finally:
         for process in processes:

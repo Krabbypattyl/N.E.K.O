@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 import gc
 import json
 from pathlib import Path
@@ -4533,8 +4534,11 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
     assert archive_detail.status_code == 200
     public_archive = archive_detail.json()["archive"]
     assert public_archive["opening"]["performance"] == "风铃轻轻响了一声。\n\n你回来了。"
+    performed_at = public_archive["turns"][0]["performed_at"]
+    assert datetime.fromisoformat(performed_at).tzinfo is not None
     assert public_archive["turns"] == [{
         "revision": 1,
+        "performed_at": performed_at,
         "player_input": "我把信放在桌上。",
         "performance": "（风铃轻轻响了一声）我在听。",
         "parts": [
@@ -5194,7 +5198,7 @@ def test_numeric_archive_forget_watermark_excludes_previous_transcript(tmp_path)
     assert receipt["archive_from_revision"] == 2
     assert receipt["archive_through_revision"] == 2
     assert receipt["include_opening"] is False
-    assert archive["opening"] == {"performance": "", "parts": []}
+    assert archive["opening"] == {"performance": "", "parts": [], "performed_at": ""}
     assert [turn["revision"] for turn in archive["turns"]] == [2]
     assert archive["turns"][0]["player_input"] == "这是遗忘后的输入。"
     assert archive["turns"][0]["performance"] == "这是遗忘后的回应。"

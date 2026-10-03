@@ -1,6 +1,7 @@
 """Text tracing observes real request boundaries without changing calls or stored prose."""
 
 import asyncio
+from datetime import datetime
 import json
 from types import SimpleNamespace
 
@@ -201,6 +202,15 @@ async def test_trace_failures_never_abort_or_repeat_model_call(tmp_path, monkeyp
 async def test_workflow_traces_retries_reviews_history_and_atomic_commit(tmp_path, monkeypatch, commit_fails):
     """The same fixed replies produce identical saves with tracing on/off, including rollback."""
     from services.theater import numeric_v2_history as history
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat("2020-01-02T03:04:05+00:00")
+
+    # Trace on/off must see the same external clock as well as model replies.
+    # Compare the full saved state, including its performance timestamps.
+    monkeypatch.setattr("services.theater.numeric_v2_runtime.datetime", FixedDatetime)
 
     async def config(*args):
         return {"model": "trace-test-model", "base_url": "https://unused.test"}
