@@ -85,6 +85,7 @@ from memory.recent import (
     TheaterEpisodeRetracted,
     _positive_metadata_int,
     is_retracted_theater_episode,
+    restored_theater_history,
 )
 from .runtime import app
 
@@ -1227,9 +1228,8 @@ async def list_theater_memory_stories(lanlan_name: str):
     characters = await runtime._config_manager.aload_characters()
     if lanlan_name not in characters.get("猫娘", {}):
         raise HTTPException(status_code=404, detail="character_not_found")
-    async with runtime._get_settle_lock(lanlan_name):
-        history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
-        latest, _ = _theater_memory_render_state(history)
+    history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    latest, _ = _theater_memory_render_state(history)
     stories = {}
     for (story_id, _), metadata in latest.items():
         if not story_id:
@@ -1248,6 +1248,7 @@ async def _drop_theater_memory_reindexed(
     should_drop,
     drop_recent,
     operation: str,
+    remaining=None,
 ):
     """Remove theater capsules from the time index, then from recent.
 
@@ -1259,7 +1260,8 @@ async def _drop_theater_memory_reindexed(
     capsules back into the recallable index.
     """
 
-    remaining = [message for message in current if not should_drop(message)]
+    if remaining is None:
+        remaining = [message for message in current if not should_drop(message)]
     reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
         _theater_index_events(lanlan_name, remaining),
         lanlan_name,
@@ -1405,6 +1407,7 @@ async def retract_theater_episode(
                     lanlan_name,
                 ),
                 "theater episode retract",
+                remaining=restored_theater_history(current, story_id, session_id, through),
             )
         return {
             "ok": True,

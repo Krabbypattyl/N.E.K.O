@@ -109,6 +109,8 @@ GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 
 MANAGED_MEMORY_FILENAMES = (
     "recent.json",
+    # Theater session numbers survive hot-memory eviction and cloud restores.
+    "theater_runs.json",
     "settings.json",
     "facts.json",
     "facts_archive.json",
