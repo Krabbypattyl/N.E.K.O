@@ -98,7 +98,7 @@
                     }
                     layer = doc.createElement('div'); layer.className = 'click-guide-layer';
                     for (const type of ['pointerdown', 'mousedown', 'touchstart', 'click']) {
-                        layer.addEventListener(type, event => event.stopPropagation());
+                        layer.addEventListener(type, event => event.stopPropagation(), { passive: true });
                     }
                     mask = api.createMask(layer); highlight = api.createHighlight(layer);
                     card = doc.createElement('section');
