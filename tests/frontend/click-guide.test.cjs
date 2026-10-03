@@ -42,15 +42,18 @@ function setup() {
     return { dom, api: dom.window.NekoClickGuide, target, doc: dom.window.document };
 }
 
-test('guide card pointerdown keeps its target open until the next click advances', async () => {
+test('guide card presses keep its target open until the next click advances', async t => {
     const { dom, api, target, doc } = setup();
-    let closed = 0;
-    doc.addEventListener('pointerdown', event => {
-        if (!target.contains(event.target)) {
-            closed++;
-            target.style.display = 'none';
-        }
-    });
+    t.after(() => dom.window.close());
+    const closed = { pointerdown: 0, mousedown: 0 };
+    for (const type of Object.keys(closed)) {
+        doc.addEventListener(type, event => {
+            if (!target.contains(event.target)) {
+                closed[type]++;
+                target.style.display = 'none';
+            }
+        });
+    }
     const guide = api.createRunner({ labels, steps: [
         { title: 'First tool', target: '#target' },
         { title: 'Next tool', target: '#target' },
@@ -58,17 +61,19 @@ test('guide card pointerdown keeps its target open until the next click advances
     await guide.start();
     const next = doc.querySelector('.click-guide-next');
     next.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+    next.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
     // Allow geometry tracking to run between press and release, as with a real mouse.
     await delay(40);
-    assert.equal(closed, 0);
+    assert.deepEqual(closed, { pointerdown: 0, mousedown: 0 });
+    assert.notEqual(target.style.display, 'none');
     assert.equal(doc.querySelector('.click-guide-card').style.display, '');
     next.click();
     await delay(40);
     assert.equal(guide.index, 1);
     await guide.stop();
     doc.querySelector('#outside').dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
-    assert.equal(closed, 1, 'normal outside presses still reach the business listener');
-    dom.window.close();
+    doc.querySelector('#outside').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+    assert.deepEqual(closed, { pointerdown: 1, mousedown: 1 }, 'normal outside presses still reach the business listeners');
 });
 
 test('opened inline panels guide the real close action before advancing', async () => {
