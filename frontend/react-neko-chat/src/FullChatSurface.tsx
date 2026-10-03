@@ -1970,7 +1970,7 @@ export default function FullChatSurface({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor')
+          && !!target.closest('.compact-export-history-anchor, .click-guide-layer')
         )
       )
     );

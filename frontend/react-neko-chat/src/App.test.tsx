@@ -9680,6 +9680,35 @@ describe('App', () => {
     expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
   });
 
+  it.each(['click-guide-card', 'click-guide-mask'])('keeps empty compact input open during a press on %s', async (className) => {
+    const onCompactChatStateChange = vi.fn();
+    const layer = document.createElement('div');
+    layer.className = 'click-guide-layer';
+    const control = document.createElement('button');
+    control.className = className;
+    layer.appendChild(control);
+    document.body.appendChild(layer);
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange} />);
+      screen.getByPlaceholderText('Type a message...').focus();
+      onCompactChatStateChange.mockClear();
+      fireEvent.pointerDown(control);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      layer.remove();
+      fireEvent.pointerDown(document.body);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+    } finally {
+      layer.remove();
+    }
+  });
+
   it('returns empty compact input to subtitle state when a document-level outside pointer starts', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');

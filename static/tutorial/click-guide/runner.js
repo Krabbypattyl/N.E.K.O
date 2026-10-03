@@ -27,6 +27,10 @@
         const previousFocus = document.activeElement;
         const layer = document.createElement('div');
         layer.className = 'click-guide-layer';
+        // Guide controls and mask panes are not outside actions on the business UI.
+        for (const type of ['pointerdown', 'mousedown', 'click']) {
+            layer.addEventListener(type, event => event.stopPropagation());
+        }
         const mask = api.createMask(layer);
         const highlight = api.createHighlight(layer);
         const secondaryHighlight = api.createHighlight(layer);
@@ -35,10 +39,6 @@
         card.setAttribute('role', 'dialog');
         card.setAttribute('aria-label', labels.tour);
         card.tabIndex = -1;
-        // Keep pointer and compatibility mouse presses from hiding the target before click.
-        for (const type of ['pointerdown', 'mousedown']) {
-            card.addEventListener(type, event => event.stopPropagation());
-        }
         const progress = document.createElement('div');
         progress.className = 'click-guide-progress';
         const title = document.createElement('h2');
