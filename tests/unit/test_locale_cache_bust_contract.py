@@ -240,6 +240,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-11-watch-together-soccer-sdk",
         "2026-09-11-watch-together",
         "2026-09-11-watch-together-discovery",
+        "2026-09-12-air-basketball",
+        "2026-09-13-watch-together-air-basketball",
+        "2026-09-14-proactive-community-chat",
         "2026-09-03-avatar-tool-image-details",
         "2026-09-03-avatar-tool-initial-connections",
         "2026-09-03-avatar-tool-stage2-structure",
@@ -264,6 +267,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-13-plugin-html-content-proactive-community",
         "2026-09-14-plugin-html-content-main-merge",
         "2026-09-22-plugin-html-content-main-merge",
+        "2026-09-22-voice-session-activation",
+        "2026-09-23-plugin-html-content-main-merge",
+        "2026-09-23-voice-wake-word-plugin-html-main",
+        "2026-09-14-proactive-community-air-basketball",
+        "2026-09-27-asr-recovery-main-merge",
         "2026-09-27-glm-voice-clone",
         "2026-09-28-glm-voice-clone-main-merge",
         "2026-09-28-glm-voice-clone-locale-key-sync",
@@ -278,6 +286,14 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-30-social-login-prompt-voice-identity-merge",
         "2026-09-30-theater-social-settings-main-merge",
         "2026-09-29-click-guide-screen-source-merge",
+        "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
+        "2026-09-27-air-basketball-main-merge",
+        "2026-10-02-air-basketball-main-merge",
+        "2026-10-03-air-basketball-review-fixes",
+        "2026-10-03-air-basketball-review-round2",
+        "2026-10-01-click-guide-memory-reactivation",
+        "2026-10-01-theater-click-guide-memory-reactivation",
+        "2026-10-03-air-basketball-review-round3",
     }
 )
 
@@ -290,7 +306,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "23d5093d64e8cb3980ce7c2629c2b5768b51fa89abec5e18902b288a57b42056"
+LOCALE_KEY_SIGNATURE = "df2c3bca65e296971fceee7be7149e0150194174e05922c049dee49a2783e55a"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
