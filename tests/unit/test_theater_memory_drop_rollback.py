@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from memory.recent import CompressedRecentHistoryManager
 from utils import recent_file
-from utils.llm_client import SystemMessage, messages_from_dict
+from utils.llm_client import HumanMessage, SystemMessage, messages_from_dict, messages_to_dict
 
 
 @pytest.fixture(autouse=True)
@@ -162,3 +162,79 @@ async def test_partly_persisted_recent_drop_keeps_removed_capsule_out_of_index(
     # The rollback follows recent's actual content, not the pre-drop snapshot.
     assert sorted(rollback.args[0]) == ["story_sun"]
     assert _disk_stories(recent_path) == ["story_sun"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "write"])
+@pytest.mark.parametrize("decision", ["retry", "retract", "forget"])
+async def test_failed_archive_never_flushes_through_ordinary_pending(
+    tmp_path, monkeypatch, failure, decision,
+):
+    from app.memory_server import routes, runtime, post_turn, gates
+
+    mgr, name, recent_path = _manager(tmp_path)
+    ordinary = HumanMessage(content="ordinary on disk")
+    pending = HumanMessage(content="ordinary pending")
+    await mgr.update_history([ordinary], name, compress=False)
+
+    def unavailable(*args, **kwargs):
+        raise PermissionError(13, "temporary sharing conflict")
+
+    # Establish a real ordinary pending batch first; the archive must preserve it.
+    with monkeypatch.context() as fault:
+        fault.setattr(recent_file, "write_recent_payload_unlocked", unavailable)
+        await mgr.update_history([pending], name, compress=False)
+
+    time_manager = MagicMock()
+    time_manager.areconcile_theater_conversations = AsyncMock(return_value={"removed": 0})
+    time_manager.astore_conversation = AsyncMock()
+    monkeypatch.setattr(runtime, "recent_history_manager", mgr)
+    monkeypatch.setattr(runtime, "time_manager", time_manager)
+    monkeypatch.setattr(routes, "_resolve_foreground_memory_language", AsyncMock(return_value="en"))
+    monkeypatch.setattr(post_turn, "_spawn_outbox_post_turn_signals", AsyncMock())
+    monkeypatch.setattr(gates, "_aclear_review_clean", AsyncMock())
+
+    def request(message, **kwargs):
+        return routes.HistoryRequest(input_history=json.dumps(messages_to_dict([message])), **kwargs)
+
+    incoming = _capsule("story_rain", "session_rain")
+    with monkeypatch.context() as fault:
+        fault.setattr(recent_file, (
+            "read_recent_text_unlocked" if failure == "read" else "write_recent_payload_unlocked"
+        ), unavailable)
+        for attempt in range(1, 4):
+            result = await routes.cache_conversation(request(
+                incoming, idempotency_key="archive-failed", theater_archive_attempt=attempt,
+            ), name)
+            assert result == {"status": "error", "message": "theater_episode_persist_failed"}
+            assert messages_to_dict(mgr._pending_batches(name)) == messages_to_dict([pending])
+        time_manager.areconcile_theater_conversations.assert_not_awaited()
+        if decision != "retry":
+            try:
+                if decision == "retract":
+                    await routes.retract_theater_episode(name, routes.TheaterEpisodeRetractRequest(
+                        story_id="story_rain", session_id="session_rain", archive_through_revision=5,
+                        archive_request_id="archive-failed", archive_attempt=3,
+                    ))
+                else:
+                    await routes.forget_theater_memory(name, routes.TheaterMemoryForgetRequest(
+                        story_id="story_rain",
+                    ))
+            except HTTPException as exc:
+                assert failure == "read" and decision == "forget" and exc.status_code == 500
+
+    next_message = HumanMessage(content="ordinary after recovery")
+    assert await routes.cache_conversation(request(next_message), name) == {"status": "cached", "count": 1}
+    with open(recent_path, encoding="utf-8") as handle:
+        assert json.load(handle) == messages_to_dict([ordinary, pending, next_message])
+    # Deletion compensation may run, but failed archives never enter its index.
+    assert all(not call.args[0] for call in time_manager.areconcile_theater_conversations.await_args_list)
+    result = await routes.cache_conversation(request(
+        incoming, idempotency_key="archive-failed", theater_archive_attempt=3,
+    ), name)
+    if decision == "retry":
+        assert result == {"status": "cached", "count": 1}
+        episodes = [m for m in await mgr.aget_recent_history(name) if m.metadata]
+        assert len(episodes) == 1 and episodes[0].metadata["run_index"] == 1
+    else:
+        assert result == {"status": "retracted", "count": 0}

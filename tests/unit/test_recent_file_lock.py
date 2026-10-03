@@ -882,7 +882,7 @@ def test_theater_episode_write_failure_is_not_reported_as_persisted(
     tmp_path,
     monkeypatch,
 ):
-    """剧场摘要只进入内存 pending 时必须让归档回执保持可重试。"""  # noqa: DOCSTRING_CJK
+    """Failed archive writes leave retries to the receipt, never ordinary pending."""
 
     mgr, name, path = _make_manager(tmp_path)
     incoming = SystemMessage(
@@ -905,9 +905,7 @@ def test_theater_episode_write_failure_is_not_reported_as_persisted(
         asyncio.run(mgr.upsert_theater_episode(incoming, name))
 
     assert not Path(path).exists()
-    assert [message.content for message in mgr._pending_batches(name)] == [
-        "这一周目仍在继续。",
-    ]
+    assert mgr._pending_batches(name) == []
 
 
 def test_theater_cache_rollback_restores_snapshot_only_without_later_writes(tmp_path):

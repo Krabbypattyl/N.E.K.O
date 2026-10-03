@@ -1162,19 +1162,13 @@ class CompressedRecentHistoryManager:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
-                updated_pending = list(pending) + [incoming]
-                self._set_pending_batches(lanlan_name, updated_pending, file_path)
-                self._cache_history_view(
-                    file_path,
-                    lanlan_name,
-                    self._current_cached_disk_history(file_path, lanlan_name),
-                    updated_pending,
-                )
                 logger.warning(
                     f"[RecentHistory] {lanlan_name} 历史文件读取失败，"
-                    "剧场单集摘要暂存内存等下次补写"
+                    "剧场单集摘要由归档回执重试"
                 )
-                # pending 只保证当前进程内可重试，不等于已经持久化；必须让上游保留归档回执。
+                # Ordinary pending is flushed without theater merge/tombstone
+                # checks or index reconciliation. Never enqueue an archive here;
+                # its durable receipt retries through the complete /cache path.
                 raise RuntimeError("theater_episode_persist_failed")
 
             merged, stored_incoming = _merge_theater_episode_summary(
@@ -1186,20 +1180,12 @@ class CompressedRecentHistoryManager:
                     file_path, messages_to_dict(merged),
                 )
             except Exception as exc:
-                self._set_pending_batches(
-                    lanlan_name, list(pending) + [incoming], file_path,
-                )
-                self._cache_history_view(
-                    file_path,
-                    lanlan_name,
-                    history,
-                    list(pending) + [incoming],
-                )
                 logger.error(
                     f"[RecentHistory] 保存 {lanlan_name} 剧场单集摘要失败: {exc}",
                     exc_info=True,
                 )
-                # 不能把内存 pending 伪装成写盘成功，否则进程退出后摘要会永久丢失。
+                # Keep existing ordinary pending intact. Failed archive input
+                # must remain solely in the theater's durable retry protocol.
                 raise RuntimeError("theater_episode_persist_failed") from exc
 
             self._set_pending_batches(lanlan_name, [], file_path)
