@@ -771,7 +771,8 @@ def _merge_theater_episode_summary(history: list, incoming):
             for index, message in enumerate(merged)
             if index not in global_drop_indexes
         ]
-    return merged, stored_incoming
+    from memory.theater_budget import bound_theater_history
+    return bound_theater_history(merged), stored_incoming
 
 
 class CompressedRecentHistoryManager:
@@ -2118,8 +2119,12 @@ class CompressedRecentHistoryManager:
             return total
 
         def _trim(history):
-            if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
-                return None  # 未超，不动
+            from memory.theater_budget import bound_theater_history
+            bounded = bound_theater_history(history)
+            ordinary = [message for message in bounded if not is_theater_memory_message(message)]
+            if _raw_tokens(ordinary) <= RECENT_HARD_CAP_TOKENS:
+                return bounded if len(bounded) < len(history) else None
+            history = bounded
             # 剧场胶囊带有独立来源和周目语义，不能被普通聊天硬裁剪吞掉。
             # Same predicate as compression and review: every theater memory
             # message is outside the ordinary body and can never be the memo head.
@@ -2142,7 +2147,8 @@ class CompressedRecentHistoryManager:
             )
             body_indices = ordinary_indices[len(head_indices):]
             kept_indices = set(head_indices) | theater_indices
-            kept_tok = _raw_tokens([history[index] for index in kept_indices])
+            # Theater has its own allowance and never consumes the chat budget.
+            kept_tok = _raw_tokens([history[index] for index in head_indices])
             kept_body_count = 0
             for index in reversed(body_indices):
                 msg = history[index]

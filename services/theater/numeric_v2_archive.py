@@ -1792,7 +1792,18 @@ def _episode_metadata(
         "memory_tier": "episode_summary",
         "message_kind": "episode_summary",
         "episode_summary": episode_summary,
+        "performed_at": _episode_performed_at(
+            session, archive_from_revision, archive_through_revision,
+        ),
     }
+
+
+def _episode_performed_at(session: Any, start: int, through: int) -> str:
+    """Use the archived turn's clock, not receipt creation or archive time."""
+    rows = [row for row in session.performance_history if start <= row.get("revision", 0) <= through]
+    if rows:
+        return str(rows[-1].get("performed_at") or "")
+    return str(getattr(session, "opening_performed_at", "") or "")
 
 
 def _compact_episode_summary(
@@ -1864,6 +1875,7 @@ def build_numeric_v2_public_archive(
         )
         turns.append({
             "revision": revision,
+            "performed_at": str(record.get("performed_at") or ""),
             "player_input": str(record.get("input_text") or "").strip(),
             "performance": performance_text,
             "parts": parts,
@@ -1883,6 +1895,7 @@ def build_numeric_v2_public_archive(
             "summary": str((ending or {}).get("summary") or "").strip(),
         },
         "opening": {
+            "performed_at": str(getattr(session, "opening_performed_at", "") or ""),
             "performance": opening_text,
             "parts": opening_parts,
         },

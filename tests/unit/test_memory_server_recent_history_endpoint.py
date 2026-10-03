@@ -451,6 +451,7 @@ def test_theater_render_passes_only_positive_run_counters():
         "story_run_count": -3,
     })]
     with patch("app.memory_server.routes.get_theater_memory_context") as render:
+        render.return_value = "rendered capsule"
         list(_iter_theater_rendered_history(history, lang="zh", name="n", master="m"))
 
     assert render.call_args.kwargs["story_run_count"] == 0

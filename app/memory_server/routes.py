@@ -168,7 +168,7 @@ def _theater_memory_render_state(history: list):
     return latest_by_episode, latest_episode_by_story
 
 
-def _iter_theater_rendered_history(history: list, *, lang: str, name: str, master: str):
+def _iter_theater_rendered_history_unbounded(history: list, *, lang: str, name: str, master: str):
     """Yield ``(message, capsule_text)`` for the prompt renderings of recent history.
 
     Each theater Session renders once, at its first position, from its latest
@@ -213,6 +213,32 @@ def _iter_theater_rendered_history(history: list, *, lang: str, name: str, maste
                 else []
             ),
         )
+
+
+def _iter_theater_rendered_history(history: list, *, lang: str, name: str, master: str):
+    """Apply a separate theater prompt allowance without dropping ordinary text."""
+    from memory.theater_budget import THEATER_MEMORY_BUDGET_TOKENS
+    from utils.tokenize import count_tokens
+
+    rendered = list(_iter_theater_rendered_history_unbounded(
+        history, lang=lang, name=name, master=master,
+    ))
+    selected = set()
+    texts = []
+    for index in range(len(rendered) - 1, -1, -1):
+        _, capsule_text = rendered[index]
+        if capsule_text is None:
+            selected.add(index)
+            continue
+        candidate = [capsule_text, *texts]
+        if count_tokens("\n".join(candidate) + "\n") <= THEATER_MEMORY_BUDGET_TOKENS:
+            selected.add(index)
+            texts = candidate
+    for index, entry in enumerate(rendered):
+        if index in selected:
+            yield entry
+
+
 class RepetitionInsightsRequest(BaseModel):
     language: Literal["en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"]
     assistant_message_limit: int = Field(default=100, ge=3, le=100)
@@ -1611,9 +1637,10 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
-    for i, capsule_text in _iter_theater_rendered_history(
+    rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
         history, lang=_lang, name=lanlan_name, master=master_name,
-    ):
+    )))
+    for i, capsule_text in rendered_history:
         if capsule_text is not None:
             result += capsule_text + "\n"
             continue
@@ -4342,9 +4369,10 @@ async def _new_dialog(
         recent_history = _screen_guarded_recent_history(
             await runtime.recent_history_manager.aget_recent_history(lanlan_name)
         )
-        for i, capsule_text in _iter_theater_rendered_history(
+        rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
             recent_history, lang=_lang, name=lanlan_name, master=master_name,
-        ):
+        )))
+        for i, capsule_text in rendered_history:
             if capsule_text is not None:
                 result += capsule_text + "\n"
                 continue

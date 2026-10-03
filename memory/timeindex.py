@@ -17,6 +17,7 @@ from utils.llm_client import (
     SystemMessage,
     THEATER_MEMORY_SOURCE,
     is_theater_memory_message,
+    message_metadata,
     messages_from_dict,
     messages_to_dict,
 )
@@ -938,8 +939,6 @@ class TimeIndexedMemory:
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             raise RuntimeError("theater_time_index_unavailable")
-        if timestamp is None:
-            timestamp = datetime.now()
         original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         normalized_batches: list[tuple[str, list[str]]] = []
         for event_id, messages in events_by_story.values():
@@ -991,6 +990,10 @@ class TimeIndexedMemory:
                     [{"row_id": row_id} for row_id in theater_row_ids],
                 )
             normalized_events = []
+            messages_by_event = {
+                str(event_id).strip(): messages
+                for event_id, messages in events_by_story.values()
+            }
             for event_id, serialized_messages in normalized_batches:
                 existing = existing_events.get(event_id, [])
                 event_timestamp = timestamp
@@ -1000,13 +1003,32 @@ class TimeIndexedMemory:
                     == serialized_messages
                     and existing[0][1] is not None
                 ):
-                    # 未变化剧本沿用原时间；只有本次真正更新的剧本才进入当前时间窗口。
+                    # Legacy rows without an event clock may retain their known index time.
                     event_timestamp = existing[0][1]
-                normalized_events.extend({
-                    "session_id": event_id,
-                    "message": message,
-                    "timestamp": event_timestamp,
-                } for message in serialized_messages)
+                for message, original in zip(
+                    serialized_messages, messages_by_event[event_id], strict=True,
+                ):
+                    metadata = message_metadata(original)
+                    performed_at = metadata.get("performed_at")
+                    # The optional clock is used by explicit migration/test callers.
+                    # Production archives without a performance clock are unknown,
+                    # including legacy rows previously dated by archive time.
+                    stored_at = event_timestamp if timestamp is not None else None
+                    if "performed_at" in metadata:
+                        # Missing clocks on upgraded sessions are unknown, never "now".
+                        stored_at = None
+                        if isinstance(performed_at, str) and performed_at:
+                            try:
+                                stored_at = datetime.fromisoformat(performed_at)
+                                if stored_at.tzinfo is not None:
+                                    stored_at = stored_at.astimezone().replace(tzinfo=None)
+                            except ValueError:
+                                pass
+                    normalized_events.append({
+                        "session_id": event_id,
+                        "message": message,
+                        "timestamp": stored_at,
+                    })
             for event in normalized_events:
                 conn.execute(
                     text(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -805,6 +806,8 @@ class ScriptSessionV2:
     dialogue_policy: str = "required"
     # 只有 Actor 在已提交正文中明确提出具体下一步时才锁存为真。
     transition_offered: bool = False
+    # Recorded by the live runtime, never inferred from a later archive/replay.
+    opening_performed_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -830,6 +833,7 @@ class ScriptSessionV2:
             "forgotten_through_revision": self.forgotten_through_revision,
             "dialogue_policy": self.dialogue_policy,
             "transition_offered": self.transition_offered,
+            "opening_performed_at": self.opening_performed_at,
         }
 
     @classmethod
@@ -878,6 +882,7 @@ class ScriptSessionV2:
             processed_client_turn_ids=tuple(str(item) for item in value.get("processed_client_turn_ids") or []),
             opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
             performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
+            opening_performed_at=str(value.get("opening_performed_at") or ""),
             story_state=story_state,
             actor_budget_profile=actor_budget_profile,
             lifecycle_revision=_integer(value.get("lifecycle_revision", 0), "lifecycle_revision"),
@@ -1533,6 +1538,7 @@ class NumericV2Runtime:
             opening_performance=opening_performance,
             actor_budget_profile=actor_budget_profile,
         )
+        session = replace(session, opening_performed_at=datetime.now().astimezone().isoformat())
         return await self.store.create_story_session(session)
 
     async def restore_story_session(
@@ -1577,6 +1583,7 @@ class NumericV2Runtime:
             opening_performance=opening_performance,
             actor_budget_profile=actor_budget_profile,
         )
+        session = replace(session, opening_performed_at=datetime.now().astimezone().isoformat())
         stored = await self.store.replace_active(previous_session_id, session)
         return stored
 
@@ -1616,6 +1623,7 @@ class NumericV2Runtime:
             opening_performance=source.session.opening_performance,
             actor_budget_profile=source.session.actor_budget_profile,
         )
+        replay_session = replace(replay_session, opening_performed_at=source.session.opening_performed_at)
         replay_events: list[dict[str, Any]] = []
         for index, source_event in enumerate(source.ledger_events[:through_revision]):
             changes = tuple(
@@ -1818,6 +1826,8 @@ class NumericV2Runtime:
             "from_node_id": outcome.ledger_event["from_node_id"],
             "to_node_id": outcome.ledger_event["to_node_id"],
             **deepcopy(dict(performance)),
+            # The actor cannot supply this clock. Only committed live turns use it.
+            "performed_at": datetime.now().astimezone().isoformat(),
             # 旧记录没有该标记；版本 3 才强制混合正文合同，保证历史 Session 可恢复。
             "performance_contract_version": (
                 3
