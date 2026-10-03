@@ -100,6 +100,9 @@
         function hasKeyboardOwner(event) {
             if (event.target?.closest?.(editableSelector)
                 || document.activeElement?.closest?.(editableSelector)) return true;
+            return hasOverlayOwner();
+        }
+        function hasOverlayOwner() {
             return [...document.querySelectorAll(overlaySelector)].some(element => {
                 if (layer.contains(element) || element.closest('[hidden], [aria-hidden="true"]')) return false;
                 // Test ancestors too: many menus keep their children mounted while hidden.
@@ -125,8 +128,11 @@
         function trapTab(event) {
             if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Tab') {
-                if (hasKeyboardOwner(event) && !layer.contains(document.activeElement)) return;
                 const target = api.resolveTarget(view()?.target);
+                // The lesson's own editable target participates in its focus loop.
+                // External editors and business overlays retain their own Tab handling.
+                if (!layer.contains(document.activeElement) && (hasOverlayOwner()
+                    || (hasKeyboardOwner(event) && !target?.contains(document.activeElement)))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
                 const controls = [...card.querySelectorAll(selector)];
                 if (target?.matches(selector)) controls.unshift(target);

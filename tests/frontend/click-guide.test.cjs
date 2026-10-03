@@ -1444,6 +1444,48 @@ test('hidden menus do not own Escape and native presentation closes once', async
     assert.equal(doc.querySelector('.click-guide-layer'), null);
 });
 
+for (const nested of [false, true]) {
+    test(`guided composer participates in Tab and Shift+Tab focus order: nested=${nested}`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        const input = doc.createElement('textarea');
+        input.className = 'composer-input';
+        input.getBoundingClientRect = target.getBoundingClientRect;
+        const group = doc.createElement('div');
+        group.id = 'composer-group';
+        group.getBoundingClientRect = target.getBoundingClientRect;
+        group.append(input);
+        doc.body.append(group);
+        const runner = api.createRunner({ labels, steps: [{ title: 'Chat',
+            target: nested ? '#composer-group' : '.composer-input',
+            keyTarget: '.composer-input', requireInput: true }] });
+        await runner.start();
+        const press = shiftKey => {
+            const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+            doc.activeElement.dispatchEvent(event);
+            return event.defaultPrevented;
+        };
+        assert.equal(doc.activeElement, input);
+        assert.equal(press(false), true);
+        assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+        assert.equal(press(true), true);
+        assert.equal(doc.activeElement, input);
+        // An open business dialog still takes priority over the guided input.
+        const dialog = doc.createElement('section');
+        dialog.setAttribute('role', 'dialog');
+        doc.body.append(dialog);
+        assert.equal(press(false), false);
+        assert.equal(doc.activeElement, input);
+        dialog.remove();
+        const external = doc.createElement('textarea');
+        doc.body.append(external);
+        external.focus();
+        assert.equal(press(false), false);
+        assert.equal(doc.activeElement, external);
+        await runner.stop('stopped');
+    });
+}
+
 test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
     const { dom, api, doc, target } = setup();
     t.after(() => dom.window.close());
