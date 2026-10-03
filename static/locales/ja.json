@@ -1334,6 +1334,7 @@
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（モデルアグリゲーター）",
             "orcarouter": "OrcaRouter（Claude ゲートウェイ）",
+            "requesty": "Requesty（モデルルーター）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
@@ -1341,6 +1342,30 @@
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
         "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
+        "modelIdCurrentPlaceholder": "現在使用中：{{model}}",
+        "modelIdFreePlaceholder": "無料版は固定モデルを使用します",
+        "modelPicker": {
+            "fetch": "モデルを取得",
+            "fetchTooltip": "プロバイダーから利用可能なモデル一覧を取得します",
+            "loading": "モデル一覧を取得中…",
+            "noMatch": "一致するモデルがありません",
+            "more": "ほかに {{count}} 件のモデルがあります。キーワードで絞り込めます",
+            "unavailable": {
+                "noProvider": "先にプロバイダーを選択してください",
+                "fixed": "このプロバイダーは固定モデルを使用するため、選択は不要です",
+                "follow": "このモードではモデルは追従先の設定で決まるため、選択は不要です",
+                "missingUrl": "先に API URL を入力してください"
+            },
+            "error": {
+                "urlHint": "API URL に /v1 などのパスが不足していないか確認してください。",
+                "unsupported": "このエンドポイントはモデル一覧を提供していません。モデルIDを手動で入力してください",
+                "key_required": "保存済みのキーは保存時のアドレスでのみ使用できます。APIキーを再入力してください",
+                "core_key_required": "コアプロバイダーが変更されました。API キーを再入力してください",
+                "rate_limited": "リクエストが多すぎます。しばらくしてから再試行してください",
+                "empty": "プロバイダーからモデルが返されませんでした",
+                "timeout": "取得がタイムアウトしました。ネットワークを確認して再試行してください"
+            }
+        },
         "disableTts": "TTSを無効化",
         "disableTtsHint": "有効にすると音声合成サービスを呼び出しません",
         "keyBookTitle": "API管理簿",
@@ -1385,6 +1410,7 @@
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
@@ -2460,6 +2486,22 @@
         "selectionIntroImageAlt": "N.E.K.O ストレージ移行のイラスト",
         "statusUnexpected": "ストレージ保守状態 API から認識できない結果が返されました。",
         "storageBootstrapBlocking": "ストレージはまだ復旧または移行が必要なため、このセッションはまだ続行できません。",
+        "storagePolicyRollbackFailed": "保存場所の設定を書き込めず、以前の状態に戻すこともできませんでした。ローカル状態ディレクトリに書き込めるか確認し、それでも解消しない場合は状態ファイルを手動で確認してください。",
+        "storagePolicyWriteFailed": "保存場所の設定を書き込めませんでした。以前の状態に戻しました。ローカル状態ディレクトリに書き込めるか確認してから再試行してください。",
+        "storageOperationFailed": "ストレージ操作を開始できませんでした。ディスクへの変更はありません。しばらくして再試行してください。",
+        "storageStateUnreadable": "保存場所の設定を書き込めませんでした。状態ファイルを現在読み取れません（存在しない、またはそのディレクトリにアクセスできない可能性があります）。ディスクへの変更も行われていません。しばらくして再試行するか、ローカル状態ディレクトリにアクセスできるか確認してください。",
+        "storageStateInvalid": "ストレージ状態ファイルが破損しているか、形式が無効です。ディスクへの変更はありません。状態ファイルを確認または復元してください。",
+        "restartRollbackFailed": "制御された再起動に失敗し、以前の状態への復元を確認できませんでした。状態ファイルを確認または復元してください。",
+        "startupReleaseFailed": "このセッションの起動制限を解除できませんでした。再試行するか、ページを更新してから続行してください。",
+        "startupReleaseRollbackFailed": "起動制限の解除に失敗し、以前の状態への復元を確認できませんでした。状態ファイルを確認または復元してください。",
+        "migrationAlreadyPending": "現在の移行または復旧状態を解決してから保存場所を変更してください。",
+        "selectedRootEmpty": "保存先のパスを入力してください。",
+        "selectedRootNotAbsolute": "保存先は絶対パスで指定してください。",
+        "selectedRootInsideProject": "保存先をプロジェクトディレクトリ内に設定できません。別の場所を選択してください。",
+        "selectedRootNotDirectory": "保存先はファイルではなくフォルダーである必要があります。",
+        "selectedRootParentMissing": "保存先の親ディレクトリが見つかりません。別の場所を選択してください。",
+        "selectedRootParentNotWritable": "保存先の親ディレクトリに書き込めません。別の場所を選択してください。",
+        "selectedRootReserved": "保存先は予約済みの保存領域にあります。別の場所を選択してください。",
         "targetNotEmpty": "保存先にはすでに実行データがあります。移行前に保存先を確認してください。",
         "systemStatusUnavailable": "ローカルサービスの状態を確認できませんでした。もう一度お試しください。",
         "systemStatusUnexpected": "ストレージ起動状態 API から認識できない結果が返されました。",
@@ -4102,7 +4144,7 @@
             },
             "step6": {
                 "title": "🔑 補助APIキー",
-                "desc": "補助APIとしてAlibabaを選択した場合、ここにAlibabaのAPIキーを入力してください。空のままの場合、コアAPIキーが使用されます。"
+                "desc": "選択した補助APIプロバイダーのAPIキーをここに入力してください。空欄の場合は通常コアAPIキーが使用されますが、専用キーが必要なプロバイダーにはこの代替は適用されません。"
             },
             "step7": {
                 "title": "🔧 カスタムAPI設定",

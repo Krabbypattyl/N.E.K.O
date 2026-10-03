@@ -1334,6 +1334,7 @@
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelos)",
             "orcarouter": "OrcaRouter (pasarela de Claude)",
+            "requesty": "Requesty (enrutador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (autoalojado)"
         },
@@ -1341,6 +1342,30 @@
         "assistApiSelectLabel": "Ayudar al proveedor de API",
         "assistApiKeyLabel": "Clave API de asistencia",
         "assistApiAutoFillHint": "Se completa automáticamente desde el Libro de claves cuando está vacío; Las claves ingresadas manualmente se guardan de forma independiente.",
+        "modelIdCurrentPlaceholder": "En uso: {{model}}",
+        "modelIdFreePlaceholder": "La versión gratuita usa modelos fijos",
+        "modelPicker": {
+            "fetch": "Obtener modelos",
+            "fetchTooltip": "Obtener la lista de modelos disponibles del proveedor",
+            "loading": "Obteniendo la lista de modelos…",
+            "noMatch": "No hay modelos que coincidan",
+            "more": "{{count}} modelos más; escribe una palabra clave para filtrar",
+            "unavailable": {
+                "noProvider": "Selecciona primero un proveedor",
+                "fixed": "Este proveedor usa modelos fijos, no hay nada que elegir",
+                "follow": "En este modo el modelo lo determina la configuración seguida, no hay nada que elegir",
+                "missingUrl": "Introduce primero la URL de la API"
+            },
+            "error": {
+                "urlHint": "Comprueba si falta un prefijo de ruta, como /v1, en la URL de la API.",
+                "unsupported": "Este endpoint no ofrece una lista de modelos; introduce el ID del modelo manualmente",
+                "key_required": "Una clave guardada solo funciona con la dirección para la que se guardó; vuelve a introducir la clave API",
+                "core_key_required": "El proveedor principal ha cambiado; vuelve a introducir la clave de API",
+                "rate_limited": "Demasiadas solicitudes; inténtalo de nuevo más tarde",
+                "empty": "El proveedor no devolvió ningún modelo",
+                "timeout": "Se agotó el tiempo de espera; revisa tu red e inténtalo de nuevo"
+            }
+        },
         "disableTts": "Deshabilitar TTS",
         "disableTtsHint": "Cuando esté habilitado, no se llamará a ningún servicio de texto a voz.",
         "keyBookTitle": "Libro de claves API",
@@ -1385,6 +1410,7 @@
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelos)",
             "orcarouter": "OrcaRouter (pasarela de Claude)",
+            "requesty": "Requesty (enrutador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
@@ -2460,6 +2486,22 @@
         "selectionIntroImageAlt": "Ilustración de migración de almacenamiento de N.E.K.O",
         "statusUnexpected": "La API de estado de mantenimiento del almacenamiento devolvió un resultado no reconocido.",
         "storageBootstrapBlocking": "El almacenamiento todavía necesita recuperación o migración, así que esta sesión aún no puede continuar.",
+        "storagePolicyRollbackFailed": "No se pudo escribir la configuración de la ubicación de almacenamiento y tampoco se pudo restaurar el estado anterior. Comprueba que el directorio de estado local sea escribible; si el problema persiste, revisa manualmente los archivos de estado.",
+        "storagePolicyWriteFailed": "No se pudo escribir la configuración de la ubicación de almacenamiento. Se restauró el estado anterior; comprueba que el directorio de estado local sea escribible e inténtalo de nuevo.",
+        "storageOperationFailed": "No se pudo iniciar la operación de almacenamiento. No se escribió nada en el disco; inténtalo de nuevo más tarde.",
+        "storageStateUnreadable": "No se pudo escribir la configuración de la ubicación de almacenamiento. El archivo de estado no se puede leer en este momento (puede que no exista o que su directorio no sea accesible) y no se escribió nada en el disco; vuelve a intentarlo más tarde o comprueba si se puede acceder al directorio de estado local.",
+        "storageStateInvalid": "El archivo de estado de almacenamiento está dañado o tiene un formato no válido. No se escribió nada en el disco; comprueba o restaura el archivo de estado.",
+        "restartRollbackFailed": "El reinicio controlado falló y no se pudo confirmar la restauración del estado anterior. Comprueba o restaura los archivos de estado.",
+        "startupReleaseFailed": "Esta sesión no pudo salir del modo de inicio restringido. Vuelve a intentarlo o actualiza la página antes de continuar.",
+        "startupReleaseRollbackFailed": "No se pudo salir del modo de inicio restringido ni confirmar la restauración del estado anterior. Comprueba o restaura los archivos de estado.",
+        "migrationAlreadyPending": "Resuelve la migración o recuperación actual antes de cambiar la ubicación de almacenamiento.",
+        "selectedRootEmpty": "La ruta de destino no puede estar vacía.",
+        "selectedRootNotAbsolute": "La ruta de destino debe ser absoluta.",
+        "selectedRootInsideProject": "El destino no puede estar dentro del directorio del proyecto. Elige otra ubicación.",
+        "selectedRootNotDirectory": "El destino debe ser una carpeta, no un archivo.",
+        "selectedRootParentMissing": "No se encontró el directorio padre del destino. Elige otra ubicación.",
+        "selectedRootParentNotWritable": "No se puede escribir en el directorio padre del destino. Elige otra ubicación.",
+        "selectedRootReserved": "El destino está en un área de almacenamiento reservada. Elige otra ubicación.",
         "targetNotEmpty": "El destino ya contiene datos de ejecución. Confirma el destino antes de migrar.",
         "systemStatusUnavailable": "No se pudo confirmar el estado del servicio local. Inténtalo de nuevo.",
         "systemStatusUnexpected": "La API de estado de inicio del almacenamiento devolvió un resultado no reconocido.",
@@ -4102,7 +4144,7 @@
             },
             "step6": {
                 "title": "🔑 Clave API auxiliar",
-                "desc": "Si utiliza Alibaba como API auxiliar, ingrese aquí la clave API de Alibaba. Si está vacío, utiliza la clave API principal."
+                "desc": "Introduzca aquí la clave API del proveedor auxiliar seleccionado. Si el campo está vacío, normalmente se utiliza la clave de la API principal; los proveedores que requieren una clave propia no permiten esta alternativa."
             },
             "step7": {
                 "title": "🔧 Configuración de API personalizada",
