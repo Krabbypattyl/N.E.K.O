@@ -158,7 +158,14 @@ function sendLaunch(ctx, sessionId = 'session_a', revision = 4, action = 'theate
 async function launch(ctx, sessionId = 'session_a', revision = 4) {
   sendLaunch(ctx, sessionId, revision);
   await respond(take(ctx, /\/session\/session_/), snapshot(sessionId, revision));
+  await claimLaunch(ctx, snapshot(sessionId, revision));
   assert.equal(ctx.runtime.getState().phase, 'awaiting_player');
+}
+async function claimLaunch(ctx, data) {
+  const claim = take(ctx, /\/session\/session_/);
+  assert.ok(claim.options.headers['X-Neko-Theater-Activity']);
+  assert.ok(!claim.url.includes('claim_activity=false'));
+  await respond(claim, { ...data, activity_claimed: true });
 }
 async function submit(ctx, text = '询问细节。') {
   ctx.callbacks.freeform(text); await tick();
@@ -187,6 +194,7 @@ RUNTIME_SCENARIOS = (
       const ctx = createContext({ hostState: { goodbyeComposerHidden: true } });
       sendLaunch(ctx);
       await respond(take(ctx, /\/session\/session_a/), snapshot());
+      await claimLaunch(ctx, snapshot());
       const firstUnhide = ctx.calls.findIndex(call => call[0] === 'setGoodbyeComposerHidden' && call[1] === false);
       const firstTheaterView = ctx.calls.findIndex(call => call[0] === 'setViewProps' && call[1] === true);
       assert.ok(firstUnhide >= 0 && firstTheaterView >= 0);
@@ -268,6 +276,10 @@ RUNTIME_SCENARIOS = (
           schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:launch-request',
           launch_id: 'resumed_' + endOk, story_id: 'story_session_a', session_id: 'session_a', revision: 4, launch_action: 'continue' } });
         await respond(take(ctx, /\/session\/session_a\?/), resumed);
+        await claimLaunch(ctx, resumed);
+        // Replacing the previous owner releases only its activity claim.
+        const release = take(ctx, /\/session\/release$/);
+        await respond(release, { ok: true });
         assert.equal(ctx.runtime.getState().lifecycleRevision, 2);
         await respond(end, endOk ? { ...snapshot('session_a', 4, 'ended'), end_receipt_id: 'stale' }
           : { ok: false, reason: 'numeric_base_lifecycle_revision_mismatch' }, endOk ? 200 : 409);
@@ -300,7 +312,8 @@ RUNTIME_SCENARIOS = (
       await respond(start, snapshot('session_a', 0));
       assert.equal(ctx.runtime.getState().active, false, '迟到的开场结果不能重新激活剧场');
       const release = take(ctx, /\/session\/release$/);
-      assert.deepEqual(JSON.parse(release.options.body), { catgirl_name: '猫娘' }, '必须释放迟到开场登记的服务端剧场信号');
+      const released = JSON.parse(release.options.body);
+      assert.equal(released.activity_claim_id, start.options.headers['X-Neko-Theater-Activity'], '必须只释放本次开场的活动标识');
       assert.equal(ctx.requests.filter(r => /speak-block/.test(r.url)).length, 0);
     """),
     ("m6_ordinary_chat_uses_local_or_peer_theater_check", r"""
