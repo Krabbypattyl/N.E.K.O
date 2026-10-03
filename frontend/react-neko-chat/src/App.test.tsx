@@ -9712,10 +9712,10 @@ describe('App', () => {
     }
   });
 
-  it.each(['click-guide-card', 'click-guide-mask'])('keeps empty compact input open during a press and focus transfer to %s', async (className) => {
+  it.each(['click-guide-card', 'click-guide-mask', 'click-guide-choice'])('keeps empty compact input open during a press and focus transfer to %s', async (className) => {
     const onCompactChatStateChange = vi.fn();
     const layer = document.createElement('div');
-    layer.className = 'click-guide-layer';
+    layer.className = className === 'click-guide-choice' ? className : 'click-guide-layer';
     const control = document.createElement('button');
     control.className = className;
     layer.appendChild(control);

@@ -1932,7 +1932,7 @@ export default function FullChatSurface({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor, .click-guide-layer')
+          && !!activeElement.closest('.compact-export-history-anchor, .click-guide-layer, .click-guide-choice')
         )
       )
     ) {
@@ -1972,7 +1972,7 @@ export default function FullChatSurface({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor, .click-guide-layer')
+          && !!target.closest('.compact-export-history-anchor, .click-guide-layer, .click-guide-choice')
         )
       )
     );

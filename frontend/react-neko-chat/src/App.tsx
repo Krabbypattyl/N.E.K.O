@@ -4475,7 +4475,7 @@ function CompactChatApp({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer')
+          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
         )
       )
     ) {
@@ -4514,7 +4514,7 @@ function CompactChatApp({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer')
+          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
         )
       )
     );
