@@ -1930,7 +1930,7 @@ export default function FullChatSurface({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor')
+          && !!activeElement.closest('.compact-export-history-anchor, .click-guide-layer')
         )
       )
     ) {

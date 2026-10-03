@@ -9680,7 +9680,7 @@ describe('App', () => {
     expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
   });
 
-  it.each(['click-guide-card', 'click-guide-mask'])('keeps empty compact input open during a press on %s', async (className) => {
+  it.each(['click-guide-card', 'click-guide-mask'])('keeps empty compact input open during a press and focus transfer to %s', async (className) => {
     const onCompactChatStateChange = vi.fn();
     const layer = document.createElement('div');
     layer.className = 'click-guide-layer';
@@ -9697,6 +9697,12 @@ describe('App', () => {
       await act(async () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      await act(async () => {
+        control.focus();
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(document.activeElement).toBe(control);
       expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
       layer.remove();
       fireEvent.pointerDown(document.body);
