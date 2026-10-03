@@ -509,3 +509,44 @@ def test_new_dialog_renders_through_the_screen_guard():
     source = inspect.getsource(routes._new_dialog)
     assert "_screen_guarded_recent_history(" in source
     assert "for i in await runtime.recent_history_manager.aget_recent_history" not in source
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_screen_guard_leaves_theater_capsules_alone():
+    """Theater capsules are system messages; the screen-chain cut only rewrites
+    assistant texts, so a capsule whose summary reads like a comment chain is
+    still rendered from its metadata."""
+    from app import memory_server
+    from utils.llm_client import HumanMessage, SystemMessage
+
+    summary = _COMMENT_A + _COMMENT_B
+    fake_config = SimpleNamespace(
+        aload_characters=AsyncMock(return_value={"猫娘": {"test_char": {}}}),
+        aget_character_data=AsyncMock(return_value=(
+            "master", None, None, None,
+            {"human": "Master", "ai": "Catgirl", "system": "System"},
+            None, None, None, None,
+        )),
+    )
+    fake_recent = SimpleNamespace(aget_recent_history=AsyncMock(return_value=[
+        HumanMessage(content="陪我聊聊"),
+        SystemMessage(content=[{"type": "text", "text": summary}], metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "story_rain",
+            "session_id": "theater_session",
+            "story_title": "雨夜合租",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "episode_status": "completed",
+            "ending_title": "雨停之后",
+            "episode_summary": summary,
+        }),
+    ]))
+
+    with patch.object(memory_server.runtime, "_config_manager", fake_config), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent):
+        result = await memory_server.get_recent_history("test_char", "zh")
+
+    assert "共同演绎小剧场《雨夜合租》" in result
+    assert "红色小车" in result
