@@ -581,13 +581,15 @@ class NumericV2ProjectStore:
                         metric_schema, initial_metrics = metrics_to_package(project["setup"]["metrics"])
                         next_story["metric_schema"] = metric_schema
                         next_story.setdefault("initial_state", {})["metrics"] = initial_metrics
-                    else:
+                    elif "metric_schema" in next_story:
                         # A package edit is also the source of the author metrics.
                         # Keep the package itself intact, including its extensions.
                         try:
                             metrics = _package_metrics(next_story)
                         except (TypeError, AttributeError) as exc:
                             raise NumericV2ProjectError("invalid_metric_draft") from exc
+                        except ValueError as exc:
+                            raise NumericV2ProjectError(str(exc)) from exc
                         stored_setup = project.get("setup")
                         setup = (deepcopy(dict(stored_setup)) if isinstance(stored_setup, Mapping)
                             else self._new_project()["setup"])

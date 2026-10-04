@@ -94,6 +94,34 @@ def test_legacy_view_roundtrip_and_snapshot_import_preserve_package(tmp_path, de
     assert 'description' not in imported['setup']['metrics'][0]['bands'][0]
 
 
+@pytest.mark.parametrize('invalid', ['limit', 'count', 'missing'])
+def test_story_only_metric_validation_is_atomic_and_missing_schema_keeps_setup(tmp_path, invalid):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    story = deepcopy(project['story'])
+    if invalid == 'limit':
+        story['metric_schema']['trust']['per_turn_limit']['increase'] = 50
+        reason = 'v2_2_turn_limit_out_of_range'
+    elif invalid == 'count':
+        story['metric_schema'] = {f'metric_{i}': deepcopy(story['metric_schema']['trust'])
+            for i in range(5)}
+        reason = 'metric_limit_exceeded'
+    else:
+        story.pop('metric_schema')
+        saved = store.update(project['project_id'], base_revision=project['revision'],
+            changes={'story': story})
+        assert saved['setup'] == project['setup']
+        assert saved['story'] == story
+        return
+    before = store._path(project['project_id']).read_bytes()
+    with pytest.raises(NumericV2ProjectError, match=reason):
+        store.update(project['project_id'], base_revision=project['revision'],
+            changes={'story': story})
+    assert store._path(project['project_id']).read_bytes() == before
+    assert store.get(project['project_id'])['revision'] == project['revision']
+
+
 @pytest.mark.parametrize('description', [123, '字' * 2500, '有效描述'], ids=['number', 'long', 'valid'])
 def test_brief_only_repair_preserves_package_and_publish_receipts(tmp_path, description):
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
