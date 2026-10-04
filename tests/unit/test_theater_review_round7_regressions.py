@@ -73,6 +73,46 @@ def test_legacy_extra_matching_ignores_unknown_null_keys():
         _setup_fields(incoming, legacy=setup)
 
 
+@pytest.mark.parametrize('description', [123, '字' * 2500], ids=['number', 'long'])
+def test_legacy_view_roundtrip_and_snapshot_import_preserve_package(tmp_path, description):
+    compiler = NumericV2Compiler(InProcessPackageGateway())
+    store = NumericV2ProjectStore(tmp_path / 'first', transaction=nullcontext, compiler=compiler)
+    project = store.import_story(numeric_v2_story())
+    project['setup']['metrics'][0]['bands'][0]['description'] = description
+    project['story']['metric_schema'][project['setup']['metrics'][0]['id']]['bands'][0]['description'] = description
+    store._write(project)
+    view = store.get(project['project_id'])
+    assert 'description' not in view['setup']['metrics'][0]['bands'][0]
+    assert view['story'] == project['story']
+    view['setup']['metrics'][0]['name'] = '修订名称'
+    saved = store.update(project['project_id'], base_revision=project['revision'], changes={'setup': view['setup']})
+    assert saved['setup']['metrics'][0]['name'] == '修订名称'
+    second = NumericV2ProjectStore(tmp_path / 'second', transaction=nullcontext, compiler=compiler)
+    imported = second.import_project(project)
+    assert imported['project_id'] == project['project_id']
+    assert imported['story'] == project['story']
+    assert 'description' not in imported['setup']['metrics'][0]['bands'][0]
+
+
+@pytest.mark.parametrize('description', [123, '字' * 2500, '有效描述'], ids=['number', 'long', 'valid'])
+def test_brief_only_repair_preserves_package_and_publish_receipts(tmp_path, description):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    project['setup']['metrics'][0]['bands'][0]['description'] = description
+    project['story']['metric_schema'][project['setup']['metrics'][0]['id']]['bands'][0]['description'] = description
+    compiled = store._compiler.compile_core(project['story'])
+    for key in ('compile_result', 'neko_validation', 'install_result'):
+        project[key] = {'success': True, 'package_hash': compiled.package_hash,
+            'revision': project['revision']}
+    store._write(project)
+    original = deepcopy(project)
+    saved = store.update(project['project_id'], base_revision=project['revision'], changes={'setup': {'brief': '修订简介'}})
+    assert saved['story'] == original['story']
+    for key in ('compile_result', 'neko_validation', 'install_result'):
+        assert saved[key] == {**original[key], 'revision': saved['revision']}
+
+
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_forget_preserves_no_receipt_for_cancelled_start(tmp_path, monkeypatch, cancelled):
     class MemoryClient:

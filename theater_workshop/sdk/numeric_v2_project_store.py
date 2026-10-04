@@ -43,6 +43,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _repair_band_descriptions(source):
+    """Clean legacy author descriptions without changing the source package."""
+    setup = deepcopy(dict(source))
+    metrics = setup.get("metrics")
+    for metric in metrics if isinstance(metrics, list) else []:
+        bands = metric.get("bands") if isinstance(metric, Mapping) else None
+        for band in bands if isinstance(bands, list) else []:
+            if isinstance(band, dict) and band.get("description") is not None:
+                description = band["description"]
+                if not isinstance(description, str) or len(description) > 2000:
+                    band.pop("description")
+    return setup
+
+
 def _setup_fields(source, *, legacy=None, strict=True):
     """Validate draft field names without requiring a complete metric schema."""
     from .contracts import NumericV2SetupPayload, MetricPayload, MetricBandPayload
@@ -482,6 +496,7 @@ class NumericV2ProjectStore:
                 # Existing drafts with unknown keys can be repaired without
                 # deleting the project. Null clears an optional field.
                 setup = _setup_fields(old_setup, strict=False)
+                old_metrics = normalize_metric_drafts(list(setup.get("metrics") or []))
                 for key, value in incoming.items():
                     if value is None:
                         if fields[key].is_required():
@@ -490,7 +505,6 @@ class NumericV2ProjectStore:
                     else:
                         setup[key] = value
                 setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
-                old_metrics = (project.get("setup") or {}).get("metrics") or []
                 project["setup"] = setup
                 project["_generation_checkpoint"] = None
                 # Metric definitions also affect quality advice and pacing.
@@ -928,7 +942,8 @@ class NumericV2ProjectStore:
             schema = (source.get("story") or {}).get("metric_schema") or {}
             package_metrics = [{"id": key, "bands": value.get("bands") or []}
                                for key, value in schema.items() if isinstance(value, Mapping)] if isinstance(schema, Mapping) else []
-            source["setup"] = _setup_fields(dict(source.get("setup") or {}), legacy={"metrics": package_metrics})
+            source["setup"] = _setup_fields(_repair_band_descriptions(source.get("setup") or {}),
+                legacy={"metrics": package_metrics})
             path = self._path(source["project_id"])
             if path.exists() or path.is_symlink():
                 raise NumericV2ProjectError("project_already_exists")
@@ -988,6 +1003,7 @@ class NumericV2ProjectStore:
     @staticmethod
     def _view(project: Mapping[str, Any]) -> dict[str, Any]:
         result = deepcopy(dict(project))
+        result["setup"] = _repair_band_descriptions(result.get("setup") or {})
         checkpoint = result.pop("_generation_checkpoint", None)
         if isinstance(checkpoint, Mapping) and isinstance(checkpoint.get("candidate"), Mapping):
             issues = checkpoint.get("issues") if isinstance(checkpoint.get("issues"), list) else []
