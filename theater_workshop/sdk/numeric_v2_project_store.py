@@ -496,7 +496,13 @@ class NumericV2ProjectStore:
                 # Existing drafts with unknown keys can be repaired without
                 # deleting the project. Null clears an optional field.
                 setup = _setup_fields(old_setup, strict=False)
-                old_metrics = normalize_metric_drafts(list(setup.get("metrics") or []))
+                old_metrics = list(setup.get("metrics") or [])
+                try:
+                    old_metrics = normalize_metric_drafts(old_metrics)
+                except ValueError:
+                    # An invalid legacy draft must not block a valid replacement.
+                    # The merged metrics are still validated below before saving.
+                    pass
                 for key, value in incoming.items():
                     if value is None:
                         if fields[key].is_required():

@@ -113,6 +113,33 @@ def test_brief_only_repair_preserves_package_and_publish_receipts(tmp_path, desc
         assert saved[key] == {**original[key], 'revision': saved['revision']}
 
 
+@pytest.mark.parametrize('remaining', [4, 0], ids=['four', 'clear'])
+def test_imported_legacy_metrics_can_be_reduced(tmp_path, remaining):
+    compiler = NumericV2Compiler(InProcessPackageGateway())
+    source_store = NumericV2ProjectStore(tmp_path / 'source', transaction=nullcontext, compiler=compiler)
+    project = source_store.import_story(numeric_v2_story())
+    original_metric = project['setup']['metrics'][0]
+    project['setup']['metrics'] = [{**deepcopy(original_metric), 'id': f'metric_{index}'}
+        for index in range(5)]
+    store = NumericV2ProjectStore(tmp_path / 'imported', transaction=nullcontext, compiler=compiler)
+    imported = store.import_project(project)
+    assert len(imported['setup']['metrics']) == 5
+    with pytest.raises(ValueError, match='metric_limit_exceeded'):
+        store.update(imported['project_id'], base_revision=imported['revision'],
+            changes={'setup': {'brief': '仍未修复超限数值'}})
+    assert store.get(imported['project_id'])['revision'] == imported['revision']
+    saved = store.update(imported['project_id'], base_revision=imported['revision'],
+        changes={'setup': {'metrics': imported['setup']['metrics'][:remaining]}})
+    assert saved['project_id'] == imported['project_id']
+    assert saved['revision'] == imported['revision'] + 1
+    assert len(saved['setup']['metrics']) == remaining
+    assert list(saved['story']['metric_schema']) == [f'metric_{index}' for index in range(remaining)]
+    with pytest.raises(ValueError, match='metric_limit_exceeded'):
+        store.update(saved['project_id'], base_revision=saved['revision'],
+            changes={'setup': {'metrics': project['setup']['metrics']}})
+    assert store.get(saved['project_id'])['revision'] == saved['revision']
+
+
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_forget_preserves_no_receipt_for_cancelled_start(tmp_path, monkeypatch, cancelled):
     class MemoryClient:
