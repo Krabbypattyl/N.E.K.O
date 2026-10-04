@@ -2240,6 +2240,7 @@
                     return;
                 }
                 applyPanelState('clean', 'subtitle-ui-escape-clean');
+                e.preventDefault();
             };
 
             refs.display.addEventListener('pointerenter', onPanelPointerEnter);

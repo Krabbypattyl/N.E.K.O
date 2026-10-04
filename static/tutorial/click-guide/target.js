@@ -1,16 +1,21 @@
 (function (root) {
     'use strict';
     const api = root.NekoClickGuide = root.NekoClickGuide || {};
+    api.isElementVisible = function (element) {
+        if (!element?.isConnected) return false;
+        const view = element.ownerDocument.defaultView;
+        for (let parent = element; parent && parent.nodeType === 1; parent = parent.parentElement) {
+            const style = view.getComputedStyle(parent);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        }
+        return true;
+    };
     api.resolveTarget = function (target, doc = root.document) {
         const view = doc.defaultView;
         const candidates = typeof target === 'string' ? doc.querySelectorAll(target)
             : [typeof target === 'function' ? target() : target];
         return Array.from(candidates).find(element => {
-            if (!element || !element.isConnected) return false;
-            for (let parent = element; parent && parent.nodeType === 1; parent = parent.parentElement) {
-                const style = view.getComputedStyle(parent);
-                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-            }
+            if (!api.isElementVisible(element)) return false;
             const rect = element.getBoundingClientRect();
             const style = view.getComputedStyle(element);
             return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden'

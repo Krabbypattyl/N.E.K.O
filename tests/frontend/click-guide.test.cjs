@@ -1380,7 +1380,7 @@ for (const consume of ['preventDefault', 'stopPropagation']) {
 for (const markup of ['<section role="dialog"><button>Close</button></section>',
     '<div class="composer-icon-popover"><button>Close</button></div>',
     '<div data-compact-input-tool-fan-open="true"><button>Close</button></div>',
-    '<div id="live2d-popup-mic"><button>Close</button></div>',
+    '<div id="live2d-popup-mic" class="live2d-popup"><button>Close</button></div>',
     '<div class="neko-social-embed-backdrop"><button>Close</button></div>']) {
     test(`Escape closes its owner without skipping the tutorial: ${markup}`, async t => {
         const { dom, api, doc } = setup();
@@ -1516,6 +1516,10 @@ test('real tool lesson keeps Tab in its wheel target and guide controls, but yie
     last.focus();
     assert.equal(press(false), true);
     assert.equal(doc.activeElement, tool);
+    doc.body.tabIndex = -1;
+    doc.body.focus();
+    assert.equal(press(false), true, 'body focus can re-enter the guided wheel loop');
+    assert.equal(doc.activeElement, tool);
     assert.equal(press(false), true);
     assert.equal(doc.activeElement, skip);
     assert.equal(press(true), true);
@@ -1552,6 +1556,87 @@ test('visible business dialog releases Tab even while focus remains on the guide
     assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
     await runner.stop('stopped');
 });
+
+test('real subtitle panel consumes its clean Escape without skipping the guide', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    doc.body.insertAdjacentHTML('beforeend', '<div id="subtitle-display" tabindex="0"><div id="subtitle-scroll"><span id="subtitle-text"></span></div></div>');
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/subtitle/subtitle-shared.js'), 'utf8'));
+    const ui = dom.window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+    let reason;
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    const display = doc.querySelector('#subtitle-display');
+    display.focus();
+    const event = new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    display.dispatchEvent(event);
+    await delay(0);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(display.dataset.subtitlePanelState, 'clean');
+    assert.equal(reason, undefined);
+    await runner.stop('stopped');
+    ui.destroy();
+});
+
+for (const page of ['index', 'chat']) {
+    test(`persistent ${page} chat shell does not claim guide Escape or Tab`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        dom.reconfigure({ url: 'http://localhost/' + (page === 'chat' ? 'chat' : '') });
+        const template = fs.readFileSync(path.join(__dirname, '../../templates', page + '.html'), 'utf8');
+        const shellMarkup = template.match(/<div id="react-chat-window-shell"[^>]*>/)[0];
+        doc.body.insertAdjacentHTML('beforeend', shellMarkup + '</div>');
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const last = doc.querySelector('.click-guide-next');
+        last.focus();
+        const tab = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        last.dispatchEvent(tab);
+        assert.equal(tab.defaultPrevented, true);
+        assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+        doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const type of ['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'image']) {
+    test(`non-editing input type ${type} does not claim Escape`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        const input = doc.createElement('input');
+        input.type = type;
+        doc.body.append(input);
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        input.focus();
+        input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const markup of ['<section role="dialog" style="opacity:0"><button>Hidden</button></section>',
+    '<div style="opacity:0"><section role="dialog"><button>Hidden</button></section></div>',
+    '<div id="chat-avatar-preview-popup" style="opacity:0"></div>',
+    '<div id="chat-avatar-preview-popup-title">Title</div>',
+    '<div id="neko-mic-popup-screen-sources">Sources</div>']) {
+    test(`invisible overlays and popup-like child IDs do not claim Escape: ${markup}`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        doc.body.insertAdjacentHTML('beforeend', markup);
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        doc.querySelector('.click-guide-card').dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+            key: 'Escape', bubbles: true, cancelable: true,
+        }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
 
 test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
     const { dom, api, doc, target } = setup();

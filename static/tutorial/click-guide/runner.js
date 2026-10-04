@@ -91,39 +91,40 @@
             }
         }
         const windowSkip = () => void finish('skipped');
-        const ownedEscapes = new WeakSet();
-        const editableSelector = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+        const ownedEscapes = new WeakMap();
+        const editableSelector = 'input:not([type="checkbox"]):not([type="radio"]):not([type="range"])'
+            + ':not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]):not([type="hidden"]), '
+            + 'textarea, select, [contenteditable]:not([contenteditable="false"])';
         const overlaySelector = '[role="dialog"], [role="menu"], [aria-modal="true"], '
             + '.modal-overlay, .neko-social-embed-backdrop, .composer-icon-popover, '
             + '[data-compact-input-tool-fan-open="true"], '
-            + '[id*="-popup-"], .mmd-popup';
+            + '.live2d-popup, .vrm-popup, .mmd-popup, .pngtuber-popup, #chat-avatar-preview-popup';
+        function hasEditableOwner(event) {
+            return !!(event.target?.closest?.(editableSelector)
+                || document.activeElement?.closest?.(editableSelector));
+        }
         function hasKeyboardOwner(event) {
-            if (event.target?.closest?.(editableSelector)
-                || document.activeElement?.closest?.(editableSelector)) return true;
-            return hasOverlayOwner();
+            return hasEditableOwner(event) || hasOverlayOwner();
         }
         function hasOverlayOwner(guideTarget) {
             return [...document.querySelectorAll(overlaySelector)].some(element => {
-                if (layer.contains(element) || element.closest('[hidden], [aria-hidden="true"]')) return false;
+                // The persistent chat surface is a host, not a dismissible overlay.
+                if (element.id === 'react-chat-window-shell' || layer.contains(element)
+                    || element.closest('[hidden], [aria-hidden="true"]')) return false;
                 // For Tab only, an overlay containing this lesson's target is
                 // part of the guided controls (for example, the tool wheel).
                 if (guideTarget && element.contains(guideTarget)) return false;
-                // Test ancestors too: many menus keep their children mounted while hidden.
-                for (let node = element; node; node = node.parentElement) {
-                    const style = root.getComputedStyle(node);
-                    if (style.display === 'none' || style.visibility === 'hidden') return false;
-                }
-                return true;
+                return api.isElementVisible(element);
             });
         }
         function rememberEscapeOwner(event) {
             // Observe before an owner removes its UI; never consume the event here.
-            if (!ended && event.key === 'Escape' && hasKeyboardOwner(event)) ownedEscapes.add(event);
+            if (!ended && event.key === 'Escape') ownedEscapes.set(event, hasKeyboardOwner(event));
         }
         function escape(event) {
             if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Escape') {
-                if (ownedEscapes.has(event) || hasKeyboardOwner(event)) return;
+                if (ownedEscapes.get(event) ?? hasKeyboardOwner(event)) return;
                 event.preventDefault();
                 windowSkip();
             }
@@ -135,7 +136,7 @@
                 // The lesson's own editable target participates in its focus loop.
                 // External editors and business overlays retain their own Tab handling.
                 if (hasOverlayOwner(target) || (!layer.contains(document.activeElement)
-                    && hasKeyboardOwner(event) && !target?.contains(document.activeElement))) return;
+                    && hasEditableOwner(event) && !target?.contains(document.activeElement))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
                 const controls = [...card.querySelectorAll(selector)];
                 if (target?.matches(selector)) controls.unshift(target);
