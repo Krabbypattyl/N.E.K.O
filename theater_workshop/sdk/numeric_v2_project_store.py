@@ -59,6 +59,8 @@ def _setup_fields(source, *, legacy=None, strict=True):
 
     setup = clean(source, NumericV2SetupPayload.model_fields, "unsupported_setup_field", legacy)
     old_metrics = (legacy or {}).get("metrics") or []
+    if not isinstance(old_metrics, list):
+        old_metrics = []
     metrics = setup.get("metrics")
     if isinstance(metrics, list):
         for index, metric in enumerate(metrics):
@@ -69,10 +71,14 @@ def _setup_fields(source, *, legacy=None, strict=True):
                        old_metrics[index] if index < len(old_metrics) else None)
             metric = clean(metric, MetricPayload.model_fields, "unsupported_metric_field", old)
             old_bands = (old or {}).get("bands") or []
+            if not isinstance(old_bands, list):
+                old_bands = []
             bands = metric.get("bands")
             if isinstance(bands, list):
                 metric["bands"] = [clean(band, MetricBandPayload.model_fields,
-                    "unsupported_metric_band_field", old_bands[i] if i < len(old_bands) else None)
+                    "unsupported_metric_band_field", next((item for item in old_bands
+                        if isinstance(item, Mapping) and all(item.get(key) == band.get(key)
+                            for key in ("min", "max", "label"))), None))
                     if isinstance(band, Mapping) else band for i, band in enumerate(bands)]
             metrics[index] = metric
     return setup
@@ -907,6 +913,11 @@ class NumericV2ProjectStore:
     def import_project(self, source: Mapping[str, Any]) -> dict[str, Any]:
         with self.transaction():
             source = deepcopy(dict(source))
+            # This discarded field was written by early author-project drafts;
+            # migrate only the known legacy field, not arbitrary new keys.
+            for metric in source.get("setup", {}).get("metrics", []) or []:
+                if isinstance(metric, dict):
+                    metric.pop("unit", None)
             source["setup"] = _setup_fields(dict(source.get("setup") or {}))
             path = self._path(source["project_id"])
             if path.exists() or path.is_symlink():

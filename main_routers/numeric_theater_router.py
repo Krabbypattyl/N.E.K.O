@@ -107,7 +107,11 @@ router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"], r
 
 def _domain_value_error(exc: ValueError, status_code: int):
     reason = str(exc)
-    if not re.fullmatch(r"(?:numeric_|current_catgirl_|catgirl_|story_|session_)[a-z0-9_]+", reason):
+    if reason not in {
+        "client_turn_id_invalid", "base_revision_invalid", "revision_invalid",
+        "current_node_id_invalid", "node_turn_count_invalid", "lifecycle_revision_invalid",
+        "forgotten_through_revision_invalid",
+    } and not re.fullmatch(r"(?:numeric_|current_catgirl_|catgirl_|story_|session_)[a-z0-9_]+", reason):
         raise exc
     return _error(reason, status_code)
 logger = logging.getLogger(__name__)
@@ -1284,7 +1288,9 @@ async def end_numeric_session(request: Request):
                 # Session 已提交但回执写入失败时只补建回执；仅相邻生命周期允许幂等重放。
                 if (
                     current.session.revision != base_revision
-                    or current.session.ended_reason != "user_exit"
+                    or current.session.ended_reason != (
+                        "cancelled_start" if payload.get("cancelled_start") is True else "user_exit"
+                    )
                     or current.session.lifecycle_revision != base_lifecycle_revision + 1
                 ):
                     raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
@@ -1300,7 +1306,7 @@ async def end_numeric_session(request: Request):
                     session_id,
                     base_revision=base_revision,
                     base_lifecycle_revision=base_lifecycle_revision,
-                    reason="user_exit",
+                    reason="cancelled_start" if payload.get("cancelled_start") is True else "user_exit",
                 )
             receipt = await _create_ended_receipt(
                 config_manager,

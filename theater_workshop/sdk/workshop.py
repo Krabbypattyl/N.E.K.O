@@ -18,7 +18,7 @@ from .generation.quality import NumericV2QualityAssessor
 from .model import capture_usage
 from .numeric_v2 import NumericV2Compiler, normalize_metric_drafts, preset_metric_catalog
 from .numeric_v2_branch import NumericV2BranchService
-from .numeric_v2_project_store import NumericV2ProjectStore, NumericV2RevisionConflictError
+from .numeric_v2_project_store import NumericV2ProjectStore, NumericV2RevisionConflictError, _setup_fields
 from .packages import PackageError, PublishCandidate
 
 
@@ -237,10 +237,11 @@ class TheaterWorkshop:
         if not project["title"].strip():
             raise WorkshopError("generation_setup_invalid")
         setup = dict(project["setup"])
-        setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
         try:
+            setup = _setup_fields(setup, strict=False)
+            setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
             setup = C.NumericV2SetupPayload.model_validate(setup).model_dump()
-        except ValueError as error:
+        except (ValueError, TypeError, AttributeError) as error:
             raise WorkshopError("generation_setup_invalid") from error
         checkpoint = self._store.generation_checkpoint(project_id)
         names = checkpoint.get("cast_names") if checkpoint is not None else self._names()
@@ -320,7 +321,7 @@ class TheaterWorkshop:
         beat = node.setdefault("story_beat", {})
         previous_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
         previous_goals = beat.get("goals") or []
-        previous_final_ref = f"goal.{previous_goals[-1]['id']}" if previous_goals else None
+        previous_final_ref = f"goal.{previous_goals[-1]['id']}" if previous_goals and previous_goals[-1].get("id") else None
         for field in ("opening_scene", "narrative_focus", "goals", "must_not_happen",
                       "catgirl_situation", "transition_goal", "character_state", "acting_contract"):
             if field in enhancement:

@@ -194,7 +194,9 @@ RUNTIME_SCENARIOS = (
       assert.equal(ctx.requests.filter(r => /\/session\/start$/.test(r.url)).length, 0);
       await respond(cleanup, snapshot('session_a', 0, 'ended'));
       const second = take(ctx, /\/session\/start$/);
-      await respond(second, {...snapshot('session_a', 0, 'ended'), resumed: true});
+      const cancelled = snapshot('session_a', 0, 'ended');
+      cancelled.session.ended_reason = 'cancelled_start';
+      await respond(second, {...cancelled, resumed: true});
       const replacement = take(ctx, /\/session\/start$/);
       const payload = JSON.parse(replacement.options.body);
       assert.equal(payload.replace_existing, true);

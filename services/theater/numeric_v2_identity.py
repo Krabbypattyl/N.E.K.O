@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from utils.config_manager import delete_reserved, get_reserved, normalize_character_id
+from utils.cloudsave_runtime import MaintenanceModeError
 
 from .llm_context import _load_player_address
 
@@ -19,7 +20,7 @@ def numeric_v2_character_ids(config_manager: Any) -> dict[str, str]:
     # and IDs that failed to persist cannot prove that a saved character is gone.
     try:
         characters = config_manager.load_characters(require_authoritative=True)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, MaintenanceModeError) as exc:
         raise ValueError("numeric_character_config_unavailable") from exc
     catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
     if not isinstance(catgirls, dict):
@@ -46,7 +47,7 @@ def numeric_v2_catgirl_binding(
     try:
         reader = getattr(config_manager, "load_character_binding_snapshot", None)
         characters = reader(catgirl_name) if reader else config_manager.load_characters(require_authoritative=True)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, MaintenanceModeError) as exc:
         raise ValueError("current_catgirl_identity_unavailable") from exc
     selected_name = str(
         catgirl_name

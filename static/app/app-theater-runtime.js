@@ -993,7 +993,8 @@
         }
         if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)
             && snapshot.ok && snapshot.resumed === true && snapshot.session
-            && snapshot.session.status === 'ended') {
+            && snapshot.session.status === 'ended'
+            && snapshot.session.ended_reason === 'cancelled_start') {
             // Starting a new performance must not adopt a retired recovery slot.
             // Keep ordinary continue/restore semantics and retry replacement once.
             // The ended response retires its activity owner as well.
@@ -1081,7 +1082,9 @@
             if (launchToken !== launchEpoch) return false;
             return performStart(message, launchToken);
         }).catch(function () {
-            if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
+            var failedSessionId = pendingLaunch && pendingLaunch.token === launchToken
+                ? pendingLaunch.sessionId : nextSessionId;
+            if (isCurrentLaunch(launchToken, nextStoryId, failedSessionId)) {
                 state.phase = 'ended';
                 state.sessionStatus = 'ended';
                 state.history = [];

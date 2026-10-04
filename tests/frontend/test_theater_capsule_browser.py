@@ -277,6 +277,7 @@ def test_start_replaces_retired_session_in_real_capsule(mock_page: Page, running
         if len(requests) == 1:
             result['resumed'] = True
             result['session']['status'] = 'ended'
+            result['session']['ended_reason'] = 'cancelled_start'
         else:
             result['session']['session_id'] = payload['session_id']
         route.fulfill(json=result)

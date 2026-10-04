@@ -179,8 +179,8 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
         evidence = str(claim.get("evidence") or "")
         cjk_count = sum('\u3400' <= char <= '\u9fff' for char in evidence)
         other_count = sum(char.isalnum() and not ('\u3400' <= char <= '\u9fff') for char in evidence)
-        whole_input = bool(player_input.strip()) and evidence.strip('（）() ') == player_input.strip('（）() ')
-        meaningful = cjk_count >= 3 or other_count >= 4 or (
+        whole_input = bool(player_input.strip()) and evidence.strip('（）() !！。.,，?？') == player_input.strip('（）() !！。.,，?？')
+        meaningful = cjk_count >= 3 or cjk_count + other_count >= 4 or (
             whole_input and sum(char.isalnum() for char in evidence) >= 2
         )
         if not meaningful or not any(evidence in text for text in sources):

@@ -20,7 +20,8 @@ from theater_workshop.host import InProcessPackageGateway
 
 
 @pytest.mark.parametrize('evidence,player', [('递给你', '我把纸条递给你'),
-    ('抱住她', '（抱住她）'), ('抱抱', '抱抱'), ('抱抱', '（抱抱）')])
+    ('抱住她', '（抱住她）'), ('抱抱', '抱抱'), ('抱抱', '（抱抱）'),
+    ('抱抱', '抱抱！'), ('抱抱', '抱抱。'), ('AI助手', '看看AI助手'), ('好的ok', '好的ok。')])
 def test_short_chinese_literal_evidence_is_delivered(evidence, player):
     story = deepcopy(_engine().story)
     # The citation fixture must actually satisfy this authored condition;
@@ -73,7 +74,12 @@ def test_new_nested_unknown_keys_rejected_on_update_and_import(tmp_path, locatio
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('silent,evaluator', [(False, True), (True, False)])
-async def test_actor_invitation_not_duplicated_and_mute_scene_has_no_author_button(tmp_path, monkeypatch, silent, evaluator):
+@pytest.mark.parametrize('invites,actor_flag,authored', [
+    (True, True, '要现在一起去长街继续调查吗？'),
+    (False, False, '（指向长街）要现在一起去长街继续调查吗？'),
+    (False, False, '要现在一起去长街继续调查吗？（指向长街）'),
+])
+async def test_actor_invitation_not_duplicated_and_mute_scene_has_no_author_button(tmp_path, monkeypatch, silent, evaluator, invites, actor_flag, authored):
     story = numeric_v2_story()
     story['fact_contract'] = {'facts': {'scene:start:done': {
         'value_type': 'bool', 'visibility': 'public', 'description': '当前幕完成。'}}}
@@ -81,7 +87,7 @@ async def test_actor_invitation_not_duplicated_and_mute_scene_has_no_author_butt
     if silent:
         story['nodes'][0]['story_beat']['acting_contract'] = _contract('forbidden')
     route = story['nodes'][0]['route_gates'][1]
-    route['transition_contract'].update(fallback_offer='要现在一起去长街继续调查吗？', accept_input='好，我们现在过去。')
+    route['transition_contract'].update(fallback_offer=authored, accept_input='好，我们现在过去。')
     middle = story['nodes'][2]
     middle.update(type='scene', min_turns=1)
     middle.pop('terminal')
@@ -97,20 +103,26 @@ async def test_actor_invitation_not_duplicated_and_mute_scene_has_no_author_butt
         fact_operations=({'op': 'set', 'key': 'scene:start:done', 'value': True, 'visibility': 'public'},))
     current = await runtime.commit_turn(outcome, {'performance': '（点头）' if silent else '问题解决了。',
         'suggested_inputs': [], 'transition_offered': False})
-    actor_text = '（指向长街）' if silent else '我们一起去长街继续调查吧？'
+    actor_text = '（指向长街）' if silent else (
+        '我们一起去长街继续调查吧？' if invites else '才、才没有紧张呢。只是有点累了。')
     async def options():
         from services.theater.numeric_v2_options import default_options
         return {**default_options(), 'review': False, 'evaluator': evaluator}
     async def evaluate(self, **kwargs):
         return ev.NumericV2EvaluationResult((), False, transition_intent='unclear')
     async def generate(self, **kwargs):
-        return {'performance': actor_text, 'suggested_inputs': ['好啊，走吧。', '再歇一会儿。'], 'transition_offered': True}
+        return {'performance': actor_text, 'suggested_inputs': ['好啊，走吧。', '再歇一会儿。'], 'transition_offered': actor_flag}
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('invite', current.session.revision, '接下来呢？'), ensure_current_binding=lambda _: _binding())
+    if not actor_flag and not silent:
+        assert authored in result.performance['performance']
+        assert result.performance['suggested_inputs'][0] == '好，我们现在过去。'
+        assert result.stored.session.transition_offered
+        return
     assert result.performance['performance'] == actor_text
     assert result.performance['suggested_inputs'][0] == '好啊，走吧。'
     assert '好，我们现在过去。' not in result.performance['suggested_inputs']

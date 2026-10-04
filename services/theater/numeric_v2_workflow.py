@@ -829,6 +829,14 @@ def _pending_offer_acceptance_path(
     return ""
 
 
+def _authored_offer_visible(performance: Mapping[str, Any], offer: str) -> bool:
+    authored_dialogue = "".join(str(block.get("text") or "") for block in mixed_performance_blocks(offer)
+                                if block.get("type") == "dialogue").strip()
+    delivered_dialogue = "".join(str(block.get("text") or "") for block in performance_content_blocks(performance)
+                                 if block.get("type") == "dialogue").strip()
+    return bool(authored_dialogue and delivered_dialogue.endswith(authored_dialogue))
+
+
 def _confirmed_authored_acceptance(
     engine: NumericV2Engine, current: NumericV2StoredSession, turn: TurnRequestV2,
 ) -> str:
@@ -849,8 +857,7 @@ def _confirmed_authored_acceptance(
     if (not offer or not accept or turn.message.strip() != accept
             or _pending_offer_acceptance_path(session, ledger_events=current.ledger_events) != accept
             or accept not in origin.get("suggested_inputs", [])
-            or not any(block.get("type") == "dialogue" and str(block.get("text") or "").endswith(offer)
-                       for block in performance_content_blocks(origin))):
+            or not _authored_offer_visible(origin, offer)):
         return ""
     # 原邀请和当前数值仍须选中同一出口；不能让本轮计分或旧邀请暗中替换路线。
     event = next((row for row in current.ledger_events if row.get("result_revision") == origin.get("revision")), None)
@@ -2513,16 +2520,7 @@ async def _execute_numeric_v2_turn(
             if valid_mixed_performance_policy(candidate, outcome.session.dialogue_policy):
                 filtered_performance = candidate
                 reviewed_transition_offered = True
-    authored_offer_visible = bool(
-        authored_offer
-        and any(
-            block.get("type") == "dialogue"
-            and str(block.get("text") or "").rstrip().endswith(
-                authored_offer
-            )
-            for block in performance_content_blocks(filtered_performance)
-        )
-    )
+    authored_offer_visible = _authored_offer_visible(filtered_performance, authored_offer)
     semantically_verified_offer = bool(
         module_options.get("review") and module_options.get("evaluator")
         and not diagnostics["evaluator_degraded"]
