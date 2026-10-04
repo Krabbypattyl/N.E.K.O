@@ -21,6 +21,7 @@ from .numeric_v2 import (
     DEFAULT_METRIC_MIN,
     metrics_to_package,
     normalize_metric_drafts,
+    preset_metric_catalog,
 )
 from .numeric_v2_branch import NumericV2BranchService
 
@@ -590,6 +591,14 @@ class NumericV2ProjectStore:
                         stored_setup = project.get("setup")
                         setup = (deepcopy(dict(stored_setup)) if isinstance(stored_setup, Mapping)
                             else self._new_project()["setup"])
+                        old_metrics = setup.get("metrics")
+                        if isinstance(old_metrics, list):
+                            preset_ids = {row["preset"] for row in preset_metric_catalog()}
+                            presets = {row.get("id"): row["preset"] for row in old_metrics
+                                if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+                                and isinstance(row.get("preset"), str) and row["preset"] in preset_ids}
+                            for metric in metrics:
+                                metric["preset"] = presets.get(metric["id"])
                         setup["metrics"] = metrics
                         project["setup"] = setup
                 authoring = _normalize_authoring(project.get("authoring"), project.get("story"))

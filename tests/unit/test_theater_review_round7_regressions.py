@@ -354,6 +354,30 @@ def test_damaged_empty_setup_repair_preserves_empty_package_receipt(tmp_path):
     assert saved['compile_result'] == {**project['compile_result'], 'revision': saved['revision']}
 
 
+@pytest.mark.parametrize('preset', ['trust', None, 'unknown', ['trust']],
+    ids=['preset', 'custom', 'unknown', 'malformed'])
+def test_story_only_edit_preserves_preset_by_metric_id(tmp_path, preset):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    project['setup']['metrics'][0]['preset'] = preset
+    store._write(project)
+    story = deepcopy(project['story'])
+    story['nodes'][0]['story_beat']['summary'] = '修改正文，数值身份保持。'
+    story['metric_schema']['trust']['name'] = '新的显示名称'
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'story': story})
+    assert saved['story'] == story
+    assert saved['setup']['metrics'][0]['preset'] == ('trust' if preset == 'trust' else None)
+    assert saved['setup']['metrics'][0]['name'] == '新的显示名称'
+    story['metric_schema']['other'] = story['metric_schema'].pop('trust')
+    story['initial_state']['metrics'] = {'other': 20}
+    replaced = store.update(saved['project_id'], base_revision=saved['revision'],
+        changes={'story': story})
+    assert replaced['setup']['metrics'][0]['id'] == 'other'
+    assert replaced['setup']['metrics'][0]['preset'] is None
+
+
 @pytest.mark.parametrize('description', [123, '字' * 2500, '有效描述'], ids=['number', 'long', 'valid'])
 @pytest.mark.parametrize('change', ['editor', 'setup'])
 def test_interrupted_generation_compares_cleaned_setup_for_checkpoint(tmp_path, description, change):
