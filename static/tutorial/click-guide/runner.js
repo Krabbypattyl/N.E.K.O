@@ -130,7 +130,7 @@
             }
         }
         function trapTab(event) {
-            if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
+            if (ended || presentation || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Tab') {
                 const target = api.resolveTarget(view()?.target);
                 // The lesson's own editable target participates in its focus loop.
@@ -138,11 +138,14 @@
                 if (hasOverlayOwner(target) || (!layer.contains(document.activeElement)
                     && hasEditableOwner(event) && !target?.contains(document.activeElement))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
-                const controls = [...card.querySelectorAll(selector)];
+                let controls = [...card.querySelectorAll(selector)];
                 if (target?.matches(selector)) controls.unshift(target);
                 if (target) controls.unshift(...target.querySelectorAll(selector));
+                controls = controls.filter(element => api.isElementVisible(element));
+                if (!controls.length) return;
                 const current = controls.indexOf(document.activeElement);
-                const nextIndex = (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+                const nextIndex = current < 0 ? (event.shiftKey ? controls.length - 1 : 0)
+                    : (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
                 event.preventDefault();
                 controls[nextIndex]?.focus({ preventScroll: true });
             }

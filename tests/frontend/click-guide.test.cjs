@@ -1557,6 +1557,25 @@ test('visible business dialog releases Tab even while focus remains on the guide
     await runner.stop('stopped');
 });
 
+test('real preview Escape is consumed during its transparent entrance', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    doc.body.insertAdjacentHTML('beforeend', '<div id="chat-avatar-preview-popup" style="opacity:0"><button id="chatAvatarPreviewRefreshButton">Refresh</button><button id="chatAvatarPreviewCloseButton">Close</button></div>');
+    dom.window.appState = { dom: {} };
+    dom.window.fetch = async () => ({ ok: true, json: async () => ({}) });
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/app/app-chat-avatar.js'), 'utf8'));
+    dom.window.appChatAvatar.init();
+    let reason;
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    const event = new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    doc.querySelector('.click-guide-card').dispatchEvent(event);
+    await delay(0);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(reason, undefined);
+    await runner.stop('stopped');
+});
+
 test('real subtitle panel consumes its clean Escape without skipping the guide', async t => {
     const { dom, api, doc } = setup();
     t.after(() => dom.window.close());
@@ -1574,7 +1593,9 @@ test('real subtitle panel consumes its clean Escape without skipping the guide',
     assert.equal(event.defaultPrevented, true);
     assert.equal(display.dataset.subtitlePanelState, 'clean');
     assert.equal(reason, undefined);
-    await runner.stop('stopped');
+    display.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.equal(reason, 'skipped', 'a clean subtitle panel releases the next Escape');
     ui.destroy();
 });
 
@@ -1637,6 +1658,73 @@ for (const markup of ['<section role="dialog" style="opacity:0"><button>Hidden</
         assert.equal(reason, 'skipped');
     });
 }
+
+test('Tab enters at the first control and Shift+Tab at the last from outside the loop', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }] });
+    await runner.start();
+    const card = doc.querySelector('.click-guide-card');
+    const skip = doc.querySelector('.click-guide-actions button');
+    const next = doc.querySelector('.click-guide-next');
+    for (const outside of [card, doc.body]) {
+        outside.tabIndex = -1;
+        for (const shiftKey of [false, true]) {
+            outside.focus();
+            outside.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true }));
+            assert.equal(doc.activeElement, shiftKey ? next : skip);
+        }
+    }
+    await runner.stop('stopped');
+});
+
+test('Tab excludes hidden target controls and releases an empty focus loop', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const group = doc.createElement('div');
+    group.id = 'focus-group';
+    group.getBoundingClientRect = target.getBoundingClientRect;
+    group.innerHTML = '<button style="display:none">Hidden</button><div style="opacity:0"><button>Transparent</button></div><button id="visible-tool">Visible</button>';
+    doc.body.append(group);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Group', target: '#focus-group' }] });
+    await runner.start();
+    const card = doc.querySelector('.click-guide-card');
+    card.focus();
+    const press = () => {
+        const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        doc.activeElement.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+    assert.equal(press(), true);
+    assert.equal(doc.activeElement.id, 'visible-tool');
+    card.style.visibility = 'hidden';
+    group.style.display = 'none';
+    doc.body.tabIndex = -1;
+    doc.body.focus();
+    assert.equal(press(), false);
+    await runner.stop('stopped');
+});
+
+test('native presentation never traps Tab on its hidden web card', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const input = doc.createElement('textarea');
+    input.id = 'native-composer';
+    input.getBoundingClientRect = target.getBoundingClientRect;
+    doc.body.append(input);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Native input', target: '#native-composer',
+        keyTarget: '#native-composer', requireInput: true }],
+        presentation: { bind() {}, update() {}, async close() {} } });
+    await runner.start();
+    for (const shiftKey of [false, true]) {
+        input.focus();
+        const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+        input.dispatchEvent(event);
+        assert.equal(event.defaultPrevented, false);
+        assert.equal(doc.activeElement, input);
+    }
+    await runner.stop('stopped');
+});
 
 test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
     const { dom, api, doc, target } = setup();
