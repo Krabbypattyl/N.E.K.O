@@ -149,7 +149,8 @@
                 if (target?.matches(selector)) controls.unshift(target);
                 if (target) controls.unshift(...target.querySelectorAll(selector));
                 for (const panel of sidepanels) controls.push(...panel.querySelectorAll(selector));
-                controls = controls.filter(element => api.isElementVisible(element));
+                controls = controls.filter(element => element.tabIndex >= 0
+                    && !element.closest('[hidden], [aria-hidden="true"]') && api.isElementVisible(element));
                 if (!controls.length) return;
                 const current = controls.indexOf(document.activeElement);
                 const nextIndex = current < 0 ? (event.shiftKey ? controls.length - 1 : 0)

@@ -1807,6 +1807,35 @@ for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
     });
 }
 
+test('owned settings panel skips presentation-only checkboxes and hidden ancestors in Tab order', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const popup = doc.createElement('div');
+    popup.id = 'live2d-popup-settings';
+    popup.className = 'live2d-popup';
+    popup.getBoundingClientRect = target.getBoundingClientRect;
+    doc.body.append(popup);
+    const panel = doc.createElement('div');
+    panel.setAttribute('data-neko-sidepanel-owner', popup.id);
+    panel.innerHTML = '<div id="toggle-row" tabindex="0" role="switch"><input type="checkbox" tabindex="-1" aria-hidden="true"></div>'
+        + '<input tabindex="-1"><div aria-hidden="true"><button>Hidden to AT</button></div>'
+        + '<div hidden><button>Hidden</button></div><div id="next-setting" tabindex="0" role="switch">Next setting</div>';
+    doc.body.append(panel);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Settings', target: popup }] });
+    await runner.start();
+    doc.querySelector('.click-guide-next').focus();
+    const press = shiftKey => doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+        key: 'Tab', shiftKey, bubbles: true, cancelable: true,
+    }));
+    press(false);
+    assert.equal(doc.activeElement.id, 'toggle-row');
+    press(false);
+    assert.equal(doc.activeElement.id, 'next-setting');
+    press(true);
+    assert.equal(doc.activeElement.id, 'toggle-row');
+    await runner.stop('stopped');
+});
+
 test('inline fade-out opacity releases target visibility before the computed transition finishes', t => {
     const { dom, api, target } = setup();
     t.after(() => dom.window.close());
