@@ -557,7 +557,7 @@ class NumericV2ProjectStore:
                     project["authoring"] = authoring
                 if isinstance(project.get("story"), dict) and (
                     setup["metrics"] != old_metrics or "metrics" in incoming and (
-                        damaged_setup or not setup["metrics"] and (
+                        not setup["metrics"] and (
                             project["story"].get("metric_schema")
                             or (project["story"].get("initial_state") or {}).get("metrics")
                         )
@@ -580,6 +580,18 @@ class NumericV2ProjectStore:
                         metric_schema, initial_metrics = metrics_to_package(project["setup"]["metrics"])
                         next_story["metric_schema"] = metric_schema
                         next_story.setdefault("initial_state", {})["metrics"] = initial_metrics
+                    else:
+                        # A package edit is also the source of the author metrics.
+                        # Keep the package itself intact, including its extensions.
+                        try:
+                            metrics = _package_metrics(next_story)
+                        except (TypeError, AttributeError) as exc:
+                            raise NumericV2ProjectError("invalid_metric_draft") from exc
+                        stored_setup = project.get("setup")
+                        setup = (deepcopy(dict(stored_setup)) if isinstance(stored_setup, Mapping)
+                            else self._new_project()["setup"])
+                        setup["metrics"] = metrics
+                        project["setup"] = setup
                 authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
                 old_signatures = _route_signatures(project.get("story"))
                 new_signatures = _route_signatures(next_story)

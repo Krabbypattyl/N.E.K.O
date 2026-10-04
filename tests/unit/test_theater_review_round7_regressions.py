@@ -288,6 +288,72 @@ def test_explicit_clear_updates_package_when_setup_already_empty(tmp_path, old):
     assert all(saved[key] is None for key in ('compile_result', 'neko_validation', 'install_result'))
 
 
+@pytest.mark.parametrize('empty', [False, True], ids=['numeric', 'empty'])
+def test_story_only_edit_syncs_metrics_and_autosave_preserves_package(tmp_path, empty):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    project = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': {'metrics': []}})
+    story = numeric_v2_story()
+    if empty:
+        story['metric_schema'] = {}
+        story['initial_state']['metrics'] = {}
+        for gate in story['nodes'][0]['route_gates']:
+            gate['conditions'] = {'all': []}
+        story['nodes'][0]['route_gates'] = story['nodes'][0]['route_gates'][:1]
+        story['nodes'] = story['nodes'][:2]
+        story['endings'] = story['endings'][:1]
+    else:
+        definition = story['metric_schema'].pop('trust')
+        definition['bands'][0]['color'] = '#f00'
+        story['metric_schema']['other'] = definition
+        story['initial_state']['metrics'] = {'other': definition['initial']}
+        for gate in story['nodes'][0]['route_gates']:
+            gate['conditions']['all'][0]['metric'] = 'other'
+    project = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'story': story})
+    assert project['story'] == story
+    assert [metric['id'] for metric in project['setup']['metrics']] == ([] if empty else ['other'])
+    compiled = store._compiler.compile_core(story)
+    for key in ('compile_result', 'neko_validation', 'install_result'):
+        project[key] = {'success': True, 'package_hash': compiled.package_hash,
+            'revision': project['revision']}
+    store._write(project)
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': store.get(project['project_id'])['setup']})
+    assert saved['story'] == story
+    for key in ('compile_result', 'neko_validation', 'install_result'):
+        assert saved[key] == {**project[key], 'revision': saved['revision']}
+    if not empty:
+        cleared = store.update(saved['project_id'], base_revision=saved['revision'],
+            changes={'setup': {'metrics': []}})
+        assert cleared['story']['metric_schema'] == {}
+        assert cleared['compile_result'] is None
+
+
+def test_damaged_empty_setup_repair_preserves_empty_package_receipt(tmp_path):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    project = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': {'metrics': []}})
+    for gate in project['story']['nodes'][0]['route_gates']:
+        gate['conditions'] = {'all': []}
+    project['story']['nodes'][0]['route_gates'] = project['story']['nodes'][0]['route_gates'][:1]
+    project['story']['nodes'] = project['story']['nodes'][:2]
+    project['story']['endings'] = project['story']['endings'][:1]
+    compiled = store._compiler.compile_core(project['story'])
+    project['compile_result'] = {'success': True, 'package_hash': compiled.package_hash,
+        'revision': project['revision']}
+    project['setup'] = 'broken'
+    store._write(project)
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': {'metrics': []}})
+    assert saved['story'] == project['story']
+    assert saved['compile_result'] == {**project['compile_result'], 'revision': saved['revision']}
+
+
 @pytest.mark.parametrize('description', [123, '字' * 2500, '有效描述'], ids=['number', 'long', 'valid'])
 @pytest.mark.parametrize('change', ['editor', 'setup'])
 def test_interrupted_generation_compares_cleaned_setup_for_checkpoint(tmp_path, description, change):
