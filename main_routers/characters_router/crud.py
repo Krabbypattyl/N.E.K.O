@@ -1476,37 +1476,27 @@ async def set_current_catgirl(request: Request):
     if catgirl_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
 
-    old_catgirl = characters.get('当前猫娘', '')
-
-    # 检查当前角色是否有活跃的语音session
-    if old_catgirl and old_catgirl in session_manager:
-        mgr = session_manager[old_catgirl]
-        if mgr.is_active:
-            # 检查是否是语音模式（通过session类型判断）
-            from main_logic.omni_realtime_client import OmniRealtimeClient
-            is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
-
-            if is_voice_mode:
-                return JSONResponse({
-                    'success': False,
-                    'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
-                }, status_code=400)
-    async def _publish_current_catgirl() -> bool:
-        """只发布当前猫娘配置；小剧场事务负责决定它与旧演出的原子顺序。"""  # noqa: DOCSTRING_CJK
-        # 等待小剧场角色锁期间配置可能被其他请求更新；发布前重读，避免旧快照覆盖并发新增或修改。
-        latest_characters = await _config_manager.aload_characters()
-        if catgirl_name not in latest_characters.get('猫娘', {}):
-            return False
-        latest_characters['当前猫娘'] = catgirl_name
-        await _config_manager.asave_characters(latest_characters)
-        return True
-
     # Numeric v2 以不可变 character_id 独立恢复；切换角色只发布当前配置，
     # 不结束或删除其他角色的剧本进度。
     # 当前角色发布与剧场提交共享角色生命周期锁，保证提交前复验结果不会被切换请求穿透。
     async with character_config_mutation_lock:
-        if not await _publish_current_catgirl():
+        # Waiting for the lock can queue multiple card switches. Read both the
+        # outgoing character and its voice state from the configuration we publish.
+        latest_characters = await _config_manager.aload_characters()
+        if catgirl_name not in latest_characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
+        old_catgirl = latest_characters.get('当前猫娘', '')
+        if old_catgirl and old_catgirl in session_manager:
+            mgr = session_manager[old_catgirl]
+            if mgr.is_active:
+                from main_logic.omni_realtime_client import OmniRealtimeClient
+                if mgr.session and isinstance(mgr.session, OmniRealtimeClient):
+                    return JSONResponse({
+                        'success': False,
+                        'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
+                    }, status_code=400)
+        latest_characters['当前猫娘'] = catgirl_name
+        await _config_manager.asave_characters(latest_characters)
     # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()

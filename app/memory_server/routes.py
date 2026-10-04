@@ -1208,6 +1208,10 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             if retracted_request:
                 logger.info(f"[MemoryServer] cache: {lanlan_name} dropped a retracted theater archive write")
                 return {"status": "retracted", "count": 0}
+            if theater_episode_batch:
+                # Theater capsules are already committed above. Ordinary
+                # reflection/correction signals must not run for this archive.
+                return {"status": "cached", "count": len(input_history)}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
