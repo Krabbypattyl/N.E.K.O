@@ -491,7 +491,9 @@ class NumericV2ProjectStore:
                 from .contracts import NumericV2SetupPayload
 
                 stored_setup = project.get("setup")
-                old_setup = deepcopy(dict(stored_setup)) if isinstance(stored_setup, Mapping) else {}
+                damaged_setup = not isinstance(stored_setup, Mapping)
+                old_setup = (deepcopy(dict(stored_setup)) if not damaged_setup
+                    else self._new_project()["setup"])
                 incoming = _setup_fields(dict(changes["setup"] or {}), legacy=old_setup)
                 fields = NumericV2SetupPayload.model_fields
                 # Existing drafts with unknown keys can be repaired without
@@ -522,7 +524,9 @@ class NumericV2ProjectStore:
                         authoring["quality_assessment"]["stale"] = True
                     authoring["pacing_diagnostics"] = None
                     project["authoring"] = authoring
-                if isinstance(project.get("story"), dict) and setup["metrics"] != old_metrics:
+                if isinstance(project.get("story"), dict) and (
+                    setup["metrics"] != old_metrics or damaged_setup and "metrics" in incoming
+                ):
                     metric_schema, initial_metrics = metrics_to_package(setup["metrics"])
                     project["story"]["metric_schema"] = metric_schema
                     # 数值编辑不能清空姓名披露等既有初始状态。

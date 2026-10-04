@@ -209,6 +209,40 @@ def test_cleaned_view_autosave_only_stales_quality_on_real_change(tmp_path, edit
     assert saved['authoring']['pacing_diagnostics'] == (None if edit else {'note': 'keep'})
 
 
+@pytest.mark.parametrize('setup', ['broken', ['broken'], 5], ids=['text', 'list', 'number'])
+@pytest.mark.parametrize('repair', ['clear', 'null', 'brief'])
+def test_damaged_setup_repair_defaults_and_explicit_metric_clear(tmp_path, setup, repair):
+    from theater_workshop.sdk.contracts import NumericV2SetupPayload
+
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    compiled = store._compiler.compile_core(project['story'])
+    for key in ('compile_result', 'neko_validation', 'install_result'):
+        project[key] = {'success': True, 'package_hash': compiled.package_hash,
+            'revision': project['revision']}
+    project['setup'] = setup
+    store._write(project)
+    changes = {'brief': '修复简介'}
+    if repair != 'brief':
+        changes['metrics'] = [] if repair == 'clear' else None
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': changes})
+    assert saved['project_id'] == project['project_id']
+    assert saved['revision'] == project['revision'] + 1
+    assert NumericV2SetupPayload.model_validate(saved['setup']).length_preset == 'standard'
+    if repair == 'brief':
+        assert saved['story'] == project['story']
+        for key in ('compile_result', 'neko_validation', 'install_result'):
+            assert saved[key] == {**project[key], 'revision': saved['revision']}
+    else:
+        assert saved['story']['metric_schema'] == {}
+        assert saved['story']['initial_state']['metrics'] == {}
+        assert saved['story']['initial_state']['player_address_known'] is False
+        assert all(saved[key] is None for key in ('compile_result', 'neko_validation', 'install_result'))
+    assert store._read_path(store._path(saved['project_id']))['setup'] == saved['setup']
+
+
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_forget_preserves_no_receipt_for_cancelled_start(tmp_path, monkeypatch, cancelled):
     class MemoryClient:
