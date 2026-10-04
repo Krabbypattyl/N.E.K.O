@@ -490,7 +490,8 @@ class NumericV2ProjectStore:
             if "setup" in changes:
                 from .contracts import NumericV2SetupPayload
 
-                old_setup = deepcopy(dict(project.get("setup") or {}))
+                stored_setup = project.get("setup")
+                old_setup = deepcopy(dict(stored_setup)) if isinstance(stored_setup, Mapping) else {}
                 incoming = _setup_fields(dict(changes["setup"] or {}), legacy=old_setup)
                 fields = NumericV2SetupPayload.model_fields
                 # Existing drafts with unknown keys can be repaired without

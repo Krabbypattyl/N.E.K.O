@@ -176,6 +176,18 @@ def test_malformed_setup_does_not_block_workspace_recovery(tmp_path, setup):
     store.recover_interrupted()
     assert store.get(healthy['project_id'])['generation_state'] == 'interrupted'
     assert store._read_path(store._path(damaged['project_id']))['setup'] == setup
+    clean = numeric_v2_setup()
+    saved = store.update(damaged['project_id'], base_revision=damaged['revision'],
+        changes={'setup': clean})
+    assert saved['project_id'] == damaged['project_id']
+    assert saved['revision'] == damaged['revision'] + 1
+    assert saved['setup']['brief'] == clean['brief']
+    assert saved['setup']['metrics'][0]['id'] == clean['metrics'][0]['id']
+    assert store._read_path(store._path(damaged['project_id']))['setup'] == saved['setup']
+    with pytest.raises(ValueError, match='unsupported_setup_field'):
+        store.update(saved['project_id'], base_revision=saved['revision'],
+            changes={'setup': {'unknown_new': 'still rejected'}})
+    assert store.get(saved['project_id'])['revision'] == saved['revision']
 
 
 @pytest.mark.parametrize('edit', [False, True], ids=['unchanged', 'real_edit'])
