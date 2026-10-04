@@ -10,7 +10,7 @@ from tests.unit.test_theater_numeric_v2_router import _client
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup, numeric_v2_story
 from theater_workshop.host import InProcessPackageGateway
 from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, _setup_fields
+from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectError, NumericV2ProjectStore, _setup_fields
 
 
 @pytest.mark.parametrize('description', [123, '字' * 2500], ids=['number', 'long'])
@@ -152,6 +152,11 @@ def test_imported_malformed_metrics_allow_valid_replacement(tmp_path, damage, cl
         project['setup']['metrics'].insert(0, {'text': 'x', 'null': None, 'number': 5}[damage])
     store = NumericV2ProjectStore(tmp_path / 'imported', transaction=nullcontext, compiler=compiler)
     imported = store.import_project(project)
+    before = store._path(imported['project_id']).read_bytes()
+    with pytest.raises(NumericV2ProjectError, match='invalid_metric_draft'):
+        store.update(imported['project_id'], base_revision=imported['revision'],
+            changes={'setup': {'brief': '尚未替换损坏数值'}})
+    assert store._path(imported['project_id']).read_bytes() == before
     clean = [] if clear else [{**numeric_v2_setup()['metrics'][0], 'id': 'replacement'}]
     saved = store.update(imported['project_id'], base_revision=imported['revision'],
         changes={'setup': {'metrics': clean}})
@@ -241,6 +246,61 @@ def test_damaged_setup_repair_defaults_and_explicit_metric_clear(tmp_path, setup
         assert saved['story']['initial_state']['player_address_known'] is False
         assert all(saved[key] is None for key in ('compile_result', 'neko_validation', 'install_result'))
     assert store._read_path(store._path(saved['project_id']))['setup'] == saved['setup']
+
+
+@pytest.mark.parametrize('metrics', [5, True, False], ids=['number', 'true', 'false'])
+def test_noniterable_legacy_metrics_can_be_replaced(tmp_path, metrics):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.create()
+    project['setup']['metrics'] = metrics
+    store._write(project)
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': {'metrics': numeric_v2_setup()['metrics']}})
+    assert saved['setup']['metrics'][0]['id'] == numeric_v2_setup()['metrics'][0]['id']
+
+
+@pytest.mark.parametrize('old', ['empty', 'missing', 'null', 'story_update'])
+def test_explicit_clear_updates_package_when_setup_already_empty(tmp_path, old):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    if old == 'story_update':
+        project = store.update(project['project_id'], base_revision=project['revision'],
+            changes={'setup': {'metrics': []}})
+        project = store.update(project['project_id'], base_revision=project['revision'],
+            changes={'story': numeric_v2_story()})
+    elif old == 'missing':
+        project['setup'].pop('metrics')
+    else:
+        project['setup']['metrics'] = None if old == 'null' else []
+    compiled = store._compiler.compile_core(project['story'])
+    for key in ('compile_result', 'neko_validation', 'install_result'):
+        project[key] = {'success': True, 'package_hash': compiled.package_hash, 'revision': project['revision']}
+    store._write(project)
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': {'metrics': []}})
+    assert saved['story']['metric_schema'] == {}
+    assert saved['story']['initial_state']['metrics'] == {}
+    assert all(saved[key] is None for key in ('compile_result', 'neko_validation', 'install_result'))
+
+
+@pytest.mark.parametrize('description', [123, '字' * 2500, '有效描述'], ids=['number', 'long', 'valid'])
+@pytest.mark.parametrize('change', ['editor', 'setup'])
+def test_interrupted_generation_compares_cleaned_setup_for_checkpoint(tmp_path, description, change):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    project['setup']['metrics'][0]['bands'][0]['description'] = description
+    store._write(project)
+    source = store.begin_generation(project['project_id'], base_revision=project['revision'])
+    store.update(project['project_id'], base_revision=source['revision'], changes=(
+        {'editor': {'node_positions': {}}} if change == 'editor' else {'setup': {'brief': '实际新简介'}}))
+    failed = store.fail_generation(project['project_id'], base_revision=source['revision'],
+        error={'code': 'model_failed'}, source_project=source,
+        checkpoint={'candidate': numeric_v2_story(), 'issues': [{}]})
+    assert bool(failed['generation_checkpoint']) is (change == 'editor')
+    assert failed['generation_error']['original_error']['code'] == 'model_failed'
 
 
 @pytest.mark.parametrize('cancelled', [False, True])

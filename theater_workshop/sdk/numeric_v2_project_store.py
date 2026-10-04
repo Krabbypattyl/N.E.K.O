@@ -499,9 +499,9 @@ class NumericV2ProjectStore:
                 # Existing drafts with unknown keys can be repaired without
                 # deleting the project. Null clears an optional field.
                 setup = _setup_fields(old_setup, strict=False)
-                old_metrics = list(setup.get("metrics") or [])
+                old_metrics = setup.get("metrics") or []
                 try:
-                    old_metrics = normalize_metric_drafts(old_metrics)
+                    old_metrics = normalize_metric_drafts(list(old_metrics))
                 except (ValueError, TypeError, AttributeError):
                     # An invalid legacy draft must not block a valid replacement.
                     # The merged metrics are still validated below before saving.
@@ -514,7 +514,10 @@ class NumericV2ProjectStore:
                         setup.pop(key, None)
                     else:
                         setup[key] = value
-                setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
+                try:
+                    setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
+                except (TypeError, AttributeError) as exc:
+                    raise NumericV2ProjectError("invalid_metric_draft") from exc
                 project["setup"] = setup
                 project["_generation_checkpoint"] = None
                 # Metric definitions also affect quality advice and pacing.
@@ -525,7 +528,12 @@ class NumericV2ProjectStore:
                     authoring["pacing_diagnostics"] = None
                     project["authoring"] = authoring
                 if isinstance(project.get("story"), dict) and (
-                    setup["metrics"] != old_metrics or damaged_setup and "metrics" in incoming
+                    setup["metrics"] != old_metrics or "metrics" in incoming and (
+                        damaged_setup or not setup["metrics"] and (
+                            project["story"].get("metric_schema")
+                            or (project["story"].get("initial_state") or {}).get("metrics")
+                        )
+                    )
                 ):
                     metric_schema, initial_metrics = metrics_to_package(setup["metrics"])
                     project["story"]["metric_schema"] = metric_schema
@@ -846,7 +854,9 @@ class NumericV2ProjectStore:
                     # Preserve diagnostics of this interrupted generation, but
                     # never overwrite a newer running/completed generation.
                     project["generation_error"]["original_error"] = deepcopy(dict(error))
-                    if all(project.get(key) == source_project.get(key) for key in ("title", "setup", "story")):
+                    if (all(project.get(key) == source_project.get(key) for key in ("title", "story"))
+                            and _repair_band_descriptions(project.get("setup"))
+                            == _repair_band_descriptions(source_project.get("setup"))):
                         project["_generation_checkpoint"] = (
                             deepcopy(dict(checkpoint)) if isinstance(checkpoint, Mapping) else None
                         )
