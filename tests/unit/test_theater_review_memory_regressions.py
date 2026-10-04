@@ -97,6 +97,55 @@ async def test_run_numbers_survive_eviction_restart_retry_and_forget(tmp_path, m
     assert result.metadata["run_index"] == result.metadata["story_run_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_late_evicted_episode_and_aggregate_retry_preserve_newer_runs(tmp_path, monkeypatch):
+    from app.memory_server import routes, runtime, post_turn, gates
+    from sqlalchemy import text
+    from config import TIME_ORIGINAL_TABLE_NAME
+
+    manager, name, _ = _manager(tmp_path)
+    index = _time_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime, 'recent_history_manager', manager)
+    monkeypatch.setattr(runtime, 'time_manager', index)
+    monkeypatch.setattr(routes, '_resolve_foreground_memory_language', AsyncMock(return_value='en'))
+    monkeypatch.setattr(post_turn, '_spawn_outbox_post_turn_signals', AsyncMock())
+    monkeypatch.setattr(gates, '_aclear_review_clean', AsyncMock())
+
+    async def cache(session):
+        message = _capsule('story', session)
+        return await routes.cache_conversation(routes.HistoryRequest(
+            input_history=json.dumps(messages_to_dict([message])),
+        ), name)
+
+    try:
+        for session in ('A', 'B', 'C', 'D'):
+            assert (await cache(session))['status'] == 'cached'
+        def sessions(history):
+            return [(m.metadata['session_id'], m.metadata['run_index']) for m in history]
+        kept = [('B', 2), ('C', 3), ('D', 4)]
+        assert sessions(await manager.aget_recent_history(name)) == kept
+        # A was numbered before eviction. A late retry is acknowledged without
+        # reinserting it or dropping any newer hot capsule/time-index content.
+        assert (await cache('A'))['status'] == 'cached'
+        assert sessions(await manager.aget_recent_history(name)) == kept
+        # The story total has advanced since B was stored. Updating only that
+        # aggregate must not move an otherwise identical B retry to the tail.
+        assert (await cache('B'))['status'] == 'cached'
+        history = await manager.aget_recent_history(name)
+        assert sessions(history) == kept
+        events = routes._theater_index_events(name, history)
+        event_id, indexed = events['story']
+        assert sessions(indexed) == kept
+        with index.engines[name].connect() as connection:
+            rows = connection.execute(text(
+                f'SELECT message FROM {TIME_ORIGINAL_TABLE_NAME} WHERE session_id=:session ORDER BY id'
+            ), {'session': event_id}).all()
+        metadata = [json.loads(row[0])['data']['metadata'] for row in rows]
+        assert [(item['session_id'], item['run_index']) for item in metadata] == kept
+    finally:
+        index.engines[name].dispose()
+
+
 def test_summary_and_recovery_copy_are_not_charged_again():
     from memory.theater_budget import theater_capsule_cost
 

@@ -793,9 +793,17 @@ def _merge_theater_episode_summary(history: list, incoming):
         "ending_titles_seen": ending_titles,
     })
     stored_incoming = _copy_message_metadata(incoming, incoming_metadata)
+
+    def retry_payload(message):
+        metadata = dict(message_metadata(message))
+        # These describe the whole story, not a change to this episode.
+        metadata.pop("story_run_count", None)
+        metadata.pop("ending_titles_seen", None)
+        return messages_to_dict([_copy_message_metadata(message, metadata)])
+
     if (
         previous is not None
-        and messages_to_dict([stored_incoming]) == messages_to_dict([previous])
+        and retry_payload(stored_incoming) == retry_payload(previous)
     ):
         # A retried archive that changes nothing keeps its slot, so the retry
         # cannot reorder history under an in-flight compression snapshot or
@@ -812,9 +820,13 @@ def _merge_theater_episode_summary(history: list, incoming):
         if is_theater_episode_summary(message)
         and message_metadata(message).get("story_id") == story_id
     ]
-    drop_indexes = set(
-        story_indexes[:-THEATER_RECENT_EPISODES_PER_STORY]
-    )
+    # The durable run number determines the recent three episodes. An evicted
+    # old Session arriving late must not displace a newer run just by arriving.
+    ranked_story_indexes = sorted(story_indexes, key=lambda index: (
+        _positive_metadata_int(message_metadata(merged[index]).get("run_index")), index,
+    ))
+    drop_indexes = set(ranked_story_indexes[:-THEATER_RECENT_EPISODES_PER_STORY])
+    incoming_evicted_by_run_limit = any(merged[index] is stored_incoming for index in drop_indexes)
     if drop_indexes:
         merged = [
             message
@@ -837,7 +849,10 @@ def _merge_theater_episode_summary(history: list, incoming):
         ]
     from memory.theater_budget import bound_theater_history
     bounded = bound_theater_history(merged)
-    if not any(message is stored_incoming for message in bounded):
+    # A known older run intentionally outside the per-story window may be
+    # acknowledged without re-entering hot memory; token-budget rejection is
+    # still an error for an incoming run that should have been retained.
+    if not incoming_evicted_by_run_limit and not any(message is stored_incoming for message in bounded):
         # Reject before persistence: the caller must retain its archive receipt
         # rather than acknowledge a capsule that never entered hot memory.
         raise ValueError("theater_episode_budget_exceeded")
