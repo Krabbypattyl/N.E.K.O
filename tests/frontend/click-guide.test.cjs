@@ -1761,8 +1761,8 @@ for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
         panel.innerHTML = '<textarea></textarea>';
         doc.body.append(panel);
         const card = doc.querySelector('.click-guide-card');
-        card.focus();
-        card.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+        doc.querySelector('.click-guide-actions button').focus();
+        doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
         assert.equal(doc.activeElement, panel.querySelector('textarea'), 'owned sibling participates in reverse Tab');
         doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
         assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
@@ -1813,6 +1813,7 @@ test('owned settings panel skips presentation-only checkboxes and hidden ancesto
     const popup = doc.createElement('div');
     popup.id = 'live2d-popup-settings';
     popup.className = 'live2d-popup';
+    popup.innerHTML = '<button id="popup-control">Popup control</button>';
     popup.getBoundingClientRect = target.getBoundingClientRect;
     doc.body.append(popup);
     const panel = doc.createElement('div');
@@ -1823,7 +1824,7 @@ test('owned settings panel skips presentation-only checkboxes and hidden ancesto
     doc.body.append(panel);
     const runner = api.createRunner({ labels, steps: [{ title: 'Settings', target: popup }] });
     await runner.start();
-    doc.querySelector('.click-guide-next').focus();
+    doc.querySelector('#popup-control').focus();
     const press = shiftKey => doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', {
         key: 'Tab', shiftKey, bubbles: true, cancelable: true,
     }));
@@ -1833,6 +1834,11 @@ test('owned settings panel skips presentation-only checkboxes and hidden ancesto
     assert.equal(doc.activeElement.id, 'next-setting');
     press(true);
     assert.equal(doc.activeElement.id, 'toggle-row');
+    press(true);
+    assert.equal(doc.activeElement.id, 'popup-control');
+    doc.querySelector('.click-guide-actions button').focus();
+    press(true);
+    assert.equal(doc.activeElement.id, 'next-setting', 'sidepanel precedes tutorial actions');
     await runner.stop('stopped');
 });
 

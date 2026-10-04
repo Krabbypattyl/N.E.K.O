@@ -107,7 +107,8 @@
         }
         function hasKeyboardOwner(event) {
             // Avatar popups and sidepanels have no Escape handler. They only
-            // participate in Tab ownership; editors within them still own Escape.
+            // participate in Tab ownership. Editable focus conservatively reserves
+            // Escape even without a dedicated handler; explicit Skip remains available.
             return hasEditableOwner(event) || hasOverlayOwner(null, escapeOverlaySelector);
         }
         function hasOverlayOwner(guideTarget, selector = tabOverlaySelector) {
@@ -145,10 +146,11 @@
                     && hasEditableOwner(event) && !target?.contains(document.activeElement)
                     && !sidepanels.some(panel => panel.contains(document.activeElement)))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
-                let controls = [...card.querySelectorAll(selector)];
-                if (target?.matches(selector)) controls.unshift(target);
-                if (target) controls.unshift(...target.querySelectorAll(selector));
+                let controls = [];
+                if (target?.matches(selector)) controls.push(target);
+                if (target) controls.push(...target.querySelectorAll(selector));
                 for (const panel of sidepanels) controls.push(...panel.querySelectorAll(selector));
+                controls.push(...card.querySelectorAll(selector));
                 controls = controls.filter(element => element.tabIndex >= 0
                     && !element.closest('[hidden], [aria-hidden="true"]') && api.isElementVisible(element));
                 if (!controls.length) return;
