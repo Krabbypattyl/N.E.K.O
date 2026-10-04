@@ -45,7 +45,7 @@ def _now() -> str:
 
 def _repair_band_descriptions(source):
     """Clean legacy author descriptions without changing the source package."""
-    setup = deepcopy(dict(source))
+    setup = deepcopy(dict(source)) if isinstance(source, Mapping) else {}
     metrics = setup.get("metrics")
     for metric in metrics if isinstance(metrics, list) else []:
         bands = metric.get("bands") if isinstance(metric, Mapping) else None
@@ -84,7 +84,7 @@ def _setup_fields(source, *, legacy=None, strict=True):
                         and metric.get("id") and item.get("id") == metric["id"]),
                        old_metrics[index] if index < len(old_metrics) else None)
             metric = clean(metric, MetricPayload.model_fields, "unsupported_metric_field", old)
-            old_bands = (old or {}).get("bands") or []
+            old_bands = (old.get("bands") or []) if isinstance(old, Mapping) else []
             if not isinstance(old_bands, list):
                 old_bands = []
             bands = metric.get("bands")
@@ -499,10 +499,11 @@ class NumericV2ProjectStore:
                 old_metrics = list(setup.get("metrics") or [])
                 try:
                     old_metrics = normalize_metric_drafts(old_metrics)
-                except ValueError:
+                except (ValueError, TypeError, AttributeError):
                     # An invalid legacy draft must not block a valid replacement.
                     # The merged metrics are still validated below before saving.
                     pass
+                comparable_setup = {**deepcopy(setup), "metrics": old_metrics}
                 for key, value in incoming.items():
                     if value is None:
                         if fields[key].is_required():
@@ -514,7 +515,7 @@ class NumericV2ProjectStore:
                 project["setup"] = setup
                 project["_generation_checkpoint"] = None
                 # Metric definitions also affect quality advice and pacing.
-                if old_setup != setup:
+                if comparable_setup != setup:
                     authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
                     if isinstance(authoring.get("quality_assessment"), dict):
                         authoring["quality_assessment"]["stale"] = True

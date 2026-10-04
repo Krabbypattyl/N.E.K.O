@@ -140,6 +140,63 @@ def test_imported_legacy_metrics_can_be_reduced(tmp_path, remaining):
     assert store.get(saved['project_id'])['revision'] == saved['revision']
 
 
+@pytest.mark.parametrize('damage', ['text', 'null', 'number', 'effect_list', 'effect_dict'])
+@pytest.mark.parametrize('clear', [False, True], ids=['replace', 'clear'])
+def test_imported_malformed_metrics_allow_valid_replacement(tmp_path, damage, clear):
+    compiler = NumericV2Compiler(InProcessPackageGateway())
+    source_store = NumericV2ProjectStore(tmp_path / 'source', transaction=nullcontext, compiler=compiler)
+    project = source_store.import_story(numeric_v2_story())
+    if damage.startswith('effect_'):
+        project['setup']['metrics'][0]['relationship_effect'] = ['x'] if damage == 'effect_list' else {}
+    else:
+        project['setup']['metrics'].insert(0, {'text': 'x', 'null': None, 'number': 5}[damage])
+    store = NumericV2ProjectStore(tmp_path / 'imported', transaction=nullcontext, compiler=compiler)
+    imported = store.import_project(project)
+    clean = [] if clear else [{**numeric_v2_setup()['metrics'][0], 'id': 'replacement'}]
+    saved = store.update(imported['project_id'], base_revision=imported['revision'],
+        changes={'setup': {'metrics': clean}})
+    assert saved['project_id'] == imported['project_id']
+    assert saved['revision'] == imported['revision'] + 1
+    assert list(saved['story']['metric_schema']) == ([] if clear else ['replacement'])
+    assert store.get(saved['project_id'])['setup'] == saved['setup']
+
+
+@pytest.mark.parametrize('setup', ['broken', ['broken'], 5], ids=['text', 'list', 'number'])
+def test_malformed_setup_does_not_block_workspace_recovery(tmp_path, setup):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    damaged = store.create()
+    damaged['setup'] = setup
+    store._write(damaged)
+    healthy = store.create()
+    healthy['generation_state'] = 'running'
+    store._write(healthy)
+    assert {row['project_id'] for row in store.list()} == {damaged['project_id'], healthy['project_id']}
+    assert store.get(damaged['project_id'])['setup'] == {}
+    store.recover_interrupted()
+    assert store.get(healthy['project_id'])['generation_state'] == 'interrupted'
+    assert store._read_path(store._path(damaged['project_id']))['setup'] == setup
+
+
+@pytest.mark.parametrize('edit', [False, True], ids=['unchanged', 'real_edit'])
+def test_cleaned_view_autosave_only_stales_quality_on_real_change(tmp_path, edit):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    project['setup']['metrics'][0]['bands'][0]['description'] = 123
+    project['setup']['metrics'][0]['bands'][0]['color'] = '#f00'
+    project['authoring']['quality_assessment'] = {'scope': 'full_story_simple', 'stale': False}
+    project['authoring']['pacing_diagnostics'] = {'note': 'keep'}
+    store._write(project)
+    view = store.get(project['project_id'])
+    if edit:
+        view['setup']['metrics'][0]['name'] = '实际修改'
+    saved = store.update(project['project_id'], base_revision=project['revision'],
+        changes={'setup': view['setup']})
+    assert saved['authoring']['quality_assessment']['stale'] is edit
+    assert saved['authoring']['pacing_diagnostics'] == (None if edit else {'note': 'keep'})
+
+
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_forget_preserves_no_receipt_for_cancelled_start(tmp_path, monkeypatch, cancelled):
     class MemoryClient:
