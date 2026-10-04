@@ -88,6 +88,20 @@ def test_equal_value_merged_entries_keep_both_route_paths():
     assert not result['unknown_reasons']
 
 
+def test_long_entry_chain_does_not_use_python_recursion():
+    project = branchable_project()
+    story = project['story']
+    story['start_node_id'] = 'long_0'
+    for index in range(1500):
+        target = f'long_{index+1}' if index < 1499 else 'main_1'
+        story['nodes'].append({'id': f'long_{index}', 'route_gates': [
+            _unconditional_route(f'route_{index}', target, '下一幕')]})
+    result = NumericV2BranchService()._entry_scenarios(project, 'main_1', 'trust')
+    assert len(result['scenarios']) == 1
+    assert len(result['scenarios'][0]['path']) == 1500
+    assert not result['unknown_reasons']
+
+
 def test_setup_draft_rejects_new_unknown_keys_and_repairs_existing_ones(tmp_path):
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
     project = store.create()

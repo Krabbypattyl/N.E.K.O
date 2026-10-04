@@ -921,21 +921,16 @@ class NumericV2BranchService:
             (start_id, initial, [], frozenset())
         ]
         successors: dict[tuple[str, int], list[tuple[str, str, int]]] = {}
-        reachable: dict[tuple[str, int], bool] = {}
-        checking: set[tuple[str, int]] = set()
-
-        def can_reach_source(node_id: str, value: int) -> bool:
+        reverse_states: dict[tuple[str, int], set[tuple[str, int]]] = {}
+        pending_states = [(start_id, initial)]
+        while pending_states:
+            state = pending_states.pop()
+            if state in successors:
+                continue
+            node_id, value = state
             if node_id == source_node_id:
-                return True
-            state = (node_id, value)
-            if state in reachable:
-                return reachable[state]
-            if state in checking:
-                # Cycles remain unknown. Do not cache a context-dependent
-                # false result and accidentally prune another valid entry.
-                unknown_reasons.append(f"cycle:{node_id}")
-                return True
-            checking.add(state)
+                successors[state] = []
+                continue
             node = nodes.get(node_id)
             edges: list[tuple[str, str, int]] = []
             if not isinstance(node, Mapping):
@@ -956,14 +951,44 @@ class NumericV2BranchService:
                         continue
                     edges.extend((str(route.get("id") or target_id), target_id, next_value) for next_value in alternatives)
             successors[state] = edges
-            # Evaluate every suffix once, including dead ends. Enumerating
-            # prefixes only happens for viable suffixes, with the usual cap.
-            outcomes = [can_reach_source(target, next_value) for _, target, next_value in edges]
-            checking.remove(state)
-            reachable[state] = any(outcomes)
-            return reachable[state]
+            for _, target, next_value in edges:
+                target_state = (target, next_value)
+                reverse_states.setdefault(target_state, set()).add(state)
+                pending_states.append(target_state)
 
-        can_reach_source(start_id, initial)
+        # Propagate viability backwards with an explicit work list; author
+        # routes are not bounded by Python's call-stack depth.
+        viable = {state for state in successors if state[0] == source_node_id}
+        pending_states = list(viable)
+        while pending_states:
+            for parent in reverse_states.get(pending_states.pop(), ()):
+                if parent not in viable:
+                    viable.add(parent)
+                    pending_states.append(parent)
+
+        # Keep cycle diagnostics even for dead suffixes pruned below. This
+        # depth-first traversal also uses explicit frames rather than calls.
+        colors: dict[tuple[str, int], int] = {}
+        for root in successors:
+            if root in colors:
+                continue
+            colors[root] = 1
+            frames = [(root, iter(successors[root]))]
+            while frames:
+                current_state, edges = frames[-1]
+                try:
+                    _, target, next_value = next(edges)
+                except StopIteration:
+                    colors[current_state] = 2
+                    frames.pop()
+                    continue
+                target_state = (target, next_value)
+                if colors.get(target_state) == 1:
+                    unknown_reasons.append(f"cycle:{target}")
+                elif target_state not in colors:
+                    colors[target_state] = 1
+                    frames.append((target_state, iter(successors[target_state])))
+
         while stack:
             node_id, value, path, visited = stack.pop()
             if node_id == source_node_id:
@@ -972,7 +997,7 @@ class NumericV2BranchService:
             if node_id in visited:
                 unknown_reasons.append(f"cycle:{node_id}")
                 continue
-            if not can_reach_source(node_id, value):
+            if (node_id, value) not in viable:
                 continue
             node = nodes.get(node_id)
             if not isinstance(node, Mapping):
@@ -980,7 +1005,7 @@ class NumericV2BranchService:
                 continue
             next_visited = visited | {node_id}
             for route_id, target_id, next_value in successors.get((node_id, value), []):
-                if not can_reach_source(target_id, next_value):
+                if (target_id, next_value) not in viable:
                     continue
                 if len(scenarios) + len(stack) >= _MAX_ENTRY_SCENARIOS:
                     unknown_reasons.append("entry_scenario_overflow")
