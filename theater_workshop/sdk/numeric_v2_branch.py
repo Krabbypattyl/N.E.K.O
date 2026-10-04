@@ -920,7 +920,50 @@ class NumericV2BranchService:
         stack: list[tuple[str, int, list[str], frozenset[str]]] = [
             (start_id, initial, [], frozenset())
         ]
-        expanded: set[tuple[str, int]] = set()
+        successors: dict[tuple[str, int], list[tuple[str, str, int]]] = {}
+        reachable: dict[tuple[str, int], bool] = {}
+        checking: set[tuple[str, int]] = set()
+
+        def can_reach_source(node_id: str, value: int) -> bool:
+            if node_id == source_node_id:
+                return True
+            state = (node_id, value)
+            if state in reachable:
+                return reachable[state]
+            if state in checking:
+                # Cycles remain unknown. Do not cache a context-dependent
+                # false result and accidentally prune another valid entry.
+                unknown_reasons.append(f"cycle:{node_id}")
+                return True
+            checking.add(state)
+            node = nodes.get(node_id)
+            edges: list[tuple[str, str, int]] = []
+            if not isinstance(node, Mapping):
+                unknown_reasons.append(f"node_missing:{node_id}")
+            else:
+                for route in node.get("route_gates") or []:
+                    if not isinstance(route, Mapping):
+                        continue
+                    target_id = str(route.get("target_node_id") or "")
+                    if target_id not in nodes:
+                        unknown_reasons.append(f"target_missing:{target_id or node_id}")
+                        continue
+                    if target_id not in ancestors:
+                        continue
+                    alternatives = self._condition_alternatives(route.get("conditions"), metric_schema, metric_id, value)
+                    if alternatives is None:
+                        unknown_reasons.append(f"condition_unknown:{route.get('id') or target_id}")
+                        continue
+                    edges.extend((str(route.get("id") or target_id), target_id, next_value) for next_value in alternatives)
+            successors[state] = edges
+            # Evaluate every suffix once, including dead ends. Enumerating
+            # prefixes only happens for viable suffixes, with the usual cap.
+            outcomes = [can_reach_source(target, next_value) for _, target, next_value in edges]
+            checking.remove(state)
+            reachable[state] = any(outcomes)
+            return reachable[state]
+
+        can_reach_source(start_id, initial)
         while stack:
             node_id, value, path, visited = stack.pop()
             if node_id == source_node_id:
@@ -929,36 +972,20 @@ class NumericV2BranchService:
             if node_id in visited:
                 unknown_reasons.append(f"cycle:{node_id}")
                 continue
-            if (node_id, value) in expanded:
+            if not can_reach_source(node_id, value):
                 continue
-            expanded.add((node_id, value))
             node = nodes.get(node_id)
             if not isinstance(node, Mapping):
                 unknown_reasons.append(f"node_missing:{node_id}")
                 continue
-            routes = [route for route in node.get("route_gates") or [] if isinstance(route, Mapping)]
             next_visited = visited | {node_id}
-            for route in routes:
-                target_id = str(route.get("target_node_id") or "")
-                if target_id not in nodes:
-                    unknown_reasons.append(f"target_missing:{target_id or node_id}")
+            for route_id, target_id, next_value in successors.get((node_id, value), []):
+                if not can_reach_source(target_id, next_value):
                     continue
-                if target_id not in ancestors:
-                    continue
-                alternatives = self._condition_alternatives(
-                    route.get("conditions"),
-                    metric_schema,
-                    metric_id,
-                    value,
-                )
-                if alternatives is None:
-                    unknown_reasons.append(f"condition_unknown:{route.get('id') or target_id}")
-                    continue
-                for next_value in alternatives:
-                    if len(scenarios) + len(stack) >= _MAX_ENTRY_SCENARIOS:
-                        unknown_reasons.append("entry_scenario_overflow")
-                        break
-                    stack.append((target_id, next_value, path + [str(route.get("id") or target_id)], next_visited))
+                if len(scenarios) + len(stack) >= _MAX_ENTRY_SCENARIOS:
+                    unknown_reasons.append("entry_scenario_overflow")
+                    break
+                stack.append((target_id, next_value, path + [route_id], next_visited))
         return {
             "scenarios": scenarios,
             "unknown_reasons": list(dict.fromkeys(unknown_reasons)),

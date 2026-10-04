@@ -71,6 +71,23 @@ def test_upstream_diamond_unknown_condition_has_bounded_work(monkeypatch):
     assert len(calls) < 100
 
 
+def test_equal_value_merged_entries_keep_both_route_paths():
+    project = branchable_project()
+    story = project['story']
+    story['start_node_id'] = 'fork'
+    story['nodes'].extend([
+        {'id': 'fork', 'route_gates': [_unconditional_route('left', 'left', '左'), _unconditional_route('right', 'right', '右')]},
+        {'id': 'left', 'route_gates': [_unconditional_route('left_join', 'join', '合流')]},
+        {'id': 'right', 'route_gates': [_unconditional_route('right_join', 'join', '合流')]},
+        {'id': 'join', 'route_gates': [_unconditional_route('entry', 'main_1', '目的地')]},
+    ])
+    result = NumericV2BranchService()._entry_scenarios(project, 'main_1', 'trust')
+    assert {tuple(row['path']) for row in result['scenarios']} == {
+        ('left', 'left_join', 'entry'), ('right', 'right_join', 'entry')}
+    assert len({row['value'] for row in result['scenarios']}) == 1
+    assert not result['unknown_reasons']
+
+
 def test_setup_draft_rejects_new_unknown_keys_and_repairs_existing_ones(tmp_path):
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
     project = store.create()
