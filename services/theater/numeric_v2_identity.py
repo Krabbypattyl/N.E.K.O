@@ -63,6 +63,7 @@ def numeric_v2_catgirl_binding(
     # 继续匹配迁移前的 profile_hash。
     profile_for_hash = deepcopy(profile)
     delete_reserved(profile_for_hash, "character_id")
+    delete_reserved(profile_for_hash, "character_uid")
     canonical = json.dumps(
         profile_for_hash,
         ensure_ascii=False,

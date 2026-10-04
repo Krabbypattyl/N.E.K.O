@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并 Requesty 与存储错误文案，刷新网页和 Electron 的八语言包缓存。
-    const LOCALE_VERSION = '2026-10-04-theater-storage-requesty-main-merge';
+    // 剧场与外部路由注册表合并后刷新所有八语言包缓存。
+    const LOCALE_VERSION = '2026-10-04-theater-external-route-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

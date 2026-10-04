@@ -388,6 +388,31 @@ async def test_ordinary_audio_frames_are_dropped_and_live_voice_ended_while_thea
 
 
 @pytest.mark.asyncio
+async def test_external_route_keeps_its_input_while_theater_signal_lingers(monkeypatch):
+    from utils import external_route_registry
+    theater_activity.mark_theater_activity('Lan')
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([
+        {'action': 'stream_data', 'input_type': 'text', 'data': 'hello'},
+        dict(_AUDIO_FRAME),
+    ])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    route = AsyncMock(return_value=True)
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind='visit-test', is_active=lambda name: name == 'Lan',
+            route_stream_message=route, on_start_session=AsyncMock(return_value=True),
+            finalize_for_character=AsyncMock(return_value=0),
+            current_instance=lambda name: 'visit-session',
+        )
+    )
+    await websocket_router.websocket_endpoint(websocket, 'Lan')
+    assert [call.args[1]['input_type'] for call in route.await_args_list] == ['text', 'audio']
+    assert not [name for name, _ in manager.calls if name in {'stream_data', 'end_session'}]
+    assert not any('THEATER_SESSION_ACTIVE' in message for message in websocket.sent_text)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["replaced", "ended", "text_mode"])
 async def test_theater_voice_teardown_leaves_a_session_that_changed_before_it_ran(monkeypatch, change):
     """session_ended_by_server is not session-scoped: a session changed meanwhile gets neither it nor an end."""

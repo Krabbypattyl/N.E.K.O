@@ -35,8 +35,8 @@ async def test_queued_switches_use_latest_outgoing_character(monkeypatch):
     monkeypatch.setattr(crud, 'get_session_manager', lambda: {})
     monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
     monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', disabled)
-    import main_routers.game_router as game_router
-    monkeypatch.setattr(game_router, 'finalize_game_routes_for_character', finalized)
+    from utils import external_route_registry
+    monkeypatch.setattr(external_route_registry, 'finalize_external_routes_for_character', finalized)
     await lock.acquire()
     tasks = [asyncio.create_task(crud.set_current_catgirl(
         SimpleNamespace(json=AsyncMock(return_value={'catgirl_name': name})),
