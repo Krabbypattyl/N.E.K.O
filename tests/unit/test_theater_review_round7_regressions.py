@@ -1,0 +1,95 @@
+"""Regression coverage for maintainer review 5979596506."""
+
+from contextlib import nullcontext
+from copy import deepcopy
+from types import SimpleNamespace
+
+import pytest
+
+from tests.unit.test_theater_numeric_v2_router import _client
+from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup, numeric_v2_story
+from theater_workshop.host import InProcessPackageGateway
+from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, _setup_fields
+
+
+@pytest.mark.parametrize('description', [123, '字' * 2500], ids=['number', 'long'])
+@pytest.mark.parametrize('repair', ['brief', 'short', 'delete', 'null', 'empty'])
+def test_invalid_old_description_can_be_repaired(tmp_path, description, repair):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
+        compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.create()
+    project['setup'] = numeric_v2_setup()
+    project['setup']['metrics'][0]['bands'][0]['description'] = description
+    store._write(project)
+    changes = {'brief': '修复旧草稿'}
+    if repair != 'brief':
+        metrics = deepcopy(project['setup']['metrics'])
+        band = metrics[0]['bands'][0]
+        if repair == 'short':
+            band['description'] = '有效描述'
+        elif repair == 'delete':
+            band.pop('description')
+        elif repair == 'null':
+            band['description'] = None
+        elif repair == 'empty':
+            metrics = []
+        changes = {'metrics': metrics}
+    saved = store.update(project['project_id'], base_revision=project['revision'], changes={'setup': changes})
+    assert saved['revision'] == project['revision'] + 1
+    assert saved['project_id'] == project['project_id']
+    if repair != 'empty':
+        assert saved['setup']['metrics'][0]['bands'][0].get('description') == (
+            '有效描述' if repair == 'short' else None)
+    incoming = numeric_v2_setup()
+    incoming['metrics'][0]['bands'][0]['description'] = description
+    with pytest.raises(ValueError, match='invalid_metric_band_description'):
+        store.update(saved['project_id'], base_revision=saved['revision'], changes={'setup': incoming})
+    assert store.get(saved['project_id'])['revision'] == saved['revision']
+
+
+@pytest.mark.parametrize('description', [123, {'x': 1}, '字' * 2500], ids=['number', 'object', 'long'])
+def test_import_story_discards_invalid_description_only_from_author_projection(tmp_path, description):
+    story = numeric_v2_story()
+    for definition in story['metric_schema'].values():
+        definition['bands'][0]['description'] = description
+    compiler = NumericV2Compiler(InProcessPackageGateway())
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=compiler)
+    imported = store.import_story(story)
+    assert imported['story'] == story
+    assert all('description' not in metric['bands'][0] for metric in imported['setup']['metrics'])
+
+
+def test_legacy_extra_matching_ignores_unknown_null_keys():
+    setup = numeric_v2_setup()
+    setup['metrics'][0]['bands'][0]['color'] = '#f00'
+    incoming = deepcopy(setup)
+    incoming['metrics'][0]['bands'][0]['new_key'] = None
+    cleaned = _setup_fields(incoming, legacy=setup)
+    assert 'color' not in cleaned['metrics'][0]['bands'][0]
+    assert 'new_key' not in cleaned['metrics'][0]['bands'][0]
+    incoming['metrics'][0]['bands'][0]['new_key'] = 'new'
+    with pytest.raises(ValueError, match='unsupported_metric_band_field'):
+        _setup_fields(incoming, legacy=setup)
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_forget_preserves_no_receipt_for_cancelled_start(tmp_path, monkeypatch, cancelled):
+    class MemoryClient:
+        async def post(self, url, **kwargs):
+            return SimpleNamespace(is_success=True, content=b'{}',
+                json=lambda: {'ok': True, 'forget_marker': 'round7_marker'})
+
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
+    scope = {'story_id': 'numeric_v2_contract', 'session_id': 'round7_forget'}
+    owner = {'X-Neko-Theater-Activity': 'round7-owner'}
+    with _client(tmp_path, monkeypatch) as client:
+        assert client.post('/api/theater-numeric/session/start', headers=owner, json=scope).status_code == 200
+        ended = client.post('/api/theater-numeric/session/end', headers=owner, json={**scope,
+            'base_revision': 0, 'base_lifecycle_revision': 0, 'cancelled_start': cancelled})
+        assert ended.status_code == 200, ended.text
+        forgotten = client.post('/api/theater-numeric/memory/forget', json={
+            'story_id': scope['story_id'], 'character_id': 'character_' + '1' * 32})
+        assert forgotten.status_code == 200, forgotten.text
+    receipts = list(tmp_path.rglob('theater_end_*.json'))
+    assert bool(receipts) is not cancelled

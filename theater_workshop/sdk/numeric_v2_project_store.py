@@ -78,13 +78,18 @@ def _setup_fields(source, *, legacy=None, strict=True):
                 metric["bands"] = [clean(band, MetricBandPayload.model_fields,
                     "unsupported_metric_band_field", next((item for item in old_bands
                         if isinstance(item, Mapping) and all(key in item and item[key] == band[key]
-                            for key in set(band).difference(MetricBandPayload.model_fields))), None))
+                            for key in set(band).difference(MetricBandPayload.model_fields)
+                            if band[key] is not None)), None))
                     if isinstance(band, Mapping) else band for i, band in enumerate(bands)]
                 for band in metric["bands"]:
                     if isinstance(band, Mapping) and band.get("description") is not None:
                         description = band["description"]
                         if not isinstance(description, str) or len(description) > 2000:
-                            raise NumericV2ProjectError("invalid_metric_band_description")
+                            if strict:
+                                raise NumericV2ProjectError("invalid_metric_band_description")
+                            # Repair legacy drafts/package projections without changing
+                            # the stored source package or accepting invalid new edits.
+                            band.pop("description")
             metrics[index] = metric
     return setup
 

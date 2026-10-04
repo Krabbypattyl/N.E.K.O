@@ -2246,7 +2246,8 @@ async def forget_numeric_story_memory(request: Request):
                 await archive_store.mutate(archive_store.delete_forget_files, pending)
                 removed_archives = len(pending["archive_files"])
                 removed_receipts = len(pending["receipt_files"])
-                if stored is not None and stored.session.status == "ended":
+                if (stored is not None and stored.session.status == "ended"
+                        and stored.session.ended_reason != "cancelled_start"):
                     # 保留一个最新“不写入”决策回执，防止选剧页立即再次询问。
                     skipped = await archive_store.acreate_or_get(stored.session)
                     await archive_store.aupdate(skipped, status="skipped")
