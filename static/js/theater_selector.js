@@ -482,7 +482,11 @@
             }
             state.channel.addEventListener('message', candidate);
             postMessage({action: 'theater:host-probe', probe_id: probeId});
+            var probeTimer = window.setInterval(function () {
+                postMessage({action: 'theater:host-probe', probe_id: probeId});
+            }, 250);
             window.setTimeout(function () {
+                window.clearInterval(probeTimer);
                 state.channel.removeEventListener('message', candidate);
                 candidates.sort(function (a, b) {
                     return Number(b.visible === true) - Number(a.visible === true)
@@ -490,7 +494,7 @@
                 });
                 if (candidates.length) payload.runtime_host_id = candidates[0].runtime_host_id;
                 resolve(candidates.length > 0);
-            }, 300);
+            }, 2000);
         });
     }
     async function handoff(snapshot, action, storyId) {
@@ -531,11 +535,18 @@
             var timeoutId = 0;
             function ready(event) {
                 var message = event && event.data;
-                if (!message || ['theater:start-accepted', 'theater:start-ready'].indexOf(message.action) < 0
+                if (!message || ['theater:start-accepted', 'theater:start-ready', 'theater:start-failed'].indexOf(message.action) < 0
                     || message.launch_id !== payload.launch_id) return;
+                if (message.action === 'theater:start-accepted') {
+                    if (timeoutId) window.clearTimeout(timeoutId);
+                    timeoutId = window.setTimeout(function () {
+                        if (!settled) { cleanup(); resolve(false); }
+                    }, 75000);
+                    return;
+                }
                 settled = true;
                 cleanup();
-                resolve(true);
+                resolve(message.action === 'theater:start-ready');
             }
             function cleanup() {
                 window.removeEventListener('message', ready);
@@ -550,7 +561,7 @@
                 return;
             }
             // 本体最多等待约 8 秒挂载 React 胶囊；留出跨窗口转发余量后再判定接管失败。
-            timeoutId = window.setTimeout(function () {
+            if (!timeoutId) timeoutId = window.setTimeout(function () {
                 if (!settled) { cleanup(); resolve(false); }
             }, 12000);
         });
@@ -903,11 +914,14 @@
         if (!state.stories.some(function (story) { return String(story.story_id) === state.storyId; })) state.storyId = String((state.stories[0] || {}).story_id || '');
         renderStories(); renderDetail();
         // 导入/删除期间 loadStories 也会在 busy 状态内运行，允许这一次内部详情刷新。
+        var initialSelectionEpoch = storySelectionEpoch;
         if (state.storyId) {
-            await selectStory(state.storyId, true);
+            var selectionPromise = selectStory(state.storyId, true);
+            initialSelectionEpoch = storySelectionEpoch;
+            await selectionPromise;
         } else setStatus('theater.ready', '就绪');
         // Memory-server reads do not delay starting an installed story.
-        loadMemoryStories(storiesCharacterEpoch, listEpoch, requestedStoryId, storySelectionEpoch).catch(function () {
+        loadMemoryStories(storiesCharacterEpoch, listEpoch, requestedStoryId, initialSelectionEpoch).catch(function () {
             if (memoryListEpoch === listEpoch) setFeedback(t('theater.memoryStoryListFailed', '保留的剧本记忆暂时无法读取，请重新加载。'), true);
         });
         return true;

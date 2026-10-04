@@ -838,7 +838,7 @@ def _confirmed_authored_acceptance(
     if not session.transition_offered or turn.input_source != "suggestion":
         return ""
     origin = pending_transition_record(session, ledger_events=current.ledger_events)
-    if not isinstance(origin, Mapping) or origin.get("revision") != session.revision:
+    if not isinstance(origin, Mapping):
         return ""
     route = engine.preview_route(session.current_node_id, session.metrics)
     contract = route.get("transition_contract") if route else None
@@ -847,12 +847,13 @@ def _confirmed_authored_acceptance(
     offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
     accept = _project_authored_transition_text(engine, session, str(contract.get("accept_input") or "")).strip()
     if (not offer or not accept or turn.message.strip() != accept
+            or _pending_offer_acceptance_path(session, ledger_events=current.ledger_events) != accept
             or accept not in origin.get("suggested_inputs", [])
             or not any(block.get("type") == "dialogue" and str(block.get("text") or "").endswith(offer)
                        for block in performance_content_blocks(origin))):
         return ""
     # 原邀请和当前数值仍须选中同一出口；不能让本轮计分或旧邀请暗中替换路线。
-    event = next((row for row in current.ledger_events if row.get("result_revision") == session.revision), None)
+    event = next((row for row in current.ledger_events if row.get("result_revision") == origin.get("revision")), None)
     offered_route = engine.preview_route(session.current_node_id, event["after_metrics"]) if event else None
     return str(route["id"]) if offered_route and offered_route["id"] == route["id"] else ""
 
@@ -2340,9 +2341,11 @@ async def _execute_numeric_v2_turn(
         and fallback_target.get("type") != "ending"
         and fallback_target.get("terminal") is not True
         and fallback_offer
-        and final_fixed_review is not None
-        and not final_fixed_review.offer_present
-        and not final_fixed_review.body_violations
+        and (not module_options.get("review") or (
+            final_fixed_review is not None
+            and not final_fixed_review.offer_present
+            and not final_fixed_review.body_violations
+        ))
     ):
         visible_performance = str(performance.get("performance") or "").rstrip()
         if fallback_offer not in visible_performance:
@@ -2494,7 +2497,22 @@ async def _execute_numeric_v2_turn(
         if isinstance(acceptance_contract, Mapping)
         else ""
     )
-    if module_options.get("review") and reviewed_transition_offered:
+    if new_offer and not route_changed and (not module_options.get("evaluator") or diagnostics["evaluator_degraded"]):
+        # Without semantic judgement, expose the authored pair explicitly; an
+        # arbitrary Actor recommendation cannot stand in for route consent.
+        authored_offer = _project_authored_transition_text(
+            runtime.engine, outcome.session,
+            str((acceptance_contract or {}).get("fallback_offer") or ""),
+        ).strip()
+        if authored_offer and authored_accept_input:
+            candidate = dict(filtered_performance)
+            visible = str(candidate.get("performance") or "").rstrip()
+            if authored_offer not in visible:
+                candidate["performance"] = "\n".join(filter(None, (visible, authored_offer)))
+            if valid_mixed_performance_policy(candidate, outcome.session.dialogue_policy):
+                filtered_performance = candidate
+                reviewed_transition_offered = True
+    if reviewed_transition_offered:
         filtered_performance, acceptance_inserted = (
             _insert_verified_offer_acceptance_suggestion(
                 filtered_performance,

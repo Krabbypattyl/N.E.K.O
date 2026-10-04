@@ -40,6 +40,7 @@
     var desktopLaunchRelayTimers = Object.create(null);
     var launchEpoch = 0;
     var pendingLaunch = null;
+    var startCleanupBarrier = Promise.resolve();
     var pendingSelectorEnd = null;
     var runtimeHostId = createId('theater_host_');
     var endConfirmationPending = false;
@@ -687,6 +688,11 @@
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
+        if (snapshot.end_receipt_pending) {
+            state.errorMessage = t('theater.endReceiptPending', '演出已经结束；记忆确认暂未准备好，请稍后重新打开选剧页。');
+        } else if (snapshot.evaluator_degraded) {
+            state.errorMessage = t('theater.evaluatorDegraded', '判定暂时不可用，本轮数值未推进；已显示的作者邀请仍可确认。');
+        }
         // 保留最近一次服务端已提交快照；表现播放被打断时可直接恢复完整历史和推荐输入。
         committedSnapshot = snapshot;
     }
@@ -838,7 +844,6 @@
         // 小剧场只接管文本胶囊；必须先停掉普通语音 Session，避免 ASR 和普通回复穿插进演绎。
         if (!await stopOrdinaryVoiceInput() || launchToken !== launchEpoch) {
             restoreProactiveChatAfterTheater();
-            delete launchReplyTargets[message.launch_id];
             return false;
         }
         if (pendingLaunch && pendingLaunch.token === launchToken && pendingLaunch.activityClaimId) {
@@ -892,7 +897,6 @@
         var hostReady = await waitForHost();
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) return false;
         if (!hostReady) {
-            delete launchReplyTargets[message.launch_id];
             clear('launch-host-unavailable');
             return false;
         }
@@ -996,6 +1000,7 @@
                 try {
                     await requestJson(api.end, {method: 'POST', activityClaimId: startClaim, body: {
                         story_id: nextStoryId, session_id: nextSessionId,
+                        cancelled_start: true,
                         base_revision: snapshot.session.revision,
                         base_lifecycle_revision: snapshot.session.lifecycle_revision || 0
                     }});
@@ -1047,7 +1052,12 @@
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
         pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId, activityClaimId: createId('theater_activity_') };
-        var request = performStart(message, launchToken).catch(function () {
+        // A cancelled opening must finish its retirement before the next start
+        // can resume the same Session without advancing its lifecycle.
+        var request = startCleanupBarrier.then(function () {
+            if (launchToken !== launchEpoch) return false;
+            return performStart(message, launchToken);
+        }).catch(function () {
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
                 state.phase = 'ended';
                 state.sessionStatus = 'ended';
@@ -1056,10 +1066,17 @@
                 render();
             }
             return false;
+        }).then(function (result) {
+            if (!result) {
+                var failedMessage = postMessage({action: 'theater:start-failed', launch_id: launchId});
+                postDirect(launchReplyTargets[launchId], failedMessage);
+            }
+            return result;
         }).finally(function () {
             delete launchReplyTargets[launchId];
             if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
         });
+        startCleanupBarrier = request;
         launchRequests[launchId] = request;
         launchRequestOrder.push(launchId);
         if (launchRequestOrder.length > 64) delete launchRequests[launchRequestOrder.shift()];

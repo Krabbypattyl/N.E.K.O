@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 import functools
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
@@ -84,7 +85,7 @@ from utils.cloudsave_runtime import (
     cloudsave_writable_transaction,
 )
 from utils.character_memory import character_config_mutation_lock
-from utils.theater_activity import clear_theater_activity, note_theater_session_response
+from utils.theater_activity import can_retire_cancelled_start, clear_theater_activity, note_theater_session_response
 
 
 class _NumericTheaterRoute(APIRoute):
@@ -95,7 +96,11 @@ class _NumericTheaterRoute(APIRoute):
             try:
                 return await handler(request)
             except ValueError as exc:
-                return _error(str(exc), 400)
+                # Only stable domain reason codes are safe client errors.
+                reason = str(exc)
+                if re.fullmatch(r"(?:numeric_|current_catgirl_|catgirl_|story_|session_)[a-z0-9_]+", reason):
+                    return _error(reason, 400)
+                raise
 
         return handle
 
@@ -1115,18 +1120,19 @@ async def _submit_numeric_input_once(
         current_binding = _ensure_current_catgirl(current.session, config_manager)
         # 幂等重放直接返回已提交快照，不能再次调用模型或重复结算。
         if turn.client_turn_id in current.session.processed_client_turn_ids:
-            replay_receipt = (
-                await _create_receipt_for_existing_ended_session(
-                    config_manager,
-                    runtime,
-                    current.session,
-                )
-                if current.session.status == "ended"
-                else None
-            )
+            replay_receipt = None
+            replay_receipt_pending = False
+            if current.session.status == "ended":
+                try:
+                    replay_receipt = await _create_receipt_for_existing_ended_session(
+                        config_manager, runtime, current.session,
+                    )
+                except (ValueError, OSError, MaintenanceModeError):
+                    replay_receipt_pending = True
             return {
                 "ok": True,
                 "idempotent_replay": True,
+                "end_receipt_pending": replay_receipt_pending,
                 **_numeric_payload(
                     runtime,
                     current,
@@ -1175,7 +1181,7 @@ async def _submit_numeric_input_once(
                 end_receipt = await _create_receipt_for_existing_ended_session(
                     config_manager, runtime, stored.session,
                 )
-            except (ValueError, OSError):
+            except (ValueError, OSError, MaintenanceModeError):
                 # The turn is already committed. Later snapshot reads retry the
                 # receipt; report the authoritative ending rather than a failed input.
                 end_receipt_pending = True
@@ -1280,6 +1286,11 @@ async def end_numeric_session(request: Request):
                     raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
                 stored = current
             else:
+                if payload.get("cancelled_start") is True and not can_retire_cancelled_start(
+                    story_id, session_id, current.session.lifecycle_revision,
+                    str(request.headers.get("X-Neko-Theater-Activity", "")).strip(),
+                ):
+                    return _error("numeric_cancelled_start_taken_over", 409)
                 await _assert_numeric_writable(config_manager, "sessions")
                 stored = await runtime.end_session(
                     session_id,

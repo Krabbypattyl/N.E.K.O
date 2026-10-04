@@ -251,7 +251,7 @@ class TheaterWorkshop:
                     error={"code": error.code, "details": {
                         "issues": error.issues, "provider": error.provider_details,
                         "attempts": error.attempts}},
-                    checkpoint=error.checkpoint)
+                    checkpoint=error.checkpoint, source_project=project)
             except Exception as persistence_error:
                 error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
@@ -259,7 +259,7 @@ class TheaterWorkshop:
             try:
                 self._store.fail_generation(project_id, base_revision=base_revision,
                     error={"code": "generation_technical_failed", "exception_type": type(error).__name__},
-                    checkpoint=checkpoint)
+                    checkpoint=checkpoint, source_project=project)
             except Exception as persistence_error:
                 error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
@@ -325,7 +325,7 @@ class TheaterWorkshop:
         for route in node.get("route_gates") or []:
             contract = route.get("transition_contract") or {}
             refs = contract.get("source_ids") or []
-            if any(ref in previous_goal_refs and ref not in current_goal_refs for ref in refs):
+            if any(ref in previous_goal_refs for ref in refs) and previous_goal_refs != current_goal_refs:
                 # The generator derives outgoing source evidence from the final
                 # source goal. Regenerate that reference with the enhanced goals.
                 refs = [ref for ref in refs if ref not in previous_goal_refs]

@@ -418,7 +418,8 @@ def test_archive_binding_failure_returns_structured_json(tmp_path, monkeypatch):
     assert response.json() == {'ok': False, 'reason': 'numeric_character_binding_unavailable'}
 
 
-def test_committed_ending_survives_receipt_write_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize('failure', ['io', 'maintenance'])
+def test_committed_ending_survives_receipt_write_failure(tmp_path, monkeypatch, failure):
     from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
     with _client(tmp_path, monkeypatch) as client:
@@ -434,6 +435,8 @@ def test_committed_ending_survives_receipt_write_failure(tmp_path, monkeypatch):
                                                                     target_opening='两人来到阅览室。')
 
         async def fail_receipt(*args, **kwargs):
+            if failure == 'maintenance':
+                raise numeric_theater_router.MaintenanceModeError('CLOUDSAVE_WRITE_FENCE_ACTIVE')
             raise NumericV2ArchiveError('numeric_end_receipt_write_failed')
 
         original = numeric_theater_router._create_receipt_for_existing_ended_session
@@ -446,6 +449,12 @@ def test_committed_ending_survives_receipt_write_failure(tmp_path, monkeypatch):
         assert response.status_code == 200, response.text
         assert response.json()['session']['status'] == 'ended'
         assert response.json()['end_receipt_pending'] is True
+        replay = client.post('/api/theater-numeric/session/input', json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'receipt-write-failure',
+            'client_turn_id': 'last-turn', 'base_revision': 0, 'message': '今天的事情已经办妥了。'})
+        assert replay.status_code == 200, replay.text
+        assert replay.json()['idempotent_replay'] is True
+        assert replay.json()['end_receipt_pending'] is True
         monkeypatch.setattr(numeric_theater_router, '_create_receipt_for_existing_ended_session', original)
         recovered = client.get('/api/theater-numeric/session/active', params={'story_id': 'numeric_v2_contract'})
         assert recovered.json()['session']['status'] == 'ended'

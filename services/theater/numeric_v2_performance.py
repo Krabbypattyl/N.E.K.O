@@ -143,7 +143,11 @@ def performance_content_blocks(performance: Mapping[str, Any]) -> list[dict[str,
                         block["type"] == "narration" and block["text"] == "时间向前流转，现场随之转换。")]
                 blocks.extend(segment_blocks)
         return blocks
-    return content_blocks(performance)
+    blocks = content_blocks(performance)
+    if performance.get("phase") == "transition_bridge":
+        blocks = [block for block in blocks if not (
+            block["type"] == "narration" and block["text"] == "时间向前流转，现场随之转换。")]
+    return blocks
 
 
 def valid_ordered_content(

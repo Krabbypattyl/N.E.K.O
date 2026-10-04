@@ -423,9 +423,26 @@ class NumericV2ProjectStore:
             if "stage" in changes and changes["stage"] in {"setup", "story", "publish"}:
                 project["stage"] = changes["stage"]
             if "setup" in changes:
+                from .contracts import NumericV2SetupPayload, MetricPayload
+
                 old_setup = deepcopy(dict(project.get("setup") or {}))
-                setup = deepcopy(old_setup)
-                setup.update(deepcopy(dict(changes["setup"] or {})))
+                incoming = deepcopy(dict(changes["setup"] or {}))
+                fields = NumericV2SetupPayload.model_fields
+                if set(incoming).difference(fields):
+                    raise NumericV2ProjectError("unsupported_setup_field")
+                # Existing drafts with unknown keys can be repaired without
+                # deleting the project. Null clears an optional field.
+                setup = {key: value for key, value in old_setup.items() if key in fields}
+                for key, value in incoming.items():
+                    if value is None:
+                        if fields[key].is_required():
+                            raise NumericV2ProjectError("required_setup_field")
+                        setup.pop(key, None)
+                    else:
+                        setup[key] = value
+                for metric in setup.get("metrics") or []:
+                    if isinstance(metric, Mapping) and set(metric).difference(MetricPayload.model_fields):
+                        raise NumericV2ProjectError("unsupported_metric_field")
                 setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
                 old_metrics = (project.get("setup") or {}).get("metrics") or []
                 project["setup"] = setup
@@ -744,12 +761,25 @@ class NumericV2ProjectStore:
         base_revision: int,
         error: Mapping[str, Any],
         checkpoint: Mapping[str, Any] | None = None,
+        source_project: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record failure diagnostics without overwriting author setup, existing story content or revision."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
             if project["revision"] != base_revision:
+                if (source_project is not None
+                        and project.get("generation_state") == "interrupted"
+                        and (project.get("generation_error") or {}).get("code") == "generation_revision_changed"):
+                    # Preserve diagnostics of this interrupted generation, but
+                    # never overwrite a newer running/completed generation.
+                    project["generation_error"]["original_error"] = deepcopy(dict(error))
+                    if all(project.get(key) == source_project.get(key) for key in ("title", "setup", "story")):
+                        project["_generation_checkpoint"] = (
+                            deepcopy(dict(checkpoint)) if isinstance(checkpoint, Mapping) else None
+                        )
+                    self._write(project)
+                    return self._view(project)
                 raise NumericV2RevisionConflictError(self._view(project))
             project["generation_state"] = "failed"
             project["generation_error"] = deepcopy(dict(error))

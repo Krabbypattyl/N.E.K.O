@@ -920,6 +920,7 @@ class NumericV2BranchService:
         stack: list[tuple[str, int, list[str], frozenset[str]]] = [
             (start_id, initial, [], frozenset())
         ]
+        expanded: set[tuple[str, int]] = set()
         while stack:
             node_id, value, path, visited = stack.pop()
             if node_id == source_node_id:
@@ -928,6 +929,9 @@ class NumericV2BranchService:
             if node_id in visited:
                 unknown_reasons.append(f"cycle:{node_id}")
                 continue
+            if (node_id, value) in expanded:
+                continue
+            expanded.add((node_id, value))
             node = nodes.get(node_id)
             if not isinstance(node, Mapping):
                 unknown_reasons.append(f"node_missing:{node_id}")

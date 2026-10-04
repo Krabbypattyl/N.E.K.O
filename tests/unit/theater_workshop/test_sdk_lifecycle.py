@@ -82,7 +82,9 @@ def test_generation_error_survives_a_concurrent_revision_change(opened, monkeypa
         host.sdk.generate(project['project_id'], base_revision=project['revision'])
     assert raised.value is failure
     assert failure.checkpoint == {'stage': 'outline'}
-    assert any('NumericV2RevisionConflictError' in note for note in failure.__notes__)
+    persisted = host.sdk._store.get(project['project_id'])
+    assert persisted['generation_error']['original_error']['code'] == 'model_auth_failed'
+    assert persisted['generation_checkpoint'] is None
 
 
 def test_partial_setup_update_round_trips_the_full_author_snapshot(opened, tmp_path):

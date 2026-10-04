@@ -176,6 +176,27 @@ async function submit(ctx, text = '询问细节。') {
 """
 
 RUNTIME_SCENARIOS = (
+    ("cancelled_opening_retires_before_second_start", r"""
+      const ctx = createContext();
+      sendLaunch(ctx, 'session_a', 0, 'theater:start-request');
+      for (let i = 0; i < 4; i++) await tick();
+      const first = take(ctx, /\/session\/start$/);
+      await ctx.runtime.requestEnd();
+      ctx.listeners.message[0]({origin: 'https://local.test', data: {
+        schema: ctx.window.nekoTheaterTransport.MESSAGE_SCHEMA, action: 'theater:start-request',
+        launch_id: 'second-start', story_id: 'story_session_a', session_id: 'session_a', character_id: 'cat'
+      }});
+      for (let i = 0; i < 4; i++) await tick();
+      assert.equal(ctx.requests.filter(r => /\/session\/start$/.test(r.url)).length, 0);
+      await respond(first, snapshot('session_a', 0));
+      const cleanup = take(ctx, /\/session\/end$/);
+      assert.equal(JSON.parse(cleanup.options.body).cancelled_start, true);
+      assert.equal(ctx.requests.filter(r => /\/session\/start$/.test(r.url)).length, 0);
+      await respond(cleanup, snapshot('session_a', 0, 'ended'));
+      const second = take(ctx, /\/session\/start$/);
+      await respond(second, snapshot('session_a', 0));
+      assert.equal(ctx.runtime.getState().sessionStatus, 'active');
+    """),
     ("m5_pointer_carries_pre_theater_surface_mode", r"""
       const first = createContext({ surfaceMode: 'full' });
       await launch(first);

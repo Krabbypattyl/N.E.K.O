@@ -117,6 +117,20 @@ class CharactersMixin:
         from config import get_localized_default_characters
         return get_localized_default_characters()
 
+    def load_character_binding_snapshot(self, catgirl_name=None):
+        """Verify only the selected persisted identity, without auditing other cards."""
+        snapshot = self.load_characters()
+        selected = str(catgirl_name or snapshot.get("当前猫娘") or "").strip()
+        with open(self.get_config_path('characters.json'), 'r', encoding='utf-8') as stream:
+            persisted = json.load(stream)
+        profiles = persisted.get("猫娘") if isinstance(persisted, dict) else None
+        profile = profiles.get(selected) if isinstance(profiles, dict) else None
+        if not isinstance(profile, dict) or not normalize_character_id(get_reserved(profile, "character_id", default="")):
+            raise ValueError("current_catgirl_identity_unavailable")
+        # Use the persisted card for both its identity and its personality hash.
+        snapshot["猫娘"][selected] = profile
+        return snapshot
+
     def load_characters(self, character_json_path=None, *, require_authoritative=False):
         """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
         # Migration results are written back to the file they came from, except

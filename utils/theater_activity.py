@@ -136,6 +136,20 @@ def is_theater_active(lanlan_name: Any, *, now: float | None = None) -> bool:
     return False
 
 
+def can_retire_cancelled_start(story_id: str, session_id: str, lifecycle: int, claim_id: str) -> bool:
+    """A late cancelled start must not retire a Session claimed by another host."""
+    now = time.monotonic()
+    scope = (story_id, session_id, lifecycle)
+    for claims in _activity_claims.values():
+        for owner, stamp in claims.items():
+            if owner != claim_id and now - stamp < THEATER_ACTIVITY_TTL_SECONDS and _claim_sessions.get(owner) == scope:
+                return False
+    for name, owned in _legacy_sessions.items():
+        if owned == scope and now - _last_activity.get(name, 0) < THEATER_ACTIVITY_TTL_SECONDS:
+            return False
+    return True
+
+
 def note_theater_session_response(response: Any, *, activity_claim_id: str = "") -> bool:
     """Update the registry from a successful theater session payload.
 
