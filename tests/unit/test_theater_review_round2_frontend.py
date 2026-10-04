@@ -194,8 +194,18 @@ RUNTIME_SCENARIOS = (
       assert.equal(ctx.requests.filter(r => /\/session\/start$/.test(r.url)).length, 0);
       await respond(cleanup, snapshot('session_a', 0, 'ended'));
       const second = take(ctx, /\/session\/start$/);
-      await respond(second, snapshot('session_a', 0));
+      await respond(second, {...snapshot('session_a', 0, 'ended'), resumed: true});
+      const replacement = take(ctx, /\/session\/start$/);
+      const payload = JSON.parse(replacement.options.body);
+      assert.equal(payload.replace_existing, true);
+      assert.notEqual(replacement.options.headers['X-Neko-Theater-Activity'], second.options.headers['X-Neko-Theater-Activity']);
+      assert.notEqual(payload.session_id, 'session_a');
+      assert.equal(ctx.runtime.getState().sessionId, payload.session_id);
+      const fresh = snapshot(payload.session_id, 0);
+      fresh.session.story_package_id = 'story_session_a';
+      await respond(replacement, fresh);
       assert.equal(ctx.runtime.getState().sessionStatus, 'active');
+      assert.notEqual(ctx.runtime.getState().phase, 'ended');
     """),
     ("m5_pointer_carries_pre_theater_surface_mode", r"""
       const first = createContext({ surfaceMode: 'full' });

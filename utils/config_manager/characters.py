@@ -126,6 +126,15 @@ class CharactersMixin:
         profiles = persisted.get("猫娘") if isinstance(persisted, dict) else None
         profile = profiles.get(selected) if isinstance(profiles, dict) else None
         if not isinstance(profile, dict) or not normalize_character_id(get_reserved(profile, "character_id", default="")):
+            # A user retry after permissions recover must bypass dirty-cache backoff.
+            # Only retry when this card lacks a durable ID; unrelated old cards
+            # cannot block a selected card whose identity is already persisted.
+            self.load_characters(require_authoritative=True)
+            with open(self.get_config_path('characters.json'), 'r', encoding='utf-8') as stream:
+                persisted = json.load(stream)
+            profiles = persisted.get("猫娘") if isinstance(persisted, dict) else None
+            profile = profiles.get(selected) if isinstance(profiles, dict) else None
+        if not isinstance(profile, dict) or not normalize_character_id(get_reserved(profile, "character_id", default="")):
             raise ValueError("current_catgirl_identity_unavailable")
         # Use the persisted card for both its identity and its personality hash.
         snapshot["猫娘"][selected] = profile

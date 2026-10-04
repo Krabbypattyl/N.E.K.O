@@ -344,6 +344,21 @@ def _legacy_id(characters: dict) -> str:
 
 
 @pytest.mark.unit
+def test_selected_binding_retries_immediately_when_write_fence_lifts(tmp_path, characters_clock):
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    transient_id = _legacy_id(cm.load_characters())
+    assert cm._characters_dirty
+    set_root_mode(cm, ROOT_MODE_NORMAL)
+    snapshot = cm.load_character_binding_snapshot('Legacy')
+    assert _legacy_id(snapshot) == transient_id
+    assert not cm._characters_dirty
+    persisted = json.loads(Path(cm.get_config_path('characters.json')).read_text(encoding='utf-8'))
+    assert _legacy_id(persisted) == transient_id
+
+
+@pytest.mark.unit
 def test_dirty_character_write_back_backs_off_during_a_write_fence(tmp_path, characters_clock):
     """Reads during a maintenance window do not retry the rejected save every time."""
     from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode

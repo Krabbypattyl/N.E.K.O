@@ -97,15 +97,19 @@ class _NumericTheaterRoute(APIRoute):
                 return await handler(request)
             except ValueError as exc:
                 # Only stable domain reason codes are safe client errors.
-                reason = str(exc)
-                if re.fullmatch(r"(?:numeric_|current_catgirl_|catgirl_|story_|session_)[a-z0-9_]+", reason):
-                    return _error(reason, 400)
-                raise
+                return _domain_value_error(exc, 400)
 
         return handle
 
 
 router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"], route_class=_NumericTheaterRoute)
+
+
+def _domain_value_error(exc: ValueError, status_code: int):
+    reason = str(exc)
+    if not re.fullmatch(r"(?:numeric_|current_catgirl_|catgirl_|story_|session_)[a-z0-9_]+", reason):
+        raise exc
+    return _error(reason, status_code)
 logger = logging.getLogger(__name__)
 # 请求执行期间由局部变量强持有锁；完成后弱引用表可自动回收不同请求 ID，避免长期运行持续增长。
 _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -972,11 +976,11 @@ async def _start_numeric_session(request: Request):
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
-        return _error(str(exc), 400)
+        return _domain_value_error(exc, 400)
     except ValueError as exc:
         if str(exc) == "catgirl_changed_requires_new_session":
-            return _error(str(exc), 409)
-        return _error(str(exc), 400)
+            return _domain_value_error(exc, 409)
+        return _domain_value_error(exc, 400)
     return {"ok": True, **_numeric_payload(runtime, stored, display_binding=binding)}
 
 
@@ -1002,7 +1006,7 @@ async def get_active_numeric_session(story_id: str):
     except NumericV2StoreError as exc:
         return _error(str(exc), 422)
     except ValueError as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
         "resumed": True,
@@ -1042,7 +1046,7 @@ async def get_numeric_session(request: Request, session_id: str, story_id: str, 
     except NumericV2StoreError as exc:
         return _error(str(exc), 422)
     except ValueError as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
         **_numeric_payload(
@@ -1202,14 +1206,14 @@ async def _submit_numeric_input_once(
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
     except (NumericV2RuntimeError, NumericV2StoreError) as exc:
-        return _error(str(exc), 400)
+        return _domain_value_error(exc, 400)
     except ValueError as exc:
         if str(exc) in {
             "catgirl_changed_requires_new_session",
             "catgirl_profile_changed_requires_retry",
         }:
-            return _error(str(exc), 409)
-        return _error(str(exc), 400)
+            return _domain_value_error(exc, 409)
+        return _domain_value_error(exc, 400)
     return {
         "ok": True,
         "resolved_turn": {
@@ -1321,9 +1325,9 @@ async def end_numeric_session(request: Request):
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
-        return _error(str(exc), 400)
+        return _domain_value_error(exc, 400)
     except ValueError as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
         **_numeric_payload(
@@ -1396,9 +1400,9 @@ async def resume_numeric_session(request: Request, claim_activity: bool = True):
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     except ValueError as exc:
-        return _error(str(exc), 409)
+        return _domain_value_error(exc, 409)
     return {
         "ok": True,
         "resumed": True,
@@ -1598,7 +1602,7 @@ async def speak_numeric_block(request: Request):
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except (NumericV2StoreError, NumericV2RuntimeError, ValueError) as exc:
-            return _error(str(exc), 409)
+            return _domain_value_error(exc, 409)
 
 
 async def _validated_receipt(
@@ -1783,7 +1787,7 @@ async def archive_numeric_session(request: Request):
                     )
                     return {"ok": True, "status": "written", "count": data.get("count")}
         except NumericV2ArchiveError as exc:
-            return _error(str(exc), 409)
+            return _domain_value_error(exc, 409)
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except MaintenanceModeError:
@@ -1900,7 +1904,7 @@ async def skip_numeric_session_archive(request: Request):
         except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
             return _package_error(exc)
         except NumericV2ArchiveError as exc:
-            return _error(str(exc), 409)
+            return _domain_value_error(exc, 409)
 
 
 def _receipt_archive_attempt(receipt: Mapping[str, Any]) -> int:

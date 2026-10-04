@@ -2341,8 +2341,9 @@ async def _execute_numeric_v2_turn(
         and fallback_target.get("type") != "ending"
         and fallback_target.get("terminal") is not True
         and fallback_offer
-        and (not module_options.get("review") or (
-            final_fixed_review is not None
+        and ((not module_options.get("review") and performance.get("transition_offered") is not True) or (
+            module_options.get("review")
+            and final_fixed_review is not None
             and not final_fixed_review.offer_present
             and not final_fixed_review.body_violations
         ))
@@ -2497,13 +2498,13 @@ async def _execute_numeric_v2_turn(
         if isinstance(acceptance_contract, Mapping)
         else ""
     )
+    authored_offer = _project_authored_transition_text(
+        runtime.engine, outcome.session,
+        str((acceptance_contract or {}).get("fallback_offer") or ""),
+    ).strip()
     if new_offer and not route_changed and (not module_options.get("evaluator") or diagnostics["evaluator_degraded"]):
         # Without semantic judgement, expose the authored pair explicitly; an
         # arbitrary Actor recommendation cannot stand in for route consent.
-        authored_offer = _project_authored_transition_text(
-            runtime.engine, outcome.session,
-            str((acceptance_contract or {}).get("fallback_offer") or ""),
-        ).strip()
         if authored_offer and authored_accept_input:
             candidate = dict(filtered_performance)
             visible = str(candidate.get("performance") or "").rstrip()
@@ -2512,7 +2513,22 @@ async def _execute_numeric_v2_turn(
             if valid_mixed_performance_policy(candidate, outcome.session.dialogue_policy):
                 filtered_performance = candidate
                 reviewed_transition_offered = True
-    if reviewed_transition_offered:
+    authored_offer_visible = bool(
+        authored_offer
+        and any(
+            block.get("type") == "dialogue"
+            and str(block.get("text") or "").rstrip().endswith(
+                authored_offer
+            )
+            for block in performance_content_blocks(filtered_performance)
+        )
+    )
+    semantically_verified_offer = bool(
+        module_options.get("review") and module_options.get("evaluator")
+        and not diagnostics["evaluator_degraded"]
+        and outcome.session.dialogue_policy != "forbidden"
+    )
+    if reviewed_transition_offered and (authored_offer_visible or semantically_verified_offer):
         filtered_performance, acceptance_inserted = (
             _insert_verified_offer_acceptance_suggestion(
                 filtered_performance,

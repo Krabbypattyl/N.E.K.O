@@ -238,7 +238,10 @@ class TheaterWorkshop:
             raise WorkshopError("generation_setup_invalid")
         setup = dict(project["setup"])
         setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
-        setup = C.NumericV2SetupPayload.model_validate(setup).model_dump()
+        try:
+            setup = C.NumericV2SetupPayload.model_validate(setup).model_dump()
+        except ValueError as error:
+            raise WorkshopError("generation_setup_invalid") from error
         checkpoint = self._store.generation_checkpoint(project_id)
         names = checkpoint.get("cast_names") if checkpoint is not None else self._names()
         self._store.begin_generation(project_id, base_revision=base_revision)
@@ -316,6 +319,8 @@ class TheaterWorkshop:
             raise WorkshopError("node_not_found")
         beat = node.setdefault("story_beat", {})
         previous_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
+        previous_goals = beat.get("goals") or []
+        previous_final_ref = f"goal.{previous_goals[-1]['id']}" if previous_goals else None
         for field in ("opening_scene", "narrative_focus", "goals", "must_not_happen",
                       "catgirl_situation", "transition_goal", "character_state", "acting_contract"):
             if field in enhancement:
@@ -328,7 +333,10 @@ class TheaterWorkshop:
             if any(ref in previous_goal_refs for ref in refs) and previous_goal_refs != current_goal_refs:
                 # The generator derives outgoing source evidence from the final
                 # source goal. Regenerate that reference with the enhanced goals.
-                refs = [ref for ref in refs if ref not in previous_goal_refs]
+                replaced_refs = previous_goal_refs.difference(current_goal_refs) | {previous_final_ref}
+                if not any(ref in replaced_refs for ref in refs):
+                    continue
+                refs = [ref for ref in refs if ref not in replaced_refs]
                 goals = beat.get("goals") or []
                 if goals:
                     refs.append(f"goal.{goals[-1]['id']}")

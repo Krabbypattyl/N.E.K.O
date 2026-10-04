@@ -43,6 +43,41 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _setup_fields(source, *, legacy=None, strict=True):
+    """Validate draft field names without requiring a complete metric schema."""
+    from .contracts import NumericV2SetupPayload, MetricPayload, MetricBandPayload
+
+    def clean(value, fields, reason, old=None):
+        result = deepcopy(dict(value))
+        for key in set(result).difference(fields):
+            if strict and result[key] is not None and not (
+                isinstance(old, Mapping) and key in old and old[key] == result[key]
+            ):
+                raise NumericV2ProjectError(reason)
+            result.pop(key)
+        return result
+
+    setup = clean(source, NumericV2SetupPayload.model_fields, "unsupported_setup_field", legacy)
+    old_metrics = (legacy or {}).get("metrics") or []
+    metrics = setup.get("metrics")
+    if isinstance(metrics, list):
+        for index, metric in enumerate(metrics):
+            if not isinstance(metric, Mapping):
+                continue
+            old = next((item for item in old_metrics if isinstance(item, Mapping)
+                        and metric.get("id") and item.get("id") == metric["id"]),
+                       old_metrics[index] if index < len(old_metrics) else None)
+            metric = clean(metric, MetricPayload.model_fields, "unsupported_metric_field", old)
+            old_bands = (old or {}).get("bands") or []
+            bands = metric.get("bands")
+            if isinstance(bands, list):
+                metric["bands"] = [clean(band, MetricBandPayload.model_fields,
+                    "unsupported_metric_band_field", old_bands[i] if i < len(old_bands) else None)
+                    if isinstance(band, Mapping) else band for i, band in enumerate(bands)]
+            metrics[index] = metric
+    return setup
+
+
 def _normalize_editor(value: Any) -> dict[str, Any]:
     """Store only author canvas coordinates, keeping editor state out of Story Package."""
 
@@ -423,16 +458,14 @@ class NumericV2ProjectStore:
             if "stage" in changes and changes["stage"] in {"setup", "story", "publish"}:
                 project["stage"] = changes["stage"]
             if "setup" in changes:
-                from .contracts import NumericV2SetupPayload, MetricPayload
+                from .contracts import NumericV2SetupPayload
 
                 old_setup = deepcopy(dict(project.get("setup") or {}))
-                incoming = deepcopy(dict(changes["setup"] or {}))
+                incoming = _setup_fields(dict(changes["setup"] or {}), legacy=old_setup)
                 fields = NumericV2SetupPayload.model_fields
-                if set(incoming).difference(fields):
-                    raise NumericV2ProjectError("unsupported_setup_field")
                 # Existing drafts with unknown keys can be repaired without
                 # deleting the project. Null clears an optional field.
-                setup = {key: value for key, value in old_setup.items() if key in fields}
+                setup = _setup_fields(old_setup, strict=False)
                 for key, value in incoming.items():
                     if value is None:
                         if fields[key].is_required():
@@ -440,9 +473,6 @@ class NumericV2ProjectStore:
                         setup.pop(key, None)
                     else:
                         setup[key] = value
-                for metric in setup.get("metrics") or []:
-                    if isinstance(metric, Mapping) and set(metric).difference(MetricPayload.model_fields):
-                        raise NumericV2ProjectError("unsupported_metric_field")
                 setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
                 old_metrics = (project.get("setup") or {}).get("metrics") or []
                 project["setup"] = setup
@@ -876,6 +906,8 @@ class NumericV2ProjectStore:
 
     def import_project(self, source: Mapping[str, Any]) -> dict[str, Any]:
         with self.transaction():
+            source = deepcopy(dict(source))
+            source["setup"] = _setup_fields(dict(source.get("setup") or {}))
             path = self._path(source["project_id"])
             if path.exists() or path.is_symlink():
                 raise NumericV2ProjectError("project_already_exists")

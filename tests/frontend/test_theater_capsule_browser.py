@@ -263,6 +263,42 @@ def test_runtime_enters_theater_loading_before_start_model_response(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('same_id', [True, False])
+def test_start_replaces_retired_session_in_real_capsule(mock_page: Page, running_server: str, same_id: bool):
+    requests = []
+
+    def handler(route: Route):
+        if not route.request.url.split('?')[0].endswith('/session/start'):
+            route.continue_()
+            return
+        payload = json.loads(route.request.post_data)
+        requests.append(payload)
+        result = _snapshot(revision=0)
+        if len(requests) == 1:
+            result['resumed'] = True
+            result['session']['status'] = 'ended'
+        else:
+            result['session']['session_id'] = payload['session_id']
+        route.fulfill(json=result)
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    requested_id = 'capsule-browser-session' if same_id else 'new-capsule-session'
+    mock_page.evaluate("""sessionId => window.postMessage({schema:'neko.theater.interpage.v1',
+        action:'theater:start-request', launch_id:'retired-start', story_id:'capsule-browser-story',
+        story_title:'雨巷来信', session_id:sessionId, character_id:'character:test', replace_existing:false},
+        window.location.origin)""", requested_id)
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'", timeout=15000)
+    assert len(requests) == 2
+    assert requests[1]['replace_existing'] is True
+    assert requests[1]['session_id'] != 'capsule-browser-session'
+    assert mock_page.evaluate('window.nekoTheaterRuntime.getState().sessionStatus') == 'active'
+    assert mock_page.evaluate('window.nekoTheaterRuntime.getState().sessionId') == requests[1]['session_id']
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize('setting', ['花店柜台旁的旧信', '轨道站舷窗外的星图'])
 def test_opening_prefix_does_not_delay_first_dialogue(mock_page: Page, running_server: str, setting):
     """长开场前缀完整保留，但不再逐字挡住首句对白和 TTS 请求。"""  # noqa: DOCSTRING_CJK

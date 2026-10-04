@@ -136,7 +136,7 @@ def test_current_persisted_card_ignores_unpersisted_unrelated_card(tmp_path):
     class Manager(CharactersMixin):
         def get_config_path(self, name):
             return path
-        def load_characters(self):
+        def load_characters(self, *, require_authoritative=False):
             return {'猫娘': {'Lan': card, 'Other': {'_reserved': {'character_id': 'temporary'}}}, '当前猫娘': 'Lan'}
     assert Manager().load_character_binding_snapshot()['猫娘']['Lan'] == card
     card_without_id = {'性格': '温和'}

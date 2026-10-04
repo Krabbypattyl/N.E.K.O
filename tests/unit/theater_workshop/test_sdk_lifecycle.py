@@ -136,6 +136,31 @@ def test_enhancement_rebuilds_outgoing_goal_references(opened, monkeypatch):
     assert updated['route_gates'][0]['transition_contract']['source_ids'] == ['goal.enhanced_goal']
 
 
+@pytest.mark.parametrize('refs', [[0], [0, 1], [2], [0, 2]])
+def test_enhancement_preserves_valid_nonfinal_goal_references(opened, monkeypatch, refs):
+    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from .test_numeric_v2_branch import _ordered_goal
+
+    host, _ = opened
+    project = ready_to_publish(host.sdk)
+    story = deepcopy(project['story'])
+    node = next(node for node in story['nodes'] if node.get('route_gates'))
+    goals = goals_to_package(node['id'], [_ordered_goal(f'线索{i}已经交付。') for i in range(3)])
+    node['story_beat']['goals'] = goals
+    sources = [f"goal.{goals[i]['id']}" for i in refs] + [f"opening.{node['id']}"]
+    node['route_gates'][0]['transition_contract']['source_ids'] = sources
+    project = host.sdk.update_project(project['project_id'], base_revision=project['revision'], changes={'story': story})
+    enhanced = goals_to_package(node['id'], [_ordered_goal(f'线索{i}已经交付。') for i in range(4)])
+    monkeypatch.setattr(host.sdk._generator, 'enhance_node', lambda **kwargs: {'goals': enhanced})
+    result = host.sdk.enhance_node(project['project_id'], node['id'], base_revision=project['revision'])
+    updated = next(row for row in result['project']['story']['nodes'] if row['id'] == node['id'])
+    actual = updated['route_gates'][0]['transition_contract']['source_ids']
+    assert all(f"goal.{goals[i]['id']}" in actual for i in refs if i != 2)
+    assert f"opening.{node['id']}" in actual
+    assert (f"goal.{enhanced[-1]['id']}" in actual) == (2 in refs)
+    assert f"goal.{goals[-1]['id']}" not in actual
+
+
 def test_unknown_total_usage_uses_reported_components_without_fabricating_counts():
     from theater_workshop.sdk.model import ModelAgent, capture_usage
     agent = ModelAgent('test', lambda *a, **kw: ModelReply('{}', 'test',

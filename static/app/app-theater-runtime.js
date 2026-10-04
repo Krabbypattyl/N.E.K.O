@@ -991,6 +991,29 @@
         } catch (_) {
             snapshot = { ok: false };
         }
+        if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)
+            && snapshot.ok && snapshot.resumed === true && snapshot.session
+            && snapshot.session.status === 'ended') {
+            // Starting a new performance must not adopt a retired recovery slot.
+            // Keep ordinary continue/restore semantics and retry replacement once.
+            // The ended response retires its activity owner as well.
+            releaseServerTheaterActivity('', startClaim);
+            startClaim = createId('theater_activity_');
+            pendingLaunch.activityClaimId = startClaim;
+            state.activityClaimId = startClaim;
+            if (snapshot.session.session_id === nextSessionId) {
+                nextSessionId = createId('theater_session_');
+                message.session_id = nextSessionId;
+                pendingLaunch.sessionId = nextSessionId;
+                state.sessionId = nextSessionId;
+            }
+            try {
+                snapshot = await requestJson(api.start, {method: 'POST', activityClaimId: startClaim, body: {
+                    story_id: nextStoryId, session_id: nextSessionId,
+                    character_id: String(message.character_id), replace_existing: true
+                }});
+            } catch (_) { snapshot = {ok: false}; }
+        }
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
             // 开场生成期间已退出或被新启动取代：迟到的开场结果只丢弃，不能重新接管胶囊。
             if (snapshot.ok && snapshot.resumed !== true && snapshot.session
@@ -1009,7 +1032,7 @@
             releaseServerTheaterActivity('', startClaim);
             return false;
         }
-        if (!snapshot.ok || !snapshot.session) {
+        if (!snapshot.ok || !snapshot.session || snapshot.session.status === 'ended') {
             state.phase = 'ended';
             state.sessionStatus = 'ended';
             state.history = [];
