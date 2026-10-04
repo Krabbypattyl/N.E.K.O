@@ -515,7 +515,8 @@ async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('authored', [False, True])
-async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path, monkeypatch, authored):
+@pytest.mark.parametrize('followup', ['', '（歪头）你觉得呢？'])
+async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path, monkeypatch, authored, followup):
     """判定故障时只核验作者合同，不把 Actor 推荐首位当成接受权限。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
@@ -547,7 +548,7 @@ async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path,
         generations.append(kwargs)
         if len(generations) == 1:
             return {
-                'performance': '手续办妥了，我们现在去阅览室吧。',
+                'performance': '手续办妥了，我们现在去阅览室吧。' + followup,
                 'suggested_inputs': [suggestion, '再等等。'],
                 'transition_offered': True,
             }

@@ -832,9 +832,15 @@ def _pending_offer_acceptance_path(
 def _authored_offer_visible(performance: Mapping[str, Any], offer: str) -> bool:
     authored_dialogue = "".join(str(block.get("text") or "") for block in mixed_performance_blocks(offer)
                                 if block.get("type") == "dialogue").strip()
-    delivered_dialogue = "".join(str(block.get("text") or "") for block in performance_content_blocks(performance)
-                                 if block.get("type") == "dialogue").strip()
-    return bool(authored_dialogue and delivered_dialogue.endswith(authored_dialogue))
+    if not authored_dialogue:
+        return False
+    delivered_dialogue = ""
+    for block in performance_content_blocks(performance):
+        if block.get("type") == "dialogue":
+            delivered_dialogue += str(block.get("text") or "")
+            if delivered_dialogue.strip().endswith(authored_dialogue):
+                return True
+    return False
 
 
 def _confirmed_authored_acceptance(

@@ -269,6 +269,8 @@ async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
 async def _create_ended_receipt(config_manager: Any, session: Any) -> dict[str, Any] | None:
     """兼容旧 Session 补建结束回执前，先通过共享写栅栏。"""  # noqa: DOCSTRING_CJK
 
+    if session.ended_reason == "cancelled_start":
+        return None
     await _assert_numeric_writable(config_manager, "end_receipts")
     if await asyncio.to_thread(
         _archive_store(config_manager).pending_forget,
@@ -1506,7 +1508,7 @@ async def speak_numeric_block(request: Request):
                 return _error("numeric_base_revision_mismatch", 409)
             if stored.session.lifecycle_revision != lifecycle_revision:
                 return _error("numeric_base_lifecycle_revision_mismatch", 409)
-            if stored.session.ended_reason == "user_exit":
+            if stored.session.status == "ended" and stored.session.ended_reason not in (None, "natural_ending"):
                 return _error("session_already_ended", 409)
             if revision == 0:
                 performance = stored.session.opening_performance
@@ -1566,7 +1568,7 @@ async def speak_numeric_block(request: Request):
                 # its lifecycle separately, while allowing natural ending audio.
                 if latest.session.lifecycle_revision != lifecycle_revision:
                     return _error("numeric_base_lifecycle_revision_mismatch", 409)
-                if latest.session.ended_reason == "user_exit":
+                if latest.session.status == "ended" and latest.session.ended_reason not in (None, "natural_ending"):
                     return _error("session_already_ended", 409)
                 if revision == 0:
                     latest_performance = latest.session.opening_performance

@@ -240,7 +240,7 @@ class TheaterWorkshop:
         try:
             setup = _setup_fields(setup, strict=False)
             setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
-            setup = C.NumericV2SetupPayload.model_validate(setup).model_dump()
+            setup = C.NumericV2SetupPayload.model_validate(setup).model_dump(exclude_none=True)
         except (ValueError, TypeError, AttributeError) as error:
             raise WorkshopError("generation_setup_invalid") from error
         checkpoint = self._store.generation_checkpoint(project_id)

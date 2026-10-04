@@ -909,6 +909,10 @@
         state.tokenUsage = message.token_usage || null;
         applySnapshot(snapshot);
         state.history = buildCommittedHistory(snapshot);
+        if (snapshot.end_receipt_id) state.pendingEnd = {
+            story_id: state.storyId, session_id: state.sessionId, revision: state.revision,
+            end_receipt_id: snapshot.end_receipt_id, archive_request_id: snapshot.archive_request_id || ''
+        };
         state.active = true;
         rememberPointer();
         claimAudioPlayback();
@@ -1033,7 +1037,7 @@
             releaseServerTheaterActivity('', startClaim);
             return false;
         }
-        if (!snapshot.ok || !snapshot.session || snapshot.session.status === 'ended') {
+        if (!snapshot.ok || !snapshot.session) {
             state.phase = 'ended';
             state.sessionStatus = 'ended';
             state.history = [];

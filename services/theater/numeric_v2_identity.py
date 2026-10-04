@@ -20,7 +20,7 @@ def numeric_v2_character_ids(config_manager: Any) -> dict[str, str]:
     # and IDs that failed to persist cannot prove that a saved character is gone.
     try:
         characters = config_manager.load_characters(require_authoritative=True)
-    except (OSError, ValueError, MaintenanceModeError) as exc:
+    except (OSError, ValueError) as exc:
         raise ValueError("numeric_character_config_unavailable") from exc
     catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
     if not isinstance(catgirls, dict):

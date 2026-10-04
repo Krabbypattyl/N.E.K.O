@@ -77,9 +77,14 @@ def _setup_fields(source, *, legacy=None, strict=True):
             if isinstance(bands, list):
                 metric["bands"] = [clean(band, MetricBandPayload.model_fields,
                     "unsupported_metric_band_field", next((item for item in old_bands
-                        if isinstance(item, Mapping) and all(item.get(key) == band.get(key)
-                            for key in ("min", "max", "label"))), None))
+                        if isinstance(item, Mapping) and all(key in item and item[key] == band[key]
+                            for key in set(band).difference(MetricBandPayload.model_fields))), None))
                     if isinstance(band, Mapping) else band for i, band in enumerate(bands)]
+                for band in metric["bands"]:
+                    if isinstance(band, Mapping) and band.get("description") is not None:
+                        description = band["description"]
+                        if not isinstance(description, str) or len(description) > 2000:
+                            raise NumericV2ProjectError("invalid_metric_band_description")
             metrics[index] = metric
     return setup
 
@@ -897,7 +902,7 @@ class NumericV2ProjectStore:
                     "bands": definition.get("bands", []),
                 })
             # The setup is an editor projection; importing must retain the original package.
-            project["setup"]["metrics"] = normalize_metric_drafts(setup_metrics)
+            project["setup"]["metrics"] = _setup_fields({"metrics": normalize_metric_drafts(setup_metrics)}, strict=False)["metrics"]
             project["story"] = deepcopy(dict(story))
             project["title"] = str(story.get("meta", {}).get("title", "未命名剧本") or "").strip()
             project["stage"] = "story"
@@ -913,12 +918,12 @@ class NumericV2ProjectStore:
     def import_project(self, source: Mapping[str, Any]) -> dict[str, Any]:
         with self.transaction():
             source = deepcopy(dict(source))
-            # This discarded field was written by early author-project drafts;
-            # migrate only the known legacy field, not arbitrary new keys.
-            for metric in source.get("setup", {}).get("metrics", []) or []:
-                if isinstance(metric, dict):
-                    metric.pop("unit", None)
-            source["setup"] = _setup_fields(dict(source.get("setup") or {}))
+            # Package bands permit extensions; only extensions backed by the
+            # imported package may be cleaned from its author projection.
+            schema = (source.get("story") or {}).get("metric_schema") or {}
+            package_metrics = [{"id": key, "bands": value.get("bands") or []}
+                               for key, value in schema.items() if isinstance(value, Mapping)] if isinstance(schema, Mapping) else []
+            source["setup"] = _setup_fields(dict(source.get("setup") or {}), legacy={"metrics": package_metrics})
             path = self._path(source["project_id"])
             if path.exists() or path.is_symlink():
                 raise NumericV2ProjectError("project_already_exists")

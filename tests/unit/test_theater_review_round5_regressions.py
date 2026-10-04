@@ -27,8 +27,12 @@ async function run() {
  const request = take(ctx, /\\/session\\/start$/);
  const ended = snapshot('session_a', 3, 'ended');
  ended.session.ended_reason = REASON;
+ ended.end_receipt_id = 'retained-receipt';
  await respond(request, {...ended, resumed:true});
  assert.equal(ctx.requests.filter(r=>/\\/session\\/start$/.test(r.url)).length, 0);
+ assert.equal(ctx.runtime.getState().sessionStatus, 'ended');
+ assert.equal(ctx.runtime.getState().errorMessage, '');
+ assert.equal(ctx.runtime.getState().pendingEnd.end_receipt_id, 'retained-receipt');
 }
 '''.replace('REASON', repr(reason)))
 
@@ -110,15 +114,13 @@ def test_legacy_bands_match_by_content_after_reorder():
     assert _setup_fields(numeric_v2_setup(), legacy={'metrics':{}})['metrics']
 
 
-def test_import_migrates_known_legacy_unit_and_preserves_band_description(tmp_path):
+def test_import_preserves_band_description(tmp_path):
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
     source = store.create()
     source['project_id'] = 'project_legacy_import'
     source['setup'] = numeric_v2_setup()
-    source['setup']['metrics'][0]['unit'] = '点'
     source['setup']['metrics'][0]['bands'][0]['description'] = '作者写的区间说明'
     imported = store.import_project(source)
-    assert 'unit' not in imported['setup']['metrics'][0]
     assert imported['setup']['metrics'][0]['bands'][0]['description'] == '作者写的区间说明'
 
 
