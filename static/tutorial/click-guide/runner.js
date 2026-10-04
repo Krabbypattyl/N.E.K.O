@@ -92,27 +92,32 @@
         }
         const windowSkip = () => void finish('skipped');
         const ownedEscapes = new WeakMap();
+        const avatarPopupSelector = '.live2d-popup, .vrm-popup, .mmd-popup, .pngtuber-popup';
         const editableSelector = 'input:not([type="checkbox"]):not([type="radio"]):not([type="range"])'
             + ':not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]):not([type="hidden"]), '
             + 'textarea, select, [contenteditable]:not([contenteditable="false"])';
         const overlaySelector = '[role="dialog"], [role="menu"], [aria-modal="true"], '
             + '.modal-overlay, .neko-social-embed-backdrop, .composer-icon-popover, '
             + '[data-compact-input-tool-fan-open="true"], '
-            + '.live2d-popup, .vrm-popup, .mmd-popup, .pngtuber-popup, #chat-avatar-preview-popup';
+            + avatarPopupSelector + ', #chat-avatar-preview-popup, .neko-mic-subwindow, [data-neko-sidepanel-owner]';
         function hasEditableOwner(event) {
             return !!(event.target?.closest?.(editableSelector)
                 || document.activeElement?.closest?.(editableSelector));
         }
         function hasKeyboardOwner(event) {
-            return hasEditableOwner(event) || hasOverlayOwner();
+            const target = api.resolveTarget(view()?.target);
+            // Avatar popup views have no business Escape handler. Only those
+            // guided popups yield to the guide; the tool wheel still owns Escape.
+            const guidedPopup = target?.matches(avatarPopupSelector) ? target : null;
+            return hasEditableOwner(event) || hasOverlayOwner(guidedPopup);
         }
         function hasOverlayOwner(guideTarget) {
             return [...document.querySelectorAll(overlaySelector)].some(element => {
                 // The persistent chat surface is a host, not a dismissible overlay.
                 if (element.id === 'react-chat-window-shell' || layer.contains(element)
                     || element.closest('[hidden], [aria-hidden="true"]')) return false;
-                // For Tab only, an overlay containing this lesson's target is
-                // part of the guided controls (for example, the tool wheel).
+                // The caller decides which guided overlay can yield: all target
+                // containers for Tab, only avatar popup views for Escape.
                 if (guideTarget && element.contains(guideTarget)) return false;
                 return api.isElementVisible(element);
             });
@@ -124,7 +129,7 @@
         function escape(event) {
             if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Escape') {
-                if (ownedEscapes.get(event) ?? hasKeyboardOwner(event)) return;
+                if (ownedEscapes.get(event) || hasKeyboardOwner(event)) return;
                 event.preventDefault();
                 windowSkip();
             }

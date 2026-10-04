@@ -17,9 +17,7 @@
         return Array.from(candidates).find(element => {
             if (!api.isElementVisible(element)) return false;
             const rect = element.getBoundingClientRect();
-            const style = view.getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden'
-                && style.display !== 'none' && style.opacity !== '0'
+            return rect.width > 0 && rect.height > 0
                 && rect.right > 0 && rect.bottom > 0 && rect.left < view.innerWidth && rect.top < view.innerHeight;
         }) || null;
     };

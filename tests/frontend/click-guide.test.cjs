@@ -1726,6 +1726,64 @@ test('native presentation never traps Tab on its hidden web card', async t => {
     await runner.stop('stopped');
 });
 
+test('Escape rechecks an owner created by a document handler after capture', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    let reason;
+    const input = doc.createElement('textarea');
+    doc.body.append(input);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    const moveFocus = () => input.focus();
+    doc.addEventListener('keydown', moveFocus);
+    target.focus();
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.equal(doc.activeElement, input);
+    assert.equal(reason, undefined);
+    doc.removeEventListener('keydown', moveFocus);
+    await runner.stop('stopped');
+});
+
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    test(`unconsumed Escape can exit the guided ${prefix} avatar popup view`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        const popup = doc.createElement('div');
+        popup.className = prefix + '-popup';
+        popup.getBoundingClientRect = target.getBoundingClientRect;
+        doc.body.append(popup);
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Popup', target: popup }], onEnd: value => { reason = value; } });
+        await runner.start();
+        doc.querySelector('.click-guide-card').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const marker of ['class="neko-mic-subwindow"', 'data-neko-sidepanel-owner="live2d-popup-mic"']) {
+    test(`independent mic sidepanel owns Tab and Escape: ${marker}`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        doc.body.insertAdjacentHTML('beforeend', '<div ' + marker + '><button id="sidepanel-control">Control</button></div>');
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card', target }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const button = doc.querySelector('#sidepanel-control');
+        button.focus();
+        for (const key of ['Tab', 'Escape']) {
+            const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+            button.dispatchEvent(event);
+            assert.equal(event.defaultPrevented, false);
+            assert.equal(doc.activeElement, button);
+        }
+        await delay(0);
+        assert.equal(reason, undefined);
+        await runner.stop('stopped');
+    });
+}
+
 test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
     const { dom, api, doc, target } = setup();
     t.after(() => dom.window.close());
