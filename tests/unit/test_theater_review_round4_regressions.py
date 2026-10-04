@@ -22,7 +22,13 @@ from theater_workshop.host import InProcessPackageGateway
 @pytest.mark.parametrize('evidence,player', [('递给你', '我把纸条递给你'),
     ('抱住她', '（抱住她）'), ('抱抱', '抱抱'), ('抱抱', '（抱抱）')])
 def test_short_chinese_literal_evidence_is_delivered(evidence, player):
-    engine = _engine()
+    story = deepcopy(_engine().story)
+    # The citation fixture must actually satisfy this authored condition;
+    # source/length validation is not a semantic condition solver.
+    story['nodes'][0]['story_beat']['fixed_narrations'][1]['trigger']['condition'] = (
+        '玩家已经把纸条递给猫娘。' if evidence == '递给你' else '玩家已经拥抱猫娘。'
+    )
+    engine = NumericV2Engine.from_mapping(story)
     session = engine.create_session(session_id='short-chinese', catgirl_binding=_binding(), opening_performance=OPENING)
     result = apply_triggers(engine.nodes['start'], session, {'performance': '（点头）'},
         ({'id': 'log', 'evidence': evidence},), player, known=False)
