@@ -96,29 +96,28 @@
         const editableSelector = 'input:not([type="checkbox"]):not([type="radio"]):not([type="range"])'
             + ':not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]):not([type="hidden"]), '
             + 'textarea, select, [contenteditable]:not([contenteditable="false"])';
-        const overlaySelector = '[role="dialog"], [role="menu"], [aria-modal="true"], '
+        const escapeOverlaySelector = '[role="dialog"], [role="menu"], [aria-modal="true"], '
             + '.modal-overlay, .neko-social-embed-backdrop, .composer-icon-popover, '
-            + '[data-compact-input-tool-fan-open="true"], '
-            + avatarPopupSelector + ', #chat-avatar-preview-popup, .neko-mic-subwindow, [data-neko-sidepanel-owner]';
+            + '[data-compact-input-tool-fan-open="true"], #chat-avatar-preview-popup';
+        const tabOverlaySelector = escapeOverlaySelector + ', ' + avatarPopupSelector
+            + ', .neko-mic-subwindow, [data-neko-sidepanel-owner]';
         function hasEditableOwner(event) {
             return !!(event.target?.closest?.(editableSelector)
                 || document.activeElement?.closest?.(editableSelector));
         }
         function hasKeyboardOwner(event) {
-            const target = api.resolveTarget(view()?.target);
-            // Avatar popup views have no business Escape handler. Only those
-            // guided popups yield to the guide; the tool wheel still owns Escape.
-            const guidedPopup = target?.matches(avatarPopupSelector) ? target : null;
-            return hasEditableOwner(event) || hasOverlayOwner(guidedPopup);
+            // Avatar popups and sidepanels have no Escape handler. They only
+            // participate in Tab ownership; editors within them still own Escape.
+            return hasEditableOwner(event) || hasOverlayOwner(null, escapeOverlaySelector);
         }
-        function hasOverlayOwner(guideTarget) {
-            return [...document.querySelectorAll(overlaySelector)].some(element => {
+        function hasOverlayOwner(guideTarget, selector = tabOverlaySelector) {
+            return [...document.querySelectorAll(selector)].some(element => {
                 // The persistent chat surface is a host, not a dismissible overlay.
                 if (element.id === 'react-chat-window-shell' || layer.contains(element)
                     || element.closest('[hidden], [aria-hidden="true"]')) return false;
-                // The caller decides which guided overlay can yield: all target
-                // containers for Tab, only avatar popup views for Escape.
-                if (guideTarget && element.contains(guideTarget)) return false;
+                // Owned sidepanels are siblings under body, not popup descendants.
+                if (guideTarget && (element.contains(guideTarget)
+                    || (guideTarget.id && element.getAttribute('data-neko-sidepanel-owner') === guideTarget.id))) return false;
                 return api.isElementVisible(element);
             });
         }
@@ -138,14 +137,18 @@
             if (ended || presentation || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Tab') {
                 const target = api.resolveTarget(view()?.target);
+                const sidepanels = target?.id ? [...document.querySelectorAll('[data-neko-sidepanel-owner]')]
+                    .filter(panel => panel.getAttribute('data-neko-sidepanel-owner') === target.id) : [];
                 // The lesson's own editable target participates in its focus loop.
                 // External editors and business overlays retain their own Tab handling.
                 if (hasOverlayOwner(target) || (!layer.contains(document.activeElement)
-                    && hasEditableOwner(event) && !target?.contains(document.activeElement))) return;
+                    && hasEditableOwner(event) && !target?.contains(document.activeElement)
+                    && !sidepanels.some(panel => panel.contains(document.activeElement)))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
                 let controls = [...card.querySelectorAll(selector)];
                 if (target?.matches(selector)) controls.unshift(target);
                 if (target) controls.unshift(...target.querySelectorAll(selector));
+                for (const panel of sidepanels) controls.push(...panel.querySelectorAll(selector));
                 controls = controls.filter(element => api.isElementVisible(element));
                 if (!controls.length) return;
                 const current = controls.indexOf(document.activeElement);

@@ -6,7 +6,8 @@
         const view = element.ownerDocument.defaultView;
         for (let parent = element; parent && parent.nodeType === 1; parent = parent.parentElement) {
             const style = view.getComputedStyle(parent);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            if (style.display === 'none' || style.visibility === 'hidden'
+                || style.opacity === '0' || parent.style.opacity === '0') return false;
         }
         return true;
     };
