@@ -14,6 +14,7 @@ from weakref import WeakValueDictionary
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
@@ -46,8 +47,6 @@ from services.theater.numeric_v2_archive import (
     build_numeric_v2_memory_messages,
 )
 from services.theater.numeric_v2_evaluator import (
-    NumericV2EvaluatorError,
-    NumericV2EvaluatorUnavailableError,
     NumericV2MetricEvaluator,
 )
 from services.theater.numeric_v2_registry import (
@@ -88,7 +87,20 @@ from utils.character_memory import character_config_mutation_lock
 from utils.theater_activity import clear_theater_activity, note_theater_session_response
 
 
-router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"])
+class _NumericTheaterRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def handle(request: Request):
+            try:
+                return await handler(request)
+            except ValueError as exc:
+                return _error(str(exc), 400)
+
+        return handle
+
+
+router = APIRouter(prefix="/api/theater-numeric", tags=["theater-numeric-v2"], route_class=_NumericTheaterRoute)
 logger = logging.getLogger(__name__)
 # 请求执行期间由局部变量强持有锁；完成后弱引用表可自动回收不同请求 ID，避免长期运行持续增长。
 _speak_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -225,16 +237,12 @@ async def _assert_numeric_writable(config_manager: Any, target: str) -> None:
 async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
     numeric_root = _numeric_root(config_manager)
     registry = NumericV2PackageRegistry(numeric_root / "numeric_v2" / "packages")
-    character_ids_by_name = await asyncio.to_thread(
-        numeric_v2_character_ids,
-        config_manager,
-    )
     await run_storage_mutation(
         nullcontext,
         maintain_numeric_v2_storage_once,
         numeric_root,
         registry,
-        character_ids_by_name=character_ids_by_name,
+        character_ids_by_name=lambda: numeric_v2_character_ids(config_manager),
         write_transaction=_numeric_write_transaction(config_manager, numeric_root),
         assert_writable=lambda: assert_cloudsave_writable(
             config_manager,
@@ -601,10 +609,10 @@ async def list_numeric_memory_stories():
     result = []
     for story_id, row in stories.items():
         try:
-            path = registry.package_path(story_id)
+            registry.package_path(story_id)
         except NumericV2PackageError:
             continue
-        if not await asyncio.to_thread(path.is_file):
+        if not await asyncio.to_thread(registry.package_file_exists, story_id):
             result.append({**row, "memory_only": True})
     return {"ok": True, "stories": result, "character_id": binding["character_id"],
             "memory_available": available}
@@ -958,11 +966,11 @@ async def _start_numeric_session(request: Request):
         return _error("numeric_v2_actor_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
+    except (NumericV2StoreError, NumericV2RuntimeError) as exc:
+        return _error(str(exc), 400)
     except ValueError as exc:
         if str(exc) == "catgirl_changed_requires_new_session":
             return _error(str(exc), 409)
-        return _error(str(exc), 400)
-    except (NumericV2StoreError, NumericV2RuntimeError) as exc:
         return _error(str(exc), 400)
     return {"ok": True, **_numeric_payload(runtime, stored, display_binding=binding)}
 
@@ -1161,12 +1169,16 @@ async def _submit_numeric_input_once(
         stored = workflow.stored
         current_binding = workflow.display_binding
         end_receipt = None
+        end_receipt_pending = False
         if stored.session.status == "ended":
-            end_receipt = await _create_receipt_for_existing_ended_session(
-                config_manager,
-                runtime,
-                stored.session,
-            )
+            try:
+                end_receipt = await _create_receipt_for_existing_ended_session(
+                    config_manager, runtime, stored.session,
+                )
+            except (ValueError, OSError):
+                # The turn is already committed. Later snapshot reads retry the
+                # receipt; report the authoritative ending rather than a failed input.
+                end_receipt_pending = True
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
     except (NumericV2RevisionConflictError, NumericV2StoreRevisionConflictError) as exc:
@@ -1179,22 +1191,18 @@ async def _submit_numeric_input_once(
         return _error(_FORGET_PENDING_REASON, 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
-    except NumericV2EvaluatorUnavailableError:
-        return _error("numeric_v2_evaluator_unavailable", 503)
-    except NumericV2EvaluatorError:
-        return _error("numeric_v2_evaluator_failed", 502)
     except NumericV2ActorUnavailableError:
         return _error("numeric_v2_actor_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
+    except (NumericV2RuntimeError, NumericV2StoreError) as exc:
+        return _error(str(exc), 400)
     except ValueError as exc:
         if str(exc) in {
             "catgirl_changed_requires_new_session",
             "catgirl_profile_changed_requires_retry",
         }:
             return _error(str(exc), 409)
-        return _error(str(exc), 400)
-    except (NumericV2RuntimeError, NumericV2StoreError) as exc:
         return _error(str(exc), 400)
     return {
         "ok": True,
@@ -1204,6 +1212,8 @@ async def _submit_numeric_input_once(
             "route_changed": outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"],
         },
         "performance": _public_performance(performance),
+        "end_receipt_pending": end_receipt_pending,
+        "evaluator_degraded": workflow.diagnostics.get("evaluator_degraded") is True,
         **_numeric_payload(
             runtime,
             stored,
@@ -1299,10 +1309,10 @@ async def end_numeric_session(request: Request):
         return _error("numeric_base_revision_mismatch", 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
-    except ValueError as exc:
-        return _error(str(exc), 409)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
         return _error(str(exc), 400)
+    except ValueError as exc:
+        return _error(str(exc), 409)
     return {
         "ok": True,
         **_numeric_payload(
@@ -1374,9 +1384,9 @@ async def resume_numeric_session(request: Request, claim_activity: bool = True):
         return _error("numeric_base_revision_mismatch", 409)
     except NumericV2SessionNotFoundError:
         return _error("numeric_session_not_found", 404)
-    except ValueError as exc:
-        return _error(str(exc), 409)
     except (NumericV2StoreError, NumericV2RuntimeError) as exc:
+        return _error(str(exc), 409)
+    except ValueError as exc:
         return _error(str(exc), 409)
     return {
         "ok": True,

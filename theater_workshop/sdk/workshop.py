@@ -246,17 +246,29 @@ class TheaterWorkshop:
             result = self._generator.generate(title=project["title"], setup=setup,
                                               checkpoint=checkpoint, cast_names=names)
         except NumericV2GenerationError as error:
-            self._store.fail_generation(project_id, base_revision=base_revision,
-                error={"code": error.code, "details": {
-                    "issues": error.issues, "provider": error.provider_details,
-                    "attempts": error.attempts}},
-                checkpoint=error.checkpoint)
+            try:
+                self._store.fail_generation(project_id, base_revision=base_revision,
+                    error={"code": error.code, "details": {
+                        "issues": error.issues, "provider": error.provider_details,
+                        "attempts": error.attempts}},
+                    checkpoint=error.checkpoint)
+            except Exception as persistence_error:
+                error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
         except Exception as error:
-            self._store.fail_generation(project_id, base_revision=base_revision,
-                error={"code": "generation_technical_failed", "exception_type": type(error).__name__},
-                checkpoint=checkpoint)
+            try:
+                self._store.fail_generation(project_id, base_revision=base_revision,
+                    error={"code": "generation_technical_failed", "exception_type": type(error).__name__},
+                    checkpoint=checkpoint)
+            except Exception as persistence_error:
+                error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
+        previous_story = project.get("story") or {}
+        previous_story_id = (previous_story.get("meta") or {}).get("story_id")
+        # Titles and introductions describe content, not project identity.
+        # Preserve existing package identities; namespace new generated projects.
+        result["story"]["meta"]["story_id"] = previous_story_id or (
+            "story_" + project_id.removeprefix("project_"))
         for field in ("relationship", "tone"):
             if field in (result.get("setup_updates") or {}):
                 setup[field] = result["setup_updates"][field]
@@ -303,11 +315,24 @@ class TheaterWorkshop:
         if node is None:
             raise WorkshopError("node_not_found")
         beat = node.setdefault("story_beat", {})
+        previous_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
         for field in ("opening_scene", "narrative_focus", "goals", "must_not_happen",
                       "catgirl_situation", "transition_goal", "character_state", "acting_contract"):
             if field in enhancement:
                 beat[field] = deepcopy(enhancement[field])
         beat.pop("must_happen", None)
+        current_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
+        for route in node.get("route_gates") or []:
+            contract = route.get("transition_contract") or {}
+            refs = contract.get("source_ids") or []
+            if any(ref in previous_goal_refs and ref not in current_goal_refs for ref in refs):
+                # The generator derives outgoing source evidence from the final
+                # source goal. Regenerate that reference with the enhanced goals.
+                refs = [ref for ref in refs if ref not in previous_goal_refs]
+                goals = beat.get("goals") or []
+                if goals:
+                    refs.append(f"goal.{goals[-1]['id']}")
+                contract["source_ids"] = list(dict.fromkeys(refs))
         return {"project": self._store.update(project_id, base_revision=base_revision,
                 changes={"story": story}), "node_id": node_id}
 

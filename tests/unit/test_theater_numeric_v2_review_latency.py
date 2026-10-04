@@ -194,8 +194,8 @@ def test_only_metric_judgment_is_on_by_default():
         'suggestion_fill': False, 'history_lookup': False, 'actor_retry': False}
 
 
-def test_evaluator_off_accepts_the_public_offer_deterministically():
-    """判定关闭时不猜数值与意图，但接受已公开提议的第一条推荐仍可放行选路。"""  # noqa: DOCSTRING_CJK
+def test_evaluator_off_does_not_authorize_an_unverified_first_suggestion():
+    """推荐的位置不证明玩家授权；没有作者合同核验时保持当前幕。"""  # noqa: DOCSTRING_CJK
 
     engine, session, _outcome, _candidate = _fixture(50)
     suggestion = '（点头）好，带路吧。'
@@ -206,7 +206,7 @@ def test_evaluator_off_accepts_the_public_offer_deterministically():
     current = SimpleNamespace(session=session)
     accepted = numeric_v2_workflow._evaluation_without_evaluator(
         current, SimpleNamespace(message=suggestion))
-    assert accepted.transition_intent == 'accept'
+    assert accepted.transition_intent == 'unclear'
     assert accepted.metric_changes == ()
     stalled = numeric_v2_workflow._evaluation_without_evaluator(
         current, SimpleNamespace(message='我想再看看别的地方。'))
@@ -514,8 +514,9 @@ async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, monkeypatch):
-    """判定服务故障时，玩家逐字点击已公开的接受按钮仍应换幕。"""  # noqa: DOCSTRING_CJK
+@pytest.mark.parametrize('authored', [False, True])
+async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path, monkeypatch, authored):
+    """判定故障时只核验作者合同，不把 Actor 推荐首位当成接受权限。"""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -525,6 +526,9 @@ async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, 
     engine = case['engine']
     runtime = NumericV2Runtime(engine, tmp_path)
     suggestion = '（点头）好，带路吧。'
+    if authored:
+        engine.nodes['start']['route_gates'][1]['transition_contract'].update(
+            fallback_offer='手续办妥了，我们现在去阅览室吧。', accept_input=suggestion)
     current = await runtime.start_session(
         session_id='evaluator_failure_acceptance',
         catgirl_binding=_binding(),
@@ -586,13 +590,13 @@ async def test_evaluator_failure_keeps_exact_public_acceptance_button(tmp_path, 
         config_manager=object(),
         runtime=runtime,
         current=current,
-        turn=TurnRequestV2('accept', current.session.revision, suggestion),
+        turn=TurnRequestV2('accept', current.session.revision, suggestion, input_source='suggestion'),
         ensure_current_binding=lambda _: _binding(),
         diagnostics_sink=diagnostics,
     )
 
     assert diagnostics['evaluator_degraded'] is True
-    assert result.stored.session.current_node_id != current.session.current_node_id
+    assert (result.stored.session.current_node_id != current.session.current_node_id) is authored
 
 
 @pytest.mark.asyncio

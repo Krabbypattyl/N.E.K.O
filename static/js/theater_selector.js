@@ -79,7 +79,7 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
+        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn', 'theater-settings-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
@@ -394,7 +394,9 @@
         var url = new URL(window.location.href);
         url.searchParams.set('story_id', storyId);
         window.history.replaceState(null, '', url.toString());
-        if (state.pendingEnd && state.pendingEnd.story_id === storyId) await maybePromptMemory();
+        if (state.pendingEnd && state.pendingEnd.story_id === storyId) maybePromptMemory().catch(function () {
+            setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+        });
         return true;
     }
     // 页面只保留一个模态框实例；所有请求串行展示，避免异步回执覆盖尚未选择的确认框。
@@ -467,6 +469,30 @@
         $('theater-modal-confirm').disabled = busy;
     }
     // 启动演绎前必须等本体回执 launch-ready，避免选剧页先关闭导致快照丢失。
+    async function targetRuntime(payload) {
+        if (window.opener && !window.opener.closed) return true;
+        if (!state.channel) return false;
+        var probeId = createId('theater_probe_');
+        return new Promise(function (resolve) {
+            var candidates = [];
+            function candidate(event) {
+                var message = event && event.data;
+                if (message && message.schema === MESSAGE_SCHEMA && message.action === 'theater:host-candidate'
+                    && message.probe_id === probeId && message.runtime_host_id) candidates.push(message);
+            }
+            state.channel.addEventListener('message', candidate);
+            postMessage({action: 'theater:host-probe', probe_id: probeId});
+            window.setTimeout(function () {
+                state.channel.removeEventListener('message', candidate);
+                candidates.sort(function (a, b) {
+                    return Number(b.visible === true) - Number(a.visible === true)
+                        || String(a.runtime_host_id).localeCompare(String(b.runtime_host_id));
+                });
+                if (candidates.length) payload.runtime_host_id = candidates[0].runtime_host_id;
+                resolve(candidates.length > 0);
+            }, 300);
+        });
+    }
     async function handoff(snapshot, action, storyId) {
         var launchId = createId('theater_launch_');
         var payload = {
@@ -475,6 +501,7 @@
             // 开场用量随启动回执传给演绎页，仅用于显示，不成为会话或剧情字段。
             token_usage: snapshot.token_usage || null
         };
+        if (!await targetRuntime(payload)) return false;
         setStatus('theater.connectingNeko', '演出已准备好，正在连接 N.E.K.O 本体');
         return new Promise(function (resolve) {
             var settled = false;
@@ -491,19 +518,21 @@
             }
             window.addEventListener('message', ready);
             if (state.channel) state.channel.addEventListener('message', ready);
-            postMessage(payload, true);
-            // 本体先用最长 30 秒读取权威 Session，再最多等待约 8 秒挂载 React 胶囊；
+            if (!postMessage(payload, true)) { cleanup(); resolve(false); return; }
+            // 本体串行预检及领取各最多 30 秒，再等待停麦和 React 胶囊挂载；
             // 选剧页必须覆盖完整链路，不能在本体仍可能成功启动时提前允许第二次启动。
-            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 40000);
+            window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 75000);
         });
     }
     async function startThroughRuntime(payload) {
+        if (!await targetRuntime(payload)) return false;
         return new Promise(function (resolve) {
             var settled = false;
             var timeoutId = 0;
             function ready(event) {
                 var message = event && event.data;
-                if (!message || message.action !== 'theater:start-ready' || message.launch_id !== payload.launch_id) return;
+                if (!message || ['theater:start-accepted', 'theater:start-ready'].indexOf(message.action) < 0
+                    || message.launch_id !== payload.launch_id) return;
                 settled = true;
                 cleanup();
                 resolve(true);
@@ -545,6 +574,15 @@
         // 开场模型生成期间保持明确的进行中状态，避免页面继续显示“就绪”而像是无响应。
         setStatus('theater.loading', '正在准备舞台...');
         try {
+            var active = await requestJson(api.active + '?story_id=' + encodeURIComponent(startStoryId));
+            if (startCharacterEpoch !== characterEpoch || startStoryId !== state.storyId || startSelectionEpoch !== storySelectionEpoch) return;
+            if (!active.ok && active.reason !== 'numeric_session_not_found') throw new Error(active.reason || 'active_session_failed');
+            if (active.session && active.session.status === 'active') {
+                state.session = active.session;
+                renderActions();
+                await launchSnapshot(active, 'continue', startStoryId);
+                return;
+            }
             // 由本体打开的选剧窗口把启动请求交还给本体持有，使窗口可在模型生成期间关闭，
             // 胶囊立即展示准备态；独立打开的 /theater 仍沿用当前页面直连接口的兼容路径。
             if (window.opener && !window.opener.closed) {
@@ -866,7 +904,7 @@
         renderStories(); renderDetail();
         // 导入/删除期间 loadStories 也会在 busy 状态内运行，允许这一次内部详情刷新。
         if (state.storyId) {
-            if (!(await selectStory(state.storyId, true))) return false;
+            await selectStory(state.storyId, true);
         } else setStatus('theater.ready', '就绪');
         // Memory-server reads do not delay starting an installed story.
         loadMemoryStories(storiesCharacterEpoch, listEpoch, requestedStoryId, storySelectionEpoch).catch(function () {
@@ -881,6 +919,7 @@
         if (!message || typeof message !== 'object') return;
         if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
         if (message.action === 'theater:post-end' && message.story_id && message.session_id && message.end_receipt_id) {
+            postMessage({action: 'theater:post-end-accepted', end_receipt_id: message.end_receipt_id});
             // BroadcastChannel、opener 或重复 ready 都可能重送同一事实；按服务端稳定回执 ID 去重。
             if (state.pendingEnd && state.pendingEnd.end_receipt_id === message.end_receipt_id) return;
             state.pendingEnd = message;
@@ -939,6 +978,7 @@
         $('theater-forget-memory-btn').addEventListener('click', forgetStoryMemory);
         var settingsButton = $('theater-settings-btn');
         if (settingsButton) settingsButton.addEventListener('click', function () {
+            if (state.busy) return;
             window.location.href = '/theater/settings';
         });
         loadStories().catch(function () { setStatus('theater.failed', '出错了'); setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true); });

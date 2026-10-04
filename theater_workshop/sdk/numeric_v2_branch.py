@@ -369,6 +369,9 @@ class NumericV2BranchService:
                     goals.append(carried_goal)
                 if len(goals) > 6:
                     raise NumericV2BranchError("branch_scene_goal_limit_exceeded")
+                scenes[index]["ordered_goals"] = self._validate_ordered_goals(
+                    goals, path=f"scenes[{index}].ordered_goals",
+                )
             else:
                 if (item.get("contract") or {}).get("owner") == "player":
                     raise NumericV2BranchError("branch_continuity_placement_invalid")
@@ -898,6 +901,22 @@ class NumericV2BranchService:
             return {"scenarios": [], "unknown_reasons": ["metric_initial_invalid"]}
         scenarios: list[dict[str, Any]] = []
         unknown_reasons: list[str] = []
+        # Downstream paths that cannot return to the source contribute no entry
+        # scenario. Prune them before enumerating route paths through diamonds.
+        predecessors: dict[str, set[str]] = {}
+        for node_id, node in nodes.items():
+            for route in node.get("route_gates") or []:
+                if isinstance(route, Mapping):
+                    predecessors.setdefault(str(route.get("target_node_id") or ""), set()).add(node_id)
+        ancestors = {source_node_id}
+        frontier = [source_node_id]
+        while frontier:
+            for parent in predecessors.get(frontier.pop(), ()):
+                if parent not in ancestors:
+                    ancestors.add(parent)
+                    frontier.append(parent)
+        if start_id not in ancestors:
+            return {"scenarios": [], "unknown_reasons": ["source_unreachable"]}
         stack: list[tuple[str, int, list[str], frozenset[str]]] = [
             (start_id, initial, [], frozenset())
         ]
@@ -919,6 +938,8 @@ class NumericV2BranchService:
                 target_id = str(route.get("target_node_id") or "")
                 if target_id not in nodes:
                     unknown_reasons.append(f"target_missing:{target_id or node_id}")
+                    continue
+                if target_id not in ancestors:
                     continue
                 alternatives = self._condition_alternatives(
                     route.get("conditions"),
@@ -2060,7 +2081,7 @@ class NumericV2BranchService:
         text = str(item.get("text") or "").strip()
         if evidence_mode == "exact" and not anchors:
             anchors = [text]
-        sources = ["player_input"] if delivery_type == "player_action" else [
+        sources = ["player_input"] if owner == "player" else [
             "previous_goal" if has_previous else "opening"
         ]
         result = {

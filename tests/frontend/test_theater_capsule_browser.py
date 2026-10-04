@@ -9,6 +9,52 @@ import pytest
 from playwright.sync_api import Page, Route, expect
 
 
+@pytest.mark.frontend
+def test_targeted_launch_only_claims_one_web_runtime(mock_page: Page, running_server: str):
+    peer = mock_page.context.new_page()
+    reads = []
+
+    def handler(route: Route):
+        path = route.request.url.split('?')[0]
+        if path.endswith('/session/targeted-session'):
+            reads.append(route.request.url)
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(
+                _snapshot(revision=0, story_id='targeted-story', session_id='targeted-session')))
+        elif path.endswith('/session/speak-block') or path.endswith('/session/release'):
+            route.fulfill(status=200, content_type='application/json', body='{"ok":true,"audio_queued":false}')
+        else:
+            route.continue_()
+
+    try:
+        for page in (mock_page, peer):
+            page.route('**/api/theater-numeric/**', handler)
+            page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+            page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+        mock_page.evaluate("""() => {
+            window.__hosts = [];
+            window.__probeChannel = new BroadcastChannel('neko_page_channel');
+            window.__probeChannel.onmessage = event => {
+                if (event.data.action === 'theater:host-candidate' && event.data.probe_id === 'test-probe')
+                    window.__hosts.push(event.data.runtime_host_id);
+            };
+            window.__probeChannel.postMessage({schema:'neko.theater.interpage.v1',
+                action:'theater:host-probe',probe_id:'test-probe'});
+        }""")
+        mock_page.wait_for_function('() => window.__hosts.length === 2')
+        mock_page.evaluate("""() => window.__probeChannel.postMessage({schema:'neko.theater.interpage.v1',
+            action:'theater:launch-request',launch_id:'targeted-launch',runtime_host_id:window.__hosts.sort()[0],
+            story_id:'targeted-story',session_id:'targeted-session',revision:0})""")
+        for _ in range(100):
+            states = [page.evaluate('window.nekoTheaterRuntime.getState()') for page in (mock_page, peer)]
+            if any(state['phase'] == 'awaiting_player' for state in states):
+                break
+            mock_page.wait_for_timeout(20)
+        assert sum(state['active'] for state in states) == 1
+        assert len(reads) == 2  # One preflight and one claim, both by the selected owner.
+    finally:
+        peer.close()
+
+
 def _snapshot(
     *,
     revision: int,
@@ -123,9 +169,11 @@ def test_theater_capsule_drops_ordinary_reply_preview_on_takeover(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('cancel_opening', [False, True])
 def test_runtime_enters_theater_loading_before_start_model_response(
     mock_page: Page,
     running_server: str,
+    cancel_opening: bool,
 ):
     """本体先展示准备态并接管请求，不能让选剧窗口陪模型响应一起等待。"""  # noqa: DOCSTRING_CJK
 
@@ -134,6 +182,12 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     def handler(route: Route) -> None:
         if route.request.url.split("?", 1)[0].endswith("/api/theater-numeric/session/start"):
             pending["start"] = route
+            return
+        if route.request.url.split('?')[0].endswith('/session/end'):
+            pending['end'] = route
+            payload = _snapshot(revision=0)
+            payload['session']['status'] = 'ended'
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
             return
         route.continue_()
 
@@ -167,6 +221,10 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     assert state["active"] is True
     assert state["storyTitle"] == "雨巷来信"
     assert state["history"][0]["id"] == "opening-loading-capsule-browser-session"
+    for _ in range(50):
+        if 'start' in pending:
+            break
+        mock_page.wait_for_timeout(20)
     assert "start" in pending
     assert mock_page.evaluate(
         "window.sessionStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1')"
@@ -179,11 +237,22 @@ def test_runtime_enters_theater_loading_before_start_model_response(
         "character_id": "character:test",
         "replace_existing": False,
     }
+    if cancel_opening:
+        mock_page.evaluate("() => window.nekoTheaterRuntime.clear('cancel-opening')")
     pending["start"].fulfill(
         status=200,
         content_type="application/json",
         body=json.dumps(_snapshot(revision=0), ensure_ascii=False),
     )
+    if cancel_opening:
+        for _ in range(50):
+            if 'end' in pending:
+                break
+            mock_page.wait_for_timeout(20)
+        assert 'end' in pending
+        assert json.loads(pending['end'].request.post_data)['session_id'] == 'capsule-browser-session'
+        assert mock_page.evaluate('window.nekoTheaterRuntime.getState().active') is False
+        return
     mock_page.wait_for_function(
         "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
         timeout=10000,
@@ -287,6 +356,8 @@ def test_theater_capsule_reasserts_composer_visibility_on_active_render(
     mock_page.evaluate(
         """() => {
             window.reactChatWindowHost.setGoodbyeComposerHidden(true, 'review-regression');
+            window.reactChatWindowHost.setHomeTutorialInteractionLocked(false, 'review-fixture');
+            window.reactChatWindowHost.setHomeTutorialInputLocked(false, 'review-fixture');
             window.dispatchEvent(new Event('localechange'));
         }"""
     )
@@ -464,13 +535,16 @@ def test_theater_capsule_restores_committed_turn_after_end_failure(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('turn_before_preview', [False, True])
 def test_theater_capsule_ignores_late_turn_after_launching_another_session(
     mock_page: Page,
     running_server: str,
+    turn_before_preview: bool,
 ):
     """A 回合等待期间切到 B 后，A 的迟到响应只能留在服务端。"""  # noqa: DOCSTRING_CJK
 
     pending_input: dict[str, Route] = {}
+    pending_preview: dict[str, Route] = {}
 
     def fulfill(route: Route, payload: dict) -> None:
         route.fulfill(
@@ -486,6 +560,9 @@ def test_theater_capsule_ignores_late_turn_after_launching_another_session(
             fulfill(route, _snapshot(revision=0, story_id="story-a", session_id="session-a"))
             return
         if path.endswith("/api/theater-numeric/session/session-b"):
+            if turn_before_preview and not pending_preview.get('released'):
+                pending_preview['route'] = route
+                return
             fulfill(route, _snapshot(revision=0, story_id="story-b", session_id="session-b"))
             return
         if path.endswith("/api/theater-numeric/session/input"):
@@ -534,10 +611,11 @@ def test_theater_capsule_ignores_late_turn_after_launching_another_session(
             story_id: 'story-b', session_id: 'session-b', revision: 0
         }, window.location.origin)"""
     )
-    mock_page.wait_for_function(
-        "() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
-        " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
-    )
+    if not turn_before_preview:
+        mock_page.wait_for_function(
+            "() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
+            " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'"
+        )
     late_turn = {
         "revision": 1,
         "input_text": "A 的待处理输入",
@@ -552,6 +630,17 @@ def test_theater_capsule_ignores_late_turn_after_launching_another_session(
     )
     late_payload["performance"] = late_turn
     fulfill(pending_input["route"], late_payload)
+    if turn_before_preview:
+        for _ in range(50):
+            if 'route' in pending_preview:
+                break
+            mock_page.wait_for_timeout(20)
+        assert 'route' in pending_preview
+        mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 1")
+        pending_preview['released'] = True
+        fulfill(pending_preview['route'], _snapshot(revision=0, story_id='story-b', session_id='session-b'))
+        mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().sessionId === 'session-b'"
+                                    " && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     mock_page.wait_for_timeout(200)
 
     state = mock_page.evaluate("() => window.nekoTheaterRuntime.getState()")
@@ -717,7 +806,7 @@ def test_theater_capsule_rejects_stale_launch_without_replacing_active_runtime(
     assert after["revision"] == 1
     assert after["phase"] == "awaiting_player"
     assert after["history"] == before["history"]
-    assert len(session_requests) == 2
+    assert len(session_requests) == 3  # Initial preflight + claim, then the rejected stale preflight.
     assert mock_page.evaluate("() => window.__theaterAudioClears") == 0
 
 
@@ -792,7 +881,8 @@ def test_theater_capsule_ignores_pointer_restore_superseded_by_launch(
     assert state["storyId"] == "story-b"
     assert state["sessionId"] == "session-b"
     assert state["phase"] == "awaiting_player"
-    assert pointer == {"story_id": "story-b", "session_id": "session-b"}
+    assert {key: pointer[key] for key in ('story_id', 'session_id')} == {"story_id": "story-b", "session_id": "session-b"}
+    assert pointer['chat_surface_mode'] == 'full'
 
 
 @pytest.mark.frontend
@@ -1662,7 +1752,8 @@ def test_theater_capsule_skips_empty_deduplicated_transition_bridge(
 
 
 @pytest.mark.frontend
-def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, running_server: str):
+@pytest.mark.parametrize('clear_instead', [False, True])
+def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, running_server: str, clear_instead):
     previous = _snapshot(revision=4, story_id="story-a", session_id="session-a")
     previous["session"].update(status="ended", ended_reason="user_exit")
     previous["end_receipt_id"] = "old-receipt"
@@ -1693,9 +1784,12 @@ def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, 
             launch_id:'missing-launch', story_id:'missing', session_id:'missing', revision:0}, location.origin)""")
     assert missing_response.value.status == 404
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd.end_receipt_id") == "old-receipt"
-    mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
-        launch_id:'new-launch', launch_action:'continue', story_id:'story-b', session_id:'session-b', revision:0}, location.origin)""")
-    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().sessionId === 'session-b' && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    if clear_instead:
+        mock_page.evaluate("() => window.nekoTheaterRuntime.clear('skip-memory')")
+    else:
+        mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'new-launch', launch_action:'continue', story_id:'story-b', session_id:'session-b', revision:0}, location.origin)""")
+        mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().sessionId === 'session-b' && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd") is None
     mock_page.evaluate("""() => {
         window.__staleReceipts = [];
@@ -1840,13 +1934,23 @@ def test_launch_is_invalidated_while_stopping_ordinary_voice(mock_page: Page, ru
 
 @pytest.mark.frontend
 def test_bridge_hides_theater_options_without_a_registered_callback(mock_page: Page, running_server: str):
+    # This exercises the React bridge without an inactive runtime overwriting
+    # the deliberately injected presentation on a late localechange event.
+    mock_page.route('**/static/app/app-theater-runtime.js*', lambda route: route.fulfill(
+        status=200, content_type='application/javascript', body=''))
     mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
-    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.wait_for_function('() => window.reactChatWindowHost')
     mock_page.evaluate('''() => {
+        window.reactChatWindowHost.openWindow();
+        window.reactChatWindowHost.setHomeTutorialInteractionLocked(false, 'review-fixture');
+        window.reactChatWindowHost.setHomeTutorialInputLocked(false, 'review-fixture');
+        window.reactChatWindowHost.setComposerHidden(false, 'review-fixture');
+        window.reactChatWindowHost.setGoodbyeComposerHidden(false, 'review-fixture');
         window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(null);
         window.reactChatWindowHost.setViewProps({theaterPresentation:{
             active:true, phase:'awaiting_player', history:[], suggestedInputs:['把信交给她']
         }});
+        window.dispatchEvent(new Event('localechange'));
     }''')
     expect(mock_page.locator('.app-shell')).to_have_attribute('data-theater-active', 'true')
     expect(mock_page.locator('.composer-galgame-option')).to_have_count(0)
@@ -1854,6 +1958,7 @@ def test_bridge_hides_theater_options_without_a_registered_callback(mock_page: P
         window.__suggestionSelected = [];
         window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(text => window.__suggestionSelected.push(text));
     }''')
+    expect(mock_page.locator('.composer-galgame-option')).to_have_count(1)
     mock_page.locator('.composer-galgame-option').click()
     assert mock_page.evaluate('window.__suggestionSelected') == ['把信交给她']
     mock_page.evaluate('window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(null)')

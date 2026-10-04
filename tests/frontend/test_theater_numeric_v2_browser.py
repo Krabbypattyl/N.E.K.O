@@ -1119,6 +1119,10 @@ def test_background_memory_selection_cannot_steal_session_launch(mock_page: Page
     mock_page.add_init_script('''window.__launches = [];
         window.__launchChannel = new BroadcastChannel('neko_page_channel');
         window.__launchChannel.onmessage = event => {
+            if (event.data.action === 'theater:host-probe') {
+                window.__launchChannel.postMessage({...event.data, action:'theater:host-candidate', runtime_host_id:'fixture-host', visible:true});
+                return;
+            }
             if (event.data.action !== 'theater:launch-request') return;
             window.__launches.push(event.data);
             window.__launchChannel.postMessage({...event.data, action:'theater:launch-ready'});
@@ -1128,7 +1132,7 @@ def test_background_memory_selection_cannot_steal_session_launch(mock_page: Page
     button = '#theater-start-btn' if operation == 'start' else '#theater-continue-btn'
     expect(mock_page.locator(button)).to_be_enabled()
     with mock_page.expect_request(lambda request: '/session/' in request.url and (
-        request.url.endswith('/start') or request.url.endswith('/resume') or '/session/launch-session?' in request.url)):
+        request.url.split('?')[0].endswith('/start') or request.url.split('?')[0].endswith('/resume') or '/session/launch-session?' in request.url)):
         mock_page.locator(button).click()
     _fulfill(pending['memory'], {'ok':True, 'character_id':CHARACTER_ID,
         'stories':[{**STORY, 'story_id':'deleted-memory', 'title':'已删除的另一剧本', 'memory_only':True}]})

@@ -877,7 +877,7 @@ def maintain_numeric_v2_storage_once(
     theater_root: Path,
     registry: NumericV2PackageRegistry,
     *,
-    character_ids_by_name: Mapping[str, str],
+    character_ids_by_name: Mapping[str, str] | Callable[[], Mapping[str, str]],
     assert_writable: Callable[[], None] | None = None,
     write_transaction=nullcontext,
 ) -> dict[str, int] | None:
@@ -887,6 +887,8 @@ def maintain_numeric_v2_storage_once(
     with _MAINTENANCE_LOCK:
         if key in _MAINTAINED_ROOTS:
             return None
+        if callable(character_ids_by_name):
+            character_ids_by_name = character_ids_by_name()
         with write_transaction():
             # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
             if assert_writable is not None:

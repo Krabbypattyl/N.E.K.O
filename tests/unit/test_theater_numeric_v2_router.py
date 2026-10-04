@@ -407,6 +407,51 @@ def _client(
     return _NumericV2TestClient(app)
 
 
+def test_archive_binding_failure_returns_structured_json(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        def invalid_binding(*args, **kwargs):
+            raise ValueError('numeric_character_binding_unavailable')
+
+        monkeypatch.setattr(numeric_theater_router, '_current_catgirl_binding', invalid_binding)
+        response = client.get('/api/theater-numeric/memory/archives', params={'story_id': 'numeric_v2_contract'})
+    assert response.status_code == 400
+    assert response.json() == {'ok': False, 'reason': 'numeric_character_binding_unavailable'}
+
+
+def test_committed_ending_survives_receipt_write_failure(tmp_path, monkeypatch):
+    from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post('/api/theater-numeric/session/start',
+                              json={'story_id': 'numeric_v2_contract', 'session_id': 'receipt-write-failure'})
+        assert started.status_code == 200
+
+        async def evaluate(*args, **kwargs):
+            return NumericV2EvaluationResult((), True, natural_ending_ready=True)
+
+        async def generate(self, **kwargs):
+            return kwargs['engine'].finalize_transition_performance(kwargs['outcome'], _candidate(),
+                                                                    target_opening='两人来到阅览室。')
+
+        async def fail_receipt(*args, **kwargs):
+            raise NumericV2ArchiveError('numeric_end_receipt_write_failed')
+
+        original = numeric_theater_router._create_receipt_for_existing_ended_session
+        monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, 'evaluate', evaluate)
+        monkeypatch.setattr(numeric_theater_router.NumericV2Actor, 'generate_turn', generate)
+        monkeypatch.setattr(numeric_theater_router, '_create_receipt_for_existing_ended_session', fail_receipt)
+        response = client.post('/api/theater-numeric/session/input', json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'receipt-write-failure',
+            'client_turn_id': 'last-turn', 'base_revision': 0, 'message': '今天的事情已经办妥了。'})
+        assert response.status_code == 200, response.text
+        assert response.json()['session']['status'] == 'ended'
+        assert response.json()['end_receipt_pending'] is True
+        monkeypatch.setattr(numeric_theater_router, '_create_receipt_for_existing_ended_session', original)
+        recovered = client.get('/api/theater-numeric/session/active', params={'story_id': 'numeric_v2_contract'})
+        assert recovered.json()['session']['status'] == 'ended'
+        assert recovered.json()['end_receipt_id']
+
+
 def test_story_id_must_match_the_package_file_literally(tmp_path, monkeypatch):
     """On case-insensitive filesystems "numeric_v2_contract.json" also answers other casings."""
 

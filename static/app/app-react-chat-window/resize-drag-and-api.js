@@ -753,7 +753,13 @@
         });
 
         window.addEventListener('localechange', function () {
-            I.state.viewProps = I.createBaseViewProps();
+            var currentProps = I.ensureViewProps();
+            I.state.viewProps = Object.assign({}, currentProps, I.createBaseViewProps());
+            if (currentProps.theaterPresentation && currentProps.theaterPresentation.active === true) {
+                // Refresh translated labels without dropping the active theater
+                // projection or unlocking an evaluating/ending turn.
+                I.state.viewProps.composerDisabled = currentProps.composerDisabled;
+            }
             I.renderWindow();
         });
 

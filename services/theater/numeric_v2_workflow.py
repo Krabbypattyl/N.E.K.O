@@ -933,18 +933,16 @@ def _insert_verified_offer_acceptance_suggestion(
     return result, True
 
 
-def _evaluation_without_evaluator(current: Any, turn: Any) -> NumericV2EvaluationResult:
+def _evaluation_without_evaluator(
+    current: Any, turn: Any, *, engine: NumericV2Engine | None = None,
+) -> NumericV2EvaluationResult:
     """判定模块关闭时的确定性结果：不结算数值、不猜意图。  # noqa: DOCSTRING_CJK
 
-    只保留一条不依赖模型的放行：玩家提交的正是当前已公开提议的第一条推荐（接受路径）时，
+    只保留一条不依赖模型的放行：玩家点击当前已公开的作者邀请所配的接受原文时，
     允许 Runtime 走既有的接受选路。其余情况一律 unclear——剧情停在当前幕，不换幕、不加分。
     """  # noqa: DOCSTRING_CJK
 
-    session = current.session
-    message = str(getattr(turn, "message", "") or "").strip()
-    accepted = bool(session.transition_offered) and bool(message) and message == _pending_offer_acceptance_path(
-        session, ledger_events=getattr(current, "ledger_events", ()),
-    )
+    accepted = engine is not None and bool(_confirmed_authored_acceptance(engine, current, turn))
     return NumericV2EvaluationResult(
         metric_changes=(),
         scene_complete=False,
@@ -1219,7 +1217,7 @@ async def _execute_numeric_v2_turn(
             diagnostics["evaluator_skipped"] = True
             trace_event("evaluator.skipped")
             try:
-                return _evaluation_without_evaluator(current, turn)
+                return _evaluation_without_evaluator(current, turn, engine=runtime.engine)
             finally:
                 _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
         diagnostics["evaluator_model_attempts"] += 1
@@ -1246,7 +1244,7 @@ async def _execute_numeric_v2_turn(
                 current.session.session_id,
                 current.session.revision,
             )
-            return _evaluation_without_evaluator(current, turn)
+            return _evaluation_without_evaluator(current, turn, engine=runtime.engine)
         finally:
             _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
 

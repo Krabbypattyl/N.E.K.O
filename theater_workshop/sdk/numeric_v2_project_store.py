@@ -411,6 +411,7 @@ class NumericV2ProjectStore:
             if unknown:
                 raise NumericV2ProjectError("unsupported_project_change")
             content_neutral = set(changes) <= {"editor", "stage"}
+            project["authoring"] = _normalize_authoring(project.get("authoring"), project.get("story"))
             previous_fingerprint = NumericV2BranchService._fingerprint(project) if content_neutral else None
             package_changed = "story" in changes
             if "title" in changes:
@@ -423,7 +424,8 @@ class NumericV2ProjectStore:
                 project["stage"] = changes["stage"]
             if "setup" in changes:
                 old_setup = deepcopy(dict(project.get("setup") or {}))
-                setup = deepcopy(dict(changes["setup"] or {}))
+                setup = deepcopy(old_setup)
+                setup.update(deepcopy(dict(changes["setup"] or {})))
                 setup["metrics"] = normalize_metric_drafts(list(setup.get("metrics") or []))
                 old_metrics = (project.get("setup") or {}).get("metrics") or []
                 project["setup"] = setup

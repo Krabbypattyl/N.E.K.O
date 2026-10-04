@@ -19,6 +19,16 @@ from services.theater.numeric_v2_store import update_numeric_v2_character_bindin
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _branch_story, _opening
 
 
+def test_completed_maintenance_does_not_resolve_unrelated_character_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(numeric_v2_maintenance, '_MAINTAINED_ROOTS', {str(tmp_path.resolve())})
+
+    def fail_ids():
+        raise PermissionError('unrelated old character cannot be written')
+
+    assert numeric_v2_maintenance.maintain_numeric_v2_storage_once(
+        tmp_path, NumericV2PackageRegistry(tmp_path / 'packages'), character_ids_by_name=fail_ids) is None
+
+
 async def _prepared_interrupted_delete(theater_root):
     story = _branch_story()
     story_id = story["meta"]["story_id"]

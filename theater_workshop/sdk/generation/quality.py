@@ -1025,6 +1025,10 @@ class NumericV2QualityAssessor(ModelAgent):
                 raise QualityAssessmentError("quality_issue_stale")
             if "chapter" in update:
                 chapter = update["chapter"]
+                if node.get("type") == "ending" and chapter != node.get("chapter") and (
+                    not isinstance(update.get("ending"), Mapping) or update["ending"].get("title") != chapter
+                ):
+                    raise QualityAssessmentError("quality_repair_outside_plan")
                 if not isinstance(chapter, str) or not chapter.strip():
                     raise QualityAssessmentError("invalid_quality_repair")
                 node["chapter"] = chapter.strip()

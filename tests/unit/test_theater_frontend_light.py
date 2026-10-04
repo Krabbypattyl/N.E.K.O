@@ -64,8 +64,8 @@ def test_selector_targets_launch_to_opener_and_covers_host_wait_window():
 
     assert "preferOpener === true && opener" in script[post_start:post_end]
     assert "opener.postMessage(payload, window.location.origin); return true;" in script[post_start:post_end]
-    assert "postMessage(payload, true);" in script[handoff_start:handoff_end]
-    assert "}, 40000);" in script[handoff_start:handoff_end]
+    assert "if (!postMessage(payload, true))" in script[handoff_start:handoff_end]
+    assert "}, 75000);" in script[handoff_start:handoff_end]
 
 
 def test_selector_binds_delayed_confirmations_to_original_selection():
@@ -376,7 +376,7 @@ def test_selector_hands_owned_window_start_to_runtime_before_model_wait():
     assert "action: 'theater:start-request'" in start
     assert "await startThroughRuntime" in start
     assert start.index("await startThroughRuntime") < start.index("await requestJson(api.start")
-    assert "message.action !== 'theater:start-ready'" in bridge
+    assert "'theater:start-accepted', 'theater:start-ready'" in bridge
     assert "window.close();" in start
 
 

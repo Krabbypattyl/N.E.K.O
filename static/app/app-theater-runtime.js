@@ -40,6 +40,8 @@
     var desktopLaunchRelayTimers = Object.create(null);
     var launchEpoch = 0;
     var pendingLaunch = null;
+    var pendingSelectorEnd = null;
+    var runtimeHostId = createId('theater_host_');
     var endConfirmationPending = false;
     var committedSnapshot = null;
     // 仅在内存中登记的主动搭话临时抑制；不写用户设置，页面关闭或崩溃时随之消失。
@@ -863,6 +865,7 @@
         state.errorMessage = '';
         state.tokenUsage = message.token_usage || null;
         state.pendingEnd = null;
+        pendingSelectorEnd = null;
         // 新启动（含同一 Session 被恢复后重新接管）使进行中的结束流程失效，迟到的结束响应不能关闭它。
         state.endInFlight = null;
         committedSnapshot = null;
@@ -986,6 +989,18 @@
         }
         if (!isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) {
             // 开场生成期间已退出或被新启动取代：迟到的开场结果只丢弃，不能重新接管胶囊。
+            if (snapshot.ok && snapshot.resumed !== true && snapshot.session
+                && snapshot.session.session_id === nextSessionId && snapshot.session.status === 'active') {
+                // Only retire the session created by this cancelled request.
+                // Revision/lifecycle checks protect a session another operation advanced.
+                try {
+                    await requestJson(api.end, {method: 'POST', activityClaimId: startClaim, body: {
+                        story_id: nextStoryId, session_id: nextSessionId,
+                        base_revision: snapshot.session.revision,
+                        base_lifecycle_revision: snapshot.session.lifecycle_revision || 0
+                    }});
+                } catch (_) {}
+            }
             releaseServerTheaterActivity('', startClaim);
             return false;
         }
@@ -1136,7 +1151,8 @@
         }
         state.pendingTurn = null;
         // 成功回合已经推进权威 revision；此前发起的同 Session 启动快照不得再覆盖新历史。
-        launchEpoch += 1;
+        if (pendingLaunch && pendingLaunch.storyId === submittedStoryId
+            && pendingLaunch.sessionId === submittedSessionId) launchEpoch += 1;
         applySnapshot(result);
         if (result.end_receipt_id) state.pendingEnd = {
             story_id: state.storyId,
@@ -1203,6 +1219,8 @@
         if (wasActive) publishSpeechAllowlist();
         restoreProactiveChatAfterTheater();
         state.pendingTurn = null; state.draftRestore = null;
+        state.pendingEnd = null;
+        pendingSelectorEnd = null;
         committedSnapshot = null;
         rememberPointer();
         var chatHost = host();
@@ -1273,12 +1291,16 @@
         sendPendingEnd(selectorTarget);
         // 确认弹窗关闭和结束请求都会把焦点留回本体；提交成功后必须再次恢复选剧页。
         restoreSelectorWindow(selectorTarget);
+        var deliveryReceipt = state.pendingEnd;
         clear(clearReason);
+        pendingSelectorEnd = deliveryReceipt ? {target: selectorTarget, receipt: deliveryReceipt} : null;
         return true;
     }
     function sendPendingEnd(target) {
-        if (!state.pendingEnd) return;
-        var content = Object.assign({ action: 'theater:post-end', message_id: createId('theater_post_end_') }, state.pendingEnd);
+        var receipt = pendingSelectorEnd && pendingSelectorEnd.target === target
+            ? pendingSelectorEnd.receipt : state.pendingEnd;
+        if (!receipt) return;
+        var content = Object.assign({ action: 'theater:post-end', message_id: createId('theater_post_end_') }, receipt);
         // 已知选剧页时只直发；直发失败才广播，避免同一回执通过两个传输通道重复到达。
         if (target) {
             var directMessage = transport.createMessage('theater-runtime', content);
@@ -1411,7 +1433,7 @@
                 applySnapshot(snapshot);
                 state.history = buildCommittedHistory(snapshot);
             }
-            state.phase = 'awaiting_player';
+            state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             // 只有请求本身未取得响应时才提示本地服务连接；后端拒绝属于业务状态错误。
             state.errorMessage = endRequestFailed
                 ? t('theater.endConnectionFailed', '无法连接 N.E.K.O 本地服务，请确认程序仍在运行后重试。')
@@ -1497,7 +1519,13 @@
             pendingLaunch = null;
             if (!state.active) rememberPointer();
         }
-        if ((message.action === 'theater:launch-ready' || message.action === 'theater:start-ready') && message.launch_id) {
+        if (message.action === 'theater:host-probe' && message.probe_id) {
+            var candidateRole = desktopRuntimeRole();
+            if (candidateRole && candidateRole !== 'compact') return;
+            postMessage({action: 'theater:host-candidate', probe_id: message.probe_id,
+                runtime_host_id: runtimeHostId, visible: document.visibilityState === 'visible'});
+        }
+        else if ((message.action === 'theater:launch-ready' || message.action === 'theater:start-ready') && message.launch_id) {
             stopDesktopLaunchRelay(message.launch_id);
         }
         else if (
@@ -1507,6 +1535,7 @@
             && message.session_id
             && (message.action === 'theater:start-request' || Number.isInteger(message.revision))
         ) {
+            if (message.runtime_host_id && message.runtime_host_id !== runtimeHostId) return;
             var role = desktopRuntimeRole();
             if (role === 'pet') {
                 if (message.runtime_host_kind) return;
@@ -1520,10 +1549,17 @@
             if (role && role !== 'compact') return;
             if (message.runtime_host_kind && role && message.runtime_host_kind !== role) return;
             if (event.source && event.source !== window) launchReplyTargets[message.launch_id] = event.source;
-            if (message.action === 'theater:start-request') startLaunch(message);
+            if (message.action === 'theater:start-request') {
+                var acceptedMessage = postMessage({ action: 'theater:start-accepted', launch_id: message.launch_id,
+                    story_id: message.story_id, session_id: message.session_id });
+                postDirect(launchReplyTargets[message.launch_id], acceptedMessage);
+                startLaunch(message);
+            }
             else launch(message);
         }
         else if (message.action === 'theater:selector-ready') sendPendingEnd(event.source);
+        else if (message.action === 'theater:post-end-accepted' && pendingSelectorEnd
+            && message.end_receipt_id === pendingSelectorEnd.receipt.end_receipt_id) pendingSelectorEnd = null;
         else if (message.action === 'theater:ordinary-voice-stop' && !state.active) {
             // A theater started in another window: stop this window's ordinary mic or
             // voice session, exactly as the theater window stops its own before launch,

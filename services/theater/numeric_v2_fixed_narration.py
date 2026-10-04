@@ -177,7 +177,7 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
     selected: set[str] = set()
     for claim in claims:
         evidence = str(claim.get("evidence") or "")
-        if not evidence or not any(evidence in text for text in sources):
+        if not any(char.isalnum() for char in evidence) or not any(evidence in text for text in sources):
             continue
         definition = next((item for item in definitions(node) if item["id"] == claim.get("id")), None)
         trigger = (definition or {}).get("trigger", {})
