@@ -108,6 +108,29 @@ def _setup_fields(source, *, legacy=None, strict=True):
     return setup
 
 
+def _package_metrics(story: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Recover the author metric projection without rewriting its source package."""
+    metrics = []
+    for metric_id, definition in (story.get("metric_schema") or {}).items():
+        metrics.append({
+            "id": metric_id,
+            "preset": None,
+            "name": definition.get("name", ""),
+            "description": definition.get("description", ""),
+            "relationship_effect": definition.get("relationship_effect", "none"),
+            "min": definition.get("min", DEFAULT_METRIC_MIN),
+            "max": definition.get("max", DEFAULT_METRIC_MAX),
+            "initial": definition.get("initial", DEFAULT_METRIC_INITIAL),
+            "increase_limit": (definition.get("per_turn_limit") or {}).get("increase", 5),
+            "decrease_limit": (definition.get("per_turn_limit") or {}).get("decrease", 5),
+            "increase_criteria": definition.get("increase_criteria", []),
+            "decrease_criteria": definition.get("decrease_criteria", []),
+            "visibility": "hidden",
+            "bands": definition.get("bands", []),
+        })
+    return _setup_fields({"metrics": normalize_metric_drafts(metrics)}, strict=False)["metrics"]
+
+
 def _normalize_editor(value: Any) -> dict[str, Any]:
     """Store only author canvas coordinates, keeping editor state out of Story Package."""
 
@@ -495,6 +518,11 @@ class NumericV2ProjectStore:
                 old_setup = (deepcopy(dict(stored_setup)) if not damaged_setup
                     else self._new_project()["setup"])
                 incoming = _setup_fields(dict(changes["setup"] or {}), legacy=old_setup)
+                if damaged_setup and "metrics" not in incoming and isinstance(project.get("story"), Mapping):
+                    try:
+                        old_setup["metrics"] = _package_metrics(project["story"])
+                    except (TypeError, AttributeError) as exc:
+                        raise NumericV2ProjectError("invalid_metric_draft") from exc
                 fields = NumericV2SetupPayload.model_fields
                 # Existing drafts with unknown keys can be repaired without
                 # deleting the project. Null clears an optional field.
@@ -924,26 +952,8 @@ class NumericV2ProjectStore:
                      compile_result: Mapping[str, Any] | None = None) -> dict[str, Any]:
         with self.transaction():
             project = self._new_project()
-            setup_metrics = []
-            for metric_id, definition in story.get("metric_schema", {}).items():
-                setup_metrics.append({
-                    "id": metric_id,
-                    "preset": None,
-                    "name": definition.get("name", ""),
-                    "description": definition.get("description", ""),
-                    "relationship_effect": definition.get("relationship_effect", "none"),
-                    "min": definition.get("min", DEFAULT_METRIC_MIN),
-                    "max": definition.get("max", DEFAULT_METRIC_MAX),
-                    "initial": definition.get("initial", DEFAULT_METRIC_INITIAL),
-                    "increase_limit": (definition.get("per_turn_limit") or {}).get("increase", 5),
-                    "decrease_limit": (definition.get("per_turn_limit") or {}).get("decrease", 5),
-                    "increase_criteria": definition.get("increase_criteria", []),
-                    "decrease_criteria": definition.get("decrease_criteria", []),
-                    "visibility": "hidden",
-                    "bands": definition.get("bands", []),
-                })
             # The setup is an editor projection; importing must retain the original package.
-            project["setup"]["metrics"] = _setup_fields({"metrics": normalize_metric_drafts(setup_metrics)}, strict=False)["metrics"]
+            project["setup"]["metrics"] = _package_metrics(story)
             project["story"] = deepcopy(dict(story))
             project["title"] = str(story.get("meta", {}).get("title", "未命名剧本") or "").strip()
             project["stage"] = "story"

@@ -238,6 +238,9 @@ def test_damaged_setup_repair_defaults_and_explicit_metric_clear(tmp_path, setup
     assert NumericV2SetupPayload.model_validate(saved['setup']).length_preset == 'standard'
     if repair == 'brief':
         assert saved['story'] == project['story']
+        assert saved['setup']['metrics'][0]['id'] == 'trust'
+        assert saved['setup']['metrics'][0]['initial'] == project['story']['metric_schema']['trust']['initial']
+        assert saved['setup']['metrics'][0]['bands'] == project['story']['metric_schema']['trust']['bands']
         for key in ('compile_result', 'neko_validation', 'install_result'):
             assert saved[key] == {**project[key], 'revision': saved['revision']}
     else:
