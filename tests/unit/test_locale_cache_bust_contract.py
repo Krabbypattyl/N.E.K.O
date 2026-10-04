@@ -65,9 +65,21 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-04-theater-external-route-main-merge",
+        "2026-10-04-voice-readiness-route-registry-merge",
         "2026-10-04-theater-storage-requesty-main-merge",
         "2026-10-04-external-route-registry-main-merge-round4",
         "2026-10-03-theater-air-basketball-main-merge",
+        "2026-10-04-voice-readiness-review-main-merge",
+        "2026-10-04-external-route-registry-main-merge-round4",
+        "2026-10-03-voice-readiness-model-picker-merge",
+        "2026-10-04-storage-requesty-main-merge",
+        "2026-10-03-voice-readiness-recovery",
+        "2026-10-03-model-picker-main-merge-round5",
+        "2026-10-03-voice-readiness-main-merge",
+        "2026-10-03-voice-readiness",
+        "2026-10-03-storage-rollback-errors",
+        "2026-10-04-external-route-registry-main-merge-round3",
         "2026-10-04-storage-requesty-main-merge",
         "2026-10-01-theater-ordinary-chat-unavailable",
         "2026-10-01-click-guide-memory-reactivation",
@@ -93,7 +105,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-model-picker-url-hint",
         "2026-10-03-assist-model-picker",
         "2026-10-03-requesty-air-basketball-main-merge",
-        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-click-guide-review-main-merge",
         "2026-09-28-click-guide-review",
@@ -266,7 +277,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-11-watch-together-discovery",
         "2026-09-12-air-basketball",
         "2026-09-13-watch-together-air-basketball",
-        "2026-09-14-proactive-community-chat",
         "2026-09-03-avatar-tool-image-details",
         "2026-09-03-avatar-tool-initial-connections",
         "2026-09-03-avatar-tool-stage2-structure",
@@ -291,11 +301,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-13-plugin-html-content-proactive-community",
         "2026-09-14-plugin-html-content-main-merge",
         "2026-09-22-plugin-html-content-main-merge",
-        "2026-09-22-voice-session-activation",
-        "2026-09-23-plugin-html-content-main-merge",
-        "2026-09-23-voice-wake-word-plugin-html-main",
         "2026-09-14-proactive-community-air-basketball",
-        "2026-09-27-asr-recovery-main-merge",
         "2026-09-27-glm-voice-clone",
         "2026-09-28-glm-voice-clone-main-merge",
         "2026-09-28-glm-voice-clone-locale-key-sync",
@@ -330,7 +336,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "f79fc889d9d603f404a6b7c2ee2b99d211b3ab7940b7327b499a190276dab6c1"
+LOCALE_KEY_SIGNATURE = "8d23e4c7badf45c65e76e603bd127d2dfad76405bd35027ba4b1177e320ff0b6"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

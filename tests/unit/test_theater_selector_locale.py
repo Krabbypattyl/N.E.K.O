@@ -132,6 +132,7 @@ async function run() {
   await respond(/\/memory\/archives\?/, { ok: true, archives: [] });
   await respond(/\/memory\/stories$/, { ok: true, character_id: 'cat_a', stories: [] });
   element('#theater-start-btn').listeners.click();
+  await respond(/\/session\/active\?/, { ok: true, session: null });
   await tick(); await tick();
   const start = requests.find(request => request.url.includes('/session/start'));
   assert.ok(start);
