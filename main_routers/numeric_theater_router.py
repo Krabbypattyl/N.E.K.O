@@ -484,7 +484,7 @@ def _public_session(session: Any) -> dict[str, Any]:
     }
 
 
-def _numeric_payload(
+async def _numeric_payload(
     runtime: NumericV2Runtime,
     stored: Any,
     *,
@@ -492,6 +492,9 @@ def _numeric_payload(
     display_binding: Mapping[str, str] | None = None,
     story_projection_compatible: bool = True,
 ) -> dict[str, Any]:
+    from services.theater.numeric_v2_options import aload_theater_module_options
+
+    modules = await aload_theater_module_options()
     binding = display_binding or stored.session.catgirl_binding
     if not story_projection_compatible:
         # 旧 Session 可以在剧本升级后结束，但不能把新剧本的场景投影伪装成旧剧情。
@@ -532,7 +535,7 @@ def _numeric_payload(
         "story_intro": cast.intro(runtime.engine.story),
         "scene": _scene_projection(runtime, stored, binding),
         "suggested_inputs": list(latest.get("suggested_inputs") or []),
-        "invitation_recovery_available": invitation_recovery_contract(runtime, stored) is not None,
+        "invitation_recovery_available": invitation_recovery_contract(runtime, stored, condition_narrations_enabled=bool(modules.get("review"))) is not None,
     }
     if end_receipt:
         payload["end_receipt_id"] = str(end_receipt.get("receipt_id") or "")
@@ -873,7 +876,7 @@ async def _start_numeric_session(request: Request):
                     return {
                         "ok": True,
                         "resumed": True,
-                        **_numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible),
+                        **(await _numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible)),
                     }
                 if session_id == existing.session.session_id:
                     return _error("numeric_replacement_session_id_must_differ", 400)
@@ -911,7 +914,7 @@ async def _start_numeric_session(request: Request):
                     return {
                         "ok": True,
                         "resumed": True,
-                        **_numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible),
+                        **(await _numeric_payload(runtime, existing, display_binding=binding, story_projection_compatible=compatible)),
                     }
                 if session_id == existing.session.session_id:
                     return _error("numeric_replacement_session_id_must_differ", 400)
@@ -932,12 +935,12 @@ async def _start_numeric_session(request: Request):
                     existing.session.session_id,
                 )
                 if needs_legacy_archive:
-                    previous_public = _numeric_payload(
+                    previous_public = (await _numeric_payload(
                         runtime,
                         existing,
                         display_binding=binding,
                         story_projection_compatible=compatible,
-                    )
+                    ))
                     # 兼容升级前已经写入记忆、但尚未生成冷档案的 Session；
                     # 冷档案落盘失败时不能继续删除旧恢复槽位。
                     await archive_store.awrite_public_archive(
@@ -989,7 +992,7 @@ async def _start_numeric_session(request: Request):
         if str(exc) == "catgirl_changed_requires_new_session":
             return _domain_value_error(exc, 409)
         return _domain_value_error(exc, 400)
-    return {"ok": True, **_numeric_payload(runtime, stored, display_binding=binding)}
+    return {"ok": True, **(await _numeric_payload(runtime, stored, display_binding=binding))}
 
 
 @router.get("/session/active")
@@ -1018,13 +1021,13 @@ async def get_active_numeric_session(story_id: str):
     return {
         "ok": True,
         "resumed": True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=receipt,
             display_binding=binding,
             story_projection_compatible=compatible,
-        ),
+        )),
     }
 
 
@@ -1057,12 +1060,12 @@ async def get_numeric_session(request: Request, session_id: str, story_id: str, 
         return _domain_value_error(exc, 409)
     return {
         "ok": True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=receipt,
             display_binding=binding,
-        ),
+        )),
     }
 
 
@@ -1145,12 +1148,12 @@ async def _submit_numeric_input_once(
                 "ok": True,
                 "idempotent_replay": True,
                 "end_receipt_pending": replay_receipt_pending,
-                **_numeric_payload(
+                **(await _numeric_payload(
                     runtime,
                     current,
                     end_receipt=replay_receipt,
                     display_binding=current_binding,
-                ),
+                )),
             }
         forget_scope = (
             str(current.session.story_package_id),
@@ -1232,12 +1235,12 @@ async def _submit_numeric_input_once(
         "performance": _public_performance(performance),
         "end_receipt_pending": end_receipt_pending,
         "evaluator_degraded": workflow.diagnostics.get("evaluator_degraded") is True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=end_receipt,
             display_binding=current_binding,
-        ),
+        )),
     }
 
 
@@ -1320,13 +1323,13 @@ async def end_numeric_session(request: Request):
             return {
                 "ok": True,
                 "idempotent_replay": True,
-                **_numeric_payload(
+                **(await _numeric_payload(
                     runtime,
                     current,
                     end_receipt=receipt,
                     display_binding=current_binding,
                     story_projection_compatible=story_projection_compatible,
-                ),
+                )),
             }
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
@@ -1340,13 +1343,13 @@ async def end_numeric_session(request: Request):
         return _domain_value_error(exc, 409)
     return {
         "ok": True,
-        **_numeric_payload(
+        **(await _numeric_payload(
             runtime,
             stored,
             end_receipt=receipt,
             display_binding=current_binding,
             story_projection_compatible=story_projection_compatible,
-        ),
+        )),
     }
 
 
@@ -1416,7 +1419,7 @@ async def resume_numeric_session(request: Request, claim_activity: bool = True):
     return {
         "ok": True,
         "resumed": True,
-        **_numeric_payload(runtime, stored, display_binding=current_binding),
+        **(await _numeric_payload(runtime, stored, display_binding=current_binding)),
     }
 
 
@@ -1692,12 +1695,12 @@ async def archive_numeric_session(request: Request):
                         return _error("numeric_end_receipt_character_mismatch", 409)
                     if stored.session.status != "ended" or stored.session.revision != receipt["revision"]:
                         return _error("numeric_archive_session_not_ended", 409)
-                    public = _numeric_payload(
+                    public = (await _numeric_payload(
                         runtime,
                         stored,
                         display_binding=current_binding,
                         story_projection_compatible=compatible,
-                    )
+                    ))
                     title = str(runtime.engine.story["meta"]["title"])
                     messages = build_numeric_v2_memory_messages(
                         title=title,

@@ -32,7 +32,7 @@ from .numeric_v2_context import (
     scene_opening_text,
     transition_bridge_leak_markers,
 )
-from .numeric_v2_fixed_narration import apply_triggers, review_candidates
+from .numeric_v2_fixed_narration import apply_triggers, required_pending, review_candidates
 from .numeric_v2_history import lookup_history
 from .numeric_v2_evaluator import (
     NumericV2EvaluationResult,
@@ -1094,10 +1094,13 @@ async def _generate_actor_turn_with_output_retry(
     raise AssertionError("unreachable")
 
 
-def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession) -> dict[str, str] | None:
+def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession, *, condition_narrations_enabled: bool = True) -> dict[str, str] | None:
     """Project a new invitation only when the current state can authorize it."""
     session = current.session
     if session.status != "active" or session.transition_offered or runtime.engine.completion_contract_satisfied(session) is not True:
+        return None
+    if required_pending(runtime.engine.nodes[session.current_node_id], session,
+            condition_triggers_enabled=condition_narrations_enabled):
         return None
     route = runtime.engine.preview_route(session.current_node_id, session.metrics)
     if not isinstance(route, Mapping):
@@ -1122,7 +1125,8 @@ def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2St
 
 async def _execute_reinvitation(*, runtime, current, turn, ensure_current_binding, before_commit):
     # Explicit control action: no Actor/Evaluator, no metrics or scene movement.
-    contract = invitation_recovery_contract(runtime, current)
+    modules = await aload_theater_module_options()
+    contract = invitation_recovery_contract(runtime, current, condition_narrations_enabled=bool(modules.get("review")))
     if contract is None:
         raise NumericV2RuntimeError("numeric_reinvitation_not_available")
     outcome = runtime.prepare_turn(current, turn, (), condition_narrations_enabled=False)

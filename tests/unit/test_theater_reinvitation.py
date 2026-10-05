@@ -101,3 +101,30 @@ async def test_router_reinvitation_replay_and_stale_revision(tmp_path, monkeypat
         current.session.story_package_id, current.session.session_id)
     assert stale.status_code == 409
     assert (await runtime.restore_session(current.session.session_id)).session.revision == first['session']['revision']
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('review', [False, True])
+async def test_reinvitation_respects_required_narration_and_review_switch(tmp_path, monkeypatch, review):
+    from main_routers import numeric_theater_router as router
+    from tests.unit.test_theater_numeric_v2_fixed_narration import _piece
+
+    runtime, current = await setup_case(tmp_path, monkeypatch, review=review)
+    runtime.engine.nodes['start']['story_beat']['fixed_narrations'] = [_piece('pending', '必显原文。')]
+    async def options():
+        return {'review': review}
+    monkeypatch.setattr('services.theater.numeric_v2_options.aload_theater_module_options', options)
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
+    payload = await router._numeric_payload(runtime, current)
+    assert payload['invitation_recovery_available'] is (not review)
+    if review:
+        with pytest.raises(NumericV2RuntimeError, match='numeric_reinvitation_not_available'):
+            await reinvite(runtime, current)
+        assert (await runtime.restore_session(current.session.session_id)).session.revision == current.session.revision
+        piece = {'node_id': 'start', 'id': 'pending', 'text': '必显原文。', 'bindings': {}, 'position': 'after'}
+        current = replace(current, session=replace(current.session,
+            performance_history=(*current.session.performance_history, {'fixed_narrations': [piece]})))
+        assert (await router._numeric_payload(runtime, current))['invitation_recovery_available']
+        # Persisted delivery is checked by the same helper used at submission.
+        assert workflow.invitation_recovery_contract(runtime, current)
+    else:
+        assert (await reinvite(runtime, current)).stored.session.transition_offered
