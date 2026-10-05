@@ -46,6 +46,7 @@ from .numeric_v2_fixed_narration import MAX_FIXED_NARRATIONS, review_candidates
 from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_runtime import (
     MetricChangeV2,
+    current_visit_started_revision,
     NumericV2Engine,
     NumericV2RuntimeError,
     ScriptSessionV2,
@@ -1098,8 +1099,7 @@ def _build_transition_judge_messages(
     complete_visit = bool(
         full_scene_context
         and full_scene_context[0].get("phase") in {"opening", "scene_entry"}
-        and len(full_scene_context) == session.node_turn_count + 1
-        and visit_revisions == list(range(session.revision - session.node_turn_count, session.revision + 1))
+        and visit_revisions == list(range(current_visit_started_revision(session), session.revision + 1))
     )
     character_state = beat.get("character_state")
     acting_contract = beat.get("acting_contract")

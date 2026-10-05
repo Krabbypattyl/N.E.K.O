@@ -604,6 +604,21 @@ def _fact_projection(
     }
 
 
+def current_visit_started_revision(session: Any) -> int:
+    """Use committed scene-entry boundaries, including control revisions."""
+    records = tuple(getattr(session, "performance_history", ()) or ())
+    for record in reversed(records):
+        if record.get("to_node_id") == session.current_node_id and record.get("from_node_id") != session.current_node_id:
+            return int(record.get("revision", 0))
+        if record.get("to_node_id") != session.current_node_id:
+            break
+    if len(records) == session.revision:
+        return 0
+    controls = sum(record.get("input_source") == "reinvite" for record in records
+                   if record.get("to_node_id") == session.current_node_id)
+    return max(session.revision - session.node_turn_count - controls, 0)
+
+
 def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
     """记录可由 Runtime 证明的场景访问顺序，不从演绎文案推断自然日期。"""  # noqa: DOCSTRING_CJK
 
@@ -611,7 +626,7 @@ def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
     from_node_id = str(event.get("from_node_id") or "")
     to_node_id = str(event.get("to_node_id") or from_node_id)
     node_turn_count = int(event.get("node_turn_count", 0) or 0)
-    started_revision = max(revision - node_turn_count, 0)
+    started_revision = int(event.get("visit_started_revision", max(revision - node_turn_count, 0)))
     events: list[dict[str, Any]] = []
     if from_node_id != to_node_id:
         events.extend((
@@ -768,7 +783,7 @@ class TurnRequestV2:
         )
         if (
             request.base_revision < 0
-            or not request.message
+            or (not request.message and request.input_source != "reinvite")
             or request.input_source not in NUMERIC_V2_INPUT_SOURCES
         ):
             raise NumericV2RuntimeError("numeric_turn_request_invalid")
@@ -1307,7 +1322,9 @@ class NumericV2Engine:
         event["transition_intent"] = effective_transition_intent
         if reinvitation:
             event["input_source"] = "reinvite"
+            event["input_text"] = ""
             event["player_action_projection"] = normalize_player_action_projection({})
+        event["visit_started_revision"] = revision if route is not None else current_visit_started_revision(session)
         if accepted_offer_route_id is not None:
             # 同时作为审计/分叉的重放边界；无此字段的旧回合沿用旧选路规则。
             event["accepted_offer_route_id"] = accepted_offer_route_id
@@ -1647,6 +1664,7 @@ class NumericV2Runtime:
                 "client_turn_id": source_event.get("client_turn_id"),
                 "base_revision": replay_session.revision,
                 "message": source_event.get("input_text"),
+                "input_source": source_event.get("input_source", "freeform"),
             })
             outcome = self.engine.resolve_turn(
                 replay_session,
@@ -1667,6 +1685,8 @@ class NumericV2Runtime:
                 dict(source.session.performance_history[index])
             )
             replayed_event = deepcopy(outcome.ledger_event)
+            if isinstance(source_event.get("program_invitation"), Mapping):
+                replayed_event["program_invitation"] = deepcopy(source_event["program_invitation"])
             if source_event.get("transition_offer_invalidated") is True:
                 replayed_event["transition_offer_invalidated"] = True
             if source_event.get("transition_offer_presented") is True:
@@ -1844,6 +1864,8 @@ class NumericV2Runtime:
         record["player_action_projection"] = normalize_player_action_projection(
             outcome.ledger_event.get("player_action_projection")
         )
+        if outcome.ledger_event.get("input_source") == "reinvite":
+            record["input_source"] = "reinvite"
         fact_projection = _fact_projection(outcome.ledger_event, record)
         record["fact_projection"] = fact_projection
         timeline_projection = _timeline_projection(outcome.ledger_event)

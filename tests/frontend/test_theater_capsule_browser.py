@@ -57,7 +57,8 @@ def test_targeted_launch_only_claims_one_web_runtime(mock_page: Page, running_se
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('page_path', ['/', '/chat'])
-def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, running_server: str, page_path):
+@pytest.mark.parametrize('failure', [None, 'numeric_base_revision_mismatch', 'invalid', 'network'])
+def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, running_server: str, page_path, failure):
     calls = []
     snapshot = _snapshot(revision=1)
     snapshot['suggested_inputs'] = []
@@ -69,7 +70,14 @@ def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, run
         if path.endswith('/session/input'):
             body = json.loads(route.request.post_data or '{}')
             calls.append(body)
-            record = {'revision': 2, 'input_text': body['message'],
+            if failure == 'network':
+                route.abort()
+                return
+            if failure:
+                route.fulfill(status=409 if failure == 'numeric_base_revision_mismatch' else 400,
+                    content_type='application/json', body=json.dumps({'ok': False, 'reason': failure}))
+                return
+            record = {'revision': 2, 'input_text': '',
                       'performance': '再请你一起去阅览室。', 'suggested_inputs': ['好，带路吧。']}
             payload = _snapshot(revision=2, performance_history=[record])
             payload.update(performance=record, suggested_inputs=record['suggested_inputs'],
@@ -99,6 +107,13 @@ def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, run
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     label = mock_page.evaluate("() => { const value = window.i18next && window.i18next.t('theater.reinvite'); return value && value !== 'theater.reinvite' ? value : '重新邀请'; }")
     mock_page.get_by_role('button', name=label, exact=True).click()
+    if failure:
+        mock_page.wait_for_function("() => !!window.nekoTheaterRuntime.getState().draftRestore")
+        state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
+        assert state['draftRestore']['text'] == ''
+        assert all(row.get('text') != label for row in state['history'])
+        assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
+        return
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2 && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
     assert mock_page.evaluate('window.nekoTheaterRuntime.getState().scene.id') == 'mainline_01'

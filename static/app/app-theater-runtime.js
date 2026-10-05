@@ -1131,7 +1131,7 @@
         var submittedSuggestedInputs = state.suggestedInputs.slice();
         var optimisticHistoryId = 'player-pending-' + state.pendingTurn.id;
         // 玩家行动先进入历史区，让推荐输入和手动提交都立即得到可见反馈。
-        if (!state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
+        if (normalizedInputSource !== 'reinvite' && !state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
             state.history.push(historyEntry(optimisticHistoryId, 'player_action', message, state.playerName));
         }
         state.phase = 'evaluating'; state.suggestedInputs = []; state.draftRestore = null; state.errorMessage = ''; render();
@@ -1173,7 +1173,7 @@
             if (!state.active || state.storyId !== submittedStoryId || state.sessionId !== submittedSessionId
                 || !state.pendingTurn || state.pendingTurn.id !== submittedTurnId || state.phase !== 'evaluating') return false;
             state.history = state.history.filter(function (entry) { return entry.id !== optimisticHistoryId; });
-            state.draftRestore = { id: createId('theater_draft_restore_'), text: message };
+            state.draftRestore = { id: createId('theater_draft_restore_'), text: normalizedInputSource === 'reinvite' ? '' : message };
             state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
             // 只有当前接口明确在提交前返回的模型失败才恢复旧按钮；断网仍保留原输入与幂等编号。
             if (['numeric_v2_actor_failed', 'numeric_v2_actor_unavailable',

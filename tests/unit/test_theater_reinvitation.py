@@ -30,10 +30,51 @@ async def test_expired_invitation_can_be_reissued_and_accepted_after_cold_restor
     assert recovered.stored.session.metrics == followed.stored.session.metrics
     assert recovered.stored.session.node_turn_count == followed.stored.session.node_turn_count
     assert recovered.stored.ledger_events[-1]['program_invitation']['offer'] == OFFER
+    assert recovered.stored.ledger_events[-1]['input_text'] == ''
+    assert recovered.stored.session.performance_history[-1]['input_text'] == ''
+    assert recovered.stored.session.performance_history[-1]['input_source'] == 'reinvite'
+    scope = recovered.stored.ledger_events[-1]['timeline_projection']['scene_scope']
+    assert scope['visit_id'] == followed.stored.ledger_events[-1]['timeline_projection']['scene_scope']['visit_id']
+    forked = await runtime.fork_session_for_test(current.session.session_id,
+        session_id='control-fork', through_revision=recovered.stored.session.revision)
+    assert forked.session.node_turn_count == recovered.stored.session.node_turn_count
+    assert forked.session.performance_history[-1]['input_text'] == ''
+    fork_accepted = await turn(runtime, forked, 'fork-accept', ACCEPT, 'suggestion')
+    assert fork_accepted.stored.session.current_node_id == 'ending_leave'
     restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id)
     assert restored == recovered.stored
     accepted = await turn(runtime, restored, 'accept-new', ACCEPT, 'suggestion')
     assert accepted.stored.session.current_node_id == 'ending_leave'
+
+
+@pytest.mark.asyncio
+async def test_multiple_reinvitations_preserve_visit_and_model_history(tmp_path, monkeypatch):
+    import json
+    from services.theater.numeric_v2_archive import build_numeric_v2_public_archive
+    from services.theater.numeric_v2_actor import _repeats_earlier_session_performance, _turn_messages
+    from services.theater.numeric_v2_evaluator import _current_scene_context, _build_transition_judge_messages
+    from services.theater.numeric_v2_context import performance_history_records
+    from services.theater.numeric_v2_runtime import current_visit_started_revision
+
+    runtime, current = await setup_case(tmp_path, monkeypatch)
+    for index in range(2):
+        offered = await reinvite(runtime, current, f'reinvite-{index}')
+        continued = await turn(runtime, offered.stored, f'follow-{index}', '先问个问题。')
+        current = continued.stored
+        assert current_visit_started_revision(current.session) == 0
+        assert current.ledger_events[-1]['timeline_projection']['scene_scope']['visit_id'] == 'start:r0'
+    assert all(row['player_input'] != '重新邀请' for row in _current_scene_context(current.session))
+    assert '重新邀请' not in str(performance_history_records(current.session))
+    prepared = runtime.prepare_turn(current, TurnRequestV2('next', current.session.revision, '继续聊。'), ())
+    messages = _turn_messages(runtime.engine, current.session, prepared, '继续聊。', '温和。', '猫娘', '你')
+    assert '重新邀请' not in str(messages)
+    assert _repeats_earlier_session_performance({'performance': OFFER}, current.session, route_changed=False)
+    archive = build_numeric_v2_public_archive(title='测试', session=current.session, ending=None)
+    assert all(row['player_input'] != '重新邀请' for row in archive['turns'])
+    judge = _build_transition_judge_messages(runtime.engine, current.session,
+        actor_performance={'performance': '继续聊。'}, player_input='继续聊。')[0]
+    payload = json.loads(judge[1].content.split('：', 1)[1])
+    assert payload['current_visit_history_complete'] is True
 
 
 @pytest.mark.asyncio
