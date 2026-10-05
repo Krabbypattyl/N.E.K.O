@@ -845,6 +845,7 @@ def _authored_offer_visible(performance: Mapping[str, Any], offer: str) -> bool:
 
 def _confirmed_authored_acceptance(
     engine: NumericV2Engine, current: NumericV2StoredSession, turn: TurnRequestV2,
+    *, require_program_invitation: bool = False,
 ) -> str:
     """只核对刚展示的作者邀请/接受原文对，不推断自由输入或过期邀请的语义。"""  # noqa: DOCSTRING_CJK
 
@@ -860,6 +861,19 @@ def _confirmed_authored_acceptance(
         return ""
     offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
     accept = _project_authored_transition_text(engine, session, str(contract.get("accept_input") or "")).strip()
+    if require_program_invitation:
+        # A literal quote is not proof of a live invitation. Only the latest
+        # committed, program-issued pair can authorize an unreviewed acceptance.
+        event = next((row for row in current.ledger_events
+                      if row.get("result_revision") == session.revision), None)
+        receipt = event.get("program_invitation") if isinstance(event, Mapping) else None
+        if (not isinstance(receipt, Mapping)
+                or origin.get("revision") != session.revision
+                or receipt.get("route_id") != route.get("id")
+                or receipt.get("offer") != offer or receipt.get("accept_input") != accept
+                or receipt.get("performance") != origin.get("performance")
+                or receipt.get("visible_blocks") != performance_content_blocks(origin)):
+            return ""
     if (not offer or not accept or turn.message.strip() != accept
             or _pending_offer_acceptance_path(session, ledger_events=current.ledger_events) != accept
             or accept not in origin.get("suggested_inputs", [])
@@ -952,11 +966,12 @@ def _evaluation_without_evaluator(
 ) -> NumericV2EvaluationResult:
     """判定模块关闭时的确定性结果：不结算数值、不猜意图。  # noqa: DOCSTRING_CJK
 
-    只保留一条不依赖模型的放行：玩家点击当前已公开的作者邀请所配的接受原文时，
+    只保留一条不依赖模型的放行：玩家点击最新程序回执核验的作者邀请所配的接受原文时，
     允许 Runtime 走既有的接受选路。其余情况一律 unclear——剧情停在当前幕，不换幕、不加分。
     """  # noqa: DOCSTRING_CJK
 
-    accepted = engine is not None and bool(_confirmed_authored_acceptance(engine, current, turn))
+    accepted = engine is not None and bool(_confirmed_authored_acceptance(
+        engine, current, turn, require_program_invitation=True))
     return NumericV2EvaluationResult(
         metric_changes=(),
         scene_complete=False,
@@ -1218,6 +1233,7 @@ async def _execute_numeric_v2_turn(
     history_lookup_result: dict[str, Any] | None = None
     invalidate_previous_offer = False
     final_fixed_review: NumericV2TransitionOfferReview | None = None
+    program_invitation_performance: str | None = None
     # 在正文重采样前冻结真实人格输入；推荐失败由内部降级，最终正文仍须属于同一角色世代。
     generation_binding = ensure_current_binding(current.session)
     generation_profile = actor._character_profile()
@@ -1734,8 +1750,17 @@ async def _execute_numeric_v2_turn(
                 transition_judge_started_at,
             )
 
-    confirmed_acceptance_route_id = _confirmed_authored_acceptance(runtime.engine, current, turn)
+    confirmed_acceptance_route_id = _confirmed_authored_acceptance(
+        runtime.engine, current, turn,
+        require_program_invitation=not module_options.get("review") or not module_options.get("evaluator"),
+    )
     evaluation = await evaluate_turn()
+    if diagnostics["evaluator_degraded"]:
+        confirmed_acceptance_route_id = _confirmed_authored_acceptance(
+            runtime.engine, current, turn, require_program_invitation=True)
+    if (not module_options.get("review") or diagnostics["evaluator_degraded"]):
+        if evaluation.transition_intent == "accept" and not confirmed_acceptance_route_id:
+            evaluation = replace(evaluation, transition_intent="unclear")
     if confirmed_acceptance_route_id:
         # 精确按钮选择不再因前置模型的 unclear 而丢失；数值、事实及 Runtime 选路检查保持。
         evaluation = replace(evaluation, transition_intent="accept", transition_reply_target="pending_transition")
@@ -2354,7 +2379,7 @@ async def _execute_numeric_v2_turn(
         and fallback_target.get("type") != "ending"
         and fallback_target.get("terminal") is not True
         and fallback_offer
-        and ((not module_options.get("review") and performance.get("transition_offered") is not True) or (
+        and ((not module_options.get("review")) or (
             module_options.get("review")
             and final_fixed_review is not None
             and not final_fixed_review.offer_present
@@ -2362,7 +2387,7 @@ async def _execute_numeric_v2_turn(
         ))
     ):
         visible_performance = str(performance.get("performance") or "").rstrip()
-        if fallback_offer not in visible_performance:
+        if not module_options.get("review") or fallback_offer not in visible_performance:
             visible_performance = "\n".join(
                 item for item in (visible_performance, fallback_offer) if item
             )
@@ -2381,6 +2406,8 @@ async def _execute_numeric_v2_turn(
             ),
         ):
             performance = fallback_candidate
+            if not module_options.get("review"):
+                program_invitation_performance = visible_performance
             reviewed_transition_offered = True
             diagnostics["completion_fallback_offer_applied"] += 1
             trace_event(
@@ -2515,18 +2542,22 @@ async def _execute_numeric_v2_turn(
         runtime.engine, outcome.session,
         str((acceptance_contract or {}).get("fallback_offer") or ""),
     ).strip()
-    if new_offer and not route_changed and (not module_options.get("evaluator") or diagnostics["evaluator_degraded"]):
-        # Without semantic judgement, expose the authored pair explicitly; an
-        # arbitrary Actor recommendation cannot stand in for route consent.
-        if authored_offer and authored_accept_input:
-            candidate = dict(filtered_performance)
-            visible = str(candidate.get("performance") or "").rstrip()
-            if authored_offer not in visible:
-                candidate["performance"] = "\n".join(filter(None, (visible, authored_offer)))
-            if valid_mixed_performance_policy(candidate, outcome.session.dialogue_policy):
-                filtered_performance = candidate
-                reviewed_transition_offered = True
     authored_offer_visible = _authored_offer_visible(filtered_performance, authored_offer)
+    conservative_invitation = (
+        not module_options.get("review") or not module_options.get("evaluator")
+        or diagnostics["evaluator_degraded"] or diagnostics["semantic_review_fallback"]
+    )
+    if conservative_invitation:
+        new_offer = bool(program_invitation_performance is not None and authored_accept_input
+                         and filtered_performance.get("performance") == program_invitation_performance)
+        reviewed_transition_offered = new_offer
+        filtered_performance = {**filtered_performance, "transition_offered": new_offer}
+        # A later free-form response may retract the old offer. Without a
+        # successful semantic review it cannot carry that authorization forward.
+        invalidate_previous_offer = invalidate_previous_offer or current.session.transition_offered
+        if not new_offer and (current.session.transition_offered
+                              or performance.get("transition_offered") is True):
+            filtered_performance["suggested_inputs"] = []
     semantically_verified_offer = bool(
         module_options.get("review") and module_options.get("evaluator")
         and not diagnostics["evaluator_degraded"]
@@ -2582,6 +2613,29 @@ async def _execute_numeric_v2_turn(
             performance, final_fixed_review, node_id=current.session.current_node_id,
         )
         diagnostics["unsafe_suggestions_removed"] += removed
+    if conservative_invitation and new_offer:
+        visible_blocks = performance_content_blocks(performance)
+        issued_blocks = mixed_performance_blocks(program_invitation_performance)
+        if (performance.get("performance") != program_invitation_performance
+                or authored_accept_input not in performance.get("suggested_inputs", [])
+                or not issued_blocks or visible_blocks[-len(issued_blocks):] != issued_blocks):
+            # Later fixed narration cannot inherit the program-issued receipt.
+            ledger_event = {**outcome.ledger_event}
+            ledger_event.pop("transition_offer_presented", None)
+            outcome = replace(outcome, ledger_event=ledger_event)
+            outcome, performance = runtime.engine.finalize_transition_offer_state(
+                outcome, {**performance, "suggested_inputs": []},
+                new_offer=False, invalidate_previous_offer=True)
+        else:
+            outcome = replace(outcome, ledger_event={
+                **outcome.ledger_event,
+                "program_invitation": {
+                    "route_id": acceptance_route["id"], "offer": authored_offer,
+                    "accept_input": authored_accept_input,
+                    "performance": program_invitation_performance,
+                    "visible_blocks": visible_blocks,
+                },
+            })
     # 模型调用不占生命周期锁；仅将身份复验、展示刷新和原子提交与角色改名串行。
     trace_event("turn.finalized", state=trace_state(outcome.session), performance=performance,
                 semantic_review_fallback=diagnostics["semantic_review_fallback"],

@@ -118,13 +118,17 @@ async def test_actor_invitation_not_duplicated_and_mute_scene_has_no_author_butt
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('invite', current.session.revision, '接下来呢？'), ensure_current_binding=lambda _: _binding())
-    if not actor_flag and not silent:
+    if not silent:
         assert authored in result.performance['performance']
         assert result.performance['suggested_inputs'][0] == '好，我们现在过去。'
         assert result.stored.session.transition_offered
+        assert result.stored.ledger_events[-1]['program_invitation']['offer'] == authored
         return
     assert result.performance['performance'] == actor_text
-    assert result.performance['suggested_inputs'][0] == '好啊，走吧。'
+    if actor_flag:
+        assert result.performance['suggested_inputs'] == []
+    else:
+        assert result.performance['suggested_inputs'][0] == '好啊，走吧。'
     assert '好，我们现在过去。' not in result.performance['suggested_inputs']
     assert result.diagnostics['completion_fallback_offer_applied'] == 0
 

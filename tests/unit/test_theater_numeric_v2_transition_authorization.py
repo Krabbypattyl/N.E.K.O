@@ -40,7 +40,7 @@ async def test_authored_acceptance_survives_a_committed_followup(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_disabled_judgement_exposes_authored_pair_for_actor_invitation(tmp_path, monkeypatch):
+async def test_disabled_judgement_does_not_authorize_actor_invitation(tmp_path, monkeypatch):
     runtime, invited, accept = await _invited(tmp_path)
     current = await runtime.start_session(session_id='new-invitation', catgirl_binding=_binding(),
                                           opening_performance=invited.session.opening_performance)
@@ -53,9 +53,12 @@ async def test_disabled_judgement_exposes_authored_pair_for_actor_invitation(tmp
     monkeypatch.setattr(wf.NumericV2Actor, '_character_profile', lambda self: '温和。')
     result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('invitation', current.session.revision, '接下来呢？'), ensure_current_binding=lambda _: _binding())
-    assert accept in result.performance['suggested_inputs']
-    assert wf._confirmed_authored_acceptance(runtime.engine, result.stored,
-        TurnRequestV2('accept', result.stored.session.revision, accept, 'suggestion'))
+    assert result.performance['suggested_inputs'] == []
+    assert not result.stored.session.transition_offered
+    assert 'program_invitation' not in result.stored.ledger_events[-1]
+    assert not wf._confirmed_authored_acceptance(runtime.engine, result.stored,
+        TurnRequestV2('accept', result.stored.session.revision, accept, 'suggestion'),
+        require_program_invitation=True)
 
 
 def _review(*, delivered=True, rejected=False):

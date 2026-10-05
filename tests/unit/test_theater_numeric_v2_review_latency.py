@@ -552,6 +552,8 @@ async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path,
                 'suggested_inputs': [suggestion, '再等等。'],
                 'transition_offered': True,
             }
+        if kwargs['outcome'].session.current_node_id == current.session.current_node_id:
+            return {'performance': '先留在这里。', 'suggested_inputs': [], 'transition_offered': False}
         return engine.finalize_transition_performance(
             kwargs['outcome'],
             _candidate(),
@@ -584,7 +586,8 @@ async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path,
         ensure_current_binding=lambda _: _binding(),
     )
     current = offered.stored
-    assert current.session.transition_offered is True
+    # A: even a literal authored quote is not a program-issued invitation.
+    assert current.session.transition_offered is False
 
     diagnostics = {}
     result = await numeric_v2_workflow.execute_numeric_v2_turn(
@@ -597,7 +600,7 @@ async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path,
     )
 
     assert diagnostics['evaluator_degraded'] is True
-    assert (result.stored.session.current_node_id != current.session.current_node_id) is authored
+    assert result.stored.session.current_node_id == current.session.current_node_id
 
 
 @pytest.mark.asyncio
