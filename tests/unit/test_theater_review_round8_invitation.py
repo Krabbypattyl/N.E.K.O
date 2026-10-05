@@ -117,7 +117,9 @@ async def test_unreviewed_followup_expires_program_invitation(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off'), (True, 'failure')])
-@pytest.mark.parametrize('text,valid', [(OFFER, True), ('（收好凭据）' + OFFER, True),
+@pytest.mark.parametrize('text,valid', [(OFFER, True), ('（收好凭据）' + OFFER, False),
+                                     ('这句话是假的：' + OFFER, False),
+                                     ('这句话是假的。（摇头）' + OFFER, False),
                                      (OFFER + '（歪头）等等，先别去了。', False),
                                      (OFFER + '（望向窗外）', False)])
 async def test_final_author_blocks_are_issued_without_duplication(tmp_path, monkeypatch, review, mode, text, valid):

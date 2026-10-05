@@ -843,21 +843,12 @@ def _authored_offer_visible(performance: Mapping[str, Any], offer: str) -> bool:
     return False
 
 
-def _authored_offer_is_final_content(performance: Mapping[str, Any], offer: str) -> bool:
-    """Match the complete authored block suffix, including actions and narration boundaries."""
+def _authored_offer_is_canonical_content(performance: Mapping[str, Any], offer: str) -> bool:
+    """Only an entire canonical author delivery can be adopted without semantic review."""
 
     authored = mixed_performance_blocks(offer)
     visible = performance_content_blocks(performance)
-    if not authored or len(visible) < len(authored):
-        return False
-    suffix = visible[-len(authored):]
-    first = authored[0]
-    if first.get("type") == "dialogue":
-        return (suffix[0].get("type") == "dialogue"
-                and suffix[0].get("speaker_id") == first.get("speaker_id")
-                and str(suffix[0].get("text") or "").endswith(first["text"])
-                and suffix[1:] == authored[1:])
-    return suffix == authored
+    return bool(authored) and visible == authored
 
 
 def _confirmed_authored_acceptance(
@@ -2392,7 +2383,7 @@ async def _execute_numeric_v2_turn(
         and isinstance(event.get("program_invitation"), Mapping)
         for event in current.ledger_events
     )
-    final_authored_offer = _authored_offer_is_final_content(performance, fallback_offer)
+    final_authored_offer = _authored_offer_is_canonical_content(performance, fallback_offer)
     if (
         not route_changed
         # 恢复请求被撤销后只交付已经审过的普通稿，不在复用路径追加新的邀请。
