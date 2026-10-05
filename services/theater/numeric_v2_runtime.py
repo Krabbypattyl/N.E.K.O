@@ -46,7 +46,7 @@ FACT_PROJECTION_SCHEMA = "neko.script.fact_projection.numeric.v1"
 TIMELINE_PROJECTION_SCHEMA = "neko.script.timeline_projection.numeric.v1"
 STORY_STATE_SCHEMA = "neko.script.story_state.numeric.v1"
 NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS = 140
-NUMERIC_V2_INPUT_SOURCES = frozenset({"freeform", "suggestion"})
+NUMERIC_V2_INPUT_SOURCES = frozenset({"freeform", "suggestion", "reinvite"})
 # 当前 Session 只保存正文、数值和转场状态；旧证据链 Session 不再可恢复。
 _DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -755,7 +755,7 @@ class TurnRequestV2:
     client_turn_id: str
     base_revision: int
     message: str
-    # 只描述本轮 UI 输入来源，不参与数值、路线或 Session 状态机。
+    # reinvite 是显式控制操作；其他来源只描述普通输入的 UI 来源。
     input_source: str = "freeform"
 
     @classmethod
@@ -1133,6 +1133,9 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("metric_change_duplicate")
         if transition_intent not in {"accept", "initiate", "reject", "unclear"}:
             raise NumericV2RuntimeError("transition_intent_invalid")
+        reinvitation = request.input_source == "reinvite"
+        if reinvitation and (changes or fact_operations or scene_complete or natural_ending_ready or transition_intent != "unclear"):
+            raise NumericV2RuntimeError("numeric_reinvitation_not_available")
         # 重新接受只能依据本次场景访问中已经公开的邀请；不新增状态，冷恢复仍从同一历史判定。
         offered_record = pending_transition_record(
             session, ledger_events=ledger_events, include_withdrawn=True,
@@ -1158,7 +1161,7 @@ class NumericV2Engine:
             after[change.metric_id] = next_value
 
         source = self.nodes[session.current_node_id]
-        next_turn_count = session.node_turn_count + 1
+        next_turn_count = session.node_turn_count if reinvitation else session.node_turn_count + 1
         route = None
         route_status = "playing"
         accepted_offer_route_id = None
@@ -1221,7 +1224,7 @@ class NumericV2Engine:
             transition = deepcopy(dict(route["transition_contract"]))
             route_status = "advanced"
 
-        player_address_known = _player_address_known_after_turn(session, request.message)
+        player_address_known = session.player_address_known if reinvitation else _player_address_known_after_turn(session, request.message)
         dialogue_policy = session.dialogue_policy
         if route is not None:
             dialogue_policy = self._node_dialogue_policy(
@@ -1302,6 +1305,9 @@ class NumericV2Engine:
             fact_operations=fact_operations,
         )
         event["transition_intent"] = effective_transition_intent
+        if reinvitation:
+            event["input_source"] = "reinvite"
+            event["player_action_projection"] = normalize_player_action_projection({})
         if accepted_offer_route_id is not None:
             # 同时作为审计/分叉的重放边界；无此字段的旧回合沿用旧选路规则。
             event["accepted_offer_route_id"] = accepted_offer_route_id

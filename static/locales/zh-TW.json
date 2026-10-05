@@ -3147,6 +3147,7 @@
     "tokenUsageCall": "{number}. {stage} · 輸入 {input} · 輸出 {output}",
     "tokenUsagePartial": "統計不完整，部分呼叫未回傳用量",
     "tokenUsageSummary": "本次請求 · 輸入 {input} · 輸出 {output} token · {calls} 次呼叫",
+        "reinvite": "重新邀請",
         "inputFailed": "暫時無法取得演繹回覆，請重試。",
         "endStateFailed": "目前演繹狀態無法結束，請返回劇本頁後重試。",
         "title": "小劇場",

@@ -27,7 +27,7 @@
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
         playerName: '', catgirlName: '', activityCatgirlName: '', activityClaimId: '',
-        sessionStatus: '', scene: null, history: [], suggestedInputs: [],
+        sessionStatus: '', scene: null, history: [], suggestedInputs: [], invitationRecoveryAvailable: false,
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
         chatSurfaceModeRestore: null, windowClaimed: false,
@@ -596,7 +596,10 @@
             phase: state.phase,
             storyTitle: state.storyTitle,
             history: state.history.slice(),
-            suggestedInputs: state.phase === 'awaiting_player' ? state.suggestedInputs.slice(0, 3) : [],
+            suggestedInputs: state.phase === 'awaiting_player' ? (state.invitationRecoveryAvailable
+                ? [t('theater.reinvite', '重新邀请')].concat(state.suggestedInputs.filter(function (text) {
+                    return text !== t('theater.reinvite', '重新邀请');
+                })).slice(0, 3) : state.suggestedInputs.slice(0, 3)) : [],
             busy: ['loading', 'evaluating', 'ending', 'returning_selector'].indexOf(state.phase) >= 0,
             sessionEnded: state.sessionStatus === 'ended',
             errorMessage: state.errorMessage,
@@ -636,7 +639,8 @@
         });
     }
     function submitSuggestedFromHost(text) {
-        void submit(text, 'suggestion').catch(function () {
+        var source = state.invitationRecoveryAvailable && text === t('theater.reinvite', '重新邀请') ? 'reinvite' : 'suggestion';
+        void submit(text, source).catch(function () {
             if (!state.active) return;
             state.phase = 'awaiting_player';
             state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
@@ -688,6 +692,7 @@
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
+        state.invitationRecoveryAvailable = snapshot.invitation_recovery_available === true;
         if (snapshot.end_receipt_pending) {
             state.errorMessage = t('theater.endReceiptPending', '演出已经结束；记忆确认暂未准备好，请稍后重新打开选剧页。');
         } else if (snapshot.evaluator_degraded) {
@@ -1114,9 +1119,9 @@
     }
     async function submit(text, inputSource) {
         var message = String(text || '').trim();
-        var normalizedInputSource = inputSource === 'suggestion' ? 'suggestion' : 'freeform';
+        var normalizedInputSource = inputSource === 'reinvite' ? 'reinvite' : inputSource === 'suggestion' ? 'suggestion' : 'freeform';
         if (!state.active || state.phase !== 'awaiting_player' || !message) return false;
-        var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + message;
+        var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + normalizedInputSource + '\u001f' + message;
         if (!state.pendingTurn || state.pendingTurn.signature !== signature) state.pendingTurn = { signature: signature, id: createId('theater_turn_') };
         // 请求期间可能从另一个选剧页切换剧本；响应只能写回发起它的 Session。
         var submittedStoryId = state.storyId;

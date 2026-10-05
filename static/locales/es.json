@@ -3147,6 +3147,7 @@
     "tokenUsageCall": "{number}. {stage} · entrada {input} · salida {output}",
     "tokenUsagePartial": "Uso parcial; faltan datos de algunas llamadas",
     "tokenUsageSummary": "Esta solicitud · entrada {input} · salida {output} tokens · {calls} llamadas",
+        "reinvite": "Pedir una nueva invitación",
         "inputFailed": "No se pudo obtener la respuesta de la escena. Inténtalo de nuevo.",
         "endStateFailed": "No se pudo finalizar el estado actual de la actuación. Vuelve a la página de historias e inténtalo de nuevo.",
         "endConnectionFailed": "No se pudo acceder al servicio local de N.E.K.O. Comprueba que la aplicación siga abierta e inténtalo de nuevo.",

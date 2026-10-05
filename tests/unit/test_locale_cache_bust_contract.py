@@ -340,7 +340,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "71d7617933d926505190bb8aa65153e85e1979c61e5f54229a825c8ac490abc0"
+LOCALE_KEY_SIGNATURE = "2ee8f68891a04c5d110037bd25b4931734bf02fb0fb03f5e656eb102af84639b"
 
 
 _BUMP_INSTRUCTIONS = (

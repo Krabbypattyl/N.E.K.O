@@ -1227,6 +1227,7 @@ class NumericV2SessionStore:
                         "client_turn_id": turn_id,
                         "base_revision": event.get("base_revision"),
                         "message": event.get("input_text"),
+                        "input_source": event.get("input_source", "freeform"),
                     }
                 )
                 replayed = self.engine.resolve_turn(

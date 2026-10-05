@@ -55,6 +55,57 @@ def test_targeted_launch_only_claims_one_web_runtime(mock_page: Page, running_se
         peer.close()
 
 
+@pytest.mark.frontend
+@pytest.mark.parametrize('page_path', ['/', '/chat'])
+def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, running_server: str, page_path):
+    calls = []
+    snapshot = _snapshot(revision=1)
+    snapshot['suggested_inputs'] = []
+    snapshot['invitation_recovery_available'] = True
+
+    def handler(route: Route):
+        path = route.request.url.split('?')[0]
+        payload = snapshot
+        if path.endswith('/session/input'):
+            body = json.loads(route.request.post_data or '{}')
+            calls.append(body)
+            record = {'revision': 2, 'input_text': body['message'],
+                      'performance': '再请你一起去阅览室。', 'suggested_inputs': ['好，带路吧。']}
+            payload = _snapshot(revision=2, performance_history=[record])
+            payload.update(performance=record, suggested_inputs=record['suggested_inputs'],
+                           invitation_recovery_available=False)
+        elif path.endswith('/session/speak-block') or path.endswith('/session/release'):
+            payload = {'ok': True, 'audio_queued': False}
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(payload, ensure_ascii=False))
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.route('**/api/seven-day-tutorial/state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'initialized': True, 'revision': 1,
+            'state': {'completedRounds': list(range(1, 8))}})))
+    mock_page.route('**/api/characters/persona-onboarding-state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'state': {'status': 'completed'}})))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate("""() => {
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'reinvite-launch', story_id:'capsule-browser-story',
+            session_id:'capsule-browser-session', revision:1}, window.location.origin);
+    }""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    label = mock_page.evaluate("() => { const value = window.i18next && window.i18next.t('theater.reinvite'); return value && value !== 'theater.reinvite' ? value : '重新邀请'; }")
+    mock_page.get_by_role('button', name=label, exact=True).click()
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2 && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
+    assert mock_page.evaluate('window.nekoTheaterRuntime.getState().scene.id') == 'mainline_01'
+    expect(mock_page.get_by_role('button', name='好，带路吧。', exact=True)).to_be_visible()
+    expect(mock_page.get_by_role('button', name=label, exact=True)).to_have_count(0)
+
+
 def _snapshot(
     *,
     revision: int,

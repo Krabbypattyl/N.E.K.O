@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 剧场与实例访问授权八语文案合并，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-10-05-theater-instance-access-main-merge';
+    const LOCALE_VERSION = '2026-10-05-theater-reinvitation';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

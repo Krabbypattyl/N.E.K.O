@@ -115,7 +115,7 @@ def test_capsule_runtime_separates_narration_and_dialogue_tts():
     assert "handleComposerSubmit" in buttons
     assert "setOnTheaterSubmit" in runtime
     assert "submit(text, 'freeform')" in runtime
-    assert "submit(text, 'suggestion')" in runtime
+    assert "submit(text, source)" in runtime
     assert "input_source: normalizedInputSource" in runtime
     assert "setOnTheaterSuggestedInputSelect(submitSuggestedFromHost)" in runtime
     assert "setOnTheaterSubmit" in host_api
@@ -334,7 +334,7 @@ def test_capsule_runtime_revalidates_conflict_refresh_ownership():
     assert ownership_guard < pending_guard < apply_snapshot
     assert "chatHost.setOnTheaterSubmit(submitFromHost);" in runtime
     assert "void submit(text, 'freeform').catch" in runtime
-    assert "void submit(text, 'suggestion').catch" in runtime
+    assert "void submit(text, source).catch" in runtime
 
 
 def test_selector_binds_session_start_to_displayed_character():

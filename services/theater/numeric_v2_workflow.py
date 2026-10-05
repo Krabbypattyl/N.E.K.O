@@ -1094,6 +1094,54 @@ async def _generate_actor_turn_with_output_retry(
     raise AssertionError("unreachable")
 
 
+def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession) -> dict[str, str] | None:
+    """Project a new invitation only when the current state can authorize it."""
+    session = current.session
+    if session.status != "active" or session.transition_offered or runtime.engine.completion_contract_satisfied(session) is not True:
+        return None
+    route = runtime.engine.preview_route(session.current_node_id, session.metrics)
+    if not isinstance(route, Mapping):
+        return None
+    target = runtime.engine.nodes.get(str(route.get("target_node_id") or ""))
+    contract = route.get("transition_contract")
+    if not isinstance(target, Mapping) or target.get("type") == "ending" or target.get("terminal") is True or not isinstance(contract, Mapping):
+        return None
+    offer = _project_authored_transition_text(runtime.engine, session, str(contract.get("fallback_offer") or "")).strip()
+    acceptance = _project_authored_transition_text(runtime.engine, session, str(contract.get("accept_input") or "")).strip()
+    if (not offer or not acceptance
+            or not _authored_offer_visible({"performance": offer}, offer)
+            or not valid_mixed_performance_policy({"performance": offer}, session.dialogue_policy)):
+        return None
+    try:
+        TurnRequestV2.from_mapping({"client_turn_id": "reinvitation_validation",
+            "base_revision": session.revision, "message": acceptance, "input_source": "suggestion"})
+    except NumericV2RuntimeError:
+        return None
+    return {"route_id": str(route["id"]), "offer": offer, "accept_input": acceptance}
+
+
+async def _execute_reinvitation(*, runtime, current, turn, ensure_current_binding, before_commit):
+    # Explicit control action: no Actor/Evaluator, no metrics or scene movement.
+    contract = invitation_recovery_contract(runtime, current)
+    if contract is None:
+        raise NumericV2RuntimeError("numeric_reinvitation_not_available")
+    outcome = runtime.prepare_turn(current, turn, (), condition_narrations_enabled=False)
+    performance = {"performance": contract["offer"], "suggested_inputs": [contract["accept_input"]]}
+    outcome, performance = runtime.engine.finalize_transition_offer_state(
+        outcome, performance, new_offer=True, invalidate_previous_offer=True)
+    outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {
+        **contract, "performance": contract["offer"], "visible_blocks": performance_content_blocks(performance)}})
+    async with character_config_mutation_lock:
+        binding = ensure_current_binding(current.session)
+        refreshed_binding = {**binding, "player_address": current.session.catgirl_binding.get("player_address", "")}
+        outcome = replace(outcome, session=replace(outcome.session, catgirl_binding=refreshed_binding))
+        async with runtime.story_session_guard():
+            if before_commit is not None:
+                await before_commit()
+            stored = await runtime.commit_turn(outcome, performance)
+    return NumericV2TurnWorkflowResult(stored, outcome, performance, binding, {"completed": True})
+
+
 async def execute_numeric_v2_turn(
     *,
     config_manager: Any,
@@ -1106,6 +1154,9 @@ async def execute_numeric_v2_turn(
 ) -> NumericV2TurnWorkflowResult:
     """Trace one attempt without changing the workflow, retry policy or public result."""
     diagnostics = diagnostics_sink if diagnostics_sink is not None else {}
+    if turn.input_source == "reinvite":
+        return await _execute_reinvitation(runtime=runtime, current=current, turn=turn,
+            ensure_current_binding=ensure_current_binding, before_commit=before_commit)
     with text_trace_scope("turn", state_before=trace_state(current.session), turn=turn):
         try:
             result = await _execute_numeric_v2_turn(
@@ -2776,5 +2827,6 @@ async def _execute_numeric_v2_turn(
 __all__ = [
     "NumericV2TurnWorkflowResult",
     "execute_numeric_v2_turn",
+    "invitation_recovery_contract",
     "generate_validated_opening",
 ]

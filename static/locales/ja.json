@@ -3147,6 +3147,7 @@
     "tokenUsageCall": "{number}. {stage} · 入力 {input} · 出力 {output}",
     "tokenUsagePartial": "一部の呼び出しで使用量が未報告です",
     "tokenUsageSummary": "今回 · 入力 {input} · 出力 {output} トークン · {calls} 回",
+        "reinvite": "もう一度誘ってもらう",
         "inputFailed": "演技の返答を取得できませんでした。もう一度お試しください。",
         "endStateFailed": "現在の演技状態を終了できませんでした。シナリオ画面に戻って再試行してください。",
         "endConnectionFailed": "N.E.K.O のローカルサービスに接続できません。アプリが起動中か確認して再試行してください。",

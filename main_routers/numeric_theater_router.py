@@ -77,6 +77,7 @@ from services.theater.numeric_v2_store import (
 from services.theater.numeric_v2_workflow import (
     execute_numeric_v2_turn,
     generate_validated_opening,
+    invitation_recovery_contract,
 )
 from services.theater.tts_bridge import speak_committed_line
 from utils.cloudsave_runtime import (
@@ -531,6 +532,7 @@ def _numeric_payload(
         "story_intro": cast.intro(runtime.engine.story),
         "scene": _scene_projection(runtime, stored, binding),
         "suggested_inputs": list(latest.get("suggested_inputs") or []),
+        "invitation_recovery_available": invitation_recovery_contract(runtime, stored) is not None,
     }
     if end_receipt:
         payload["end_receipt_id"] = str(end_receipt.get("receipt_id") or "")
