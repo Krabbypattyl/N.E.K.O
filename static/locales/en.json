@@ -3196,6 +3196,7 @@
         "actorUnavailable": "The performance model is temporarily unavailable. Try again; if the problem continues, check the auxiliary API conversation model.",
         "inputInterpreterUnavailable": "Input understanding is temporarily unavailable. This turn did not advance; please try again.",
         "numericSessionUpdated": "The session was updated. Your input was kept; confirm it and try again.",
+        "numericSessionUpdatedControl": "The performance state has been updated. Check the available actions.",
         "restartSession": "Restart",
         "routerTechnicalHold": "The story entry check is temporarily unavailable. Nothing advanced this turn; please try again.",
         "sessionUpdated": "The scene changed elsewhere. Please choose again.",

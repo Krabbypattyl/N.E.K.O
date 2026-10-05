@@ -3197,6 +3197,7 @@
         "actorUnavailable": "演技モデルを一時的に利用できません。再試行し、失敗が続く場合は補助 API の会話モデル設定を確認してください。",
         "inputInterpreterUnavailable": "入力の理解を一時的に利用できません。このターンは進行していません。もう一度お試しください。",
         "numericSessionUpdated": "セッションが更新されました。入力は保持されています。確認してもう一度お試しください。",
+        "numericSessionUpdatedControl": "上演の状態が更新されました。現在利用できる操作を確認してください。",
         "restartSession": "もう一度始める",
         "routerTechnicalHold": "物語の入口判定を一時的に利用できません。このターンは進行していないため、もう一度お試しください。",
         "sessionUpdated": "別のウィンドウで進行が更新されました。もう一度選んでください。",

@@ -3197,6 +3197,7 @@
         "actorUnavailable": "O modelo de interpretação está temporariamente indisponível. Tente novamente; se o problema continuar, verifique o modelo de conversa da API auxiliar.",
         "inputInterpreterUnavailable": "A compreensão da entrada está temporariamente indisponível. Este turno não avançou; tente novamente.",
         "numericSessionUpdated": "A sessão foi atualizada. Sua entrada foi mantida; confirme-a e tente novamente.",
+        "numericSessionUpdatedControl": "O estado da apresentação foi atualizado. Confira as ações disponíveis.",
         "restartSession": "Reiniciar",
         "routerTechnicalHold": "A verificação de entrada da história está temporariamente indisponível. Este turno não avançou; tente novamente.",
         "sessionUpdated": "A cena mudou em outra janela. Escolha novamente.",

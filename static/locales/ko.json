@@ -3197,6 +3197,7 @@
         "actorUnavailable": "연기 모델을 일시적으로 사용할 수 없습니다. 다시 시도하고, 문제가 계속되면 보조 API의 대화 모델 설정을 확인하세요.",
         "inputInterpreterUnavailable": "입력 이해를 일시적으로 사용할 수 없습니다. 이번 턴은 진행되지 않았습니다. 다시 시도해 주세요.",
         "numericSessionUpdated": "세션이 업데이트되었습니다. 입력은 보존되었으니 확인한 후 다시 시도해 주세요.",
+        "numericSessionUpdatedControl": "공연 상태가 업데이트되었습니다. 현재 가능한 동작을 확인해 주세요.",
         "restartSession": "다시 시작",
         "routerTechnicalHold": "이야기 진입 판정을 일시적으로 사용할 수 없습니다. 이번 턴은 진행되지 않았으니 다시 시도하세요.",
         "sessionUpdated": "다른 창에서 진행 상태가 변경되었습니다. 다시 선택해 주세요.",

@@ -1160,6 +1160,7 @@
             if (state.phase !== 'evaluating') return false;
             var refreshed = null;
             if (result.reason === 'numeric_base_revision_mismatch'
+                || result.reason === 'numeric_reinvitation_not_available'
                 || result.reason === 'numeric_suggested_input_not_current'
                 || result.reason === 'numeric_duplicate_client_turn_id'
                 || result.reason === 'session_already_ended') {
@@ -1195,7 +1196,9 @@
                 }
                 state.errorMessage = state.sessionStatus === 'ended'
                     ? t('theater.ended', '已结束')
-                    : t('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
+                    : normalizedInputSource === 'reinvite'
+                        ? t('theater.numericSessionUpdatedControl', '演出状态已更新，请确认当前可用操作。')
+                        : t('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
             }
             state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             render();

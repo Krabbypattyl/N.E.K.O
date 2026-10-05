@@ -57,7 +57,7 @@ def test_targeted_launch_only_claims_one_web_runtime(mock_page: Page, running_se
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('page_path', ['/', '/chat'])
-@pytest.mark.parametrize('failure', [None, 'numeric_base_revision_mismatch', 'invalid', 'network'])
+@pytest.mark.parametrize('failure', [None, 'numeric_base_revision_mismatch', 'numeric_reinvitation_not_available', 'invalid', 'network'])
 def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, running_server: str, page_path, failure):
     calls = []
     snapshot = _snapshot(revision=1)
@@ -84,6 +84,9 @@ def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, run
                            invitation_recovery_available=False)
         elif path.endswith('/session/speak-block') or path.endswith('/session/release'):
             payload = {'ok': True, 'audio_queued': False}
+        elif calls and failure in ('numeric_base_revision_mismatch', 'numeric_reinvitation_not_available'):
+            payload = _snapshot(revision=2)
+            payload.update(suggested_inputs=['先看看周围。'], invitation_recovery_available=False)
         route.fulfill(status=200, content_type='application/json', body=json.dumps(payload, ensure_ascii=False))
 
     mock_page.route('**/api/theater-numeric/**', handler)
@@ -113,6 +116,13 @@ def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, run
         assert state['draftRestore']['text'] == ''
         assert all(row.get('text') != label for row in state['history'])
         assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
+        if failure in ('numeric_base_revision_mismatch', 'numeric_reinvitation_not_available'):
+            assert state['revision'] == 2
+            assert state['invitationRecoveryAvailable'] is False
+            expect(mock_page.get_by_role('button', name=label, exact=True)).to_have_count(0)
+            expect(mock_page.get_by_role('button', name='先看看周围。', exact=True)).to_be_visible()
+            assert state['errorMessage'] == mock_page.evaluate(
+                "window.i18next.t('theater.numericSessionUpdatedControl')")
         return
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2 && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'

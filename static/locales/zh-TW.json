@@ -3196,6 +3196,7 @@
         "actorUnavailable": "貓娘演繹暫時不可用，請重試；如果持續失敗，再檢查輔助 API 的對話模型設定。",
         "inputInterpreterUnavailable": "輸入理解暫時不可用，本回合沒有推進，請重試。",
         "numericSessionUpdated": "演出狀態已更新，已保留你的輸入，請確認後重試。",
+        "numericSessionUpdatedControl": "演出狀態已更新，請確認目前可用操作。",
         "restartSession": "重新開始",
         "routerTechnicalHold": "劇情入口判定暫時不可用，本回合沒有推進劇情，請重試。",
         "sessionUpdated": "演出狀態已在其他視窗更新，請重新選擇。",
