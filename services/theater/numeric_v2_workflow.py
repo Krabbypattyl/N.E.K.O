@@ -2363,6 +2363,18 @@ async def _execute_numeric_v2_turn(
         if isinstance(fallback_contract, Mapping)
         else ""
     )
+    fallback_accept_input = (
+        _project_authored_transition_text(
+            runtime.engine, outcome.session, str(fallback_contract.get("accept_input") or ""),
+        ).strip() if isinstance(fallback_contract, Mapping) else ""
+    )
+    scene_records, _ = current_scene_records(current.session)
+    scene_revisions = {record.get("revision") for record in scene_records}
+    program_offer_already_issued = any(
+        event.get("result_revision") in scene_revisions
+        and isinstance(event.get("program_invitation"), Mapping)
+        for event in current.ledger_events
+    )
     if (
         not route_changed
         # 恢复请求被撤销后只交付已经审过的普通稿，不在复用路径追加新的邀请。
@@ -2383,6 +2395,15 @@ async def _execute_numeric_v2_turn(
         and fallback_target.get("type") != "ending"
         and fallback_target.get("terminal") is not True
         and fallback_offer
+        and (not conservative_invitation or (
+            not program_offer_already_issued
+            and fallback_accept_input
+            and turn.message.strip() != fallback_accept_input
+            # Existing author words can be followed by a withdrawal. Their
+            # presence only blocks automatic reissuance; it never authorizes.
+            and not _authored_offer_visible(performance, fallback_offer)
+            and fallback_offer not in str(performance.get("performance") or "")
+        ))
         and ((not module_options.get("review")) or (
             module_options.get("review")
             and final_fixed_review is not None
@@ -2552,11 +2573,16 @@ async def _execute_numeric_v2_turn(
                          and filtered_performance.get("performance") == program_invitation_performance)
         reviewed_transition_offered = new_offer
         filtered_performance = {**filtered_performance, "transition_offered": new_offer}
+        if new_offer:
+            # Only the signed acceptance input is actionable in this contract;
+            # Actor alternatives must not look like equivalent route consent.
+            filtered_performance["suggested_inputs"] = [authored_accept_input]
         # A later free-form response may retract the old offer. Without a
         # successful semantic review it cannot carry that authorization forward.
         invalidate_previous_offer = invalidate_previous_offer or current.session.transition_offered
         if not new_offer and (current.session.transition_offered
-                              or performance.get("transition_offered") is True):
+                              or performance.get("transition_offered") is True
+                              or authored_offer_visible):
             filtered_performance["suggested_inputs"] = []
     semantically_verified_offer = bool(
         module_options.get("review") and module_options.get("evaluator")

@@ -90,6 +90,7 @@ async def test_program_invitation_accepts_after_cold_restore(tmp_path, monkeypat
     offered = await turn(runtime, current, 'offer', '接下来呢？')
     assert offered.stored.session.transition_offered
     assert offered.performance['suggested_inputs'][0] == ACCEPT
+    assert offered.performance['suggested_inputs'] == [ACCEPT]
     assert offered.performance['performance'].endswith(OFFER)
     receipt = offered.stored.ledger_events[-1]['program_invitation']
     assert receipt['performance'] == offered.performance['performance']
@@ -115,12 +116,46 @@ async def test_unreviewed_followup_expires_program_invitation(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off'), (True, 'failure')])
+@pytest.mark.parametrize('text', [OFFER, OFFER + '（歪头）等等，先别去了。'])
+async def test_existing_author_quote_blocks_automatic_reissuance(tmp_path, monkeypatch, review, mode, text):
+    runtime, current = await setup_case(tmp_path, monkeypatch, review=review, mode=mode, text=text)
+    result = await turn(runtime, current, 'quote', '接下来呢？')
+    assert result.performance['performance'] == text
+    assert result.performance['performance'].count(OFFER) == 1
+    assert not result.stored.session.transition_offered
+    assert result.performance['suggested_inputs'] == []
+    assert 'program_invitation' not in result.stored.ledger_events[-1]
+    accepted = await turn(runtime, result.stored, 'accept', ACCEPT, 'suggestion')
+    assert accepted.stored.session.current_node_id == 'start'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('message,intent', [('那里有什么？', 'unclear'), ('再等等，先不走。', 'reject')])
+@pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off')])
+async def test_expired_program_offer_is_not_reissued_every_other_turn(tmp_path, monkeypatch, message, intent, review, mode):
+    runtime, current = await setup_case(tmp_path, monkeypatch, review=review, mode=mode)
+    offered = await turn(runtime, current, 'offer', '接下来呢？')
+    current = offered.stored
+    async def evaluate_reply(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False, transition_intent=intent)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate_reply)
+    for index in range(4):
+        result = await turn(runtime, current, f'followup-{index}', message)
+        assert not result.stored.session.transition_offered
+        assert OFFER not in result.performance['performance']
+        assert 'program_invitation' not in result.stored.ledger_events[-1]
+        current = result.stored
+
+
+@pytest.mark.asyncio
 async def test_consumed_acceptance_does_not_leave_an_unusable_invitation(tmp_path, monkeypatch):
     runtime, current = await setup_case(tmp_path, monkeypatch)
     result = await turn(runtime, current, 'uninvited-accept', ACCEPT)
     assert result.stored.session.current_node_id == 'start'
     assert not result.stored.session.transition_offered
     assert result.performance['suggested_inputs'] == []
+    assert OFFER not in result.performance['performance']
     assert 'program_invitation' not in result.stored.ledger_events[-1]
     assert await runtime.restore_session(current.session.session_id) == result.stored
 
