@@ -117,17 +117,19 @@ async def test_unreviewed_followup_expires_program_invitation(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off'), (True, 'failure')])
-@pytest.mark.parametrize('text', [OFFER, OFFER + '（歪头）等等，先别去了。'])
-async def test_existing_author_quote_blocks_automatic_reissuance(tmp_path, monkeypatch, review, mode, text):
+@pytest.mark.parametrize('text,valid', [(OFFER, True), ('（收好凭据）' + OFFER, True),
+                                     (OFFER + '（歪头）等等，先别去了。', False),
+                                     (OFFER + '（望向窗外）', False)])
+async def test_final_author_blocks_are_issued_without_duplication(tmp_path, monkeypatch, review, mode, text, valid):
     runtime, current = await setup_case(tmp_path, monkeypatch, review=review, mode=mode, text=text)
     result = await turn(runtime, current, 'quote', '接下来呢？')
     assert result.performance['performance'] == text
     assert result.performance['performance'].count(OFFER) == 1
-    assert not result.stored.session.transition_offered
-    assert result.performance['suggested_inputs'] == []
-    assert 'program_invitation' not in result.stored.ledger_events[-1]
+    assert result.stored.session.transition_offered is valid
+    assert result.performance['suggested_inputs'] == ([ACCEPT] if valid else [])
+    assert ('program_invitation' in result.stored.ledger_events[-1]) is valid
     accepted = await turn(runtime, result.stored, 'accept', ACCEPT, 'suggestion')
-    assert accepted.stored.session.current_node_id == 'start'
+    assert accepted.stored.session.current_node_id == ('ending_leave' if valid else 'start')
 
 
 @pytest.mark.asyncio

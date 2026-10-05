@@ -843,6 +843,23 @@ def _authored_offer_visible(performance: Mapping[str, Any], offer: str) -> bool:
     return False
 
 
+def _authored_offer_is_final_content(performance: Mapping[str, Any], offer: str) -> bool:
+    """Match the complete authored block suffix, including actions and narration boundaries."""
+
+    authored = mixed_performance_blocks(offer)
+    visible = performance_content_blocks(performance)
+    if not authored or len(visible) < len(authored):
+        return False
+    suffix = visible[-len(authored):]
+    first = authored[0]
+    if first.get("type") == "dialogue":
+        return (suffix[0].get("type") == "dialogue"
+                and suffix[0].get("speaker_id") == first.get("speaker_id")
+                and str(suffix[0].get("text") or "").endswith(first["text"])
+                and suffix[1:] == authored[1:])
+    return suffix == authored
+
+
 def _confirmed_authored_acceptance(
     engine: NumericV2Engine, current: NumericV2StoredSession, turn: TurnRequestV2,
     *, require_program_invitation: bool = False,
@@ -2375,6 +2392,7 @@ async def _execute_numeric_v2_turn(
         and isinstance(event.get("program_invitation"), Mapping)
         for event in current.ledger_events
     )
+    final_authored_offer = _authored_offer_is_final_content(performance, fallback_offer)
     if (
         not route_changed
         # 恢复请求被撤销后只交付已经审过的普通稿，不在复用路径追加新的邀请。
@@ -2401,8 +2419,10 @@ async def _execute_numeric_v2_turn(
             and turn.message.strip() != fallback_accept_input
             # Existing author words can be followed by a withdrawal. Their
             # presence only blocks automatic reissuance; it never authorizes.
-            and not _authored_offer_visible(performance, fallback_offer)
-            and fallback_offer not in str(performance.get("performance") or "")
+            and (final_authored_offer or (
+                not _authored_offer_visible(performance, fallback_offer)
+                and fallback_offer not in str(performance.get("performance") or "")
+            ))
         ))
         and ((not module_options.get("review")) or (
             module_options.get("review")
@@ -2412,7 +2432,9 @@ async def _execute_numeric_v2_turn(
         ))
     ):
         visible_performance = str(performance.get("performance") or "").rstrip()
-        if conservative_invitation or fallback_offer not in visible_performance:
+        if (conservative_invitation and not final_authored_offer) or (
+            not conservative_invitation and fallback_offer not in visible_performance
+        ):
             visible_performance = "\n".join(
                 item for item in (visible_performance, fallback_offer) if item
             )
