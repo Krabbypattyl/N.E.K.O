@@ -2333,6 +2333,10 @@ async def _execute_numeric_v2_turn(
         raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
     # 只在完整复核确认正文安全且没有公开邀请时，追加作者写定的可见邀请。
     # 该文案属于剧本合同，不再调用 Actor；真正换幕仍需玩家下一回合明确接受。
+    conservative_invitation = (
+        not module_options.get("review") or not module_options.get("evaluator")
+        or diagnostics["evaluator_degraded"] or diagnostics["semantic_review_fallback"]
+    )
     completion_ready_before_turn = (
         runtime.engine.completion_contract_satisfied(current.session) is True
     )
@@ -2387,7 +2391,7 @@ async def _execute_numeric_v2_turn(
         ))
     ):
         visible_performance = str(performance.get("performance") or "").rstrip()
-        if not module_options.get("review") or fallback_offer not in visible_performance:
+        if conservative_invitation or fallback_offer not in visible_performance:
             visible_performance = "\n".join(
                 item for item in (visible_performance, fallback_offer) if item
             )
@@ -2406,7 +2410,7 @@ async def _execute_numeric_v2_turn(
             ),
         ):
             performance = fallback_candidate
-            if not module_options.get("review"):
+            if conservative_invitation:
                 program_invitation_performance = visible_performance
             reviewed_transition_offered = True
             diagnostics["completion_fallback_offer_applied"] += 1
@@ -2543,10 +2547,6 @@ async def _execute_numeric_v2_turn(
         str((acceptance_contract or {}).get("fallback_offer") or ""),
     ).strip()
     authored_offer_visible = _authored_offer_visible(filtered_performance, authored_offer)
-    conservative_invitation = (
-        not module_options.get("review") or not module_options.get("evaluator")
-        or diagnostics["evaluator_degraded"] or diagnostics["semantic_review_fallback"]
-    )
     if conservative_invitation:
         new_offer = bool(program_invitation_performance is not None and authored_accept_input
                          and filtered_performance.get("performance") == program_invitation_performance)

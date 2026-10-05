@@ -15,7 +15,7 @@ OFFER = '手续办妥了，我们现在去阅览室吧。'
 ACCEPT = '（点头）好，带路吧。'
 
 
-async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='先留在这里。'):
+async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='先留在这里。', review=False):
     engine = initiation_case()['engine']
     engine.nodes['start']['route_gates'][1]['transition_contract'].update(
         fallback_offer=OFFER, accept_input=ACCEPT)
@@ -32,7 +32,7 @@ async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='
         current = await runtime.commit_turn(prepared, {'performance': '办好了。', 'suggested_inputs': []})
 
     async def options():
-        return {**default_options(), 'review': False, 'evaluator': mode != 'off',
+        return {**default_options(), 'review': review, 'evaluator': mode != 'off',
                 'review_delivery': False, 'review_contract': False, 'actor_retry': False}
 
     async def evaluate(self, **kwargs):
@@ -51,8 +51,13 @@ async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='
                 'transition_offered': True,
                 'program_invitation': {'route_id': 'fake', 'offer': OFFER, 'accept_input': ACCEPT}}
 
+    async def validate_offer(self, **kwargs):
+        return ev.NumericV2TransitionOfferReview(False, True, (), (),
+            acceptance_authorized=True if kwargs.get('route_changed') else None)
+
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', validate_offer)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     return runtime, current
@@ -78,9 +83,10 @@ async def test_actor_flags_and_literal_quotes_never_issue_authorization(tmp_path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['off', 'on', 'failure'])
-async def test_program_invitation_accepts_after_cold_restore(tmp_path, monkeypatch, mode):
-    runtime, current = await setup_case(tmp_path, monkeypatch, mode=mode)
+@pytest.mark.parametrize('review,mode', [(False, 'off'), (False, 'on'), (False, 'failure'),
+                                       (True, 'off'), (True, 'failure')])
+async def test_program_invitation_accepts_after_cold_restore(tmp_path, monkeypatch, mode, review):
+    runtime, current = await setup_case(tmp_path, monkeypatch, mode=mode, review=review)
     offered = await turn(runtime, current, 'offer', '接下来呢？')
     assert offered.stored.session.transition_offered
     assert offered.performance['suggested_inputs'][0] == ACCEPT
@@ -95,8 +101,9 @@ async def test_program_invitation_accepts_after_cold_restore(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('text', ['那里有什么？', '等等，今天不开门，先别去了。'])
-async def test_unreviewed_followup_expires_program_invitation(tmp_path, monkeypatch, text):
-    runtime, current = await setup_case(tmp_path, monkeypatch, text=text, mode='on')
+@pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off'), (True, 'failure')])
+async def test_unreviewed_followup_expires_program_invitation(tmp_path, monkeypatch, text, review, mode):
+    runtime, current = await setup_case(tmp_path, monkeypatch, text=text, mode=mode, review=review)
     offered = await turn(runtime, current, 'offer', '接下来呢？')
     continued = await turn(runtime, offered.stored, 'followup', '先问个问题。')
     assert not continued.stored.session.transition_offered
