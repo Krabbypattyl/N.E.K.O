@@ -16,6 +16,7 @@ from .numeric_v2 import (
     acting_contract_to_package,
     has_dialogue_policy_conflict,
     final_dialogue_policy,
+    valid_silent_choice,
     character_state_to_package,
     scene_turn_budget,
 )
@@ -1799,6 +1800,10 @@ class NumericV2BranchService:
                             {"path": f"transitions[{index}].{field}"},
                         )
                     transition[field] = value.strip()
+                if (completion_policy == "forbidden" and not transition.get("fallback_offer")
+                        and not valid_silent_choice(transition.get("silent_choice"))):
+                    raise NumericV2BranchError("branch_transition_silent_choice_required",
+                        {"path": f"transitions[{index}].silent_choice"})
                 if transition["accept_input"] == "我接受这个安排，继续进入下一阶段。":
                     raise NumericV2BranchError(
                         "branch_transition_accept_input_generic",

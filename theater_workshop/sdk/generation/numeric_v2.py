@@ -18,6 +18,7 @@ from ..numeric_v2 import (
     acting_contract_to_package,
     has_dialogue_policy_conflict,
     final_dialogue_policy,
+    valid_silent_choice,
     character_state_to_package,
     _is_actionable_player_exit,
     metrics_to_package,
@@ -413,6 +414,7 @@ _MAINLINE_OUTPUT_CONTRACT = """{
         "player_decision": "普通换幕保留可执行选择；最后一幕自然收束且没有未决选择时为空字符串",
         "fallback_offer": "非最后一幕填写一条可直接展示的角色邀请文案；仅明确最终发声策略为 forbidden 时可填空字符串；最后一幕填写空字符串",
         "accept_input": "非最后一幕填写一条明确接受同一邀请的玩家输入；最后一幕填写空字符串",
+        "silent_choice": {"destination": "仅禁言普通出口省略 fallback_offer 时必填的具体去向，其他出口省略整个对象", "arrangement": "待接受的具体安排；每项非空单行且最多30 tokens"},
         "preserve_facts": ["换场后仍必须成立的非道具剧情事实"],
         "carry_props": ["需带入下一幕的 key_props.id"]
       },
@@ -970,6 +972,7 @@ _BRANCH_PATH_PROMPT = GOAL_METADATA_RULE + "\n\n" + """# Role: Numeric v2 终点
       "bridge_scene_narration": "进入下一节点所需的时空与必要结果；Runtime 按实际历史适配措辞",
       "fallback_offer": "普通路线的具体角色邀请；仅来源最终发声策略为 forbidden 时可省略；通往 ending 的最后路线省略",
       "accept_input": "玩家明确接受同一具体安排的一句话；通往 ending 的最后路线省略",
+      "silent_choice": {"destination": "仅禁言普通出口省略 fallback_offer 时必填的具体去向，其他出口省略整个对象", "arrangement": "待接受的具体安排；每项非空单行且最多30 tokens"},
       "must_preserve": ["移动时必须保持的事实"],
       "tone": "过渡语气"
     }
@@ -1691,6 +1694,14 @@ def _validate_idea_outline(
                 "code": "terminal_transition_fallback_offer_forbidden",
                 "path": f"{path}.exit_plan.fallback_offer",
                 "message": "最后一幕自然收束，不得新增兜底邀请。",
+            })
+        if (index < len(chapters) - 1 and completion_policy == "forbidden"
+                and isinstance(fallback_offer, str) and not fallback_offer.strip()
+                and not valid_silent_choice(exit_plan.get("silent_choice"))):
+            issues.append({
+                "code": "transition_silent_choice_required",
+                "path": f"{path}.exit_plan.silent_choice",
+                "message": "Silent exits require nonempty single-line destination and arrangement.",
             })
         accept_input = exit_plan.get("accept_input")
         if not isinstance(accept_input, str):

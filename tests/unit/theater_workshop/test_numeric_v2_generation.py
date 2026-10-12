@@ -1322,6 +1322,7 @@ def test_mainline_empty_fallback_requires_final_typed_forbidden_policy(initial, 
         for policy in changes
     ]
     chapter["exit_plan"]["fallback_offer"] = ""
+    chapter["exit_plan"]["silent_choice"] = {"destination": "观测舱", "arrangement": "查看封存记录"}
 
     issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
 
@@ -2561,3 +2562,18 @@ def test_mainline_continuation_unexpected_exception_uses_technical_failure_code(
 
     assert caught.value.code == "generation_technical_failed"
     assert caught.value.checkpoint["candidate"] == candidate
+
+
+@pytest.mark.parametrize("choice", [None, {}, {"destination": "观测舱"},
+    {"destination": "", "arrangement": "查看记录"},
+    {"destination": "观测舱", "arrangement": "查看\n记录"},
+    {"destination": "观测舱", "arrangement": "查看记录", "extra": True}])
+def test_generated_silent_mainline_rejects_missing_or_malformed_choice(choice):
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    chapter["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    chapter["exit_plan"]["fallback_offer"] = ""
+    if choice is not None:
+        chapter["exit_plan"]["silent_choice"] = choice
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "transition_silent_choice_required" for issue in issues)

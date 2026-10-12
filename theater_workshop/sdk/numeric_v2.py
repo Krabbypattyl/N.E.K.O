@@ -225,6 +225,13 @@ def _is_actionable_player_exit(value: Any) -> bool:
     return not any(phrase in text for phrase in _NON_ACTIONABLE_PLAYER_EXIT_PHRASES)
 
 
+def valid_silent_choice(value: Any) -> bool:
+    """Validate author choice shape; host compilation enforces token budgets."""
+    return (isinstance(value, Mapping) and set(value) == {"destination", "arrangement"}
+            and all(isinstance(text, str) and bool(text.strip())
+                    and "\n" not in text and "\r" not in text for text in value.values()))
+
+
 def final_dialogue_policy(initial_policy: Any, changes: Iterable[Any]) -> str:
     """Fold explicit speech policies in order; unchanged or absent fields keep the prior policy."""
 

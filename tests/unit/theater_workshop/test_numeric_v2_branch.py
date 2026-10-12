@@ -764,6 +764,8 @@ def _silent_exit_path(position, initial, changes):
         ]
     index = 0 if position == "source" else 1
     result["transitions"][index].pop("fallback_offer")
+    result["transitions"][index]["silent_choice"] = {
+        "destination": "下一处核对地点", "arrangement": "继续核对证据"}
     return project, service, plan, result, index
 
 
@@ -1114,3 +1116,17 @@ def test_entrance_projection_does_not_ignore_untracked_metric(mode):
     assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) is None
     conditions[mode][0].update(metric="trust", value=20)
     assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) == [20]
+
+
+@pytest.mark.parametrize("position", ["source", "scene"])
+@pytest.mark.parametrize("choice", [None, {}, {"destination": "石桥"},
+    {"destination": "石桥", "arrangement": ""},
+    {"destination": "石桥", "arrangement": "核对\n记录"}])
+def test_generated_silent_branch_rejects_missing_or_malformed_choice(position, choice):
+    _, service, plan, result, index = _silent_exit_path(position, "optional", ["forbidden"])
+    if choice is None:
+        result["transitions"][index].pop("silent_choice")
+    else:
+        result["transitions"][index]["silent_choice"] = choice
+    with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+        service.finish_path(plan, result)
