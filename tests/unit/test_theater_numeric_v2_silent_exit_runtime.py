@@ -433,3 +433,23 @@ def test_silent_choice_checks_final_projected_input_budget(monkeypatch, tokens):
             wf._silent_choice_input(None, None, contract)
     else:
         assert wf._silent_choice_input(None, None, contract) == text
+
+
+@pytest.mark.asyncio
+async def test_readonly_session_payload_survives_projected_choice_overflow(tmp_path, monkeypatch):
+    from main_routers import numeric_theater_router as router
+    from services.theater import numeric_v2_options
+
+    async def options():
+        return default_options()
+
+    monkeypatch.setattr(numeric_v2_options, "aload_theater_module_options", options)
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch,
+        binding={**_binding(), "catgirl_name": "longname " * 160},
+        silent_choice={"destination": "男女主的观测舱", "arrangement": "查看记录"})
+    payload = await router._numeric_payload(runtime, current)
+    assert payload["session"]["session_id"] == current.session.session_id
+    assert payload["invitation_recovery_available"] is False
+    assert await runtime.restore_session("silent") == current
+    with pytest.raises(NumericV2RuntimeError, match="numeric_silent_choice_input_too_long"):
+        await turn(runtime, current, "reinvite-after-read", "重新邀请", "reinvite")
