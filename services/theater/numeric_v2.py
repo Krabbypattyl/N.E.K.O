@@ -1439,7 +1439,7 @@ class NumericV2Compiler:
             else:
                 for field in ("destination", "arrangement"):
                     text = c.require_text(choice.get(field), f"{path}.silent_choice.{field}")
-                    if text and ("\n" in text or count_tokens(text) > 30):
+                    if text and ("\n" in text or "\r" in text or count_tokens(text) > 30):
                         c.add("transition_silent_choice_invalid", f"{path}.silent_choice.{field}",
                               "Silent choice fields must be single-line text within 30 tokens.")
         if "accept_input" in contract:

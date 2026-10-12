@@ -384,3 +384,25 @@ def test_branch_export_preserves_structured_silent_choice(destination):
     assert contract["silent_choice"] == choice
     choice["destination"] = "别处"
     assert contract["silent_choice"]["destination"] == destination
+
+
+@pytest.mark.parametrize("field", ["destination", "arrangement"])
+def test_compiler_and_runtime_reject_carriage_returns_in_silent_choice(tmp_path, field):
+    from services.theater.numeric_v2 import NumericV2CompileError, NumericV2Compiler
+    story = _story("scifi")
+    contract = story["nodes"][0]["route_gates"][1]["transition_contract"]
+    contract["silent_choice"] = {"destination": "观测舱", "arrangement": "查看记录"}
+    contract["silent_choice"][field] += "\r更多内容"
+    with pytest.raises(NumericV2CompileError):
+        NumericV2Compiler().compile(story)
+    assert wf._silent_choice_input(None, None, contract) == ""
+
+
+@pytest.mark.parametrize("fallback,accept", [("一起去下一处？", "好，我们去。"), (None, None)])
+def test_branch_export_drops_unused_silent_choice(fallback, accept):
+    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    transition = {"reason": "完成交接", "bridge_scene_narration": "来到下一处。",
+        "must_preserve": [], "tone": "平静", "silent_choice": {"destination": "unused"}}
+    contract = NumericV2BranchService._transition_contract(transition,
+        source_ids=[], fallback_offer=fallback, accept_input=accept)
+    assert "silent_choice" not in contract

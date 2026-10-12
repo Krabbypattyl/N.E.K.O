@@ -1130,3 +1130,15 @@ def test_generated_silent_branch_rejects_missing_or_malformed_choice(position, c
         result["transitions"][index]["silent_choice"] = choice
     with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
         service.finish_path(plan, result)
+
+
+@pytest.mark.parametrize("field", ["destination", "arrangement"])
+@pytest.mark.parametrize("tokens", [30, 31])
+def test_branch_silent_choice_enforces_compiler_token_limit(field, tokens):
+    _, service, plan, result, index = _silent_exit_path("scene", "optional", ["forbidden"])
+    result["transitions"][index]["silent_choice"][field] = " a" * tokens
+    if tokens > 30:
+        with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+            service.finish_path(plan, result)
+    else:
+        service.finish_path(plan, result)

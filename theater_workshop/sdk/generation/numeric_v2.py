@@ -2931,7 +2931,7 @@ class NumericV2Generator(ModelAgent):
             "must_preserve": [item.strip() for item in must_preserve if item.strip()],
             "tone": tone,
         }
-        if silent_choice is not None:
+        if not fallback_offer and accept_input and silent_choice is not None:
             transition_contract["silent_choice"] = deepcopy(silent_choice)
         if fallback_offer:
             # 普通幕保留作者可直接展示的邀请；结局路线不写空字段。

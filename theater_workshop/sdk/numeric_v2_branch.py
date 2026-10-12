@@ -2087,7 +2087,7 @@ class NumericV2BranchService:
             contract["fallback_offer"] = str(fallback_offer).strip()
         if accept_input is not None:
             contract["accept_input"] = str(accept_input or "").strip()
-            if "silent_choice" in transition:
+            if not fallback_offer and "silent_choice" in transition:
                 contract["silent_choice"] = deepcopy(transition["silent_choice"])
         return contract
 

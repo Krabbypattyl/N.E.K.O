@@ -2577,3 +2577,32 @@ def test_generated_silent_mainline_rejects_missing_or_malformed_choice(choice):
         chapter["exit_plan"]["silent_choice"] = choice
     issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
     assert any(issue["code"] == "transition_silent_choice_required" for issue in issues)
+
+
+@pytest.mark.parametrize("field", ["destination", "arrangement"])
+@pytest.mark.parametrize("tokens", [30, 31])
+def test_mainline_silent_choice_enforces_compiler_token_limit(field, tokens):
+    from utils.tokenize import count_tokens
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    chapter["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    chapter["exit_plan"]["fallback_offer"] = ""
+    choice = {"destination": "观测舱", "arrangement": "查看记录"}
+    choice[field] = " a" * tokens
+    assert count_tokens(choice[field]) == tokens
+    chapter["exit_plan"]["silent_choice"] = choice
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "transition_silent_choice_required" for issue in issues) is (tokens > 30)
+
+
+def test_mainline_drops_unused_silent_choices_on_spoken_and_ending_routes():
+    candidate = _idea_outline()
+    for chapter in candidate["mainline_chapters"]:
+        chapter["exit_plan"]["silent_choice"] = {"destination": "unused"}
+    generator = NumericV2Generator()
+    generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
+    story = generator.generate(title="普通出口", setup=_generation_setup())["story"]
+    for node in story["nodes"]:
+        for route in node.get("route_gates", []):
+            assert "silent_choice" not in route["transition_contract"]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)

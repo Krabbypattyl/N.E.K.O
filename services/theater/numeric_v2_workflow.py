@@ -951,7 +951,7 @@ def _silent_choice_input(engine, session, contract: Mapping[str, Any]) -> str:
     if not isinstance(choice, Mapping) or set(choice) != {"destination", "arrangement"}:
         return ""
     if any(not isinstance(choice[key], str) or not choice[key].strip()
-           or "\n" in choice[key] for key in choice):
+           or "\n" in choice[key] or "\r" in choice[key] for key in choice):
         return ""
     text = f"我同意前往{choice['destination'].strip()}，安排是：{choice['arrangement'].strip()}。"
     return _project_authored_transition_text(engine, session, text).strip()

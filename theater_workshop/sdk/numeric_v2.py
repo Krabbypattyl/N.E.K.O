@@ -226,10 +226,14 @@ def _is_actionable_player_exit(value: Any) -> bool:
 
 
 def valid_silent_choice(value: Any) -> bool:
-    """Validate author choice shape; host compilation enforces token budgets."""
+    """Validate author choices against the same format and budget as compilation."""
+    # SDK import stays host-free; explicit validation uses the compiler's counter.
+    from utils.tokenize import count_tokens
+
     return (isinstance(value, Mapping) and set(value) == {"destination", "arrangement"}
             and all(isinstance(text, str) and bool(text.strip())
-                    and "\n" not in text and "\r" not in text for text in value.values()))
+                    and "\n" not in text and "\r" not in text
+                    and count_tokens(text) <= 30 for text in value.values()))
 
 
 def final_dialogue_policy(initial_policy: Any, changes: Iterable[Any]) -> str:
