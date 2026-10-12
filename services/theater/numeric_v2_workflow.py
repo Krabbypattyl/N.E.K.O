@@ -1007,9 +1007,14 @@ def _confirmed_authored_acceptance(
     if not isinstance(contract, Mapping):
         return ""
     offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
-    accept = (_silent_choice_input(engine, session, contract) if not offer else
-              _project_authored_transition_text(engine, session, str(contract.get("accept_input") or "")).strip())
     silent_receipt = _pending_silent_receipt(current)
+    # A signed button keeps its original text across display-name changes.
+    if not offer:
+        accept = str(silent_receipt.get("accept_input") or "") if silent_receipt is not None else ""
+    else:
+        accept = _project_authored_transition_text(
+            engine, session, str(contract.get("accept_input") or ""),
+        ).strip()
     if require_program_invitation or silent_receipt is not None:
         # A literal quote is not proof of a live invitation. Only the latest
         # committed, program-issued pair can authorize an unreviewed acceptance.

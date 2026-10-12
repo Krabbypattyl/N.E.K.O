@@ -453,3 +453,27 @@ async def test_readonly_session_payload_survives_projected_choice_overflow(tmp_p
     assert await runtime.restore_session("silent") == current
     with pytest.raises(NumericV2RuntimeError, match="numeric_silent_choice_input_too_long"):
         await turn(runtime, current, "reinvite-after-read", "重新邀请", "reinvite")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_name", ["新名字", "longname " * 160], ids=["rename", "oversized-rename"])
+async def test_signed_silent_button_survives_rename_before_commit(tmp_path, monkeypatch, new_name):
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch,
+        silent_choice={"destination": "男女主的观测舱", "arrangement": "查看记录"})
+    bindings = iter([_binding(), {**_binding(), "catgirl_name": new_name}])
+    offered = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("rename-offer", current.session.revision, "接下来呢？"),
+        ensure_current_binding=lambda _: next(bindings))
+    button = offered.performance["suggested_inputs"][0]
+    assert new_name not in button
+    assert offered.stored.session.catgirl_binding["catgirl_name"] == new_name
+    restored = await runtime.restore_session("silent")
+    fork = await runtime.fork_session_for_test("silent", session_id="rename-fork",
+        through_revision=restored.session.revision)
+    for stored, key in [(restored, "rename-accept"), (fork, "rename-fork-accept")]:
+        accepted = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=stored,
+            turn=TurnRequestV2(key, stored.session.revision, button, "suggestion"),
+            ensure_current_binding=lambda _: {**_binding(), "catgirl_name": new_name})
+        assert accepted.stored.session.current_node_id == "ending_leave"
+        assert accepted.stored.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
+        assert await runtime.restore_session(stored.session.session_id) == accepted.stored
