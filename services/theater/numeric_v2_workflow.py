@@ -2099,17 +2099,17 @@ async def _execute_numeric_v2_turn(
     acceptance_origin = pending_transition_record(
         current.session, ledger_events=current.ledger_events, include_withdrawn=True,
     )
-    spoken_offer_evidence = isinstance(acceptance_origin, Mapping) and any(
+    reviewed_offer_evidence = isinstance(acceptance_origin, Mapping) and any(
         block.get("type") == "dialogue" and str(block.get("text") or "").strip()
         for block in performance_content_blocks(acceptance_origin)
     )
     if isinstance(acceptance_origin, Mapping):
         offer_source = acceptance_origin.get("transition_offer_source")
         if offer_source is not None:
-            spoken_offer_evidence = spoken_offer_evidence and offer_source == "reviewed"
+            reviewed_offer_evidence = offer_source == "reviewed"
         else:
             # Legacy records have no provenance marker; a deterministic button is not speech evidence.
-            spoken_offer_evidence = spoken_offer_evidence and not any(
+            reviewed_offer_evidence = reviewed_offer_evidence and not any(
                 isinstance(item, str) and "我同意前往" in item and "，安排是：" in item
                 for item in acceptance_origin.get("suggested_inputs") or []
             )
@@ -2119,8 +2119,8 @@ async def _execute_numeric_v2_turn(
         and not str(acceptance_contract.get("fallback_offer") or "").strip()
         and isinstance(acceptance_target, Mapping)
         and acceptance_target.get("type") != "ending" and acceptance_target.get("terminal") is not True
-        # A reviewed invitation spoken before silence retains the ordinary acceptance path.
-        and not spoken_offer_evidence
+        # Reviewed dialogue, narration and action offers retain ordinary acceptance.
+        and not reviewed_offer_evidence
     )
     if (not module_options.get("review") or diagnostics["evaluator_degraded"]
             or silent_acceptance_required

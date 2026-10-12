@@ -530,8 +530,9 @@ async def test_signed_silent_button_survives_rename_before_commit(tmp_path, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("legacy_provenance", [False, True])
-async def test_reviewed_spoken_offer_before_silence_still_accepts_freeform(tmp_path, monkeypatch, legacy, legacy_provenance):
+@pytest.mark.parametrize("medium,legacy_provenance", [("dialogue", False), ("dialogue", True),
+    ("narration", False), ("action", False)])
+async def test_reviewed_offer_before_silence_still_accepts_freeform(tmp_path, monkeypatch, legacy, medium, legacy_provenance):
     runtime, current, _, _ = await setup(tmp_path, monkeypatch, review=True)
     if legacy:
         runtime.engine.nodes["start"]["route_gates"][1]["transition_contract"].pop("silent_choice")
@@ -540,8 +541,13 @@ async def test_reviewed_spoken_offer_before_silence_still_accepts_freeform(tmp_p
     async def generate(self, **kwargs):
         if kwargs["outcome"].ledger_event["from_node_id"] != kwargs["outcome"].ledger_event["to_node_id"]:
             return await original_generate(self, **kwargs)
-        return {"performance": "我们待会去观测舱吧。", "suggested_inputs": ["好，走吧。"],
-                "transition_offered": True}
+        performance = {"performance": "我们待会去观测舱吧。", "suggested_inputs": ["好，走吧。"],
+                       "transition_offered": True}
+        if medium == "narration":
+            performance.update(performance="（等待你的决定）", scene_narration="前往观测舱的入口已经打开，等待你的决定。")
+        elif medium == "action":
+            performance["performance"] = "（指向观测舱的入口，伸手等待你的决定）"
+        return performance
 
     async def review_offer(self, **kwargs):
         return ev.NumericV2TransitionOfferReview(not kwargs.get("route_changed"), True, (), (),
