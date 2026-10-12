@@ -2090,7 +2090,18 @@ async def _execute_numeric_v2_turn(
     if diagnostics["evaluator_degraded"]:
         confirmed_acceptance_route_id = _confirmed_authored_acceptance(
             runtime.engine, current, turn, require_program_invitation=True)
+    acceptance_route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics)
+    acceptance_contract = acceptance_route.get("transition_contract") if isinstance(acceptance_route, Mapping) else None
+    acceptance_target = runtime.engine.nodes.get(str(acceptance_route.get("target_node_id") or "")) if acceptance_route else None
+    silent_acceptance_required = (
+        _silent_exit_allowed(runtime.engine.nodes[current.session.current_node_id])
+        and isinstance(acceptance_contract, Mapping)
+        and not str(acceptance_contract.get("fallback_offer") or "").strip()
+        and isinstance(acceptance_target, Mapping)
+        and acceptance_target.get("type") != "ending" and acceptance_target.get("terminal") is not True
+    )
     if (not module_options.get("review") or diagnostics["evaluator_degraded"]
+            or silent_acceptance_required
             or _pending_silent_receipt(current, include_withdrawn=True) is not None):
         if evaluation.transition_intent == "accept" and not confirmed_acceptance_route_id:
             evaluation = replace(evaluation, transition_intent="unclear")

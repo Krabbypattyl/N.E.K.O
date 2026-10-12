@@ -16,6 +16,7 @@ from weakref import WeakValueDictionary
 import portalocker
 
 from .numeric_v2_archive import _retry_windows_permission_error
+from .numeric_v2_context import pending_transition_record
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 from .numeric_v2_narrative import apply_narrative_record, narrative_body_fingerprint
 from .numeric_v2_performance import (
@@ -1257,6 +1258,19 @@ class NumericV2SessionStore:
             raw_changes = event.get("metric_changes")
             if not isinstance(raw_changes, list):
                 raise NumericV2StoreError("numeric_ledger_metric_changes_invalid")
+            if (event.get("transition_intent") == "accept"
+                    and event.get("from_node_id") != event.get("to_node_id")):
+                origin = pending_transition_record(
+                    replay_session, ledger_events=tuple(events[:event_index]), include_withdrawn=True,
+                )
+                offered_event = next((row for row in events[:event_index]
+                    if isinstance(origin, Mapping) and row.get("result_revision") == origin.get("revision")), None)
+                receipt = offered_event.get("program_invitation") if isinstance(offered_event, Mapping) else None
+                if isinstance(receipt, Mapping) and receipt.get("silent") is True:
+                    # Receipt-backed acceptances cannot masquerade as pre-feature records.
+                    if (event.get("input_source") != "suggestion"
+                            or event.get("source_transition_dialogue_policy") != "forbidden"):
+                        raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             try:
                 changes = tuple(
                     MetricChangeV2.from_mapping(

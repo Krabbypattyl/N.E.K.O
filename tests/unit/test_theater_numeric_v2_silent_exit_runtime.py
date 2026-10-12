@@ -323,14 +323,20 @@ async def test_real_actor_receives_receipt_policy_without_mutating_session(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_restore_rejects_missing_receipt_derived_source_policy(tmp_path, monkeypatch):
+@pytest.mark.parametrize("missing", [("source_transition_dialogue_policy",),
+    ("input_source",), ("input_source", "source_transition_dialogue_policy")])
+@pytest.mark.parametrize("source_speech", [False, True])
+async def test_restore_rejects_missing_receipt_derived_source_policy(tmp_path, monkeypatch, missing, source_speech):
     from services.theater.numeric_v2_store import NumericV2StoreError
     runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False)
     offered = await turn(runtime, current, "offer", "接下来呢？")
     await turn(runtime, offered.stored, "accept", accept, "suggestion")
     path = runtime.store.root / "silent.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["ledger_events"][-1].pop("source_transition_dialogue_policy")
+    for field in missing:
+        payload["ledger_events"][-1].pop(field)
+    if source_speech:
+        payload["session"]["performance_history"][-1]["segments"][0]["performance"] = "（望向出口）我们走吧。"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(NumericV2StoreError, match="numeric_ledger_replay_mismatch"):
         await runtime.restore_session("silent")
@@ -338,18 +344,48 @@ async def test_restore_rejects_missing_receipt_derived_source_policy(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_legacy_acceptance_without_source_policy_still_restores(tmp_path, monkeypatch):
-    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False)
-    offered = await turn(runtime, current, "offer", "接下来呢？")
-    await turn(runtime, offered.stored, "accept", accept, "suggestion")
-    path = runtime.store.root / "silent.json"
+    from tests.unit.test_theater_review_round8_invitation import ACCEPT, setup_case, turn as ordinary_turn
+
+    runtime, current = await setup_case(tmp_path, monkeypatch, review=False)
+    offered = await ordinary_turn(runtime, current, "offer", "接下来呢？")
+    receipt = offered.stored.ledger_events[-1].get("program_invitation") or {}
+    assert receipt.get("silent") is not True
+    await ordinary_turn(runtime, offered.stored, "accept", ACCEPT, "suggestion")
+    path = runtime.store.root / f"{current.session.session_id}.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     # Before source-policy receipts, ordinary acceptances did not persist input_source.
-    payload["ledger_events"][-1].pop("source_transition_dialogue_policy")
-    payload["ledger_events"][-1].pop("input_source")
+    payload["ledger_events"][-1].pop("source_transition_dialogue_policy", None)
+    payload["ledger_events"][-1].pop("input_source", None)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    restored = await runtime.restore_session("silent")
+    restored = await runtime.restore_session(current.session.session_id)
     assert restored.session.current_node_id == "ending_leave"
     assert "source_transition_dialogue_policy" not in restored.ledger_events[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["missing", "silent_flag", "not_mapping"])
+async def test_full_review_cannot_accept_silent_exit_without_valid_receipt(tmp_path, monkeypatch, mutation):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=True)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    path = runtime.store.root / "silent.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    event = payload["ledger_events"][-1]
+    if mutation == "missing":
+        event.pop("program_invitation")
+    elif mutation == "silent_flag":
+        event["program_invitation"]["silent"] = False
+    else:
+        event["program_invitation"] = "damaged"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    current = await runtime.restore_session("silent")
+
+    async def accept_evaluation(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False, transition_intent="accept")
+
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", accept_evaluation)
+    result = await turn(runtime, current, "tampered-accept", accept, "suggestion")
+    assert result.stored.session.current_node_id == current.session.current_node_id
+    assert result.stored.ledger_events[-1]["transition_intent"] != "accept"
 
 
 @pytest.mark.asyncio
