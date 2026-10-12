@@ -1352,6 +1352,8 @@ def test_mainline_projects_silent_exit_without_fallback_and_keeps_accept_input()
     candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = "optional"
     candidate["mainline_chapters"][0]["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
     candidate["mainline_chapters"][0]["exit_plan"]["fallback_offer"] = ""
+    candidate["mainline_chapters"][0]["exit_plan"]["silent_choice"] = {
+        "destination": "观测舱", "arrangement": "查看封存记录"}
     generator = NumericV2Generator()
     generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
 
@@ -1359,6 +1361,7 @@ def test_mainline_projects_silent_exit_without_fallback_and_keeps_accept_input()
     contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
 
     assert "fallback_offer" not in contract
+    assert contract["silent_choice"] == candidate["mainline_chapters"][0]["exit_plan"]["silent_choice"]
     assert contract["accept_input"] == candidate["mainline_chapters"][0]["exit_plan"]["accept_input"]
     NumericV2Compiler(InProcessPackageGateway()).compile(story)
 

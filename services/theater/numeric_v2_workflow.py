@@ -945,6 +945,18 @@ def _authored_offer_is_canonical_content(performance: Mapping[str, Any], offer: 
     return bool(authored) and visible == authored
 
 
+def _silent_choice_input(engine, session, contract: Mapping[str, Any]) -> str:
+    """Render only explicit structured route choices; never infer missing author intent."""
+    choice = contract.get("silent_choice")
+    if not isinstance(choice, Mapping) or set(choice) != {"destination", "arrangement"}:
+        return ""
+    if any(not isinstance(choice[key], str) or not choice[key].strip()
+           or "\n" in choice[key] for key in choice):
+        return ""
+    text = f"我同意前往{choice['destination'].strip()}，安排是：{choice['arrangement'].strip()}。"
+    return _project_authored_transition_text(engine, session, text).strip()
+
+
 def _silent_exit_allowed(node: Mapping[str, Any]) -> bool:
     """Match the compiler's author-only exemption without changing live policy."""
     if not isinstance(node.get("completion_contract"), Mapping):
@@ -986,7 +998,8 @@ def _confirmed_authored_acceptance(
     if not isinstance(contract, Mapping):
         return ""
     offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
-    accept = _project_authored_transition_text(engine, session, str(contract.get("accept_input") or "")).strip()
+    accept = (_silent_choice_input(engine, session, contract) if not offer else
+              _project_authored_transition_text(engine, session, str(contract.get("accept_input") or "")).strip())
     silent_receipt = _pending_silent_receipt(current)
     if require_program_invitation or silent_receipt is not None:
         # A literal quote is not proof of a live invitation. Only the latest
@@ -1234,7 +1247,8 @@ def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2St
     if not isinstance(target, Mapping) or target.get("type") == "ending" or target.get("terminal") is True or not isinstance(contract, Mapping):
         return None
     offer = _project_authored_transition_text(runtime.engine, session, str(contract.get("fallback_offer") or "")).strip()
-    acceptance = _project_authored_transition_text(runtime.engine, session, str(contract.get("accept_input") or "")).strip()
+    acceptance = (_silent_choice_input(runtime.engine, session, contract) if not offer else
+                  _project_authored_transition_text(runtime.engine, session, str(contract.get("accept_input") or "")).strip())
     silent = not offer and _silent_exit_allowed(runtime.engine.nodes[session.current_node_id])
     if (not acceptance or (not silent and (
             not offer or not _authored_offer_visible({"performance": offer}, offer)
@@ -3101,8 +3115,7 @@ async def _execute_numeric_v2_turn(
                                      condition_triggers_enabled=bool(module_options.get("review")))
             and (not module_options.get("review") or (final_fixed_review is not None
                  and not final_fixed_review.body_violations and not final_fixed_review.offer_present))):
-        accept = _project_authored_transition_text(runtime.engine, outcome.session,
-                                                  str(silent_contract.get("accept_input") or "")).strip()
+        accept = _silent_choice_input(runtime.engine, outcome.session, silent_contract)
         if accept and turn.message.strip() != accept:
             # Validate the same input limits that will apply when this button is clicked.
             try:

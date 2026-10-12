@@ -17,8 +17,10 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on", complete=True):
     story = _story(genre)
     destination = "观测舱入口" if genre == "scifi" else "石桥入口"
-    accept = f"好，我们去{destination}。"
-    story["nodes"][0]["route_gates"][1]["transition_contract"]["accept_input"] = accept
+    accept = f"我同意前往{destination}，安排是：继续旅程。"
+    contract = story["nodes"][0]["route_gates"][1]["transition_contract"]
+    contract["accept_input"] = "好，就按刚才的安排。"
+    contract["silent_choice"] = {"destination": destination, "arrangement": "继续旅程"}
     engine = NumericV2Engine.from_mapping(story)
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id="silent", catgirl_binding=_binding(),
@@ -272,10 +274,10 @@ def test_workshop_prompts_make_silent_button_self_contained():
     from theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
     from theater_workshop.sdk.generation import numeric_v2
     from theater_workshop.sdk.generation import runtime_rules
-    assert "Runtime 只展示 accept_input 按钮、不补台词" in _BRANCH_PATH_PROMPT
-    assert "accept_input 将作为完成后的静默出口按钮展示" in numeric_v2._MAINLINE_PROMPT
-    assert "accept_input 将作为完成后的静默出口按钮展示" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
-    assert "按钮须独立说明具体去向和安排" in runtime_rules.SCORING_RUNTIME_RULES
+    assert "Runtime 据此生成完整按钮、不补台词" in _BRANCH_PATH_PROMPT
+    assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_PROMPT
+    assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
+    assert "独立说明具体去向和安排" in runtime_rules.SCORING_RUNTIME_RULES
 
 
 @pytest.mark.asyncio
@@ -317,3 +319,68 @@ async def test_real_actor_receives_receipt_policy_without_mutating_session(tmp_p
         through_revision=accepted.stored.session.revision)
     assert fork.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
     assert await runtime.restore_session("accepted-fork") == fork
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_missing_receipt_derived_source_policy(tmp_path, monkeypatch):
+    from services.theater.numeric_v2_store import NumericV2StoreError
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    await turn(runtime, offered.stored, "accept", accept, "suggestion")
+    path = runtime.store.root / "silent.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["ledger_events"][-1].pop("source_transition_dialogue_policy")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(NumericV2StoreError, match="numeric_ledger_replay_mismatch"):
+        await runtime.restore_session("silent")
+
+
+@pytest.mark.asyncio
+async def test_legacy_acceptance_without_source_policy_still_restores(tmp_path, monkeypatch):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    await turn(runtime, offered.stored, "accept", accept, "suggestion")
+    path = runtime.store.root / "silent.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    # Before source-policy receipts, ordinary acceptances did not persist input_source.
+    payload["ledger_events"][-1].pop("source_transition_dialogue_policy")
+    payload["ledger_events"][-1].pop("input_source")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    restored = await runtime.restore_session("silent")
+    assert restored.session.current_node_id == "ending_leave"
+    assert "source_transition_dialogue_policy" not in restored.ledger_events[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("genre", ["scifi", "fantasy"])
+async def test_legacy_opaque_silent_button_is_not_signed_or_reinvited(tmp_path, monkeypatch, genre):
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch, genre=genre, review=False)
+    runtime.engine.nodes["start"]["route_gates"][1]["transition_contract"].pop("silent_choice")
+    result = await turn(runtime, current, "old-package", "接下来呢？")
+    assert not result.stored.session.transition_offered
+    assert "好，就按刚才的安排。" not in result.performance["suggested_inputs"]
+    assert wf.invitation_recovery_contract(runtime, result.stored) is None
+
+
+@pytest.mark.parametrize("choice", [{}, {"destination": "门口"},
+    {"destination": "", "arrangement": "会面"},
+    {"destination": "门口", "arrangement": "会面\n等待"}])
+def test_invalid_structured_silent_choices_fail_compilation(choice):
+    from services.theater.numeric_v2 import NumericV2Compiler, NumericV2CompileError
+    story = _story("scifi")
+    story["nodes"][0]["route_gates"][1]["transition_contract"]["silent_choice"] = choice
+    with pytest.raises(NumericV2CompileError):
+        NumericV2Compiler().compile(story)
+
+
+@pytest.mark.parametrize("destination", ["观测舱", "山间石桥"])
+def test_branch_export_preserves_structured_silent_choice(destination):
+    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    choice = {"destination": destination, "arrangement": "查看封存记录"}
+    transition = {"reason": "完成交接", "bridge_scene_narration": "来到下一处。",
+        "must_preserve": [], "tone": "平静", "silent_choice": choice}
+    contract = NumericV2BranchService._transition_contract(transition,
+        source_ids=[], accept_input="按刚才的安排。")
+    assert contract["silent_choice"] == choice
+    choice["destination"] = "别处"
+    assert contract["silent_choice"]["destination"] == destination

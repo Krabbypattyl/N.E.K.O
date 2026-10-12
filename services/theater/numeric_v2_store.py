@@ -1389,6 +1389,9 @@ class NumericV2SessionStore:
                         replayed_session,
                         player_address_known=True,
                     )
+            if ("source_transition_dialogue_policy" in expected_event
+                    and "source_transition_dialogue_policy" not in event):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             for field in (
                 "transition_intent",
                 "before_dialogue_policy",
