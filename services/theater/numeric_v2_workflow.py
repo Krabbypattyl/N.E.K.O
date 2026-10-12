@@ -2093,12 +2093,21 @@ async def _execute_numeric_v2_turn(
     acceptance_route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics)
     acceptance_contract = acceptance_route.get("transition_contract") if isinstance(acceptance_route, Mapping) else None
     acceptance_target = runtime.engine.nodes.get(str(acceptance_route.get("target_node_id") or "")) if acceptance_route else None
+    acceptance_origin = pending_transition_record(
+        current.session, ledger_events=current.ledger_events, include_withdrawn=True,
+    )
+    spoken_offer_evidence = isinstance(acceptance_origin, Mapping) and any(
+        block.get("type") == "dialogue" and str(block.get("text") or "").strip()
+        for block in performance_content_blocks(acceptance_origin)
+    )
     silent_acceptance_required = (
         _silent_exit_allowed(runtime.engine.nodes[current.session.current_node_id])
         and isinstance(acceptance_contract, Mapping)
         and not str(acceptance_contract.get("fallback_offer") or "").strip()
         and isinstance(acceptance_target, Mapping)
         and acceptance_target.get("type") != "ending" and acceptance_target.get("terminal") is not True
+        # A reviewed invitation spoken before silence retains the ordinary acceptance path.
+        and not spoken_offer_evidence
     )
     if (not module_options.get("review") or diagnostics["evaluator_degraded"]
             or silent_acceptance_required

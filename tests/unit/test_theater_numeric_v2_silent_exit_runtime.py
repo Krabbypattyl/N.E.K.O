@@ -513,3 +513,37 @@ async def test_signed_silent_button_survives_rename_before_commit(tmp_path, monk
         assert accepted.stored.session.current_node_id == "ending_leave"
         assert accepted.stored.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
         assert await runtime.restore_session(stored.session.session_id) == accepted.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_reviewed_spoken_offer_before_silence_still_accepts_freeform(tmp_path, monkeypatch, legacy):
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch, review=True)
+    if legacy:
+        runtime.engine.nodes["start"]["route_gates"][1]["transition_contract"].pop("silent_choice")
+    original_generate = wf.NumericV2Actor.generate_turn
+
+    async def generate(self, **kwargs):
+        if kwargs["outcome"].ledger_event["from_node_id"] != kwargs["outcome"].ledger_event["to_node_id"]:
+            return await original_generate(self, **kwargs)
+        return {"performance": "我们待会去观测舱吧。", "suggested_inputs": ["好，走吧。"],
+                "transition_offered": True}
+
+    async def review_offer(self, **kwargs):
+        return ev.NumericV2TransitionOfferReview(not kwargs.get("route_changed"), True, (), (),
+            pending_invitation_invalid=False, acceptance_authorized=True,
+            delivery_matches_route=True)
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False,
+            transition_intent="accept" if kwargs["session"].transition_offered else "unclear")
+
+    monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review_offer)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    offered = await turn(runtime, current, "spoken-offer", "接下来呢？")
+    assert offered.stored.session.transition_offered
+    assert "program_invitation" not in offered.stored.ledger_events[-1]
+    accepted = await turn(runtime, offered.stored, "spoken-accept", "好，走吧。")
+    assert accepted.stored.session.current_node_id == "ending_leave"
+    assert await runtime.restore_session("silent") == accepted.stored
