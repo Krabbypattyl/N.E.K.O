@@ -6,7 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ..model import ModelAgent, LLMCallFailure
 
@@ -1162,6 +1162,7 @@ def _validate_idea_outline(
     maximum: int,
     scene_expected_turns_target: int | None = None,
     cast_names: Mapping[str, str] | None = None,
+    token_counter: Callable[[str], int] | None = None,
 ) -> list[dict[str, str]]:
     """Check structural contracts and chapter counts without turning prose length into a blocking rule."""
 
@@ -1697,7 +1698,7 @@ def _validate_idea_outline(
             })
         if (index < len(chapters) - 1 and completion_policy == "forbidden"
                 and isinstance(fallback_offer, str) and not fallback_offer.strip()
-                and not valid_silent_choice(exit_plan.get("silent_choice"))):
+                and not valid_silent_choice(exit_plan.get("silent_choice"), token_counter=token_counter)):
             issues.append({
                 "code": "transition_silent_choice_required",
                 "path": f"{path}.exit_plan.silent_choice",
@@ -1941,8 +1942,9 @@ class NumericV2GenerationError(RuntimeError):
 class NumericV2Generator(ModelAgent):
     """Generate a mainline and one Normal ending, then project an editable map draft."""
 
-    def __init__(self, model_call=None) -> None:
+    def __init__(self, model_call=None, *, token_counter: Callable[[str], int] | None = None) -> None:
         super().__init__("NEKO_Numeric_drama Generator", model_call)
+        self._token_counter = token_counter
 
     def process(self, input_data: dict[str, Any]) -> dict[str, Any]:
         title = str(input_data.get("title") or "").strip()
@@ -2009,6 +2011,7 @@ class NumericV2Generator(ModelAgent):
 
             issues = _validate_idea_outline(
                 candidate,
+                token_counter=self._token_counter,
                 cast_names=cast_names,
                 minimum=minimum,
                 maximum=maximum,
@@ -2068,6 +2071,7 @@ class NumericV2Generator(ModelAgent):
         if candidate is not None:
             issues = _validate_idea_outline(
                 candidate,
+                token_counter=self._token_counter,
                 cast_names=cast_names,
                 minimum=minimum,
                 maximum=maximum,

@@ -735,6 +735,7 @@ def test_branch_path_rejects_missing_or_generic_accept_input():
 
 
 def _silent_exit_path(position, initial, changes):
+    from utils.tokenize import count_tokens
     project = branchable_project()
     if position == "source":
         beat = next(node for node in project["story"]["nodes"] if node["id"] == "main_3")["story_beat"]
@@ -748,7 +749,8 @@ def _silent_exit_path(position, initial, changes):
                           **({"state_effects": {"dialogue_policy": policy}} if policy != "unchanged" else {})}}
             for index, policy in enumerate(changes)
         ]
-    service = NumericV2BranchService(id_factory=iter(["scene", "r0", "r1", "draft"]).__next__)
+    service = NumericV2BranchService(id_factory=iter(["scene", "r0", "r1", "draft"]).__next__,
+                                     token_counter=count_tokens)
     options = service.options(project, "main_3")
     plan = service.prepare_path(project, source_node_id="main_3", endpoint_mode="mainline",
         endpoint_node_id="main_4", direction="根据当前证据继续核对。", length=1,
@@ -1142,3 +1144,9 @@ def test_branch_silent_choice_enforces_compiler_token_limit(field, tokens):
             service.finish_path(plan, result)
     else:
         service.finish_path(plan, result)
+
+
+def test_silent_branch_without_counter_returns_validation_error():
+    _, _, plan, result, _ = _silent_exit_path("scene", "optional", ["forbidden"])
+    with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
+        NumericV2BranchService().finish_path(plan, result)

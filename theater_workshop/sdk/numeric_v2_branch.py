@@ -138,8 +138,10 @@ def condition_and_complement(
 class NumericV2BranchService:
     """Validate candidates, context and model results, and construct Story data before atomic application."""
 
-    def __init__(self, id_factory: Callable[[], str] | None = None):
+    def __init__(self, id_factory: Callable[[], str] | None = None, *,
+                 token_counter: Callable[[str], int] | None = None):
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex[:10])
+        self._token_counter = token_counter
 
     def options(self, project: Mapping[str, Any], source_node_id: str) -> dict[str, Any]:
         story = self._story(project)
@@ -1801,7 +1803,7 @@ class NumericV2BranchService:
                         )
                     transition[field] = value.strip()
                 if (completion_policy == "forbidden" and not transition.get("fallback_offer")
-                        and not valid_silent_choice(transition.get("silent_choice"))):
+                        and not valid_silent_choice(transition.get("silent_choice"), token_counter=self._token_counter)):
                     raise NumericV2BranchError("branch_transition_silent_choice_required",
                         {"path": f"transitions[{index}].silent_choice"})
                 if transition["accept_input"] == "我接受这个安排，继续进入下一阶段。":

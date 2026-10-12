@@ -3126,8 +3126,8 @@ async def _execute_numeric_v2_turn(
         else:
             accept = ""
         if accept:
-            performance = {**performance, "suggested_inputs": [accept, *[
-                item for item in performance.get("suggested_inputs", []) if item != accept][:2]]}
+            # Actor alternatives must not look like equivalent route consent.
+            performance = {**performance, "suggested_inputs": [accept]}
             outcome, performance = runtime.engine.finalize_transition_offer_state(
                 outcome, performance, new_offer=True)
             outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {

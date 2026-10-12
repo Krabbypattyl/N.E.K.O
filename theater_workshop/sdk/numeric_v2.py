@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .packages import PackageGateway, PackageError as NekoV2BridgeError, PackageWarning as NekoV2Warning
 from .numeric_v2_analysis import analyze_numeric_v2_story
@@ -225,15 +225,14 @@ def _is_actionable_player_exit(value: Any) -> bool:
     return not any(phrase in text for phrase in _NON_ACTIONABLE_PLAYER_EXIT_PHRASES)
 
 
-def valid_silent_choice(value: Any) -> bool:
+def valid_silent_choice(value: Any, *, token_counter: Callable[[str], int] | None = None) -> bool:
     """Validate author choices against the same format and budget as compilation."""
-    # SDK import stays host-free; explicit validation uses the compiler's counter.
-    from utils.tokenize import count_tokens
-
-    return (isinstance(value, Mapping) and set(value) == {"destination", "arrangement"}
+    # Without a host counter, fail validation rather than guess the compiler's budget.
+    return (token_counter is not None
+            and isinstance(value, Mapping) and set(value) == {"destination", "arrangement"}
             and all(isinstance(text, str) and bool(text.strip())
                     and "\n" not in text and "\r" not in text
-                    and count_tokens(text) <= 30 for text in value.values()))
+                    and token_counter(text) <= 30 for text in value.values()))
 
 
 def final_dialogue_policy(initial_policy: Any, changes: Iterable[Any]) -> str:

@@ -46,7 +46,7 @@ async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on",
             candidate = {**_candidate(), "source_performance": "（望向出口）"}
             return engine.finalize_transition_performance(outcome, candidate, target_opening="到达入口。",
                 source_dialogue_policy="forbidden")
-        return {"performance": "（看向远处的灯光）", "suggested_inputs": ["再等一下。"], "transition_offered": False}
+        return {"performance": "（看向远处的灯光）", "suggested_inputs": ["那我们这就出发吧。"], "transition_offered": False}
 
     async def review_offer(self, **kwargs):
         calls.append(kwargs)
@@ -81,7 +81,7 @@ async def test_silent_button_is_visible_and_click_survives_restore_and_fork(tmp_
     runtime, current, accept, calls = await setup(tmp_path, monkeypatch, genre=genre, review=review, mode=mode)
     offered = await turn(runtime, current, "offer", "接下来呢？")
     assert offered.performance["performance"] == "（看向远处的灯光）"
-    assert offered.performance["suggested_inputs"][0] == accept
+    assert offered.performance["suggested_inputs"] == [accept]
     assert offered.stored.session.transition_offered
     assert offered.stored.session.dialogue_policy == "optional"
     receipt = offered.stored.ledger_events[-1]["program_invitation"]
