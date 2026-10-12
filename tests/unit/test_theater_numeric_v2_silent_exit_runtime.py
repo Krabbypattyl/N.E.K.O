@@ -14,16 +14,17 @@ from tests.unit.test_theater_numeric_v2_silent_completion_offer import _story
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
 
-async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on", complete=True):
+async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on", complete=True,
+                binding=None, silent_choice=None):
     story = _story(genre)
     destination = "观测舱入口" if genre == "scifi" else "石桥入口"
     accept = f"我同意前往{destination}，安排是：继续旅程。"
     contract = story["nodes"][0]["route_gates"][1]["transition_contract"]
     contract["accept_input"] = "好，就按刚才的安排。"
-    contract["silent_choice"] = {"destination": destination, "arrangement": "继续旅程"}
+    contract["silent_choice"] = silent_choice or {"destination": destination, "arrangement": "继续旅程"}
     engine = NumericV2Engine.from_mapping(story)
     runtime = NumericV2Runtime(engine, tmp_path)
-    current = await runtime.start_session(session_id="silent", catgirl_binding=_binding(),
+    current = await runtime.start_session(session_id="silent", catgirl_binding=binding or _binding(),
         opening_performance={"performance": "（望向出口）", "suggested_inputs": []})
     if complete:
         prepared = runtime.prepare_turn(current, TurnRequestV2("done", 0, "办好了。"), (),
@@ -406,3 +407,29 @@ def test_branch_export_drops_unused_silent_choice(fallback, accept):
     contract = NumericV2BranchService._transition_contract(transition,
         source_ids=[], fallback_offer=fallback, accept_input=accept)
     assert "silent_choice" not in contract
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["freeform", "reinvite"])
+async def test_projected_silent_choice_overflow_is_explicit_and_rolls_back(tmp_path, monkeypatch, source):
+    from utils.tokenize import count_tokens
+
+    choice = {"destination": "男女主的观测舱", "arrangement": "查看记录"}
+    assert all(count_tokens(value) <= 30 for value in choice.values())
+    binding = {**_binding(), "catgirl_name": "longname " * 160}
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch, binding=binding, silent_choice=choice)
+    with pytest.raises(NumericV2RuntimeError, match="numeric_silent_choice_input_too_long"):
+        await turn(runtime, current, "overflow", "重新邀请" if source == "reinvite" else "接下来呢？", source)
+    assert await runtime.restore_session("silent") == current
+
+
+@pytest.mark.parametrize("tokens", [140, 141])
+def test_silent_choice_checks_final_projected_input_budget(monkeypatch, tokens):
+    text = "a " * (tokens - 1) + "a"
+    monkeypatch.setattr(wf, "_project_authored_transition_text", lambda *_args: text)
+    contract = {"silent_choice": {"destination": "observatory", "arrangement": "read records"}}
+    if tokens > 140:
+        with pytest.raises(NumericV2RuntimeError, match="numeric_silent_choice_input_too_long"):
+            wf._silent_choice_input(None, None, contract)
+    else:
+        assert wf._silent_choice_input(None, None, contract) == text

@@ -954,7 +954,16 @@ def _silent_choice_input(engine, session, contract: Mapping[str, Any]) -> str:
            or "\n" in choice[key] or "\r" in choice[key] for key in choice):
         return ""
     text = f"我同意前往{choice['destination'].strip()}，安排是：{choice['arrangement'].strip()}。"
-    return _project_authored_transition_text(engine, session, text).strip()
+    acceptance = _project_authored_transition_text(engine, session, text).strip()
+    # Validate after cast projection: short author names can expand at runtime.
+    try:
+        TurnRequestV2.from_mapping({"client_turn_id": "silent_validation", "base_revision": 0,
+                                   "message": acceptance, "input_source": "suggestion"})
+    except NumericV2RuntimeError as exc:
+        if str(exc) == "numeric_turn_input_too_long":
+            raise NumericV2RuntimeError("numeric_silent_choice_input_too_long") from exc
+        raise
+    return acceptance
 
 
 def _silent_exit_allowed(node: Mapping[str, Any]) -> bool:
@@ -3116,14 +3125,7 @@ async def _execute_numeric_v2_turn(
             and (not module_options.get("review") or (final_fixed_review is not None
                  and not final_fixed_review.body_violations and not final_fixed_review.offer_present))):
         accept = _silent_choice_input(runtime.engine, outcome.session, silent_contract)
-        if accept and turn.message.strip() != accept:
-            # Validate the same input limits that will apply when this button is clicked.
-            try:
-                TurnRequestV2.from_mapping({"client_turn_id": "silent_validation", "base_revision": 0,
-                                           "message": accept, "input_source": "suggestion"})
-            except NumericV2RuntimeError:
-                accept = ""
-        else:
+        if turn.message.strip() == accept:
             accept = ""
         if accept:
             # Actor alternatives must not look like equivalent route consent.
