@@ -1287,6 +1287,9 @@ async def _execute_reinvitation(*, runtime, current, turn, ensure_current_bindin
     performance = {"performance": contract["offer"], "suggested_inputs": [contract["accept_input"]]}
     outcome, performance = runtime.engine.finalize_transition_offer_state(
         outcome, performance, new_offer=True, invalidate_previous_offer=True)
+    if contract.get("silent") is True:
+        performance["transition_offer_source"] = "program_silent"
+        outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_source": "program_silent"})
     outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {
         **contract, "performance": contract["offer"], "visible_blocks": performance_content_blocks(performance),
         **({"revision": outcome.session.revision} if contract.get("silent") else {})}})
@@ -2100,6 +2103,16 @@ async def _execute_numeric_v2_turn(
         block.get("type") == "dialogue" and str(block.get("text") or "").strip()
         for block in performance_content_blocks(acceptance_origin)
     )
+    if isinstance(acceptance_origin, Mapping):
+        offer_source = acceptance_origin.get("transition_offer_source")
+        if offer_source is not None:
+            spoken_offer_evidence = spoken_offer_evidence and offer_source == "reviewed"
+        else:
+            # Legacy records have no provenance marker; a deterministic button is not speech evidence.
+            spoken_offer_evidence = spoken_offer_evidence and not any(
+                isinstance(item, str) and "我同意前往" in item and "，安排是：" in item
+                for item in acceptance_origin.get("suggested_inputs") or []
+            )
     silent_acceptance_required = (
         _silent_exit_allowed(runtime.engine.nodes[current.session.current_node_id])
         and isinstance(acceptance_contract, Mapping)
@@ -3122,6 +3135,13 @@ async def _execute_numeric_v2_turn(
                     "visible_blocks": visible_blocks,
                 },
             })
+    # Persist the reviewed origin before a program button can change the offer flags.
+    performance.pop("transition_offer_source", None)
+    if (performance.get("transition_offer_presented") is True and final_fixed_review is not None
+            and final_fixed_review.offer_present and final_fixed_review.valid
+            and not final_fixed_review.body_violations):
+        performance["transition_offer_source"] = "reviewed"
+        outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_source": "reviewed"})
     # The button is a program choice, not new character prose or a model verdict.
     # Run after facts, narration and recommendation filtering are final.
     silent_route = runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics)
@@ -3157,7 +3177,9 @@ async def _execute_numeric_v2_turn(
             performance = {**performance, "suggested_inputs": [accept]}
             outcome, performance = runtime.engine.finalize_transition_offer_state(
                 outcome, performance, new_offer=True)
-            outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {
+            performance["transition_offer_source"] = "program_silent"
+            outcome = replace(outcome, ledger_event={**outcome.ledger_event,
+                "transition_offer_source": "program_silent", "program_invitation": {
                 "route_id": silent_route["id"], "offer": "", "accept_input": accept,
                 "silent": True, "revision": outcome.session.revision,
                 "performance": str(performance.get("performance") or ""),

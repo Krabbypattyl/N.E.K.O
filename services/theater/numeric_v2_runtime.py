@@ -1738,6 +1738,8 @@ class NumericV2Runtime:
                 replayed_event["transition_offer_invalidated"] = True
             if source_event.get("transition_offer_presented") is True:
                 replayed_event["transition_offer_presented"] = True
+            if "transition_offer_source" in source_event:
+                replayed_event["transition_offer_source"] = source_event["transition_offer_source"]
             replayed_session_after_turn = outcome.session
             if "transition_offered" in source_event:
                 # 分叉重放沿用原回合已经提交的提议状态；不能把 Actor 结果重新猜一遍。

@@ -83,6 +83,7 @@ async def test_silent_button_is_visible_and_click_survives_restore_and_fork(tmp_
     offered = await turn(runtime, current, "offer", "接下来呢？")
     assert offered.performance["performance"] == "（看向远处的灯光）"
     assert offered.performance["suggested_inputs"] == [accept]
+    assert offered.stored.ledger_events[-1]["transition_offer_source"] == "program_silent"
     assert offered.stored.session.transition_offered
     assert offered.stored.session.dialogue_policy == "optional"
     receipt = offered.stored.ledger_events[-1]["program_invitation"]
@@ -93,6 +94,7 @@ async def test_silent_button_is_visible_and_click_survives_restore_and_fork(tmp_
     assert restored == offered.stored
     fork = await runtime.fork_session_for_test("silent", session_id="silent-fork", through_revision=restored.session.revision)
     assert fork.ledger_events[-1]["program_invitation"] == receipt
+    assert fork.ledger_events[-1]["transition_offer_source"] == "program_silent"
     assert fork.session.performance_history[-1]["suggested_inputs"] == restored.session.performance_history[-1]["suggested_inputs"]
     for stored, key in [(restored, "accept"), (fork, "fork-accept")]:
         accepted = await turn(runtime, stored, key, accept, "suggestion")
@@ -364,8 +366,19 @@ async def test_legacy_acceptance_without_source_policy_still_restores(tmp_path, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["missing", "silent_flag", "not_mapping"])
-async def test_full_review_cannot_accept_silent_exit_without_valid_receipt(tmp_path, monkeypatch, mutation):
+@pytest.mark.parametrize("unrelated_dialogue", [False, True])
+async def test_full_review_cannot_accept_silent_exit_without_valid_receipt(tmp_path, monkeypatch, mutation, unrelated_dialogue):
     runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=True)
+    if unrelated_dialogue:
+        original_generate = wf.NumericV2Actor.generate_turn
+
+        async def generate(self, **kwargs):
+            if kwargs["outcome"].ledger_event["from_node_id"] != kwargs["outcome"].ledger_event["to_node_id"]:
+                return await original_generate(self, **kwargs)
+            return {"performance": "（收好工具）记录已经封存。", "suggested_inputs": [],
+                    "transition_offered": False}
+
+        monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
     offered = await turn(runtime, current, "offer", "接下来呢？")
     path = runtime.store.root / "silent.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -517,7 +530,8 @@ async def test_signed_silent_button_survives_rename_before_commit(tmp_path, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
-async def test_reviewed_spoken_offer_before_silence_still_accepts_freeform(tmp_path, monkeypatch, legacy):
+@pytest.mark.parametrize("legacy_provenance", [False, True])
+async def test_reviewed_spoken_offer_before_silence_still_accepts_freeform(tmp_path, monkeypatch, legacy, legacy_provenance):
     runtime, current, _, _ = await setup(tmp_path, monkeypatch, review=True)
     if legacy:
         runtime.engine.nodes["start"]["route_gates"][1]["transition_contract"].pop("silent_choice")
@@ -544,6 +558,37 @@ async def test_reviewed_spoken_offer_before_silence_still_accepts_freeform(tmp_p
     offered = await turn(runtime, current, "spoken-offer", "接下来呢？")
     assert offered.stored.session.transition_offered
     assert "program_invitation" not in offered.stored.ledger_events[-1]
-    accepted = await turn(runtime, offered.stored, "spoken-accept", "好，走吧。")
+    assert offered.stored.ledger_events[-1]["transition_offer_source"] == "reviewed"
+    if legacy_provenance:
+        path = runtime.store.root / "silent.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["ledger_events"][-1].pop("transition_offer_source")
+        payload["session"]["performance_history"][-1].pop("transition_offer_source")
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    stored = await runtime.restore_session("silent")
+    accepted = await turn(runtime, stored, "spoken-accept", "好，走吧。")
     assert accepted.stored.session.current_node_id == "ending_leave"
     assert await runtime.restore_session("silent") == accepted.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["event_missing", "history_missing", "mismatch", "bad_type"])
+async def test_restore_rejects_mismatched_offer_provenance(tmp_path, monkeypatch, mutation):
+    from services.theater.numeric_v2_store import NumericV2StoreError
+
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch)
+    await turn(runtime, current, "offer", "接下来呢？")
+    path = runtime.store.root / "silent.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    event, history = payload["ledger_events"][-1], payload["session"]["performance_history"][-1]
+    if mutation == "event_missing":
+        event.pop("transition_offer_source")
+    elif mutation == "history_missing":
+        history.pop("transition_offer_source")
+    elif mutation == "mismatch":
+        event["transition_offer_source"] = "reviewed"
+    else:
+        event["transition_offer_source"] = history["transition_offer_source"] = {}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(NumericV2StoreError, match="numeric_ledger_replay_mismatch"):
+        await runtime.restore_session("silent")

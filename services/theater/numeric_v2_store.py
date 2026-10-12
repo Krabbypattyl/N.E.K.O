@@ -1266,7 +1266,9 @@ class NumericV2SessionStore:
                 offered_event = next((row for row in events[:event_index]
                     if isinstance(origin, Mapping) and row.get("result_revision") == origin.get("revision")), None)
                 receipt = offered_event.get("program_invitation") if isinstance(offered_event, Mapping) else None
-                if isinstance(receipt, Mapping) and receipt.get("silent") is True:
+                if ((isinstance(receipt, Mapping) and receipt.get("silent") is True)
+                        or (isinstance(offered_event, Mapping)
+                            and offered_event.get("transition_offer_source") == "program_silent")):
                     # Receipt-backed acceptances cannot masquerade as pre-feature records.
                     if (event.get("input_source") != "suggestion"
                             or event.get("source_transition_dialogue_policy") != "forbidden"):
@@ -1375,6 +1377,14 @@ class NumericV2SessionStore:
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if event.get("transition_offer_presented", False) != performance.get("transition_offer_presented", False):
                 raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if ("transition_offer_source" in event) != ("transition_offer_source" in performance):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if "transition_offer_source" in event:
+                if (not isinstance(event["transition_offer_source"], str)
+                        or event["transition_offer_source"] not in {"reviewed", "program_silent"}
+                        or event["transition_offer_source"] != performance["transition_offer_source"]
+                        or event.get("transition_offer_presented") is not True):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if "transition_offered" in event:
                 # 新 Ledger 的提议状态来自同 revision 的 Actor 正文；重放时只复用已提交值。
                 committed_transition_offered = event.get("transition_offered")
