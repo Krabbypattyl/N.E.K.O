@@ -41,7 +41,9 @@ async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on",
     async def generate(self, **kwargs):
         outcome = kwargs["outcome"]
         if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]:
-            return engine.finalize_transition_performance(outcome, _candidate(), target_opening="到达入口。")
+            candidate = {**_candidate(), "source_performance": "（望向出口）"}
+            return engine.finalize_transition_performance(outcome, candidate, target_opening="到达入口。",
+                source_dialogue_policy="forbidden")
         return {"performance": "（看向远处的灯光）", "suggested_inputs": ["再等一下。"], "transition_offered": False}
 
     async def review_offer(self, **kwargs):
@@ -92,6 +94,9 @@ async def test_silent_button_is_visible_and_click_survives_restore_and_fork(tmp_
     for stored, key in [(restored, "accept"), (fork, "fork-accept")]:
         accepted = await turn(runtime, stored, key, accept, "suggestion")
         assert accepted.stored.session.current_node_id == "ending_leave"
+        assert accepted.stored.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
+        assert accepted.performance["segments"][0]["performance"] == "（望向出口）"
+        assert await runtime.restore_session(stored.session.session_id) == accepted.stored
     if review:
         assert calls[-1]["confirmed_silent_acceptance"] == accept
 
@@ -157,6 +162,9 @@ async def test_expiry_never_auto_reissues_but_explicit_reinvitation_restores_onl
     for stored, key in [(restored, "accept"), (fork, "fork-accept")]:
         accepted = await turn(runtime, stored, key, accept, "suggestion")
         assert accepted.stored.session.current_node_id == "ending_leave"
+        assert accepted.stored.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
+        assert accepted.performance["segments"][0]["performance"] == "（望向出口）"
+        assert await runtime.restore_session(stored.session.session_id) == accepted.stored
 
 
 @pytest.mark.asyncio
@@ -268,3 +276,44 @@ def test_workshop_prompts_make_silent_button_self_contained():
     assert "accept_input 将作为完成后的静默出口按钮展示" in numeric_v2._MAINLINE_PROMPT
     assert "accept_input 将作为完成后的静默出口按钮展示" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
     assert "按钮须独立说明具体去向和安排" in runtime_rules.SCORING_RUNTIME_RULES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("genre", ["scifi", "fantasy"])
+async def test_silent_transition_rejects_source_speech_with_review_disabled(tmp_path, monkeypatch, genre):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, genre=genre, review=False)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+
+    async def generate(self, **kwargs):
+        # Bypass Actor parsing to check the independent commit boundary.
+        return runtime.engine.finalize_transition_performance(kwargs["outcome"], _candidate(),
+            target_opening="到达入口。")
+
+    monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
+    with pytest.raises(NumericV2RuntimeError, match="numeric_transition_performance_invalid"):
+        await turn(runtime, offered.stored, "accept-speech", accept, "suggestion")
+    assert await runtime.restore_session("silent") == offered.stored
+
+
+@pytest.mark.asyncio
+async def test_real_actor_receives_receipt_policy_without_mutating_session(tmp_path, monkeypatch):
+    original_generate = wf.NumericV2Actor.generate_turn
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    captured = []
+
+    async def invoke(self, messages, **kwargs):
+        captured.append(kwargs)
+        return {**_candidate(), "source_performance": "（垂下手，望向出口）"}
+
+    monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", original_generate)
+    monkeypatch.setattr(wf.NumericV2Actor, "_invoke", invoke)
+    accepted = await turn(runtime, offered.stored, "actor-accept", accept, "suggestion")
+    assert offered.stored.session.dialogue_policy == "optional"
+    assert captured[0]["source_dialogue_policy"] == "forbidden"
+    assert captured[0]["target_dialogue_policy"] == accepted.stored.session.dialogue_policy
+    assert accepted.performance["segments"][2]["performance"] == _candidate()["target_performance"]
+    fork = await runtime.fork_session_for_test("silent", session_id="accepted-fork",
+        through_revision=accepted.stored.session.revision)
+    assert fork.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
+    assert await runtime.restore_session("accepted-fork") == fork

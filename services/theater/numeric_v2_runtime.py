@@ -1352,6 +1352,17 @@ class NumericV2Engine:
         if accepted_offer_route_id is not None:
             # 同时作为审计/分叉的重放边界；无此字段的旧回合沿用旧选路规则。
             event["accepted_offer_route_id"] = accepted_offer_route_id
+        if route is not None and accepted_offer_route_id is not None:
+            receipt = offered_event.get("program_invitation") if offered_event else None
+            if (isinstance(receipt, Mapping) and receipt.get("silent") is True
+                    and receipt.get("route_id") == accepted_offer_route_id
+                    and receipt.get("revision") == session.revision
+                    and receipt.get("offer") == ""
+                    and request.input_source == "suggestion"
+                    and request.message.strip() == receipt.get("accept_input")):
+                # This receipt constrains only the departing scene, never Session policy.
+                event["source_transition_dialogue_policy"] = "forbidden"
+                event["input_source"] = request.input_source
         if offer_route_changed:
             event["transition_offer_invalidated"] = True
         if fact_operations:
@@ -1845,7 +1856,8 @@ class NumericV2Runtime:
                             segments[0],
                             transition_source_dialogue_policy(
                                 str(
-                                    outcome.ledger_event.get("before_dialogue_policy")
+                                    outcome.ledger_event.get("source_transition_dialogue_policy")
+                                    or outcome.ledger_event.get("before_dialogue_policy")
                                     or "required"
                                 )
                             ),

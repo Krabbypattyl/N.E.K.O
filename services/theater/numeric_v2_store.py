@@ -1392,6 +1392,7 @@ class NumericV2SessionStore:
             for field in (
                 "transition_intent",
                 "before_dialogue_policy",
+                "source_transition_dialogue_policy",
                 "performance_dialogue_policy",
                 "dialogue_policy",
             ):
@@ -1457,7 +1458,7 @@ class NumericV2SessionStore:
                         or not valid_mixed_performance_policy(
                             segments[0],
                             transition_source_dialogue_policy(
-                                replay_session.dialogue_policy
+                                str(event.get("source_transition_dialogue_policy") or replay_session.dialogue_policy)
                             ),
                         )
                         # 合同版本 3 允许去重后的空桥段；目标开场仍必须非空并由 Runtime 注入。
