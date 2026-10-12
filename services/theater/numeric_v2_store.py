@@ -19,6 +19,7 @@ from .numeric_v2_archive import _retry_windows_permission_error
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 from .numeric_v2_narrative import apply_narrative_record, narrative_body_fingerprint
 from .numeric_v2_performance import (
+    is_silent_invitation_control,
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
     valid_ordered_content,
@@ -1429,12 +1430,15 @@ class NumericV2SessionStore:
                         raise NumericV2StoreError("numeric_transition_performance_invalid")
             if performance_contract_version == 3:
                 if expected_event["from_node_id"] == expected_event["to_node_id"]:
-                    if not valid_mixed_performance_policy(
-                        performance,
-                        str(
-                            event.get("performance_dialogue_policy")
-                            or replayed_session.dialogue_policy
-                        ),
+                    if (
+                        not is_silent_invitation_control(event, performance)
+                        and not valid_mixed_performance_policy(
+                            performance,
+                            str(
+                                event.get("performance_dialogue_policy")
+                                or replayed_session.dialogue_policy
+                            ),
+                        )
                     ):
                         raise NumericV2StoreError("numeric_performance_record_invalid")
                 else:

@@ -1,0 +1,270 @@
+"""Silent exits expose an explicit player choice without adding character prose."""
+
+from copy import deepcopy
+from dataclasses import replace
+import json
+
+import pytest
+
+from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as wf
+from services.theater.numeric_v2_options import default_options
+from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, NumericV2RuntimeError, TurnRequestV2
+from tests.unit.test_theater_numeric_v2_runtime import _binding
+from tests.unit.test_theater_numeric_v2_silent_completion_offer import _story
+from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+
+async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on", complete=True):
+    story = _story(genre)
+    destination = "观测舱入口" if genre == "scifi" else "石桥入口"
+    accept = f"好，我们去{destination}。"
+    story["nodes"][0]["route_gates"][1]["transition_contract"]["accept_input"] = accept
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="silent", catgirl_binding=_binding(),
+        opening_performance={"performance": "（望向出口）", "suggested_inputs": []})
+    if complete:
+        prepared = runtime.prepare_turn(current, TurnRequestV2("done", 0, "办好了。"), (),
+            fact_operations=({"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},))
+        current = await runtime.commit_turn(prepared, {"performance": "（放下工具）", "suggested_inputs": []})
+    calls = []
+
+    async def options():
+        return {**default_options(), "review": review, "evaluator": mode != "off",
+                "actor_retry": False, "suggestion_fill": False}
+
+    async def evaluate(self, **kwargs):
+        if mode == "failure":
+            raise ev.NumericV2EvaluatorError("numeric_v2_evaluator_invalid_json")
+        return ev.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        outcome = kwargs["outcome"]
+        if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]:
+            return engine.finalize_transition_performance(outcome, _candidate(), target_opening="到达入口。")
+        return {"performance": "（看向远处的灯光）", "suggested_inputs": ["再等一下。"], "transition_offered": False}
+
+    async def review_offer(self, **kwargs):
+        calls.append(kwargs)
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            reviewed_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs", [])),
+            pending_invitation_invalid=False if kwargs.get("confirmed_acceptance") else None,
+            acceptance_authorized=True if kwargs.get("route_changed") else None,
+            delivery_matches_route=True if kwargs.get("route_changed") else None)
+
+    async def propose(self, **kwargs):
+        return []
+
+    monkeypatch.setattr(wf, "aload_theater_module_options", options)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review_offer)
+    monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(wf.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    monkeypatch.setattr(wf.NumericV2NarrativeProposer, "propose", propose)
+    return runtime, current, accept, calls
+
+
+async def turn(runtime, current, key, message, source="freeform"):
+    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2(key, current.session.revision, message, source),
+        ensure_current_binding=lambda _: _binding())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("genre", ["scifi", "fantasy"])
+@pytest.mark.parametrize("review,mode", [(True, "on"), (False, "on"), (True, "failure"), (False, "off"), (True, "off")])
+async def test_silent_button_is_visible_and_click_survives_restore_and_fork(tmp_path, monkeypatch, genre, review, mode):
+    runtime, current, accept, calls = await setup(tmp_path, monkeypatch, genre=genre, review=review, mode=mode)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    assert offered.performance["performance"] == "（看向远处的灯光）"
+    assert offered.performance["suggested_inputs"][0] == accept
+    assert offered.stored.session.transition_offered
+    assert offered.stored.session.dialogue_policy == "optional"
+    receipt = offered.stored.ledger_events[-1]["program_invitation"]
+    assert receipt["silent"] is True and receipt["offer"] == ""
+    assert receipt["revision"] == offered.stored.session.revision
+    assert len(calls) == int(review)
+    restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session("silent")
+    assert restored == offered.stored
+    fork = await runtime.fork_session_for_test("silent", session_id="silent-fork", through_revision=restored.session.revision)
+    assert fork.ledger_events[-1]["program_invitation"] == receipt
+    assert fork.session.performance_history[-1]["suggested_inputs"] == restored.session.performance_history[-1]["suggested_inputs"]
+    for stored, key in [(restored, "accept"), (fork, "fork-accept")]:
+        accepted = await turn(runtime, stored, key, accept, "suggestion")
+        assert accepted.stored.session.current_node_id == "ending_leave"
+    if review:
+        assert calls[-1]["confirmed_silent_acceptance"] == accept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("genre", ["scifi", "fantasy"])
+async def test_fixed_narration_completed_this_turn_publishes_button_immediately(tmp_path, monkeypatch, genre):
+    from tests.unit.test_theater_numeric_v2_fixed_narration import _piece
+
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, genre=genre)
+    node = runtime.engine.nodes["start"]
+    node["story_beat"]["fixed_narrations"] = [_piece("closing", "记录已封存。")]
+    node["completion_contract"] = {"all": [{"fixed_narration_id": "closing"}]}
+
+    async def review(self, **kwargs):
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            reviewed_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs", [])),
+            fixed_narration_triggers=({"id": "closing", "evidence": "记录封存。"},))
+
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    result = await turn(runtime, current, "complete-fixed", "记录封存。")
+    assert result.performance["fixed_narrations"][0]["text"] == "记录已封存。"
+    assert runtime.engine.completion_contract_satisfied(result.stored.session) is True
+    assert result.performance["suggested_inputs"][0] == accept
+    assert result.stored.session.transition_offered
+    restored = await runtime.restore_session("silent")
+    assert restored == result.stored
+
+
+@pytest.mark.asyncio
+async def test_completion_confirmed_this_turn_publishes_button_immediately(tmp_path, monkeypatch):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False, complete=False)
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False, fact_operations=(
+            {"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},))
+
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    result = await turn(runtime, current, "complete-now", "办好了。")
+    assert result.performance["suggested_inputs"][0] == accept
+    assert result.stored.session.transition_offered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review", [False, True])
+async def test_expiry_never_auto_reissues_but_explicit_reinvitation_restores_only_button(tmp_path, monkeypatch, review):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=review)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    expired = await turn(runtime, offered.stored, "follow", "先问个问题。")
+    assert not expired.stored.session.transition_offered
+    assert accept not in expired.performance["suggested_inputs"]
+    assert "program_invitation" not in expired.stored.ledger_events[-1]
+    again = await turn(runtime, expired.stored, "again", "继续等。")
+    assert not again.stored.session.transition_offered
+    assert "program_invitation" not in again.stored.ledger_events[-1]
+    revived = await turn(runtime, again.stored, "reinvite", "重新邀请", "reinvite")
+    assert revived.performance["performance"] == ""
+    assert revived.performance["suggested_inputs"] == [accept]
+    assert revived.stored.session.node_turn_count == again.stored.session.node_turn_count
+    restored = await runtime.restore_session("silent")
+    assert restored == revived.stored
+    fork = await runtime.fork_session_for_test("silent", session_id="revived-fork", through_revision=restored.session.revision)
+    for stored, key in [(restored, "accept"), (fork, "fork-accept")]:
+        accepted = await turn(runtime, stored, key, accept, "suggestion")
+        assert accepted.stored.session.current_node_id == "ending_leave"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["missing", "route", "revision", "accept", "body", "button", "source"])
+async def test_silent_acceptance_rejects_stale_or_modified_authorization(tmp_path, monkeypatch, mutation):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    current = offered.stored
+    events, history = deepcopy(current.ledger_events), deepcopy(current.session.performance_history)
+    receipt = events[-1]["program_invitation"]
+    if mutation == "missing":
+        events[-1].pop("program_invitation")
+    elif mutation == "route":
+        receipt["route_id"] = "wrong-route"
+    elif mutation == "revision":
+        receipt["revision"] -= 1
+    elif mutation == "accept":
+        receipt["accept_input"] = "好。"
+    elif mutation == "body":
+        history[-1]["performance"] = "（转向另一个出口）"
+    elif mutation == "button":
+        history[-1]["suggested_inputs"] = []
+    current = replace(current, ledger_events=events, session=replace(current.session, performance_history=history))
+    request = TurnRequestV2("accept", current.session.revision, accept, "freeform" if mutation == "source" else "suggestion")
+    assert wf._confirmed_authored_acceptance(runtime.engine, current, request) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guard", ["incomplete", "speaking", "ending", "leaving", "reject", "body"])
+async def test_ineligible_turn_never_issues_silent_button(tmp_path, monkeypatch, guard):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, complete=guard != "incomplete")
+    if guard == "speaking":
+        runtime.engine.nodes["start"]["story_beat"]["goals"][-1]["delivery"]["state_effects"]["dialogue_policy"] = "optional"
+    if guard == "ending":
+        runtime.engine.nodes["ending_leave"]["terminal"] = True
+    if guard == "reject":
+        async def evaluate(self, **kwargs):
+            return ev.NumericV2EvaluationResult((), False, transition_intent="reject")
+        monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    if guard == "body":
+        async def review(self, **kwargs):
+            return ev.NumericV2TransitionOfferReview(False, False, ("author_boundary",), (), failure_reason="越界。")
+        monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    result = await turn(runtime, current, "guard", "我们走向门口。" if guard == "leaving" else "接下来呢？")
+    assert "program_invitation" not in result.stored.ledger_events[-1]
+    assert accept not in result.performance["suggested_inputs"]
+
+
+def test_review_distinguishes_the_program_button_from_character_dialogue():
+    from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
+    from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
+    engine, session, outcome, candidate = _fixture(1)
+    outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_intent": "accept"})
+    messages, _ = _build_transition_judge_messages(engine, session, actor_performance=candidate,
+        player_input="好，我们去入口。", transition_outcome=outcome,
+        confirmed_acceptance=True, confirmed_silent_acceptance="好，我们去入口。")
+    data = json.loads(messages[1].content.split("：", 1)[1])
+    assert data["transition_authorization"]["pending_invitation"]["kind"] == "silent_exit"
+    assert "不是角色台词或已经完成的玩家行动" in messages[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review", [True, False])
+async def test_freeform_copy_cannot_accept_even_when_evaluator_claims_acceptance(tmp_path, monkeypatch, review):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=review)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False, transition_intent="accept")
+
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    result = await turn(runtime, offered.stored, "typed", accept)
+    assert result.stored.session.current_node_id == "start"
+
+
+@pytest.mark.asyncio
+async def test_program_button_does_not_whitelist_other_rejected_suggestions(tmp_path, monkeypatch):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch)
+
+    async def review(self, **kwargs):
+        return ev.NumericV2TransitionOfferReview(False, False, (), (0,), reviewed_suggestion_texts=())
+
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    result = await turn(runtime, current, "offer", "接下来呢？")
+    assert result.performance["suggested_inputs"] == [accept]
+
+
+@pytest.mark.asyncio
+async def test_empty_body_exception_requires_exact_program_control_receipt(tmp_path, monkeypatch):
+    from services.theater.numeric_v2_performance import is_silent_invitation_control
+    runtime, current, _, _ = await setup(tmp_path, monkeypatch)
+    offered = await turn(runtime, current, "offer", "接下来呢？")
+    expired = await turn(runtime, offered.stored, "expire", "先等等。")
+    revived = await turn(runtime, expired.stored, "reinvite", "重新邀请", "reinvite")
+    event = revived.stored.ledger_events[-1]
+    assert is_silent_invitation_control(event, revived.performance)
+    for key, value in [("input_source", "freeform"), ("program_invitation", {}),
+                       ("to_node_id", "other-node")]:
+        assert not is_silent_invitation_control({**event, key: value}, revived.performance)
+    assert not is_silent_invitation_control(event, {**revived.performance, "scene_narration": "新旁白"})
+    assert not is_silent_invitation_control(event, {**revived.performance, "suggested_inputs": ["其他选择"]})
+
+
+def test_workshop_prompts_make_silent_button_self_contained():
+    from theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
+    from theater_workshop.sdk.generation import numeric_v2
+    from theater_workshop.sdk.generation import runtime_rules
+    assert "Runtime 只展示 accept_input 按钮、不补台词" in _BRANCH_PATH_PROMPT
+    assert "accept_input 将作为完成后的静默出口按钮展示" in numeric_v2._MAINLINE_PROMPT
+    assert "accept_input 将作为完成后的静默出口按钮展示" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
+    assert "按钮须独立说明具体去向和安排" in runtime_rules.SCORING_RUNTIME_RULES

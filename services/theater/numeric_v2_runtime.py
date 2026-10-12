@@ -20,6 +20,7 @@ from .numeric_v2 import (
     NumericV2Compiler,
 )
 from .numeric_v2_performance import (
+    is_silent_invitation_control,
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
     valid_ordered_content,
@@ -1869,7 +1870,8 @@ class NumericV2Runtime:
         elif (
             "performance" in performance
             and (
-                not valid_mixed_performance_policy(
+                not is_silent_invitation_control(outcome.ledger_event, performance)
+                and not valid_mixed_performance_policy(
                     performance,
                     str(
                         outcome.ledger_event.get("performance_dialogue_policy")
