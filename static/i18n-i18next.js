@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并重力猫、访问复盘与 VRM 情绪设置文案，刷新客户端 locale 缓存。
-    const LOCALE_VERSION = '2026-10-13-day1-platform-systray';
+    // Day1 托盘介绍按系统区分文案（本分支）与上游串门访客层徽标、重力猫、访问复盘、VRM 情绪设置文案合并，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-13-day1-platform-systray-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

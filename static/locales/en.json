@@ -6696,5 +6696,9 @@
         "stream": {
             "ttsFallback": "Voice is unavailable right now, so she will speak in text for this visit"
         }
+    },
+    "visitFrame": {
+        "peerAway": "Stepped away",
+        "visitingAway": "Out visiting"
     }
 }
