@@ -1766,7 +1766,7 @@ class UniversalTutorialManager {
         const escape = (text) => this.safeEscapeHtml(t(text.key, text.fallback));
         const platformEscape = (text) => escape({
             key: isMac ? text.key.replace('tutorial.systray.', 'tutorial.systray.macos.') : text.key,
-            fallback: text.fallback
+            fallback: isMac ? text.macFallback : text.fallback
         });
         const overlay = document.createElement('div');
         overlay.id = 'neko-day1-systray-intro-modal';
@@ -1782,19 +1782,19 @@ class UniversalTutorialManager {
                 <div class="neko-day1-systray-layout">
                     <div class="neko-day1-systray-media">
                         <div class="neko-day1-systray-location-copy">
-                            <h2 id="neko-day1-systray-intro-title">${platformEscape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置' })}</h2>
-                            <p>${platformEscape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。' })}</p>
-                            <p class="neko-day1-systray-note">${platformEscape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。' })}</p>
+                            <h2 id="neko-day1-systray-intro-title">${platformEscape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置', macFallback: '📍 菜单栏图标位置' })}</h2>
+                            <p>${platformEscape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。', macFallback: 'N.E.K.O 的图标位于屏幕顶部的 macOS 菜单栏。' })}</p>
+                            <p class="neko-day1-systray-note">${platformEscape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。', macFallback: '在顶部菜单栏找到图中的 N.E.K.O 图标。' })}</p>
                         </div>
                         <img
                             src="${isMac ? '/static/assets/tutorial/systray/macos_intro.png' : '/static/assets/tutorial/systray/stray_intro.png'}"
-                            alt="${platformEscape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图' })}"
+                            alt="${platformEscape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图', macFallback: 'macOS 菜单栏图标和菜单示意图' })}"
                         >
                     </div>
                     <div class="neko-day1-systray-content">
                         <section class="neko-day1-systray-menu" aria-labelledby="neko-day1-systray-menu-title">
-                            <h3 id="neko-day1-systray-menu-title">${platformEscape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单' })}</h3>
-                            <p>${platformEscape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
+                            <h3 id="neko-day1-systray-menu-title">${platformEscape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单', macFallback: '📋 菜单栏菜单' })}</h3>
+                            <p>${platformEscape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：', macFallback: '点击菜单栏中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
                             <div class="neko-day1-systray-menu-panel">
                                 <div class="neko-day1-systray-menu-item">
                                     <strong>${escape({ key: 'tutorial.systray.resetPosition', fallback: '重置角色位置' })}</strong>
@@ -1810,7 +1810,7 @@ class UniversalTutorialManager {
                                 </div>
                                 <div class="neko-day1-systray-menu-item neko-day1-systray-menu-item--danger">
                                     <strong>${escape({ key: 'tutorial.systray.exit', fallback: '退出' })}</strong>
-                                    <span>${platformEscape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~' })}</span>
+                                    <span>${platformEscape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~', macFallback: '关闭 N.E.K.O，可从菜单栏菜单中选择退出。' })}</span>
                                 </div>
                             </div>
                         </section>

@@ -203,3 +203,39 @@ test('Day1 intro renders the matching platform image and localized guidance', ()
     }
   }
 });
+
+test('Day1 intro keeps platform guidance correct when translations are unavailable', () => {
+  const method = getMethodBlock(universalManagerSource, 'showDay1SystrayIntroModal');
+const locale = JSON.parse(zhCnLocaleSource);
+  for (const platform of ['macos', 'windows']) {
+    const overlay = {
+      setAttribute() {}, addEventListener() {},
+      querySelectorAll() { return []; }, querySelector() { return null; }
+    };
+    const document = {
+      createElement() { return overlay; },
+      body: { appendChild() {}, classList: { add() {} } }
+    };
+    const window = { homeTutorialPlatformCapabilities: { detectPlatform: () => platform } };
+    const manager = new Function('window', 'document', `return ({${method}});`)(window, document);
+    manager.shouldShowDay1SystrayIntro = () => true;
+    manager.closeDay1SystrayIntroModal = () => {};
+    manager.safeEscapeHtml = value => value;
+    manager.t = (key, fallback) => fallback;
+    manager.showDay1SystrayIntroModal({ reason: 'complete' }, { day: 1 });
+    const expected = platform === 'macos' ? locale.tutorial.systray.macos : locale.tutorial.systray;
+    for (const value of Object.values(expected.location)) {
+      assert.ok(overlay.innerHTML.includes(value));
+    }
+    assert.ok(overlay.innerHTML.includes(expected.exitDesc));
+    assert.ok(overlay.innerHTML.includes(expected.menu.desc));
+    assert.ok(overlay.innerHTML.includes(locale.tutorial.systray.settings));
+    const image = platform === 'macos' ? 'macos_intro.png' : 'stray_intro.png';
+    assert.ok(overlay.innerHTML.includes(`/static/assets/tutorial/systray/${image}`));
+    assert.ok(fs.existsSync(path.join(repoRoot, 'static/assets/tutorial/systray', image)));
+    if (platform === 'macos') {
+      assert.ok(!overlay.innerHTML.includes(locale.tutorial.systray.location.desc));
+      assert.ok(!overlay.innerHTML.includes('stray_intro.png'));
+    }
+  }
+});
