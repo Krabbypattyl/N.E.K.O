@@ -206,7 +206,7 @@ test('Day1 intro renders the matching platform image and localized guidance', ()
 
 test('Day1 intro keeps platform guidance correct when translations are unavailable', () => {
   const method = getMethodBlock(universalManagerSource, 'showDay1SystrayIntroModal');
-const locale = JSON.parse(zhCnLocaleSource);
+  const locale = JSON.parse(zhCnLocaleSource);
   for (const platform of ['macos', 'windows']) {
     const overlay = {
       setAttribute() {}, addEventListener() {},
