@@ -1,0 +1,182 @@
+"""Execute the served profile script against disposable DOM and local API doubles."""
+
+import json
+from pathlib import Path
+import subprocess
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "static/app/app-character-profile-sync.js"
+
+
+def run_script(assertions):
+    """Observe real async listeners without a browser, remote HTTP or OAuth data."""
+    bootstrap = r"""
+        const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
+        const events={}, calls=[], alerts=[];
+        function element(tag='') {
+            return {tag,children:[],dataset:{},events:{},textContent:'',style:{},open:false,
+                appendChild(child){this.children.push(child);child.parent=this;},
+                insertBefore(child,other){this.children.splice(this.children.indexOf(other),0,child);child.parent=this;},
+                setAttribute(){},addEventListener(name,callback){this.events[name]=callback;},
+                querySelector(selector){return this.children.find(x=>selector==='[data-profile-preview]'&&x.dataset.profilePreview);},
+                showModal(){this.open=true;},close(){if(this.open){this.open=false;if(this.events.close)this.events.close();}},
+                remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);}};
+        }
+        const body=element('body');
+        global.document={body,visibilityState:'visible',createElement:element,addEventListener(n,c){events[n]=c;}};
+        global.window={t(k){return k;},confirm(){return true;},alert(v){alerts.push(v);},addEventListener(){},
+            setInterval(){return 1;},clearInterval(){},dispatchEvent(){}};
+        global.CustomEvent=class {constructor(name){this.name=name;}};
+        global.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>response(path,init)};};
+        const uid='a'.repeat(32), profile={schemaVersion:1,name:'Synthetic',nickname:'NICKNAME',systemPrompt:'RAW SETTING',
+            fields:[{key:'Literal field',value:'FIELD VALUE'}],persona:{presetId:'internal_id',promptGuidance:'SPEAKING STYLE',fields:[]}};
+        const candidate={local:profile,head:{...profile,name:'Cloud Name'},local_hash:'d'.repeat(64),head_revision:2,
+            dirty:true,conflict:false,renameRequired:true,apply_pending:true};
+        let response=()=>{throw new Error('Unexpected local API');};
+        function flatten(node){return [node,...node.children.flatMap(flatten)];}
+        function choice(panel,name){return flatten(panel).find(node=>node.dataset.profileChoice===name);}
+        function button(panel,label){return flatten(panel).find(node=>node.tag==='button'&&node.textContent===label);}
+        vm.runInThisContext(fs.readFileSync(process.argv[1],'utf8'));
+    """
+    result = subprocess.run(["node", "-e", bootstrap + assertions, str(SCRIPT)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_declined_save_records_divergence_without_queueing_upload():
+    run_script(r"""
+        (async()=>{
+            window.confirm=()=>false;
+            response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,conflict:false,renameRequired:false};
+            await window.nekoCharacterProfileSync.afterSave('Synthetic',false);
+            assert.deepEqual(calls.map(x=>x.path),['/api/chat-sync/status','/api/chat-sync/characters/'+uid+'/profile/local']);
+            assert.equal(alerts.length,0);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_unbound_save_asks_and_explains_manual_binding_without_enabling():
+    run_script(r"""
+        (async()=>{
+            let asked=0;window.confirm=()=>{asked++;return true;};
+            response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,binding:null}]});
+            await window.nekoCharacterProfileSync.afterSave('Synthetic',false);
+            assert.equal(asked,1);assert.deepEqual(alerts,['chatSync.profileNeedsBinding']);
+            assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/chat-sync/status');
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_approved_save_pins_saved_hash_and_cloud_revision_only():
+    run_script(r"""
+        (async()=>{
+            response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,conflict:false,renameRequired:false};
+            await window.nekoCharacterProfileSync.afterSave('Synthetic',false);
+            assert.equal(calls.length,3);
+            assert.deepEqual(JSON.parse(calls[2].init.body),{localHash:candidate.local_hash,revision:2});
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_preview_is_readable_inert_persona_and_remote_rename_needs_confirmation():
+    run_script(r"""
+        (async()=>{
+            await window.nekoCharacterProfileSync.review(uid,candidate);const panel=body.children[0];
+            const shown=flatten(panel).map(x=>x.textContent).join('\n');
+            for(const value of ['NICKNAME','RAW SETTING','FIELD VALUE','SPEAKING STYLE'])assert(shown.includes(value));
+            for(const value of ['schemaVersion','internal_id','local_hash','operationId'])assert(!shown.includes(value));
+            assert.equal(calls.length,0);window.confirm=()=>false;
+            await choice(panel,'remote').events.click();assert.equal(calls.length,0);assert(panel.open);
+            window.confirm=()=>true;response=()=>({});await choice(panel,'remote').events.click();
+            assert.deepEqual(JSON.parse(calls[0].init.body),{choice:'remote',localHash:candidate.local_hash,revision:2,confirmRename:true});
+            assert(!panel.open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_late_resolve_receipt_never_closes_a_new_dialog():
+    run_script(r"""
+        (async()=>{
+            let release;global.fetch=async()=>{await new Promise(resolve=>release=resolve);return {ok:true,json:async()=>({})};};
+            await window.nekoCharacterProfileSync.review(uid,candidate);const first=body.children[0];
+            const pending=choice(first,'local').events.click();first.close();
+            await window.nekoCharacterProfileSync.review(uid,candidate);const second=body.children[0];assert.notEqual(first,second);
+            release();await pending;assert(second.open);assert.equal(body.children[0],second);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_cloud_role_is_not_created_by_listing_or_preview():
+    run_script(r"""
+        (async()=>{
+            let refreshed=0;window.loadCharacterCards=async()=>refreshed++;
+            response=(path)=>path.endsWith('/characters')?{characters:[{characterSyncId:uid,displayName:'Cloud Role'}]}:
+                path.endsWith('/profile')?{profile,revision:3,profileHash:'e'.repeat(64)}:{displayName:'Synthetic',existing:false};
+            await window.nekoCharacterProfileSync.cloudImport();const panel=body.children[0];
+            assert.equal(calls.length,1);await button(panel,'Cloud Role').events.click();assert.equal(calls.length,2);
+            assert(flatten(panel).some(x=>x.textContent.includes('RAW SETTING')));
+            await button(panel,'chatSync.cloudCreate').events.click();assert.equal(calls.length,3);
+            assert.deepEqual(JSON.parse(calls[2].init.body),{revision:3,profileHash:'e'.repeat(64)});
+            assert.equal(calls[2].path,'/api/chat-sync/cloud/characters/'+uid+'/import');
+            assert.equal(refreshed,1);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize("choice,success", [("remote", True), ("remote", False), ("local", True)])
+def test_review_refreshes_cards_only_after_remote_apply_without_replacing_draft(choice, success):
+    """A confirmed remote save refreshes the existing list callback, never the editor page."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            # Synthetic DOM/API boundaries cannot reach user roles or the running service.
+            page.route("**/*", lambda route: route.abort())
+            page.set_content('<div id="chara-cards-container"><span class="card-name">Synthetic</span></div>'
+                             '<div class="catgirl-panel-overlay"><textarea id="draft">Unsaved synthetic draft</textarea></div>')
+            page.add_style_tag(path=str(ROOT / "static/css/index.css"))
+            page.evaluate("""success => {
+                window.t = key => key;
+                window.confirm = () => true;
+                window.refreshCount = 0;
+                window.loadCharacterCards = async () => {
+                    window.refreshCount++;
+                    document.querySelector('.card-name').textContent = 'Cloud Name';
+                };
+                window.fetch = async () => ({ok: success, json: async () => success ? {} : {detail: 'profile_revision_conflict'}});
+            }""", success)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate("""async () => {
+                const local = {schemaVersion: 1, name: 'Synthetic', nickname: '', systemPrompt: '', fields: [], persona: null};
+                await window.nekoCharacterProfileSync.review('a'.repeat(32), {local, head: {...local, name: 'Cloud Name'},
+                    local_hash: 'b'.repeat(64), head_revision: 2, conflict: true, renameRequired: true});
+            }""")
+            page.locator(f'[data-profile-choice="{choice}"]').click()
+            if success:
+                page.wait_for_function("!document.querySelector('dialog[open]')")
+            else:
+                page.locator('dialog [role="status"]').get_by_text("chatSync.profileChanged", exact=True).wait_for()
+            expected = int(success and choice == "remote")
+            assert page.evaluate("window.refreshCount") == expected
+            assert page.locator(".card-name").text_content() == ("Cloud Name" if expected else "Synthetic")
+            assert page.locator("#draft").input_value() == "Unsaved synthetic draft"
+            assert page.locator(".catgirl-panel-overlay").count() == 1
+        finally:
+            browser.close()
+
+
+def test_all_served_entrypoints_and_eight_locales_cover_profile_labels():
+    """Classic scripts are served directly; template inclusion is the runtime entry."""
+    for filename in ("index.html", "chat.html", "character_card_manager.html"):
+        assert "/static/app/app-character-profile-sync.js" in (ROOT / "templates" / filename).read_text()
+    locales = [json.loads((ROOT / "static/locales" / (language + ".json")).read_text())["chatSync"]
+               for language in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW")]
+    assert all(locale.keys() == locales[0].keys() for locale in locales)
+    for key in ("profileConflict", "profileNeedsBinding", "profileStyle", "profileName", "cloudNameConflict", "cloudCreate"):
+        assert all(locale[key] for locale in locales)

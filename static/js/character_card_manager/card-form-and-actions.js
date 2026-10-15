@@ -426,6 +426,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                     closeCatgirlPanel();
                     await loadCharacterCards();
                     showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
+                    // A local rename changes portable identity display, not its UID.
+                    if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(normalizedNewName, false);
                 } else {
                     const errMsg = result.error || (window.t ? window.t('character.renameFailed') : '重命名失败');
                     if (typeof showAlert === 'function') {
@@ -860,6 +862,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
             }
             showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
+            // Clearing a preset is a separate persisted persona change.
+            if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name, false);
         } catch (e) {
             console.error('清除人格设定失败:', e);
             if (typeof showAlert === 'function') {
@@ -2267,6 +2271,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         await loadCharacterCards();
         setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
         syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
+        // Ask only after local persistence; sync failure never rolls back the card.
+        if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(savedCatgirlName, false);
         return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);
