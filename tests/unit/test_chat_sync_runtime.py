@@ -1751,9 +1751,9 @@ async def test_unbound_deleted_id_beyond_registration_page_cannot_revive_from_pu
 
 
 def test_default_is_disabled_and_state_survives_restart(tmp_path):
-    """A local store has no service URL or character consent until requested."""
+    """The built-in origin does not grant consent to any existing character."""
     state = DesktopSyncState(tmp_path / "chat_sync" / "state.sqlite3")
-    assert state.settings()["service_url"] is None
+    assert state.settings()["service_url"] == "https://sync.nekotech.cn"
     assert state.bindings() == []
     device = state.settings()["device_id"]
     assert len(device) == 32
@@ -1770,7 +1770,7 @@ def test_invalid_service_origins_do_not_change_state(tmp_path, url):
     state = DesktopSyncState(tmp_path / "state.sqlite3")
     with pytest.raises(ValueError, match="invalid_chat_sync_service_url"):
         state.configure(url)
-    assert state.settings()["service_url"] is None
+    assert state.settings()["service_url"] == "https://sync.nekotech.cn"
 
 
 def test_binding_uses_server_owner_and_pins_origin(tmp_path):
@@ -2595,7 +2595,7 @@ def test_local_ca_refuses_remote_configuration_and_previously_saved_origin(tmp_p
         try:
             with pytest.raises(ValueError, match="^chat_sync_local_ca_loopback_required$"):
                 await runtime.configure(origin)
-            assert runtime.state.settings()["service_url"] is None
+            assert runtime.state.settings()["service_url"] == "https://sync.nekotech.cn"
             runtime.state.configure(origin)
             with pytest.raises(ValueError, match="^chat_sync_local_ca_loopback_required$"):
                 await runtime._identity("synthetic-local-token")

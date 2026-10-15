@@ -154,10 +154,16 @@ class ProfileStore:
             elif raw is not None and not previous["dirty"]:
                 conn.execute("UPDATE profile_state SET apply_pending=1 WHERE domain=?", (domain,))
 
-    def approve(self, domain, expected_hash, expected_revision, *, resolve=False):
+    def approve(self, domain, expected_hash, expected_revision, *, resolve=False, operation_id=None):
         """Consent pins one exact local snapshot and CAS base; retries never re-read it."""
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
+            if operation_id is not None:
+                previous = conn.execute("SELECT domain,profile_hash FROM profile_outbox WHERE operation_id=?", (operation_id,)).fetchone()
+                if previous:
+                    if tuple(previous) != (domain, expected_hash):
+                        raise ValueError("character_profile_changed")
+                    return operation_id
             row = conn.execute("SELECT * FROM profile_state WHERE domain=?", (domain,)).fetchone()
             if row is None or row["local_hash"] != expected_hash or row["head_revision"] != expected_revision:
                 raise ValueError("character_profile_changed")
@@ -166,9 +172,11 @@ class ProfileStore:
             if resolve:
                 # Superseded requests remain archived rather than being rewritten.
                 conn.execute("UPDATE profile_outbox SET status='superseded' WHERE domain=? AND status IN ('pending','conflict')", (domain,))
-            previous = conn.execute("SELECT base_revision FROM profile_outbox WHERE domain=? AND status='pending' ORDER BY seq DESC LIMIT 1", (domain,)).fetchone()
+            previous = conn.execute("SELECT base_revision,profile_hash,operation_id FROM profile_outbox WHERE domain=? AND status='pending' ORDER BY seq DESC LIMIT 1", (domain,)).fetchone()
+            if previous and previous["profile_hash"] == expected_hash:
+                return previous["operation_id"]
             base = previous[0] + 1 if previous else expected_revision
-            operation_id = uuid4().hex
+            operation_id = operation_id or uuid4().hex
             body = _canonical({"operationId": operation_id, "baseRevision": base, "profile": decode_character_profile(bytes(row["local"]))})
             conn.execute("INSERT INTO profile_outbox(operation_id,domain,body,profile_hash,base_revision) VALUES (?,?,?,?,?)",
                          (operation_id, domain, body, expected_hash, base))

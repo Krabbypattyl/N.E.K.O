@@ -373,7 +373,7 @@ class ChatOriginalSource:
                 "AND m.status='waiting' AND u.deleted=0", (uid,),
             ).fetchone()[0]
 
-    def prepare_history(self, binding, service_url, fingerprint, local_name, cloud_name, *, device_id):
+    def prepare_history(self, binding, service_url, fingerprint, local_name, cloud_name, *, device_id, after_origin_seq=0):
         """Freeze only trusted unbound source IDs in one SQLite snapshot."""
         uid, task_id = binding["character_uid"], uuid4().hex
         with closing(self._connect()) as connection, connection:
@@ -392,11 +392,12 @@ class ChatOriginalSource:
                 "SELECT ?,u.record_id,u.origin_seq,u.original_hash,u.origin_stream_id,u.origin_seq FROM source_unbound u WHERE u.uid=? AND u.deleted=0 "
                 "AND u.scope='private-chat-original-v1' AND u.original IS NOT NULL "
                 "AND u.origin_stream_id IS NOT NULL AND u.origin_seq IS NOT NULL "
+                "AND u.origin_seq>? "
                 "AND (u.verified_owner IS NULL OR u.verified_owner=?) "
                 "AND NOT EXISTS (SELECT 1 FROM source_originals o WHERE o.record_id=u.record_id) "
                 "AND NOT EXISTS (SELECT 1 FROM source_history_members m JOIN source_history_tasks t "
                 "ON t.task_id=m.task_id WHERE m.record_id=u.record_id AND t.status IN ('approved','registered'))",
-                (task_id, uid, binding["owner_id"]),
+                (task_id, uid, after_origin_seq, binding["owner_id"]),
             )
             connection.execute("UPDATE source_history_tasks SET count=(SELECT count(*) FROM source_history_members WHERE task_id=?) WHERE task_id=?",
                                (task_id, task_id))
@@ -635,9 +636,8 @@ async def save_local_reply(lanlan_name, text, proof, *, config_manager=None):
 
 def mark_turn_origin(manager, turn_id, origin):
     """Bind an explicit origin to one speech identity rather than a global current flag."""
-    # Preserve provenance independently of future upload policy. Origin is fixed
-    # before output; tools starting after ordinary chunks require an explicit
-    # provenance design, not relabeling already emitted bytes (MSYNC-004).
+    # Preserve provenance independently of future upload policy. Later tool
+    # evidence travels separately; emitted identity/proof stays fixed (MSYNC-004).
     turns = getattr(manager, "_chat_original_turns", None)
     if turns is None:
         turns = manager._chat_original_turns = {}
@@ -651,6 +651,17 @@ def mark_turn_origin(manager, turn_id, origin):
     return dict(turns[key])
 
 
+def mark_tool_turn(manager, turn_id):
+    """Queue tool evidence for one fixed reply without mutating emitted proof."""
+    queue = getattr(manager, "sync_message_queue", None)
+    if not turn_id or queue is None:
+        return
+    proof = mark_turn_origin(manager, turn_id, "tool")
+    # This internal event precedes the tool await, including failures or a
+    # session close with no post-tool text. It never becomes chat content.
+    queue.put({"type": "system", "data": "chat original tool", "chat_original_id": proof["recordId"]})
+
+
 class AssistantOriginalBuffer:
     """Collect emitted text per stable message ID; persist only at final boundaries."""
 
@@ -658,6 +669,13 @@ class AssistantOriginalBuffer:
         """Start without inferred identities for legacy or system messages."""
         self.records = {}
         self._traced_exclusions = set()
+        self._tool_records = set()
+
+    def mark_tool(self, record_id):
+        """Retain late tool evidence even when ordinary chunks arrived first."""
+        if isinstance(record_id, str) and re.fullmatch(r"[0-9a-f]{32}", record_id):
+            self._tool_records.add(record_id)
+            self._trace_exclusion({"recordId": record_id, "origin": "tool"}, "nonchat_origin")
 
     def _trace_exclusion(self, proof, reason):
         """Observe each excluded identity once, without retaining any text."""
@@ -707,30 +725,37 @@ class AssistantOriginalBuffer:
         for identity in ids:
             entry = self.records.get(identity)
             if not entry:
+                self._tool_records.discard(identity)
                 continue
             if not excluded:
                 # Current scope selects local-only storage for Agent/tool replies.
                 # Future sync belongs at this policy boundary, with matching
                 # protocol/consent/deletion tests; keep producer origin truthful.
-                local_only = entry["proof"]["origin"] in ("agent", "tool")
+                proof = entry["proof"]
+                if identity in self._tool_records and proof["origin"] in ("chat", "proactive"):
+                    proof = {**proof, "origin": "tool"}
+                local_only = proof["origin"] in ("agent", "tool")
                 try:
                     if local_only:
-                        saved = await save_local_reply(lanlan_name, "".join(entry["chunks"]), entry["proof"])
+                        saved = await save_local_reply(lanlan_name, "".join(entry["chunks"]), proof)
                     else:
                         saved = await save_original(lanlan_name, "assistant", "".join(entry["chunks"]), record_id=identity,
                                                     original_time=entry["proof"]["originalTime"])
                 except Exception:
-                    get_trace().emit("assistant_source_finished", message_id=identity, source_origin=entry["proof"]["origin"],
+                    get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
                                      source_reason="local_save_failed" if local_only else "save_failed", outcome="error")
                     print("[chat-sync] original_save_failed")
                     continue
-                get_trace().emit("assistant_source_finished", message_id=identity, source_origin=entry["proof"]["origin"],
+                get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
                                  source_reason=("local_saved" if saved else "local_save_unavailable") if local_only
                                  else ("saved" if saved else "save_unavailable"), outcome="success" if saved else "error")
             else:
                 get_trace().emit("assistant_source_finished", message_id=identity, source_origin=entry["proof"]["origin"],
                                  source_reason="terminal_excluded", outcome="success")
             self.records.pop(identity, None)
+            self._tool_records.discard(identity)
+        if record_id is None:
+            self._tool_records.intersection_update(self.records)
         self._traced_exclusions = {key for key in self._traced_exclusions
                                    if record_id is not None and key[0] not in (None, record_id)}
 
@@ -738,3 +763,4 @@ class AssistantOriginalBuffer:
         """Drop temporary output when the existing persistence path discards it."""
         self.records.clear()
         self._traced_exclusions.clear()
+        self._tool_records.clear()

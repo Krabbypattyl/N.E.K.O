@@ -519,6 +519,112 @@ def test_source_diagnostic_records_first_fixed_origin_only(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_late_tool_evidence_keeps_preface_local_without_tainting_another_reply(
+    monkeypatch,
+):
+    """A slow tool changes the matching completed record, never its emitted proof or sibling."""
+    save, local = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(source_module, "save_original", save)
+    monkeypatch.setattr(source_module, "save_local_reply", local)
+    manager = SimpleNamespace()
+    old = mark_turn_origin(manager, "old", "chat")
+    newer = mark_turn_origin(manager, "new", "chat")
+    buffer = AssistantOriginalBuffer()
+    buffer.append({"chat_original_source": old, "text": "preface "})
+    buffer.mark_tool(old["recordId"])
+    buffer.append({"chat_original_source": newer, "text": "ordinary"})
+    await buffer.finish("Lan", newer["recordId"])
+    save.assert_awaited_once_with(
+        "Lan",
+        "assistant",
+        "ordinary",
+        record_id=newer["recordId"],
+        original_time=newer["originalTime"],
+    )
+    buffer.append({"chat_original_source": old, "text": "tool result"})
+    await buffer.finish("Lan", old["recordId"])
+    local.assert_awaited_once_with(
+        "Lan", "preface tool result", {**old, "origin": "tool"}
+    )
+    assert mark_turn_origin(manager, "old", "chat") == old
+
+
+@pytest.mark.asyncio
+async def test_tool_evidence_survives_failed_local_save_and_is_cleared_on_discard(
+    monkeypatch,
+):
+    """Retry retains the whole local record; discard cannot contaminate a replacement."""
+    save = AsyncMock()
+    local = AsyncMock(side_effect=[OSError("synthetic failure"), "saved"])
+    monkeypatch.setattr(source_module, "save_original", save)
+    monkeypatch.setattr(source_module, "save_local_reply", local)
+    proof = mark_turn_origin(SimpleNamespace(), "reply", "chat")
+    buffer = AssistantOriginalBuffer()
+    buffer.append({"chat_original_source": proof, "text": "preface"})
+    buffer.mark_tool(proof["recordId"])
+    await buffer.finish("Lan")
+    await buffer.finish("Lan")
+    assert (
+        local.await_count == 2 and local.await_args_list[0] == local.await_args_list[1]
+    )
+    save.assert_not_awaited()
+    buffer.mark_tool(proof["recordId"])
+    buffer.discard()
+    buffer.append({"chat_original_source": proof, "text": "replacement"})
+    await buffer.finish("Lan")
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tool_dispatch_marks_its_owner_before_await_and_ignores_closed_or_retired_turns():
+    """Source evidence is tied to the invoking owner, not a mutable current turn."""
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolCall, ToolResult
+    from tests.unit.test_core_game_route_memory_contract import _FakeQueue
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def execute(call):
+        started.set()
+        await release.wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    active, retired = object(), object()
+    manager = SimpleNamespace(
+        session=active,
+        current_speech_id="new",
+        sync_message_queue=_FakeQueue(),
+        tool_registry=SimpleNamespace(get=lambda _name: None, execute=execute),
+    )
+    owner = SimpleNamespace(speech_id="old", turn_ended=False)
+    call = ToolCall(name="synthetic", arguments={}, reply_owner=owner)
+    task = asyncio.create_task(
+        ToolCallingMixin._on_tool_call(manager, call, invoking_session=retired)
+    )
+    await started.wait()
+    proof = manager._chat_original_turns["old"]
+    assert manager.sync_message_queue.messages == [
+        {
+            "type": "system",
+            "data": "chat original tool",
+            "chat_original_id": proof["recordId"],
+        }
+    ]
+    assert "new" not in manager._chat_original_turns
+    release.set()
+    await task
+    owner.turn_ended = True
+    await ToolCallingMixin._on_tool_call(manager, call, invoking_session=active)
+    await ToolCallingMixin._on_tool_call(
+        manager, ToolCall(name="synthetic", arguments={}), invoking_session=retired
+    )
+    assert len(manager.sync_message_queue.messages) == 1
+    await ToolCallingMixin._on_tool_call(
+        manager, ToolCall(name="synthetic", arguments={}), invoking_session=active
+    )
+    assert manager._chat_original_turns["new"]["origin"] == "tool"
+
+@pytest.mark.asyncio
 async def test_source_diagnostic_exclusion_is_once_per_reply_and_never_uploads(monkeypatch):
     """Actual collector exclusions identify one reply without logging every chunk."""
     trace, save = Mock(enabled=True), AsyncMock()
@@ -753,3 +859,163 @@ async def test_actual_connector_saves_exact_reply_and_keeps_memory_projection_se
     projected = str(memory.await_args.args[2])
     assert "avatar tool reply" in projected
     assert "🙂" not in projected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prefix,post_text",
+    [
+        ("", "Synthetic tool result050."),
+        ("Ordinary preface050. ", "Synthetic tool result050."),
+        ("Ordinary preface050. ", ""),
+    ],
+    ids=["tool-only", "mixed-after-visible-prefix", "close-without-post-tool-text"],
+)
+@pytest.mark.parametrize(
+    "tool_error", [False, True], ids=["tool-success", "tool-failure"]
+)
+async def test_actual_tool_dispatch_keeps_whole_reply_local(
+    tmp_path, monkeypatch, prefix, post_text, tool_error
+):
+    from tests.unit.test_tool_calling import _FakeLLM, _init_bare
+    from tests.unit.test_core_game_route_memory_contract import _make_manager
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.core.turn import TurnMixin
+    from main_logic.tool_calling import ToolDefinition, ToolRegistry
+    from utils.llm_client import LLMStreamChunk
+
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", Mock())
+    monkeypatch.setattr(
+        "httpx.AsyncClient.send",
+        AsyncMock(side_effect=AssertionError("unexpected_http")),
+    )
+    runtime = make_runtime(tmp_path)
+    config = SimpleNamespace(
+        aload_characters=AsyncMock(
+            return_value={"猫娘": {"Lan": {"_reserved": {"character_uid": UID}}}}
+        )
+    )
+    monkeypatch.setattr(
+        "services.chat_sync_runtime.get_desktop_chat_sync_runtime",
+        AsyncMock(return_value=runtime),
+    )
+    original_save, local_save = (
+        source_module.save_original,
+        source_module.save_local_reply,
+    )
+
+    async def saved_original(name, text_role, text, **kwargs):
+        return await original_save(
+            name, text_role, text, config_manager=config, **kwargs
+        )
+
+    async def saved_local(name, text, proof):
+        return await local_save(name, text, proof, config_manager=config)
+
+    monkeypatch.setattr(source_module, "save_original", saved_original)
+    monkeypatch.setattr(source_module, "save_local_reply", saved_local)
+    seen = []
+
+    async def echo(arguments):
+        seen.append(arguments)
+        if tool_error:
+            raise RuntimeError("synthetic tool failure050")
+        return {"value": "Synthetic tool result050"}
+
+    definition = ToolDefinition(
+        name="acceptance_echo050", description="Synthetic read-only echo", handler=echo
+    )
+    manager = _make_manager()
+    manager.tool_registry = ToolRegistry()
+    manager.tool_registry.register(definition)
+    owner = TurnMixin._begin_reply_turn(
+        manager, speech_id=manager.current_speech_id, request_id="source050"
+    )
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    first = ([LLMStreamChunk(content=prefix)] if prefix else []) + [
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call050",
+                    "type": "function",
+                    "function": {
+                        "name": definition.name,
+                        "arguments": '{"sample":"050"}',
+                    },
+                }
+            ],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    client.llm = _FakeLLM(
+        [first, [LLMStreamChunk(content=post_text, finish_reason="stop")]]
+    )
+    client._tool_definitions = [definition]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client._active_reply_owner = owner
+    client.on_tool_call = manager._make_tool_call_handler(client)
+    manager.session = client
+    owner.session = client
+    visible = []
+    async for chunk in client._astream_with_tools(
+        [{"role": "user", "content": "Invoke the synthetic echo."}]
+    ):
+        if chunk.content:
+            await TurnMixin.send_lanlan_response(
+                manager,
+                chunk.content,
+                is_first_chunk=not visible,
+                turn_id=owner.speech_id,
+            )
+            visible.append(chunk.content)
+    assert seen == [{"sample": "050"}], "Actual registry execution must be observed"
+    terminal = TurnMixin._queue_turn_end(manager, "source050", reply_turn=owner)
+    from main_logic import cross_server
+
+    monkeypatch.setattr(
+        cross_server, "_post_memory_server", AsyncMock(return_value=(True, "", {}))
+    )
+    monkeypatch.setattr(
+        cross_server,
+        "_publish_analyze_request_with_fallback",
+        AsyncMock(return_value=True),
+    )
+    queue = asyncio.Queue()
+    proofs = []
+    for event in manager.sync_message_queue.messages:
+        queue.put_nowait(event)
+        if event["type"] == "json" and event["data"]["type"] == "gemini_response":
+            proofs.append(event["data"]["chat_original_source"])
+    completed = asyncio.get_running_loop().create_future()
+    queue.put_nowait(
+        {"type": "system", "data": "session end", "_memory_settlement_done": completed}
+    )
+    connector = asyncio.create_task(
+        cross_server.run_sync_connector(
+            queue, "Lan", config={"monitor": False, "bullet": False}
+        )
+    )
+    try:
+        await asyncio.wait_for(completed, 5)
+    finally:
+        connector.cancel()
+        await asyncio.gather(connector, return_exceptions=True)
+    source = source_for(runtime)
+    local = source.read_local_replies(source.path, UID)
+    report = {
+        "scope": "scripted model, actual client tool loop, manager dispatch, actual connector, raw output and SQLite source store",
+        "actual_tool_calls": len(seen),
+        "visible_chunks": len(visible),
+        "proof_origins": [p["origin"] for p in proofs],
+        "local_reply_count": len(local),
+        "pending_upload_sources": len(source.pending(200)),
+        "ledger_pending": len(runtime.ledger.pending(DOMAIN)),
+    }
+    assert len(local) == 1, report
+    assert local[0]["text"] == "".join(visible) == prefix + post_text
+    assert source.pending(200) == [] and runtime.ledger.pending(DOMAIN) == []

@@ -120,6 +120,29 @@
             });
         } catch (_) { state.textContent = text('profileSaveFailed'); }
     }
+    async function getSyncChoice(name) {
+        const status = await api('/status');
+        const role = status.characters.find(item => item.displayName === name);
+        if (!role) throw new Error('chat_sync_character_not_found');
+        // A first grant still being issued is pending, not an explicit user pause.
+        if (role.binding && (role.binding.bindingId !== null || role.binding.generation > 1)) return !!role.binding.enabled;
+        return role.syncEnabled !== false;
+    }
+
+    async function afterCardSave(name, enabled, isNew) {
+        try {
+            if (typeof enabled !== 'boolean') throw new Error('chat_sync_choice_unavailable');
+            const status = await api('/status');
+            const role = status.characters.find(item => item.displayName === name);
+            if (!role) throw new Error('chat_sync_character_not_found');
+            await api('/characters/' + role.characterSyncId + '/sync-choice', {enabled, includeHistory: !!isNew});
+            window.showMessage(text('syncChoiceSaved'), 'success');
+        } catch (_) {
+            // The card is already saved; an unreadable switch must preserve its previous consent.
+            window.showMessage(text('newSyncFailed'), 'warning');
+        }
+    }
+
     async function afterSave(name, initial) {
         // Local saving already succeeded. A refusal still records divergence,
         // protecting this exact saved version from automatic remote replacement.
@@ -169,7 +192,8 @@
         // BFCache restores reuse one local timer and never start cloud requests.
         if (timer === null) timer = window.setInterval(function () { return poll().catch(function () {}); }, 5000);
     }
-    window.nekoCharacterProfileSync = {afterSave: afterSave, review: review, poll: poll, cloudImport: cloudImport};
+    window.nekoCharacterProfileSync = {afterCardSave: afterCardSave, getSyncChoice: getSyncChoice,
+        afterSave: afterSave, review: review, poll: poll, cloudImport: cloudImport};
     document.addEventListener('DOMContentLoaded', start);
     window.addEventListener('pageshow', start);
     window.addEventListener('pagehide', function () { if (timer !== null) window.clearInterval(timer); timer = null; });

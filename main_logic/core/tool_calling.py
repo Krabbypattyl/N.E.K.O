@@ -26,6 +26,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from services.chat_sync_source import mark_tool_turn
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
@@ -133,6 +134,15 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        # Tool evidence belongs to the invoking reply, before execution can
+        # yield to another turn. A visible preface must stay in the same local
+        # record as the later result; never relabel a newer reply on completion.
+        owner = call.reply_owner
+        if owner is not None:
+            if not getattr(owner, "turn_ended", False):
+                mark_tool_turn(self, getattr(owner, "speech_id", None))
+        elif invoking_session is not None and invoking_session is getattr(self, "session", None):
+            mark_tool_turn(self, getattr(self, "current_speech_id", None))
         if call.reply_owner is not None:
             from main_logic.reply_tail import reply_tail_registry
 

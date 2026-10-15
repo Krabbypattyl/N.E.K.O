@@ -180,3 +180,75 @@ def test_all_served_entrypoints_and_eight_locales_cover_profile_labels():
     assert all(locale.keys() == locales[0].keys() for locale in locales)
     for key in ("profileConflict", "profileNeedsBinding", "profileStyle", "profileName", "cloudNameConflict", "cloudCreate"):
         assert all(locale[key] for locale in locales)
+
+
+@pytest.mark.parametrize('enabled,is_new', [(True, True), (True, False), (False, False)])
+def test_card_save_uses_one_choice_without_a_second_profile_confirmation(enabled, is_new):
+    run_script(r"""
+        (async()=>{
+            let asked=0;const messages=[];
+            window.confirm=()=>{asked++;throw new Error('Unexpected second confirmation');};
+            window.showMessage=(text,kind)=>messages.push({text,kind});
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:{};
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',ENABLED,IS_NEW);
+            assert.equal(asked,0);assert.equal(alerts.length,0);assert.equal(calls.length,2);
+            assert.equal(calls[1].path,'/api/chat-sync/characters/'+uid+'/sync-choice');
+            assert.deepEqual(JSON.parse(calls[1].init.body),{enabled:ENABLED,includeHistory:IS_NEW});
+            assert.equal(messages[0].text,'chatSync.syncChoiceSaved');
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('ENABLED', json.dumps(enabled)).replace('IS_NEW', json.dumps(is_new)))
+
+
+@pytest.mark.parametrize('is_new,binding,choice,expected', [
+    (True, None, None, True), (False, None, None, True),
+    (False, {'enabled': False}, True, False), (False, None, False, False),
+    (False, {'enabled': False, 'bindingId': None, 'generation': 1}, True, True),
+])
+def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_hint(is_new, binding, choice, expected):
+    from playwright.sync_api import sync_playwright
+    source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text()
+    start = source.index("    {\n        const row = document.createElement('div');")
+    switch_code = source[start:source.index('    const btnArea', start)]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={'width': 375, 'height': 700}, reduced_motion='reduce')
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div class="settings-form-layout panel-tab-settings"><form id="test-card"></form></div>')
+            page.add_style_tag(path=str(ROOT / 'static/css/character_card_manager.css'))
+            page.evaluate("""role => {
+                window.t=key=>key==='chatSync.newRoleSync'?'Sync character and chats':key;
+                window.setInterval=()=>1;window.fetchCalls=[];
+                window.fetch=async path=>{fetchCalls.push(path);return {ok:true,json:async()=>({characters:[role]})};};
+            }""", {'displayName': 'Synthetic', 'characterSyncId': 'a' * 32, 'binding': binding, 'syncEnabled': choice})
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate("""async ({code,isNew})=>{
+                const form=document.querySelector('form');
+                new Function('form','isNew','name',code)(form,isNew,'Synthetic');
+                await form._chatSyncLoadPromise;
+            }""", {'code': switch_code, 'isNew': is_new})
+            toggle=page.get_by_role('switch')
+            assert toggle.is_checked() == expected and toggle.is_enabled()
+            assert page.locator('.character-chat-sync-row').inner_text() == 'Sync character and chats'
+            assert page.locator('.character-chat-sync-row').bounding_box()['height'] < 80
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            toggle.focus();toggle.press('Space')
+            assert toggle.is_checked() != expected
+            assert page.evaluate('fetchCalls') == ([] if is_new else ['/api/chat-sync/status'])
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('known', [False, True])
+def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied(known):
+    run_script(r"""
+        (async()=>{
+            const messages=[];window.confirm=()=>{throw new Error('Unexpected confirmation');};
+            window.showMessage=(text,kind)=>messages.push({text,kind});
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:
+                (()=>{throw new Error('synthetic failure');})();
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',KNOWN?true:undefined,false);
+            assert.equal(calls.length,KNOWN?2:0);
+            assert.equal(messages[0].kind,'warning');assert.equal(alerts.length,0);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('KNOWN',json.dumps(known)))

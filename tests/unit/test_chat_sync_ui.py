@@ -336,6 +336,64 @@ def test_history_consent_approves_only_the_reviewed_task_as_background_work():
     """)
 
 
+@pytest.mark.parametrize("include_history", [False, True])
+def test_initial_enable_queues_history_only_with_explicit_checkbox(include_history):
+    """The single enable confirmation defaults to new chats, with an opt-in fixed history task."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32), task='f'.repeat(32), requests=[];
+        let binding=null;
+        global.fetch=async(path,options)=>({ok:true,async json(){
+            requests.push({path,body:options.body});
+            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
+            if(path.endsWith('/enable')){binding={enabled:true,ownerId:'owner',bindingId:'binding',generation:1};return binding;}
+            if(path.endsWith('/history/preview'))return {taskId:task,count:3,localName:'Neko',cloudName:'Cloud Neko'};
+            if(path.endsWith('/history/approve'))return {taskId:task,status:'approved'};
+            if(path.endsWith('/history'))return {originals:[]};
+            throw new Error('Unexpected request '+path);
+        }});
+        documentEvents.DOMContentLoaded();await headerButton.events.click();
+        const modal=body.children[0], checkbox=modal.querySelectorAll('*').find(n=>n.id==='chat-sync-include-history');
+        assert.ok(checkbox);assert.equal(checkbox.checked,false);
+        checkbox.checked=INCLUDE;
+        await modal.querySelector('[data-sync-action="enable"]').events.click();
+        assert.equal(requests.filter(x=>x.path.endsWith('/enable')).length,1);
+        const approvals=requests.filter(x=>x.path.endsWith('/history/approve'));
+        assert.equal(approvals.length,INCLUDE?1:0);
+        assert.equal(requests.filter(x=>x.path.endsWith('/history/preview')).length,INCLUDE?1:0);
+        if(INCLUDE)assert.deepEqual(JSON.parse(approvals[0].body),{taskId:task});
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace("INCLUDE", json.dumps(include_history)))
+
+
+@pytest.mark.parametrize("change", ["role", "closed", "binding", "paused", "service"])
+def test_initial_checked_history_rejects_a_changed_context(change):
+    """A checked first-enable choice cannot follow a late response into another context."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32), requests=[];let binding=null,service='https://sync.test';
+        global.fetch=async(path,options)=>({ok:true,async json(){
+            requests.push(path);
+            if(path.endsWith('/status'))return {serviceUrl:service,characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
+            if(path.endsWith('/enable')){binding={enabled:true,ownerId:'owner',bindingId:'binding',generation:1};return binding;}
+            if(path.endsWith('/history/preview')){
+                if(CHANGE==='role')window.lanlan_config.lanlan_name='Other';
+                if(CHANGE==='closed')modal.children.find(n=>n.textContent==='chatSync.close').events.click();
+                if(CHANGE==='binding')binding={...binding,generation:2};
+                if(CHANGE==='paused')binding={...binding,enabled:false};
+                if(CHANGE==='service')service='https://other.test';
+                return {taskId:'f'.repeat(32),count:3};
+            }
+            if(path.endsWith('/history'))return {originals:[]};
+            throw new Error('Unexpected request '+path);
+        }});
+        documentEvents.DOMContentLoaded();await headerButton.events.click();
+        const modal=body.children[0];modal.querySelectorAll('*').find(n=>n.id==='chat-sync-include-history').checked=true;
+        await modal.querySelector('[data-sync-action="enable"]').events.click();
+        assert.equal(requests.filter(p=>p.endsWith('/enable')).length,1);
+        assert.equal(requests.filter(p=>p.endsWith('/history/approve')).length,0);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace("CHANGE", json.dumps(change)))
+
+
 @pytest.mark.parametrize("change", ["role", "generation", "paused", "service", "closed"])
 def test_history_consent_rejects_a_changed_context_before_approval(change):
     """The fixed task cannot follow a role, binding, service or dialog change."""
@@ -408,7 +466,7 @@ def test_same_text_distinct_ids_survive_and_exact_live_identity_is_replaced():
         const current = [{id:'optimistic',role:'user',blocks:[{type:'text',text:'same'}],status:'sent'}];
         const originals = [original, {...original,messageId:other,originSeq:2}];
         const merged = window.nekoChatSync.mergeHistory(current, originals, new Set(), new Map([['optimistic',id]]), 'Neko');
-        assert.deepEqual(merged.map(x=>x.id), ['sync-original-'+id,'sync-original-'+other]);
+        assert.deepEqual(merged.map(x=>x.id), ['optimistic','sync-original-'+other]);
         assert.deepEqual(merged.map(x=>x.blocks[0].text), ['same','same']);
         assert.equal(merged[0].actions[0].payload.messageId,id);
     """)
@@ -501,7 +559,7 @@ def test_local_only_identity_replaces_exact_split_bubbles_without_text_deduplica
         const merge=items=>window.nekoChatSync.mergeHistory(items,[original],new Set(),new Map(),'Neko',
             new Map([['local-turn',other]]),[local]);
         const merged=merge(current);
-        assert.deepEqual(merged.map(item=>item.id),['sync-original-'+id,'local-reply-'+other,'different-turn']);
+        assert.deepEqual(merged.map(item=>item.id),['sync-original-'+id,'sentence-one','sentence-two','different-turn']);
         assert.equal(merged[1].actions,undefined);
         assert.deepEqual(merge(merged),merged);
     """)
@@ -522,7 +580,25 @@ def test_assistant_turn_identity_handles_delayed_realistic_rendering():
         const current = [{id:'sentence-1',role:'assistant',turnId:'turn-one'}, {id:'sentence-2',role:'assistant',turnId:'turn-one'}];
         const merged = window.nekoChatSync.mergeHistory(current,[{...original,role:'assistant'}],new Set(),new Map(),'Neko',
             new Map([['turn-one',id]]));
-        assert.deepEqual(merged.map(x=>x.id),['sync-original-'+id]);
+        assert.deepEqual(merged.map(x=>x.id),['sentence-1','sentence-2']);
+        assert.equal(merged[0].actions,undefined);
+        assert.equal(merged[1].actions[0].payload.messageId,id);
+    """)
+
+
+def test_sync_keeps_live_split_bubble_keys_and_blocks_without_replaying_entry():
+    """Canonical identity adds metadata; it must not remount already visible text."""
+    run_script(r"""
+        const first=[{type:'text',text:'First.'}],second=[{type:'text',text:'Second.'}];
+        const current=[{id:'live-1',role:'assistant',turnId:'turn',blocks:first},
+            {id:'live-2',role:'assistant',turnId:'turn',blocks:second}];
+        const mappings=new Map([['turn',id]]),record={...original,role:'assistant',text:'First. Second.'};
+        const merge=items=>window.nekoChatSync.mergeHistory(items,[record],new Set([id]),new Map(),'Neko',mappings);
+        const merged=merge(current);
+        assert.deepEqual(merged.map(x=>x.id),['live-1','live-2']);
+        assert.equal(merged[0].blocks,first);assert.equal(merged[1].blocks,second);
+        assert.deepEqual(merge(merged),merged);
+        assert.deepEqual(window.nekoChatSync.mergeHistory(merged,[],new Set([id]),new Map(),'Neko',mappings),[]);
     """)
 
 
@@ -1069,10 +1145,11 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                 "nodes => nodes.every(node => getComputedStyle(node).pointerEvents === 'auto')"
             )
             if kind == "chat":
-                modal.locator("input").click()
-                assert modal.locator("input").evaluate("node => document.activeElement === node")
-                modal.locator('[data-sync-action="save"]').click()
-                page.wait_for_function("window.fetchCalls.includes('/api/chat-sync/configuration')")
+                modal.locator("summary").click()
+                assert modal.locator('input[type="url"]').count() == 0
+                assert modal.locator('[data-sync-action="save"]').count() == 0
+                modal.locator('[data-sync-action="sync"]').click()
+                page.wait_for_function("window.fetchCalls.some(path => path.endsWith('/sync'))")
                 modal.get_by_role("button", name="chatSync.close", exact=True).click()
             else:
                 modal.locator('[data-profile-choice="close"]').click()
@@ -1115,6 +1192,7 @@ def test_history_consent_real_browser_shows_safe_names_and_submits_only_reviewed
             page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
             page.locator("#chatSyncButton").click()
             modal = page.locator("#chat-sync-dialog")
+            modal.locator("summary").click()
             modal.get_by_role("button", name=labels["previewHistory"], exact=True).click()
             preview = modal.get_by_role("group", name=labels["historyPreview"], exact=True)
             preview.get_by_text("Local character: Synthetic", exact=True).wait_for()
@@ -1181,8 +1259,8 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
             page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
             page.locator("#chatSyncButton").click()
             modal = page.locator("#chat-sync-dialog")
-            assert modal.get_by_role("button", name=labels["enable"], exact=True).is_disabled()
-            assert modal.get_by_role("button", name=labels["previewHistory"], exact=True).is_disabled()
+            assert modal.locator('[data-sync-action="enable"]').is_disabled()
+            assert modal.locator('[data-sync-action="history"]').is_disabled()
             messages = []
 
             def consent(dialog):

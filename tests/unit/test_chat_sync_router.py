@@ -103,7 +103,7 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     assert response.json()["characters"] == [{
-        "characterSyncId": UID, "displayName": "Neko",
+        "characterSyncId": UID, "displayName": "Neko", "syncEnabled": False,
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None},
@@ -295,3 +295,18 @@ def test_writer_recovery_routes_keep_history_and_deletion_consent_separate(local
     runtime.approve_history.assert_not_awaited()
     assert client.post(f"/api/chat-sync/characters/{'f' * 32}/recovery/preview",
                        json={"serviceUrl": "https://sync.test"}).status_code == 404
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_card_save_choice_is_local_authorized_and_rejects_extra_fields(local_client, enabled):
+    from unittest.mock import AsyncMock
+    client, runtime = local_client
+    runtime.save_character_sync_choice = AsyncMock(return_value={'pending': enabled, 'enabled': enabled})
+    path = '/api/chat-sync/characters/' + UID + '/sync-choice'
+    response = client.post(path, json={'enabled': enabled})
+    assert response.status_code == 200
+    runtime.save_character_sync_choice.assert_awaited_once_with(UID, 'Neko', enabled, include_history=False)
+    assert client.post(path, json={'enabled': enabled, 'ownerId': OWNER}).status_code == 422
+    assert client.post(path, json={'enabled': enabled}, headers={'Origin': 'https://foreign.test'}).status_code == 403
+    assert client.post('/api/chat-sync/characters/' + 'b' * 32 + '/sync-choice', json={'enabled': enabled}).status_code == 404
+    assert runtime.save_character_sync_choice.await_count == 1

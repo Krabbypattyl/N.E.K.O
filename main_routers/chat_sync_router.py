@@ -33,6 +33,14 @@ class ServiceConfiguration(BaseModel):
     serviceUrl: StrictStr
 
 
+class CharacterSyncChoice(BaseModel):
+    """Save the card switch without opting old history into automatic upload."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+    includeHistory: StrictBool = False
+
+
 class ManualSyncRequest(BaseModel):
     """Bound manual work; runtime scheduling still enforces device retry gates."""
 
@@ -118,9 +126,12 @@ async def status(runtime: Runtime):
     """Report opt-in per local character without claiming chats are uploaded."""
     state = await runtime.status()
     bindings = {item["character_uid"]: item for item in state.pop("bindings")}
+    choices = state.pop("syncChoices", {})
     characters = await _characters()
     for character in characters:
         binding = bindings.get(character["characterSyncId"])
+        paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
+        character["syncEnabled"] = bool(binding["enabled"]) if paused_or_bound else choices.get(character["characterSyncId"], True)
         character["binding"] = None if binding is None else {
             "ownerId": binding["owner_id"], "bindingId": binding["binding_id"],
             "enabled": bool(binding["enabled"]), "generation": binding["generation"],
@@ -156,6 +167,19 @@ async def wake(runtime: Runtime, body: None = Body(default=None)):
     except (OSError, sqlite3.Error):
         raise _error(ValueError("chat_sync_unavailable")) from None
     return {"scheduled": True}
+
+
+@router.post("/characters/{character_uid}/sync-choice")
+async def save_sync_choice(character_uid: str, body: CharacterSyncChoice, runtime: Runtime):
+    """Resolve the saved UID and treat this save as the single affirmative choice."""
+    character = await _character(character_uid)
+    try:
+        return await runtime.save_character_sync_choice(character_uid, character["displayName"], body.enabled,
+                                                       include_history=body.includeHistory)
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
 
 
 @router.post("/characters/{character_uid}/enable")

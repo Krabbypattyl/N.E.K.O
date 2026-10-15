@@ -969,6 +969,38 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     form.appendChild(voiceWrapper);
 
     // 操作按钮区
+    {
+        const row = document.createElement('div');
+        row.className = 'character-chat-sync-row';
+        const title = document.createElement('label');
+        title.className = 'character-chat-sync-label';
+        title.textContent = window.t('chatSync.newRoleSync');
+        const control = document.createElement('label');
+        control.className = 'character-chat-sync-choice';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.setAttribute('role', 'switch');
+        toggle.setAttribute('aria-label', title.textContent);
+        toggle.id = form.id + '-chat-sync';
+        title.htmlFor = toggle.id;
+        toggle.name = 'chat_sync_enabled';
+        toggle.checked = true;
+        toggle.disabled = !isNew;
+        const track = document.createElement('span');
+        track.className = 'character-chat-sync-track';
+        track.setAttribute('aria-hidden', 'true');
+        control.append(toggle, track);
+        row.append(title, control);
+        form.appendChild(row);
+        if (!isNew && window.nekoCharacterProfileSync) {
+            form._chatSyncLoadPromise = window.nekoCharacterProfileSync.getSyncChoice(name).then(enabled => {
+                if (!toggle.isConnected) return;
+                toggle.checked = enabled;
+                toggle.disabled = false;
+            }).catch(() => { /* Leave an unknown preference disabled; saving still preserves the local card. */ });
+        }
+    }
+
     const btnArea = document.createElement('div');
     btnArea.className = 'btn-area settings-action-row';
     btnArea.style.display = 'flex';
@@ -2047,7 +2079,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         const previousVoiceId = form._previousVoiceId || '';
         const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
             baseData: { '档案名': nameInput.value.trim() },
-            excludeFieldNames: ['档案名', 'voice_id'],
+            excludeFieldNames: ['档案名', 'voice_id', 'chat_sync_enabled'],
         });
         if (duplicateKey) {
             showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
@@ -2271,8 +2303,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         await loadCharacterCards();
         setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
         syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
-        // Ask only after local persistence; sync failure never rolls back the card.
-        if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(savedCatgirlName, false);
+        // The same saved switch approves both new and edited cards; no second profile prompt.
+        if (window.nekoCharacterProfileSync) {
+            if (form._chatSyncLoadPromise) await form._chatSyncLoadPromise;
+            const choice = form.querySelector('[name="chat_sync_enabled"]');
+            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName,
+                choice && !choice.disabled ? choice.checked : undefined, isNew);
+        }
         return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);

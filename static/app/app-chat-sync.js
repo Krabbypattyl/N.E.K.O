@@ -17,7 +17,10 @@
     var historyRequestGeneration = 0;
     var dialog = null;
     var statusNode = null;
-    var serviceInput = null;
+    var DEFAULT_SERVICE_URL = 'https://sync.nekotech.cn';
+    var configuredServiceUrl = null;
+    var includeHistoryInput = null;
+    var includeHistoryLabel = null;
     var activeBindingKey = null;
     var activeBinding = null;
     var operationRunning = false;
@@ -78,6 +81,12 @@
             blocks: [{ type: 'text', text: record.text }]
         };
         if (!localOnly) {
+            // TODO(chat-sync-ui): Consolidate this transitional original-delete UI into Memory Browser.
+            // Kept for direct canonical deletion and end-to-end sync acceptance; not test-build gated.
+            // Memory Browser currently edits recent-memory projections via recent_file/save, not these IDs.
+            // Remove this bubble action and its chat_sync_delete_original listener only after that UI uses
+            // the same UID/message-ID deletion API and passes dual-device deletion/restart checks.
+            // Keep shared deletion/tombstone APIs and rememberDeletion; clearing also depends on them.
             message.actions = [{ id: 'delete-original-' + record.messageId, label: text('deleteOriginal'),
                 action: 'chat_sync_delete_original', variant: 'danger',
                 payload: { messageId: record.messageId, characterSyncId: record.characterSyncId } }];
@@ -89,12 +98,38 @@
         // Identity is the only dedupe key; equal text/time never joins distinct messages.
         localReplies = localReplies || [];
         var received = new Set(originals.concat(localReplies).map(function (record) { return record.messageId; }));
+        var live = new Map();
+        current.forEach(function (message) {
+            if (message.id.indexOf('sync-original-') === 0 || message.id.indexOf('local-reply-') === 0) return;
+            var identity = mappings.get(message.id)
+                || (turnMappings && message.role === 'assistant' && turnMappings.get(message.turnId));
+            if (!identity) return;
+            if (!live.has(identity)) live.set(identity, []);
+            live.get(identity).push(message);
+        });
+        function restore(record, localOnly) {
+            var canonical = originalMessage(record, name, localOnly);
+            var displayed = live.get(record.messageId);
+            if (!displayed) return [canonical];
+            // Wire identity is independent of React keys. Keep the visible split
+            // bubbles and blocks so passive sync cannot replay their entry animation.
+            // Local-only/tool records stay local; this is presentation, not eligibility.
+            return displayed.map(function (message, index) {
+                var actions = (message.actions || []).filter(function (action) {
+                    return action.action !== 'chat_sync_delete_original';
+                });
+                if (index === displayed.length - 1 && canonical.actions) actions = actions.concat(canonical.actions);
+                var next = Object.assign({}, message, { status: 'sent', actions: actions.length ? actions : undefined });
+                if (typeof next.createdAt !== 'number' && canonical.createdAt) next.createdAt = canonical.createdAt;
+                return next;
+            });
+        }
         var restored = originals.slice().sort(function (a, b) {
             var at = /^\d+$/.test(a.originalTime || '') ? Number(a.originalTime) : 0;
             var bt = /^\d+$/.test(b.originalTime || '') ? Number(b.originalTime) : 0;
             return at - bt || a.originStreamId.localeCompare(b.originStreamId) || a.originSeq - b.originSeq;
-        }).map(function (record) { return originalMessage(record, name); });
-        restored = restored.concat(localReplies.map(function (record) { return originalMessage(record, name, true); }));
+        }).flatMap(function (record) { return restore(record, false); });
+        restored = restored.concat(localReplies.flatMap(function (record) { return restore(record, true); }));
         var retained = current.filter(function (message) {
             if (message.id.indexOf('sync-original-') === 0 || message.id.indexOf('local-reply-') === 0) return false;
             var originalId = mappings.get(message.id)
@@ -261,6 +296,7 @@
         // Dismissed consent never survives a role switch or a later local response.
         historyConsentGeneration++;
         historyPreview = null;
+        if (includeHistoryInput) includeHistoryInput.checked = false;
         if (historyPreviewNode) historyPreviewNode.replaceChildren();
     }
 
@@ -271,8 +307,14 @@
             dialog.querySelector('[data-sync-action="' + action + '"]').disabled = operationRunning || !activeBinding || !activeBinding.enabled;
         });
         dialog.querySelector('[data-sync-action="clear"]').disabled = operationRunning || !activeUid || unfinishedChat();
-        dialog.querySelector('[data-sync-action="enable"]').disabled = operationRunning || writerRecoveryRequired || !activeUid || !serviceInput.value;
-        dialog.querySelector('[data-sync-action="recover"]').disabled = operationRunning || !writerRecoveryRequired || !activeUid || !serviceInput.value;
+        dialog.querySelector('[data-sync-action="enable"]').disabled = operationRunning || writerRecoveryRequired || !activeUid;
+        dialog.querySelector('[data-sync-action="recover"]').disabled = operationRunning || !writerRecoveryRequired || !activeUid;
+        dialog.querySelector('[data-sync-action="enable"]').hidden = !!(activeBinding && activeBinding.enabled) || writerRecoveryRequired;
+        dialog.querySelector('[data-sync-action="sync"]').hidden = !activeBinding || !activeBinding.enabled || writerRecoveryRequired;
+        dialog.querySelector('[data-sync-action="pause"]').hidden = !activeBinding || !activeBinding.enabled || writerRecoveryRequired;
+        dialog.querySelector('[data-sync-action="recover"]').hidden = !writerRecoveryRequired;
+        includeHistoryLabel.hidden = !!activeBinding || writerRecoveryRequired;
+        includeHistoryInput.disabled = operationRunning;
         if (writerRecoveryRequired) {
             ['sync', 'pause', 'history', 'profile', 'cloud'].forEach(function (action) {
                 dialog.querySelector('[data-sync-action="' + action + '"]').disabled = true;
@@ -359,13 +401,13 @@
         if (characterName() !== name) return false;
         var role = state.characters.find(function (item) { return item.displayName === name; });
         activeUid = role ? role.characterSyncId : null;
-        serviceInput.value = state.serviceUrl || '';
+        configuredServiceUrl = state.serviceUrl;
         var binding = role && role.binding;
         activeBinding = binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
         activeBindingKey = binding ? JSON.stringify([activeUid, state.serviceUrl, binding.ownerId, binding.bindingId, binding.generation, binding.enabled]) : null;
         if (historyPreview && (historyPreview.name !== name || historyPreview.bindingKey !== activeBindingKey)) clearHistoryPreview();
-        statusNode.textContent = !state.serviceUrl ? text('notConfigured') : !binding ? text('notBound')
+        statusNode.textContent = !binding ? text('enableHint', { name: name })
             : text(binding.enabled ? 'enabled' : 'paused') + ' ' + text('pending', {
                 originals: binding.pendingOriginals, deletions: binding.pendingDeletions
             });
@@ -391,17 +433,18 @@
         updateControls();
         var requestedName = characterName();
         var requestedUid = activeUid;
+        var requestedBindingKey = activeBindingKey;
+        var includeHistory = action === 'enable' && !activeBinding && includeHistoryInput.checked;
+        var enabledHere = false;
         try {
-            if (action !== 'save') {
-                if (!await refreshStatus() || characterName() !== requestedName
-                        || (requestedUid && activeUid !== requestedUid)) return;
-                requestedUid = activeUid;
-            }
+            if (!await refreshStatus() || characterName() !== requestedName
+                    || (requestedUid && activeUid !== requestedUid)) return;
+            requestedUid = activeUid;
+            if (action === 'enable' && requestedBindingKey !== activeBindingKey) return;
             statusNode.textContent = text('working');
-            if (['save', 'enable', 'pause', 'clear'].includes(action)) clearHistoryPreview();
-            if (action === 'save') {
-                await api('/configuration', 'PUT', { serviceUrl: serviceInput.value });
-            } else if (action === 'cloud' && window.nekoCharacterProfileSync) {
+            if (['enable', 'pause', 'clear'].includes(action)) clearHistoryPreview();
+            var consentGeneration = historyConsentGeneration;
+            if (action === 'cloud' && window.nekoCharacterProfileSync) {
                 // Cloud import is independent of whichever local role is active.
                 await window.nekoCharacterProfileSync.cloudImport();
                 return;
@@ -409,7 +452,7 @@
                 var path = '/characters/' + requestedUid;
                 if (action === 'recover') {
                     clearHistoryPreview();
-                    var recovered = await api(path + '/recovery/preview', 'POST', { serviceUrl: serviceInput.value });
+                    var recovered = await api(path + '/recovery/preview', 'POST', { serviceUrl: (configuredServiceUrl || DEFAULT_SERVICE_URL) });
                     if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
                     await refreshStatus();
                     // Deletion consent is separate from the existing reviewed
@@ -427,7 +470,22 @@
                     return;
                 }
                 if (action === 'enable') {
+                    if (!configuredServiceUrl) await api('/configuration', 'PUT', { serviceUrl: (configuredServiceUrl || DEFAULT_SERVICE_URL) });
+                    if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid
+                            || consentGeneration !== historyConsentGeneration) return;
                     await api(path + '/enable', 'POST');
+                    enabledHere = true;
+                    if (includeHistory) {
+                        if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
+                                || activeUid !== requestedUid || consentGeneration !== historyConsentGeneration) return;
+                        var bindingKey = activeBindingKey;
+                        // This single opt-in approves one trusted fixed snapshot, not restored delete operations.
+                        var snapshot = await api(path + '/history/preview', 'POST');
+                        if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
+                                || activeUid !== requestedUid || bindingKey !== activeBindingKey
+                                || consentGeneration !== historyConsentGeneration) return;
+                        if (snapshot.count > 0) await api(path + '/history/approve', 'POST', { taskId: snapshot.taskId });
+                    }
                     // Chat consent never silently publishes the current persona.
                     if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(requestedName, true);
                 }
@@ -455,7 +513,8 @@
             await refreshStatus();
             await loadHistory();
         } catch (error) {
-            statusNode.textContent = text(error.message === 'chat_sync_login_required' ? 'loginRequired' : 'failed');
+            statusNode.textContent = text(enabledHere && includeHistory ? 'initialHistoryFailed'
+                : error.message === 'chat_sync_login_required' ? 'loginRequired' : 'failed');
         } finally {
             if (action === 'sync') {
                 // Earlier pages can commit even when a later network page fails.
@@ -475,24 +534,33 @@
         title.id = 'chat-sync-title';
         title.textContent = text('title');
         dialog.appendChild(title);
-        var label = document.createElement('label');
-        label.textContent = text('serviceUrl');
-        serviceInput = document.createElement('input');
-        serviceInput.type = 'url';
-        serviceInput.autocomplete = 'off';
-        label.appendChild(serviceInput);
-        dialog.appendChild(label);
+        var advanced = document.createElement('details');
+        var summary = document.createElement('summary');
+        summary.textContent = text('moreOptions');
+        advanced.appendChild(summary);
         statusNode = document.createElement('p');
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
-        [['save', 'saveService'], ['recover', 'recoverWriter'], ['enable', 'enable'], ['pause', 'pause'], ['sync', 'syncNow'], ['history', 'previewHistory'], ['profile', 'profileReview'], ['cloud', 'cloudImport'], ['clear', 'clearKnown']].forEach(function (item) {
+        includeHistoryLabel = document.createElement('label');
+        includeHistoryLabel.id = 'chat-sync-include-history-choice';
+        includeHistoryInput = document.createElement('input');
+        includeHistoryInput.id = 'chat-sync-include-history';
+        includeHistoryInput.type = 'checkbox';
+        includeHistoryInput.checked = false;
+        includeHistoryLabel.appendChild(includeHistoryInput);
+        var includeText = document.createElement('span');
+        includeText.textContent = text('includeHistory');
+        includeHistoryLabel.appendChild(includeText);
+        dialog.appendChild(includeHistoryLabel);
+        [['recover', 'recoverWriter'], ['enable', 'enable'], ['pause', 'pause'], ['sync', 'syncNow'], ['history', 'previewHistory'], ['profile', 'profileReview'], ['cloud', 'cloudImport'], ['clear', 'clearKnown']].forEach(function (item) {
             var button = document.createElement('button');
             button.type = 'button';
             button.dataset.syncAction = item[0];
             button.textContent = text(item[1]);
             button.addEventListener('click', function () { return operate(item[0]); });
-            dialog.appendChild(button);
+            (['enable', 'pause', 'sync', 'recover'].includes(item[0]) ? dialog : advanced).appendChild(button);
         });
+        dialog.appendChild(advanced);
         historyPreviewNode = document.createElement('div');
         historyPreviewNode.setAttribute('role', 'group');
         historyPreviewNode.setAttribute('aria-label', text('historyPreview'));
@@ -532,6 +600,9 @@
     };
 
     window.addEventListener('react-chat-window:action', async function (event) {
+        // Transitional bubble-delete adapter: remove together with originalMessage's action above once
+        // Memory Browser owns verified canonical deletion. Do not map projection indices/text to IDs
+        // or remove the shared deletion machinery when retiring this temporary UI entry.
         // Delete actions belong only to known original IDs in the active role.
         var action = event.detail && event.detail.action;
         var messageId = action && action.payload && action.payload.messageId;

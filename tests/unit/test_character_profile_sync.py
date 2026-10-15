@@ -673,3 +673,205 @@ async def test_current_role_explicit_inactive_profile_apply_remains_authorized(t
         assert len(config.saves) == 1 and config.data["当前猫娘"] == "Other"
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_new_role_choice_is_local_durable_and_current_role_only(tmp_path, config):
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    runtime, service, session = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        session['logged_in'] = False
+        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync_ledger import ChatOriginal
+        source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'saved before login'))
+        assert await runtime.request_new_role_sync(UID, 'Synthetic') == {'pending': True, 'enabled': False}
+        request = runtime.state.new_role(UID)
+        assert not service.requests and not runtime.state.bindings()
+        assert type(runtime.state)(runtime.state.path).new_role(UID) == request
+        select_runtime_current(runtime, 'b' * 32)
+        await runtime._start_new_role_sync('synthetic-presence')
+        assert 'new-role' not in runtime._flights
+        select_runtime_current(runtime)
+        session['logged_in'] = True
+        presence = await runtime.session_presence_provider()
+        await runtime._run_new_role_sync(UID, request, presence)
+        assert runtime.state.binding(UID)['enabled']
+        assert runtime.state.new_role(UID) is None
+        await runtime._advance_history(UID)
+        await runtime._recover_originals()
+        assert json.loads(runtime.ledger.pending(ChatDomain(OWNER, UID))[0][0])['text'] == 'saved before login'
+        operation = runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key())
+        assert operation['operation_id'] == request['requestId']
+        assert json.loads(operation['body'])['profile'] == decode_character_profile(request['canonical'].encode())
+        assert all(str(item.url).startswith('https://sync.nekotech.cn/') for item in service.requests)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['profile-edit', 'pause', 'writer-epoch'])
+async def test_new_role_choice_cannot_override_later_local_decisions(tmp_path, config, reason):
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        await runtime.request_new_role_sync(UID, 'Synthetic')
+        request = runtime.state.new_role(UID)
+        if reason == 'profile-edit':
+            config.data['猫娘']['Synthetic']['昵称'] = 'unapproved edit'
+        elif reason == 'pause':
+            await runtime.enable(UID, 'Synthetic')
+            await runtime.pause(UID)
+        else:
+            request['epoch'] = ['copied-installation', 'stale-lineage']
+        service.requests.clear()
+        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        assert not service.requests
+        assert runtime.state.new_role(UID) is not None
+        if reason == 'pause':
+            assert not runtime.state.binding(UID)['enabled']
+    finally:
+        await runtime.close()
+
+
+def test_fixed_new_role_profile_approval_is_idempotent_after_restart(tmp_path):
+    store = ProfileStore(tmp_path / 'profiles.db')
+    domain = ChatDomain(OWNER, UID).key()
+    store.observe(domain, PROFILE)
+    expected = hashlib.sha256(encode_character_profile(PROFILE)).hexdigest()
+    operation = 'c' * 32
+    assert store.approve(domain, expected, 0, operation_id=operation) == operation
+    reopened = ProfileStore(tmp_path / 'profiles.db')
+    assert reopened.approve(domain, expected, 0, operation_id=operation) == operation
+    assert reopened.next_operation(domain)['base_revision'] == 0
+    with pytest.raises(ValueError, match='character_profile_changed'):
+        reopened.approve(domain, 'd' * 64, 0, operation_id=operation)
+
+
+@pytest.mark.asyncio
+async def test_new_role_setup_stops_before_registration_when_current_role_changes(tmp_path, config):
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    selected = select_runtime_current(runtime)
+    try:
+        await runtime.request_new_role_sync(UID, 'Synthetic')
+        async def switch_after_identity(request):
+            if request.url.path.endswith('/identity'):
+                selected['uid'] = 'b' * 32
+        service.on_request = switch_after_identity
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        assert [item.url.path for item in service.requests] == ['/v1/chat-sync/identity']
+        binding = runtime.state.binding(UID)
+        assert binding is None or not binding['enabled']
+        assert runtime.state.new_role(UID) is not None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_old_card_choice_is_durable_and_does_not_approve_preexisting_chats(tmp_path, config):
+    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync_ledger import ChatOriginal
+    runtime, service, session = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+    try:
+        source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'old history'))
+        session['logged_in'] = False
+        await runtime.save_character_sync_choice(UID, 'Synthetic', False)
+        assert runtime.state.choices()[UID] is False
+        assert type(runtime.state)(runtime.state.path).choices()[UID] is False
+        assert not runtime.state.new_role(UID) and service.requests == []
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        assert service.requests == []
+        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'new after choice'))
+        session['logged_in'] = True
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime._advance_history(UID); await runtime._recover_originals()
+        texts = [json.loads(row[0])['text'] for row in runtime.ledger.pending(ChatDomain(OWNER, UID))]
+        assert texts == ['new after choice']
+        import sqlite3
+        with sqlite3.connect(source.path) as conn:
+            assert json.loads(conn.execute('SELECT original FROM source_unbound WHERE record_id=?', ('c' * 32,)).fetchone()[0])['text'] == 'old history'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_paused_card_save_stays_off_and_explicit_on_approves_profile_without_http(tmp_path, config):
+    runtime, service, session = await bound(tmp_path, config)
+    try:
+        await runtime.pause(UID)
+        config.data['猫娘']['Synthetic']['昵称'] = 'saved nickname'
+        session['logged_in'] = False; service.requests.clear()
+        await runtime.save_character_sync_choice(UID, 'Synthetic', False)
+        assert not runtime.state.binding(UID)['enabled']
+        assert runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key()) is None
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        assert runtime.state.binding(UID)['enabled']
+        operation = runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key())
+        assert json.loads(operation['body'])['profile']['nickname'] == 'saved nickname'
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_card_off_during_first_grant_prevents_late_activation(tmp_path, config):
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        async def turn_off(request):
+            if request.url.path.endswith('/bindings'):
+                await runtime.save_character_sync_choice(UID, 'Synthetic', False)
+        service.on_request = turn_off
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        assert not runtime.state.binding(UID)['enabled']
+        assert runtime.state.choices()[UID] is False
+        assert runtime.state.new_role(UID) is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_on_can_resume_a_paused_unfinished_grant_but_a_later_pause_wins(tmp_path, config):
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        runtime.state.prepare_binding(ChatDomain(OWNER, UID))
+        runtime.state.pause(UID)
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        request = runtime.state.new_role(UID)
+        assert request['resumeGeneration'] == runtime.state.binding(UID)['generation']
+        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        assert runtime.state.binding(UID)['enabled']
+        await runtime.save_character_sync_choice(UID, 'Synthetic', False)
+        assert not runtime.state.binding(UID)['enabled']
+        service.requests.clear()
+        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_card_save_does_not_publish_an_identical_profile_again_after_setup_retry(tmp_path, config):
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        await runtime.request_new_role_sync(UID, 'Synthetic')
+        await runtime.enable(UID, 'Synthetic')
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        request = runtime.state.new_role(UID)
+        await runtime.profiles.step(UID, manual=True)
+        domain = ChatDomain(OWNER, UID).key()
+        assert runtime.profiles.store.next_operation(domain) is None
+        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        assert runtime.profiles.store.next_operation(domain) is None
+        assert runtime.state.new_role(UID) is None
+        assert len([item for item in service.profile_requests if item.method == 'PUT']) == 1
+    finally:
+        await runtime.close()

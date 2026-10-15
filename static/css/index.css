@@ -1903,6 +1903,36 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     padding: 8px;
 }
 
+#chat-sync-dialog input[type="url"] {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+#chat-sync-dialog [hidden] {
+    display: none !important;
+}
+
+#chat-sync-dialog #chat-sync-include-history-choice {
+    flex-direction: row;
+    align-items: flex-start;
+    min-height: 44px;
+    padding: 8px 0;
+}
+
+#chat-sync-dialog #chat-sync-include-history {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+}
+
+#chat-sync-dialog summary {
+    min-height: 44px;
+    padding: 12px 0;
+    cursor: pointer;
+}
+
 #chat-sync-dialog button {
     margin: 6px 6px 0 0;
     padding: 6px 10px;
