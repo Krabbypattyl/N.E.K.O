@@ -468,7 +468,38 @@ def test_same_text_distinct_ids_survive_and_exact_live_identity_is_replaced():
         const merged = window.nekoChatSync.mergeHistory(current, originals, new Set(), new Map([['optimistic',id]]), 'Neko');
         assert.deepEqual(merged.map(x=>x.id), ['optimistic','sync-original-'+other]);
         assert.deepEqual(merged.map(x=>x.blocks[0].text), ['same','same']);
-        assert.equal(merged[0].actions[0].payload.messageId,id);
+        assert.equal(merged[0].actions,undefined);
+    """)
+
+
+def test_memory_browser_save_receipt_hides_exact_chat_without_bubble_actions():
+    """The saved receipt fences old pages and never deletes equal-text siblings."""
+    run_script(r"""(async()=>{
+        window.location={origin:'http://localhost'};
+        let messages=[];
+        window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;}};
+        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')
+            ? {characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
+            : {originals:[original,{...original,messageId:other,originSeq:2}]}});
+        await window.nekoChatSync.loadHistory();
+        const data={action:'chat_sync_deleted',characterSyncId:original.characterSyncId,
+            receipt:{messageIds:[id],localMessageIds:[]}};
+        windowEvents.message({origin:'https://foreign.invalid',data});
+        assert.equal(messages.length,2);
+        global.fetch=async()=>{throw new Error('synthetic history outage');};
+        windowEvents.message({origin:window.location.origin,data});
+        assert.deepEqual(messages.map(item=>item.id),['sync-original-'+other]);
+        assert.equal(messages[0].actions,undefined);
+        assert.equal(windowEvents['react-chat-window:action'],undefined);
+    })().catch(error=>{console.error(error);process.exitCode=1;});""")
+
+
+def test_retired_delete_actions_are_removed_without_affecting_other_actions():
+    run_script(r"""
+        const keep={action:'unrelated',label:'keep'};
+        const current=[{id:'live',role:'user',actions:[{action:'chat_sync_delete_original'},keep]}];
+        const merged=window.nekoChatSync.mergeHistory(current,[original],new Set(),new Map([['live',id]]),'Neko');
+        assert.deepEqual(merged[0].actions,[keep]);
     """)
 
 
@@ -582,7 +613,7 @@ def test_assistant_turn_identity_handles_delayed_realistic_rendering():
             new Map([['turn-one',id]]));
         assert.deepEqual(merged.map(x=>x.id),['sentence-1','sentence-2']);
         assert.equal(merged[0].actions,undefined);
-        assert.equal(merged[1].actions[0].payload.messageId,id);
+        assert.equal(merged[1].actions,undefined);
     """)
 
 
@@ -1087,12 +1118,57 @@ def test_sync_locale_namespace_is_complete(locale):
     assert "{{deletions}}" in actual["pending"]
 
 
-def test_both_served_pages_expose_the_same_sync_control():
-    """The desktop/home and standalone chat entrypoints load the served script directly."""
+def test_both_served_pages_restore_sync_without_a_header_control():
+    """Both chat entrypoints keep passive restoration without an extra user action."""
     for name in ("index", "chat"):
         html = (ROOT / f"templates/{name}.html").read_text()
-        assert html.count('id="chatSyncButton"') == 1
+        assert 'id="chatSyncButton"' not in html
+        assert 'id="react-chat-window-root"' in html
         assert '/static/app/app-chat-sync.js?v=' in html
+
+
+@pytest.mark.parametrize("lifecycle", ["poll", "pageshow", "visibilitychange"])
+def test_chat_host_refreshes_and_wakes_without_a_sync_button(lifecycle):
+    """Removing the header control must not disable local polling or foreground catchup."""
+    run_script(r"""
+        (async()=>{
+            const lifecycle=LIFECYCLE, requests=[];
+            let messages=[], cursor=1;
+            document.getElementById=name=>name==='react-chat-window-root'?body:null;
+            document.visibilityState='visible';
+            window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;},
+                appendMessage(){throw new Error('Passive sync must not invoke message reactions');}};
+            global.fetch=async(path,options)=>{
+                requests.push({path,method:options.method});
+                assert.ok(path.endsWith('/status')||path.endsWith('/history')||path.endsWith('/wake'));
+                if(path.endsWith('/wake'))assert.equal(options.method,'POST');
+                return {ok:true,json:async()=>path.endsWith('/status')
+                    ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor}}]}
+                    :path.endsWith('/history')?{originals:cursor===1?[original]:[original,{...original,messageId:other,originSeq:2}]}:{}};
+            };
+            documentEvents.DOMContentLoaded();
+            assert.equal(intervals.length,1);
+            await intervals[0].callback();
+            assert.deepEqual(messages.map(message=>message.id),['sync-original-'+id]);
+            cursor=2;
+            if(lifecycle==='poll')await intervals[0].callback();
+            else if(lifecycle==='pageshow'){
+                windowEvents.pagehide();
+                await windowEvents.pageshow();
+                assert.equal(intervals.length,2);
+            }else{
+                document.visibilityState='hidden';
+                const previous=requests.length;
+                await documentEvents.visibilitychange();
+                assert.equal(requests.length,previous);
+                document.visibilityState='visible';
+                await documentEvents.visibilitychange();
+            }
+            assert.deepEqual(messages.map(message=>message.id),['sync-original-'+id,'sync-original-'+other]);
+            assert.equal(requests.filter(request=>request.path.endsWith('/wake')).length,lifecycle==='poll'?0:1);
+            assert.equal(body.children.length,0);
+        })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace("LIFECYCLE", json.dumps(lifecycle)))
 
 
 @pytest.mark.parametrize("kind", ["chat", "profile"])

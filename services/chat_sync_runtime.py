@@ -1614,26 +1614,38 @@ class DesktopChatSyncRuntime:
         self.wake_scheduler()
         return record
 
-    async def delete(self, character_uid: str, message_ids: list[str]) -> dict:
+    async def delete(self, character_uid: str, message_ids: list[str], *, expected_binding=...) -> dict:
         """Durably hide exact IDs and queue deletion even while network is unavailable."""
         from services.chat_sync_writer import WriterQuarantined
         from services.chat_sync_recovery import save_outage_deletions
         try:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
             await self._recover_originals()
-            deletions = await asyncio.to_thread(self._delete_sources, character_uid, binding, message_ids)
+            deletions = await asyncio.to_thread(self._delete_sources, character_uid, binding, message_ids,
+                                                expected_binding=expected_binding)
         except WriterQuarantined:
             await asyncio.to_thread(save_outage_deletions, self.state.path.parent, character_uid, message_ids)
             return {"deletionIds": [], "messageIds": list(message_ids), "pending": False, "recoveryRequired": True}
         self.wake_scheduler()
         return {"deletionIds": [item.deletion_id for item in deletions], "messageIds": list(message_ids), "pending": bool(deletions)}
 
-    def _delete_sources(self, character_uid, binding, message_ids):
+    def _delete_sources(self, character_uid, binding, message_ids, *, expected_binding=...):
         """Serialize local deletion with source-page transfer and preserve crash fences."""
         from services.chat_sync_source import ChatOriginalSource
         from services.chat_sync_ledger import _message_ids
         _message_ids(message_ids)
         with self._commit_lock:
+            if expected_binding is not ...:
+                # Memory Browser's Save may await recovery while a role is
+                # rebound. Pin its reviewed owner/generation at the actual
+                # marker commit, under the same gate used by activation/pause.
+                current = self.state.binding(character_uid)
+                fence = None if current is None else {
+                    key: current[key] for key in ('owner_id', 'binding_id', 'generation')
+                }
+                if fence != expected_binding:
+                    raise ValueError('chat_sync_binding_changed')
+                binding = current
             domain = ChatDomain(binding["owner_id"], character_uid) if binding else None
             path = self.state.path.parent / "sources.sqlite3"
             source = ChatOriginalSource(path) if path.exists() else None

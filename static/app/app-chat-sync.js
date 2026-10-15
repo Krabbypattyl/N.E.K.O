@@ -80,17 +80,6 @@
             time: time, createdAt: timestamp, status: 'sent',
             blocks: [{ type: 'text', text: record.text }]
         };
-        if (!localOnly) {
-            // TODO(chat-sync-ui): Consolidate this transitional original-delete UI into Memory Browser.
-            // Kept for direct canonical deletion and end-to-end sync acceptance; not test-build gated.
-            // Memory Browser currently edits recent-memory projections via recent_file/save, not these IDs.
-            // Remove this bubble action and its chat_sync_delete_original listener only after that UI uses
-            // the same UID/message-ID deletion API and passes dual-device deletion/restart checks.
-            // Keep shared deletion/tombstone APIs and rememberDeletion; clearing also depends on them.
-            message.actions = [{ id: 'delete-original-' + record.messageId, label: text('deleteOriginal'),
-                action: 'chat_sync_delete_original', variant: 'danger',
-                payload: { messageId: record.messageId, characterSyncId: record.characterSyncId } }];
-        }
         return message;
     }
 
@@ -114,11 +103,11 @@
             // Wire identity is independent of React keys. Keep the visible split
             // bubbles and blocks so passive sync cannot replay their entry animation.
             // Local-only/tool records stay local; this is presentation, not eligibility.
-            return displayed.map(function (message, index) {
+            return displayed.map(function (message) {
+                // Retire cached transitional actions, preserving unrelated ones.
                 var actions = (message.actions || []).filter(function (action) {
                     return action.action !== 'chat_sync_delete_original';
                 });
-                if (index === displayed.length - 1 && canonical.actions) actions = actions.concat(canonical.actions);
                 var next = Object.assign({}, message, { status: 'sent', actions: actions.length ? actions : undefined });
                 if (typeof next.createdAt !== 'number' && canonical.createdAt) next.createdAt = canonical.createdAt;
                 return next;
@@ -239,7 +228,7 @@
 
     function startHistoryPoll() {
         // BFCache restoration reuses this page instead of firing DOMContentLoaded.
-        if (historyPollTimer !== null || !document.getElementById('chatSyncButton')) return;
+        if (historyPollTimer !== null || !document.getElementById('react-chat-window-root')) return;
         historyPollTimer = window.setInterval(function () {
             return refreshDownloadedHistory().catch(function () { /* Local chat remains available offline. */ });
         }, 5000);
@@ -599,28 +588,20 @@
         }
     };
 
-    window.addEventListener('react-chat-window:action', async function (event) {
-        // Transitional bubble-delete adapter: remove together with originalMessage's action above once
-        // Memory Browser owns verified canonical deletion. Do not map projection indices/text to IDs
-        // or remove the shared deletion machinery when retiring this temporary UI entry.
-        // Delete actions belong only to known original IDs in the active role.
-        var action = event.detail && event.detail.action;
-        var messageId = action && action.payload && action.payload.messageId;
-        if (!action || action.action !== 'chat_sync_delete_original' || !ID.test(messageId || '')
-                || !activeUid || action.payload.characterSyncId !== activeUid) return;
-        if (!(knownIds.get(activeUid) || new Set()).has(messageId) || !window.confirm(text('deleteConfirm'))) return;
-        if (unfinishedChat()) {
-            if (window.showStatusToast) window.showStatusToast(text('unfinishedChat'), 3000);
-            return;
-        }
-        var deletionUid = activeUid;
-        try {
-            rememberDeletion(deletionUid, await api('/characters/' + deletionUid + '/deletions', 'POST', { messageIds: [messageId] }));
-            await loadHistory();
-            if (dialog && dialog.open) await refreshStatus();
-        } catch (_) {
-            if (window.showStatusToast) window.showStatusToast(text('failed'), 3000);
-        }
+    function memoryBrowserDeletion(data) {
+        var receipt = data && data.receipt;
+        if (!data || data.action !== 'chat_sync_deleted' || !ID.test(data.characterSyncId || '') || !receipt
+                || !Array.isArray(receipt.messageIds) || !receipt.messageIds.every(function (id) { return ID.test(id); })
+                || !Array.isArray(receipt.localMessageIds) || !receipt.localMessageIds.every(function (id) { return ID.test(id); })) return;
+        rememberDeletion(data.characterSyncId, receipt);
+        loadHistory().catch(function () { /* Durable tombstones already hide exact IDs. */ });
+    }
+    if (typeof window.BroadcastChannel === 'function') {
+        var memoryDeletionChannel = new window.BroadcastChannel('neko_page_channel');
+        memoryDeletionChannel.addEventListener('message', function (event) { memoryBrowserDeletion(event.data); });
+    }
+    window.addEventListener('message', function (event) {
+        if (event.origin === window.location.origin) memoryBrowserDeletion(event.data);
     });
 
     window.addEventListener('neko-assistant-turn-end', function (event) {
@@ -640,12 +621,11 @@
     });
 
     document.addEventListener('DOMContentLoaded', function () {
-        // Both index and the independent chat page share one visible settings control.
+        // Notifications wake backend downloads. This cheap local cursor check
+        // belongs to the chat host, independently of optional settings controls.
+        startHistoryPoll();
         var button = document.getElementById('chatSyncButton');
         if (!button) return;
-        // Notifications wake backend downloads. This cheap local cursor check
-        // displays committed changes without submitting chat or model work.
-        startHistoryPoll();
         button.addEventListener('click', async function () {
             if (!dialog) buildDialog();
             dialog.showModal();
@@ -661,7 +641,7 @@
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground
         // wake does not perform manual sync or bypass durable retry fences.
-        if (foregroundWakeRunning || document.visibilityState === 'hidden' || !document.getElementById('chatSyncButton')) return;
+        if (foregroundWakeRunning || document.visibilityState === 'hidden' || !document.getElementById('react-chat-window-root')) return;
         foregroundWakeRunning = true;
         try { await api('/wake', 'POST'); } catch (_) { /* Local chat stays usable. */ }
         finally { foregroundWakeRunning = false; }
