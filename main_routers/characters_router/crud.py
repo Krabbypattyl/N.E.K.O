@@ -1134,6 +1134,7 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     try:
         result = await _rename_catgirl_transaction(
             _config_manager, session_manager, characters, old_name, new_name, is_current_catgirl,
+            sync_commit=sync_commit,
         )
     finally:
         if visit_marker is not None:
@@ -1162,6 +1163,7 @@ async def _visit_name_refusal(config_manager, name: str, label: str):
 
 async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
+    *, sync_commit=None,
 ):
     rename_notification_ws = None
     rename_notification_message = None

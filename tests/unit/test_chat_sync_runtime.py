@@ -3587,3 +3587,20 @@ async def test_current_role_initial_notification_wait_rechecks_before_outbound_f
         assert runtime.scheduler.last_error(DOMAIN.key()) is None
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_recovery_does_not_advance_durable_writer_heads(tmp_path):
+    from services.chat_sync_source import ChatOriginalSource
+    runtime, service, _ = setup_runtime(tmp_path)
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Synthetic")
+        ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+        await runtime.delete(UID, ["f" * 32])
+        before = runtime.writer.path.read_bytes()
+        for _ in range(3):
+            await runtime._recover_originals()
+        assert runtime.writer.path.read_bytes() == before
+    finally:
+        await runtime.close()

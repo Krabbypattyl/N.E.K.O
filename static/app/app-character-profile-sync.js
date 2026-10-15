@@ -177,6 +177,13 @@
         try {
             var state = await api('/status');
             for (var role of state.characters) {
+                if (role.syncSetupError) {
+                    var setupKey = role.characterSyncId + ':setup:' + role.syncSetupError;
+                    if (!reviewed.has(setupKey)) {
+                        reviewed.add(setupKey);
+                        window.showMessage(text('setupNeedsSave', {name: role.displayName}), 'warning');
+                    }
+                }
                 var profile = role.binding && role.binding.profile;
                 if (!profile) continue;
                 var key = role.characterSyncId + ':' + profile.local_hash + ':' + profile.head_revision;

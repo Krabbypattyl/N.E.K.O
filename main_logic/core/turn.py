@@ -383,6 +383,8 @@ class TurnMixin:
 
     async def handle_new_message(self):
         """Handle new model output: clear the TTS queue and notify the frontend"""
+        voice_session = getattr(self, 'session', None)
+        agent_owner = getattr(voice_session, '_gemini_proactive_outcome_owner', None)
         if self._takeover_active:
             logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
@@ -410,6 +412,16 @@ class TurnMixin:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             new_sid = self.current_speech_id
+            if (isinstance(agent_owner, tuple) and len(agent_owner) == 5
+                and agent_owner[0] == getattr(voice_session, '_connection_generation', None)
+                and agent_owner[1] is getattr(voice_session, '_gemini_session', None)
+                and agent_owner[4] == getattr(voice_session, '_tool_scope_generation', None)
+                and voice_session is getattr(self, "session", None)
+                and agent_owner is getattr(voice_session, "_gemini_proactive_outcome_owner", None)):
+                # Gemini opens a new host turn after the explicit Agent inject.
+                # Transfer origin only while its provider generation still owns
+                # the response; a real user's changed tool scope cannot inherit it.
+                mark_turn_origin(self, new_sid, 'agent')
             # 必须在 self.lock 内同步翻 _preempted 标记，使新 sid + preempt 对
             # 同样在 self.lock 内复查 is_proactive_preempted 的 prepare_proactive_delivery
             # 原子可见；否则 proactive 会插到 lock 释放 ~ fire() 之间把 user sid

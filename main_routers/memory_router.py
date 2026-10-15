@@ -33,6 +33,8 @@ import hashlib
 import os
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal
@@ -1450,6 +1452,9 @@ async def save_recent_file(request: Request):
     async def _register_chat_deletions():
         nonlocal deletion_receipt
         from services.chat_sync_source import clear_local_replies
+        from services.character_profile_sync import DesktopProfileAdapter
+        if (sync_edit['messageIds'] or sync_edit['localMessageIds']) and DesktopProfileAdapter(cm).busy(catgirl_name):
+            raise HTTPException(409, 'chat_sync_reply_in_progress')
         # Recheck inside the locked save, after the recent-file CAS succeeded.
         if (uid != await _memory_chat_uid(cm, catgirl_name)
                 or sync_edit['binding'] != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))):
@@ -1476,17 +1481,23 @@ async def save_recent_file(request: Request):
 
     async def _commit_browser_save():
         try:
-            saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
-                _write_recent_browser_payload,
-                resolved_path,
-                arr,
-                expected_fingerprint=snapshot_fingerprint,
-                expected_identity_token=snapshot_identity_token,
-                expected_generation=admission_generation,
-                browser_chat=chat,
-                allow_missing=runtime is not None,
-                before_write=_before_write if runtime is not None else None,
-            )
+            # The locked file worker must not occupy the pool used by its
+            # async deletion callback; even a one-worker default pool can finish.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-save") as save_executor:
+                saved, saved_fingerprint, saved_identity_token = await loop.run_in_executor(
+                    save_executor, partial(
+                        _write_recent_browser_payload,
+                        resolved_path,
+                        arr,
+                        expected_fingerprint=snapshot_fingerprint,
+                        expected_identity_token=snapshot_identity_token,
+                        expected_generation=admission_generation,
+                        browser_chat=chat,
+                        allow_missing=runtime is not None,
+                        before_write=_before_write if runtime is not None else None,
+                    ),
+                )
+
         except _RecentBrowserTheaterEditRejected:
             return JSONResponse(
                 {

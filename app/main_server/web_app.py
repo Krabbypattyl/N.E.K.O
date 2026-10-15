@@ -807,9 +807,9 @@ app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(public_knowledge_router)
-# Chat controls keep their own local authorization and never use memory edit routes.
+# Canonical chat operations retain their own local authorization, including memory saves.
 app.include_router(chat_sync_router)
-app.add_event_handler("shutdown", close_chat_sync_runtime)
+app.router.add_event_handler("shutdown", close_chat_sync_runtime)
 app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
 app.include_router(plugin_card_router)

@@ -974,7 +974,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         row.className = 'character-chat-sync-row';
         const title = document.createElement('label');
         title.className = 'character-chat-sync-label';
-        title.textContent = window.t('chatSync.newRoleSync');
+        title.textContent = typeof window.t === 'function' ? window.t('chatSync.newRoleSync') : 'Sync character and chat';
         const control = document.createElement('label');
         control.className = 'character-chat-sync-choice';
         const toggle = document.createElement('input');
@@ -991,6 +991,14 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         track.setAttribute('aria-hidden', 'true');
         control.append(toggle, track);
         row.append(title, control);
+        if (!isNew) {
+            const advanced = document.createElement('button');
+            advanced.type = 'button';
+            advanced.className = 'btn sm';
+            advanced.textContent = typeof window.t === 'function' ? window.t('chatSync.moreOptions') : 'More options';
+            advanced.addEventListener('click', () => window.nekoChatSync.openSettings(name));
+            row.appendChild(advanced);
+        }
         form.appendChild(row);
         if (!isNew && window.nekoCharacterProfileSync) {
             form._chatSyncLoadPromise = window.nekoCharacterProfileSync.getSyncChoice(name).then(enabled => {

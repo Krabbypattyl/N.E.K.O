@@ -3395,9 +3395,6 @@
                             createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
                         }
                     }
-                    if (window.nekoChatSync && response.chat_original_id) {
-                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
-                    }
                     if (createdVisibleBubble && response.request_id) {
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
                             window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
@@ -3414,6 +3411,9 @@
                             assistantResponseMeta,
                             response.request_id
                         );
+                    }
+                    if (window.nekoChatSync && response.chat_original_id) {
+                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -3687,6 +3687,9 @@
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
+                        // A canonical transcript owns one exact display identity.
+                        // Keep separate accepted frames separate on the React host.
+                        !(response.chat_original_id && syncVoiceBefore) &&
                         S.lastVoiceUserMessage &&
                         S.lastVoiceUserMessage.isConnected &&
                         (now - S.lastVoiceUserMessageTime) < C.VOICE_TRANSCRIPT_MERGE_WINDOW;

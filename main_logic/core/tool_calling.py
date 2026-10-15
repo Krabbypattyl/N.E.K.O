@@ -141,8 +141,6 @@ class ToolCallingMixin:
         if owner is not None:
             if not getattr(owner, "turn_ended", False):
                 mark_tool_turn(self, getattr(owner, "speech_id", None))
-        elif invoking_session is not None and invoking_session is getattr(self, "session", None):
-            mark_tool_turn(self, getattr(self, "current_speech_id", None))
         if call.reply_owner is not None:
             from main_logic.reply_tail import reply_tail_registry
 

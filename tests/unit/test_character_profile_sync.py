@@ -810,10 +810,14 @@ async def test_paused_card_save_stays_off_and_explicit_on_approves_profile_witho
         assert not runtime.state.binding(UID)['enabled']
         assert runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key()) is None
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        assert not runtime.state.binding(UID)['enabled']
+        assert runtime.state.new_role(UID) is not None
+        assert service.requests == []
+        session['logged_in'] = True
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
         assert runtime.state.binding(UID)['enabled']
         operation = runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key())
         assert json.loads(operation['body'])['profile']['nickname'] == 'saved nickname'
-        assert service.requests == []
     finally:
         await runtime.close()
 
@@ -873,5 +877,59 @@ async def test_card_save_does_not_publish_an_identical_profile_again_after_setup
         assert runtime.profiles.store.next_operation(domain) is None
         assert runtime.state.new_role(UID) is None
         assert len([item for item in service.profile_requests if item.method == 'PUT']) == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_offline_card_save_retains_the_original_approved_chat_cutoff(tmp_path, config):
+    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync_ledger import ChatOriginal
+    runtime, service, session = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    session['logged_in'] = False
+    try:
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        first = runtime.state.new_role(UID)
+        source = ChatOriginalSource(tmp_path / 'sources.sqlite3')
+        source.commit_unbound(UID, 'f' * 32, ChatOriginal('user', 'approved offline chat'))
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        assert runtime.state.new_role(UID)['afterSeq'] == first['afterSeq']
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_changed_new_role_profile_blocks_retry_until_explicit_save(tmp_path, config):
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        config.data['猫娘']['Synthetic']['昵称'] = 'unapproved change'
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        assert runtime.state.new_role(UID)['error'] == 'character_profile_changed'
+        assert runtime.state.new_role_errors() == {UID: 'character_profile_changed'}
+        assert service.requests == []
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        assert 'error' not in runtime.state.new_role(UID)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_card_resume_revalidates_owner_before_reenabling_a_paused_binding(tmp_path, config):
+    from tests.unit.test_chat_sync_runtime import OTHER_OWNER
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        await runtime.pause(UID)
+        before = runtime.state.binding(UID)
+        service.owner = OTHER_OWNER
+        service.requests.clear()
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        assert runtime.state.binding(UID) == before
+        assert not runtime.state.binding(UID)['enabled']
+        assert [request.url.path for request in service.requests] == ['/v1/chat-sync/identity']
     finally:
         await runtime.close()

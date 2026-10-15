@@ -130,7 +130,8 @@ def test_runtime_registers_all_databases_and_blocks_copied_binding(tmp_path):
         copied.state.activate(prepared, 'b' * 32)
 
 
-def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path):
+@pytest.mark.parametrize("corrupt", [None, "payload", "domain"])
+def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path, corrupt):
     from services.chat_sync_runtime import DesktopChatSyncRuntime
     from services.chat_sync_source import ChatOriginalSource
     from services.chat_sync_ledger import ChatDomain, ChatOriginal
@@ -148,6 +149,9 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
                            proven_source_origin=(old['origin_stream_id'], old['origin_seq']))
     runtime.ledger.seal_batch(domain, byte_budget=100_000)
     runtime.ledger.queue_deletion(domain, ['2' * 32])
+    if corrupt:
+        with closing(runtime.ledger._connect()) as conn, conn:
+            conn.execute("UPDATE chat_deletions SET " + corrupt + "=?", ("{broken",))
     runtime.writer.path.write_text('{broken')
     runtime.prepare_writer_recovery()
     assert runtime.state.binding(domain.character_uid)['enabled'] == 0
@@ -159,7 +163,7 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
         stream = conn.execute('SELECT origin_stream_id FROM source_unbound WHERE record_id=?', ('3' * 32,)).fetchone()[0]
         assert stream != old['origin_stream_id']
         assert conn.execute('SELECT record_id FROM source_recovery_candidates').fetchall() == [('1' * 32,)]
-        assert conn.execute('SELECT message_id FROM source_recovery_delete_ids').fetchall() == [('2' * 32,)]
+        assert conn.execute('SELECT message_id FROM source_recovery_delete_ids').fetchall() == ([] if corrupt else [('2' * 32,)])
 
 
 def test_faulted_source_saves_raw_without_old_source_sequence(tmp_path):

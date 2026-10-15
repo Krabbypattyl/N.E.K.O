@@ -316,7 +316,11 @@ class DesktopProfileAdapter:
                 # The user's explicit choice reuses the existing complete rename
                 # transaction; a dictionary-key edit would orphan local histories.
                 from main_routers.characters_router.crud import _rename_catgirl_serialized
-                result = await _rename_catgirl_serialized(current["name"], target["name"], sync_commit=commit)
+                from utils.external_route_registry import end_character_mutation
+                try:
+                    result = await _rename_catgirl_serialized(current["name"], target["name"], sync_commit=commit)
+                finally:
+                    end_character_mutation(current["name"], target["name"])
                 if not isinstance(result, dict) or not result.get("success"):
                     raise ValueError("character_profile_rename_failed")
             characters = await self.config.aload_characters()

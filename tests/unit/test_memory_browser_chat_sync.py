@@ -17,6 +17,11 @@ LOCAL = "c" * 32
 BINDING = {"owner_id": "owner", "binding_id": "binding", "generation": 2}
 
 
+@pytest.fixture(autouse=True)
+def isolated_conversation_state(monkeypatch):
+    monkeypatch.setattr("main_routers.shared_state.get_session_manager", lambda: {})
+
+
 @pytest.fixture
 def editor(tmp_path, monkeypatch):
     import httpx
@@ -270,3 +275,42 @@ async def test_binding_change_during_recovery_cannot_retarget_saved_deletion(tmp
         assert runtime.ledger.deleted_message_ids(DOMAIN) == []
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_save_with_one_default_pool_worker_cannot_deadlock_its_deletion_callback(editor):
+    from concurrent.futures import ThreadPoolExecutor
+    import asyncio
+    client, path, runtime, clear = editor
+    payload = save_payload(snapshot(client))
+    from starlette.requests import Request
+    request = Request({"type": "http", "method": "POST", "path": "/api/memory/recent_file/save",
+        "scheme": "http", "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", 80),
+        "headers": [(b"host", b"127.0.0.1")]})
+    request._body = json.dumps(payload).encode()
+    # Call the real coroutine on a loop whose shared worker pool has one slot.
+    loop = asyncio.get_running_loop()
+    pool = ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(pool)
+    try:
+        result = await asyncio.wait_for(routes.save_recent_file(request), 5)
+        assert result['success'] is True
+        runtime.delete.assert_awaited_once()
+    finally:
+        # Restore an independent pool before retiring this test-owned executor.
+        loop.set_default_executor(ThreadPoolExecutor())
+        pool.shutdown(wait=True)
+
+
+def test_unfinished_reply_blocks_canonical_deletion_without_writing_memory(editor, monkeypatch):
+    from services.character_profile_sync import DesktopProfileAdapter
+    client, path, runtime, clear = editor
+    payload = save_payload(snapshot(client))
+    before = path.read_bytes()
+    monkeypatch.setattr(DesktopProfileAdapter, 'busy', lambda self, name: True)
+    result = client.post('/api/memory/recent_file/save', json=payload)
+    assert result.status_code == 409
+    assert result.json()['detail'] == 'chat_sync_reply_in_progress'
+    assert path.read_bytes() == before
+    runtime.delete.assert_not_called()
+    clear.assert_not_called()

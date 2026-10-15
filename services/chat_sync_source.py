@@ -42,6 +42,20 @@ class ChatOriginalSource:
         """Initialize only the dedicated original WAL, without touching old history."""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            with closing(self._connect()) as connection:
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                required = {'source_identity', 'source_originals', 'source_unbound', 'source_local_replies',
+                            'source_origin_streams', 'source_history_tasks', 'source_history_members',
+                            'source_recovery_candidates', 'source_recovery_roles', 'source_recovery_delete_ids',
+                            'source_recovery_delete_tasks', 'source_recovery_delete_members'}
+                migrations = {'source_originals': {'queued_at_ms', 'history_task_id', 'origin_stream_id', 'origin_seq'},
+                              'source_unbound': {'origin_stream_id', 'origin_seq', 'verified_owner', 'deletion_pending'},
+                              'source_history_tasks': {'device_id'},
+                              'source_history_members': {'original_hash', 'origin_stream_id', 'origin_seq'}}
+                if required <= tables and all(columns <= {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+                                               for table, columns in migrations.items()):
+                    return
         with closing(self._connect()) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript("""
@@ -260,11 +274,19 @@ class ChatOriginalSource:
                             "text": original.text, "originalTime": original.original_time})
         return replies
 
-    def pending(self, maximum):
+    def pending(self, maximum, bindings=None):
         """Return only explicitly proven pending originals in durable insertion order."""
         with closing(self._connect()) as connection:
             identity = connection.execute("SELECT * FROM source_identity WHERE singleton=1").fetchone()
-            rows = connection.execute("SELECT * FROM source_originals WHERE pending=1 ORDER BY rowid LIMIT ?", (maximum,)).fetchall()
+            eligible = ""
+            parameters = []
+            if bindings is not None:
+                if not bindings:
+                    return []
+                eligible = " AND (" + " OR ".join("(owner=? AND uid=?)" for _ in bindings) + ")"
+                parameters = [value for binding in bindings for value in (binding["owner_id"], binding["character_uid"])]
+            rows = connection.execute("SELECT * FROM source_originals WHERE pending=1" + eligible
+                                      + " ORDER BY rowid LIMIT ?", (*parameters, maximum)).fetchall()
             return [(dict(row), SourceLocator(identity["database_id"], identity["generation"], row["record_id"])) for row in rows]
 
     def captured(self, record_id):
@@ -308,7 +330,23 @@ class ChatOriginalSource:
 
     def purge(self, owner, uid, message_ids):
         """Remove readable originals while retaining immutable deletion identities."""
+        if not message_ids:
+            return
         with closing(self._connect()) as connection, connection:
+            dirty = None
+            for offset in range(0, len(message_ids), 200):
+                page = message_ids[offset:offset + 200]
+                placeholders = ','.join('?' for _ in page)
+                dirty = connection.execute(
+                    "SELECT 1 FROM source_originals WHERE owner=? AND uid=? AND (original IS NOT NULL OR pending=1 OR deleted=0) "
+                    "AND record_id IN (" + placeholders + ") UNION ALL "
+                    "SELECT 1 FROM source_unbound WHERE uid=? AND deleted=0 AND record_id IN (" + placeholders + ") LIMIT 1",
+                    (owner, uid, *page, uid, *page),
+                ).fetchone()
+                if dirty is not None:
+                    break
+            if dirty is None:
+                return
             connection.execute("BEGIN IMMEDIATE")
             connection.executemany(
                 "UPDATE source_originals SET original=NULL,pending=0,deleted=1 "
@@ -526,13 +564,14 @@ async def recover_sources(runtime, *, max_records=200):
         return 0
     source = await asyncio.to_thread(ChatOriginalSource, path)
     # A prior delete may have committed before its source cleanup was interrupted.
-    for binding in await asyncio.to_thread(runtime.state.bindings):
+    bindings = await asyncio.to_thread(runtime.state.bindings)
+    for binding in bindings:
         domain = ChatDomain(binding["owner_id"], binding["character_uid"])
         deleted = await asyncio.to_thread(runtime.ledger.deleted_message_ids, domain)
         await asyncio.to_thread(source.purge, domain.owner_id, domain.character_uid, deleted)
     await asyncio.to_thread(_recover_deletions, runtime, source, max_records)
     recovered = 0
-    for row, locator in await asyncio.to_thread(source.pending, max_records):
+    for row, locator in await asyncio.to_thread(source.pending, max_records, bindings):
         binding = await asyncio.to_thread(runtime.state.binding, row["uid"])
         if not binding or binding["owner_id"] != row["owner"]:
             continue
@@ -588,6 +627,10 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
     try:
         runtime = await get_desktop_chat_sync_runtime(manager)
         binding = await asyncio.to_thread(runtime.state.binding, uid)
+        if binding is None and not (await asyncio.to_thread(runtime.state.choices)).get(uid, False):
+            # Unconfigured roles keep their normal local memory; no hidden raw
+            # history is captured before the user saves an explicit sync choice.
+            return None
         source = await asyncio.to_thread(ChatOriginalSource, _source_path(runtime))
         if binding is None or await asyncio.to_thread(role_pending, runtime, uid):
             # Recovery cannot turn a fresh binding into automatic approval for
@@ -605,14 +648,9 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
             print("[chat-sync] local_original_sync_unavailable")
             return None
         return record_id
-    # A crash/failure between commit and capture leaves pending=1 for recovery.
-    try:
-        await recover_sources(runtime)
-    except Exception:
-        print("[chat-sync] source_saved_ledger_pending")
-    finally:
-        # This only wakes the local worker; saved chat never waits for network.
-        runtime.wake_scheduler()
+    # Keep the original durable before the model starts; ledger replay belongs
+    # to the owned scheduler, so the producer never waits for backlog processing.
+    runtime.wake_scheduler()
     return record_id
 
 

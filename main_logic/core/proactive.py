@@ -31,7 +31,7 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
-from services.chat_sync_source import mark_turn_origin
+from services.chat_sync_source import mark_tool_turn, mark_turn_origin
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -1377,6 +1377,7 @@ class ProactiveMixin:
                         inject_kwargs["events_before_text"] = events_before_text
                     # The explicit callback origin belongs only to this rotated speech ID.
                     mark_turn_origin(self, self.current_speech_id, 'agent')
+                    mark_tool_turn(self, self.current_speech_id)
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,

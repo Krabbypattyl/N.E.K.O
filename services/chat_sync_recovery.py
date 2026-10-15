@@ -87,7 +87,11 @@ def stage_authority(runtime):
             for domain, identity, payload, kind in ledger.execute(
                     "SELECT domain,message_id,payload,'local' FROM chat_originals UNION ALL "
                     "SELECT domain,message_id,payload,'download' FROM chat_downloaded"):
-                owner, uid, _, _ = json.loads(domain)
+                try:
+                    owner, uid, channel, scope = json.loads(domain)
+                    ChatDomain(owner, uid, channel, scope)
+                except (ValueError, TypeError, RecursionError):
+                    continue
                 # Malformed or unknown evidence stays hidden. It must not abort
                 # revocation and accidentally leave some old tasks executable.
                 try:
@@ -109,8 +113,14 @@ def stage_authority(runtime):
                                (identity, owner, uid, raw, hashlib.sha256(raw.encode()).hexdigest(),
                                 record['originStreamId'], record['originSeq'], payload, kind))
             for domain, payload in ledger.execute('SELECT domain,payload FROM chat_deletions'):
-                owner, uid, _, _ = json.loads(domain)
-                for identity in json.loads(payload)['messageIds']:
+                try:
+                    from services.chat_sync_ledger import _message_ids
+                    owner, uid, channel, scope = json.loads(domain)
+                    ChatDomain(owner, uid, channel, scope)
+                    identities = _message_ids(json.loads(payload)['messageIds'])
+                except (KeyError, ValueError, TypeError, RecursionError):
+                    continue
+                for identity in identities:
                     source.execute('INSERT OR IGNORE INTO source_recovery_delete_ids VALUES (?,?,?)', (owner, uid, identity))
         source.execute("INSERT OR IGNORE INTO source_recovery_candidates "
                        "(record_id,owner,uid,original,original_hash,queued_at_ms,origin_stream_id,origin_seq,kind,deleted) "

@@ -668,6 +668,14 @@ class ChatSyncLedger:
         """
         key = domain.key()
         with closing(self._connect()) as conn:
+            dirty = any(conn.execute(
+                f"SELECT 1 FROM {table} p JOIN chat_tombstones t ON t.domain=p.domain AND t.message_id=p.message_id "
+                "WHERE p.domain=? LIMIT 1", (key,),
+            ).fetchone() for table in ('chat_pending', 'chat_originals', 'chat_downloaded'))
+            if not dirty and not conn.execute(
+                "SELECT 1 FROM chat_batches WHERE domain=? AND EXISTS(SELECT 1 FROM chat_tombstones WHERE domain=?)", (key, key),
+            ).fetchone():
+                return
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 "SELECT o.message_id,o.locator,o.original,o.payload,o.sha256 FROM chat_originals o "

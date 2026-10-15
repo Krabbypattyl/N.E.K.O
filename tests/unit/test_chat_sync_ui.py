@@ -1176,14 +1176,14 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
     """Real CSS inheritance must allow modal clicks while chat/tutorial gates stay intact."""
     from playwright.sync_api import sync_playwright
 
-    template = (ROOT / "templates/chat.html").read_text()
+    template = (ROOT / ("templates/chat.html" if kind == "chat" else "templates/character_card_manager.html")).read_text()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
             page = browser.new_page()
             # This disposable page never reaches the running backend or user data.
             page.route("**/*", lambda route: route.abort())
-            page.set_content('<body class="electron-chat-window subtitle-web-host yui-guide-chat-buttons-disabled">'
+            page.set_content(('<body class="electron-chat-window subtitle-web-host yui-guide-chat-buttons-disabled">' if kind == 'chat' else '<body>') +
                              '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div>'
                              '<button id="chatSyncButton">Sync</button></body>')
             for href in re.findall(r'<link rel="stylesheet" href="([^"?]+)', template):
@@ -1215,8 +1215,8 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                         local_hash: 'b'.repeat(64), head_revision: 1, conflict: true, renameRequired: false});
                 }""")
                 modal = page.locator("dialog")
-            assert page.locator("body").evaluate("node => getComputedStyle(node).pointerEvents") == "none"
-            assert page.locator("#tutorial-control").evaluate("node => getComputedStyle(node).pointerEvents") == "none"
+            assert page.locator("body").evaluate("node => getComputedStyle(node).pointerEvents") == ("none" if kind == "chat" else "auto")
+            assert page.locator("#tutorial-control").evaluate("node => getComputedStyle(node).pointerEvents") == ("none" if kind == "chat" else "auto")
             assert modal.locator("button").evaluate_all(
                 "nodes => nodes.every(node => getComputedStyle(node).pointerEvents === 'auto')"
             )

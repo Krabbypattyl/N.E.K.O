@@ -393,12 +393,15 @@ async def test_recovery_rejects_invalid_boundaries(tmp_path, maximum):
 
 @pytest.mark.asyncio
 async def test_save_preserves_unbound_proof_without_upload_and_keeps_paused_owner(tmp_path, monkeypatch):
-    """Raw originals survive before consent without guessing an account owner."""
+    """Approved offline originals survive before binding without guessing an owner."""
     runtime = make_runtime(tmp_path, bound=False)
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
     monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    assert await save_original("Lan", "user", RAW.text, config_manager=manager) is None
+    assert not (tmp_path / "sources.sqlite3").exists()
+    runtime.state.save_choice(UID, True)
     unbound_id = await save_original("Lan", "user", RAW.text, config_manager=manager)
     assert len(unbound_id) == 32
     with sqlite3.connect(tmp_path / "sources.sqlite3") as connection:
@@ -412,6 +415,8 @@ async def test_save_preserves_unbound_proof_without_upload_and_keeps_paused_owne
     identity = await save_original("Lan", "user", RAW.text, original_time=RAW.original_time, config_manager=manager)
     assert len(identity) == 32
     assert runtime.state.binding(UID)["enabled"] == 0
+    assert runtime.ledger.pending(DOMAIN) == []
+    await recover_sources(runtime)
     payload = json.loads(runtime.ledger.pending(DOMAIN)[0][0])
     assert payload["ownerId"] == OWNER
     assert payload["messageId"] == identity
@@ -622,7 +627,8 @@ async def test_tool_dispatch_marks_its_owner_before_await_and_ignores_closed_or_
     await ToolCallingMixin._on_tool_call(
         manager, ToolCall(name="synthetic", arguments={}), invoking_session=active
     )
-    assert manager._chat_original_turns["new"]["origin"] == "tool"
+    assert "new" not in manager._chat_original_turns
+    assert len(manager.sync_message_queue.messages) == 1
 
 @pytest.mark.asyncio
 async def test_source_diagnostic_exclusion_is_once_per_reply_and_never_uploads(monkeypatch):
@@ -1019,3 +1025,35 @@ async def test_actual_tool_dispatch_keeps_whole_reply_local(
     assert len(local) == 1, report
     assert local[0]["text"] == "".join(visible) == prefix + post_text
     assert source.pending(200) == [] and runtime.ledger.pending(DOMAIN) == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_filters_ineligible_rows_before_applying_the_page_limit(tmp_path):
+    runtime = make_runtime(tmp_path)
+    source = source_for(runtime)
+    for index in range(205):
+        source.commit(OTHER, UID, f"{index + 1:032x}", RAW)
+    identity = "f" * 32
+    source.commit(OWNER, UID, identity, RAW)
+    assert await recover_sources(runtime, max_records=1) == 1
+    assert json.loads(runtime.ledger.pending(DOMAIN)[0][0])["messageId"] == identity
+    assert len(source.pending(300)) == 205
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preempted", [False, True])
+async def test_gemini_agent_origin_follows_only_its_owned_provider_response(preempted):
+    from main_logic.core.turn import TurnMixin
+    provider = object()
+    session = SimpleNamespace(_connection_generation=2, _gemini_session=provider, _tool_scope_generation=3)
+    session._gemini_proactive_outcome_owner = (2, provider, "ticket", object(), 3)
+    manager = SimpleNamespace(session=session, _takeover_active=False, audio_resampler=Mock(),
+        _reset_ai_turn_buffer=Mock(), send_user_activity=AsyncMock(), lock=asyncio.Lock(),
+        state=SimpleNamespace(mark_user_input_preempt=Mock(), fire=AsyncMock()), current_speech_id="old")
+    async def clear():
+        if preempted:
+            session._tool_scope_generation += 1
+    manager._clear_tts_pipeline = clear
+    await TurnMixin.handle_new_message(manager)
+    proof = mark_turn_origin(manager, manager.current_speech_id, "chat")
+    assert proof['origin'] == ('chat' if preempted else 'agent')

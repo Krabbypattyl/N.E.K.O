@@ -16,6 +16,7 @@
     var activeName = null;
     var historyRequestGeneration = 0;
     var dialog = null;
+    var settingsCharacterName = null;
     var statusNode = null;
     var DEFAULT_SERVICE_URL = 'https://sync.nekotech.cn';
     var configuredServiceUrl = null;
@@ -37,7 +38,7 @@
 
     function characterName() {
         // Resolve the current local profile, then use its persisted UID from the API.
-        return window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
+        return settingsCharacterName || window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
     }
 
     function traceHistoryMerge(records, uid, localOnly) {
@@ -60,8 +61,10 @@
             headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
             body: body === undefined ? undefined : JSON.stringify(body)
         });
-        var result = await response.json();
-        if (!response.ok) throw new Error(result.detail || 'chat_sync_unavailable');
+        var result;
+        try { result = await response.json(); }
+        catch (_) { throw new Error('chat_sync_unavailable'); }
+        if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_unavailable');
         return result;
     }
 
@@ -159,6 +162,7 @@
         (deletedLocalIds.get(activeUid) || new Set()).forEach(function (id) { previous.add(id); });
         var localDeleted = deletedLocalIds.get(activeUid) || new Set();
         var localReplies = (result.localReplies || []).filter(function (record) { return !localDeleted.has(record.messageId); });
+        if (!result.originals.length && !localReplies.length && !previous.size) return true;
         var merged = mergeHistory(host.getState().messages || [], result.originals, previous, liveIds, name, assistantTurns, localReplies);
         // setMessages is passive: appendMessage would enqueue message reactions.
         traceHistoryMerge(result.originals, activeUid);
@@ -401,6 +405,7 @@
                 originals: binding.pendingOriginals, deletions: binding.pendingDeletions
             });
         if (writerRecoveryRequired) statusNode.textContent = text('writerRecoveryRequired');
+        else if (role && role.syncSetupError) statusNode.textContent = text('setupNeedsSave', {name: name});
         // Automatic failures use existing localized progress labels; remote
         // bodies and internal retry metadata never become visible text.
         if (binding && binding.lastSyncError) statusNode.textContent += ' ' + text(
@@ -559,12 +564,18 @@
         close.textContent = text('close');
         close.addEventListener('click', function () { clearHistoryPreview(); dialog.close(); });
         dialog.addEventListener('cancel', clearHistoryPreview);
-        dialog.addEventListener('close', clearHistoryPreview);
+        dialog.addEventListener('close', function () { clearHistoryPreview(); settingsCharacterName = null; });
         dialog.appendChild(close);
         document.body.appendChild(dialog);
     }
 
     window.nekoChatSync = {
+        openSettings: async function (name) {
+            settingsCharacterName = name || null;
+            if (!dialog) buildDialog();
+            dialog.showModal();
+            try { await refreshStatus(); } catch (_) { statusNode.textContent = text('failed'); }
+        },
         // Pure identity merge is exposed for direct browser-independent regression tests.
         mergeHistory: mergeHistory,
         loadHistory: loadHistory,
@@ -627,9 +638,7 @@
         var button = document.getElementById('chatSyncButton');
         if (!button) return;
         button.addEventListener('click', async function () {
-            if (!dialog) buildDialog();
-            dialog.showModal();
-            try { await refreshStatus(); } catch (_) { statusNode.textContent = text('failed'); }
+            await window.nekoChatSync.openSettings();
         });
     });
 

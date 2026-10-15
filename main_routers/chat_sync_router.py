@@ -27,10 +27,10 @@ router = APIRouter(prefix="/api/chat-sync", tags=["chat-sync"], dependencies=[De
 
 
 class ServiceConfiguration(BaseModel):
-    """Require an explicit service origin; no token or owner is accepted from UI."""
+    """Browser requests use the built-in origin; never forward OAuth to a supplied host."""
 
     model_config = ConfigDict(extra="forbid")
-    serviceUrl: StrictStr
+    serviceUrl: Literal["https://sync.nekotech.cn", "https://sync.nekotech.cn/"]
 
 
 class CharacterSyncChoice(BaseModel):
@@ -127,8 +127,11 @@ async def status(runtime: Runtime):
     state = await runtime.status()
     bindings = {item["character_uid"]: item for item in state.pop("bindings")}
     choices = state.pop("syncChoices", {})
+    setup_errors = state.pop("syncSetupErrors", {})
     characters = await _characters()
     for character in characters:
+        if character["characterSyncId"] in setup_errors:
+            character["syncSetupError"] = setup_errors[character["characterSyncId"]]
         binding = bindings.get(character["characterSyncId"])
         paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
         character["syncEnabled"] = bool(binding["enabled"]) if paused_or_bound else choices.get(character["characterSyncId"], True)

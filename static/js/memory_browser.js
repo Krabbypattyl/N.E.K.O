@@ -5554,13 +5554,23 @@
         }
         try {
             // 直接获取原始JSON内容
-            const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename) + '&include_chat_sync=true');
-            const data = await resp.json();
+            const memoryUrl = '/api/memory/recent_file?filename=' + encodeURIComponent(filename);
+            let resp = await fetch(memoryUrl + '&include_chat_sync=true');
+            let data;
+            try { data = await resp.json(); } catch (_) { data = null; }
+            const syncUnavailable = !resp.ok || !data;
+            if (syncUnavailable) {
+                // Remote/proxied deployments retain the existing memory editor.
+                // The optional original-chat API keeps its loopback/origin gate.
+                resp = await fetch(memoryUrl);
+                data = await resp.json();
+            }
             if (requestId !== memoryFileRequestId) {
                 return;
             }
             if (!resp.ok) throw new Error('memory_load_failed');
             chatSyncSnapshot = data.chat_sync || null;
+            if (syncUnavailable) showSaveStatus(translate('memory.chatSyncUnavailable', ''), 'info', 5000);
             currentMemoryFingerprint = typeof data.fingerprint === 'string'
                 ? data.fingerprint
                 : null;
@@ -5700,12 +5710,15 @@
         );
         const savedRows = chatData.filter(msg => !msg.chat_sync_kind);
         const saveChat = savedRows.map(msg => ({ ...msg }));
-        const syncEdit = chatSyncSnapshot ? {
+        const syncEdit = chatSyncSnapshot && (deletedOriginalIds.size || deletedLocalReplyIds.size) ? {
             characterSyncId: chatSyncSnapshot.characterSyncId,
             binding: chatSyncSnapshot.binding,
             messageIds: Array.from(deletedOriginalIds),
             localMessageIds: Array.from(deletedLocalReplyIds)
         } : null;
+        if (syncEdit && syncEdit.messageIds.length && !window.confirm(translate('memory.chatDeleteConfirm', '', {
+            count: syncEdit.messageIds.length
+        }))) return false;
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -5795,6 +5808,7 @@
                 const errorMsg = data.code === 'CHAT_DELETION_SAVED_MEMORY_FAILED'
                     ? translate('memory.chatDeletionPartial', '')
                     : data.detail === 'chat_sync_binding_changed' ? translate('chatSync.historyChanged', '')
+                    : data.detail === 'chat_sync_reply_in_progress' ? translate('chatSync.unfinishedChat', '')
                     : data.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 if (stillTargetsSavedSelection()) {
                     showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
