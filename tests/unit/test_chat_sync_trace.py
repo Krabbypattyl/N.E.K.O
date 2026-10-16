@@ -17,7 +17,7 @@ from services.chat_sync_trace import ChatSyncTrace, route_class
 
 
 def read_events(path):
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
 
 def enable_trace(monkeypatch, tmp_path):
@@ -51,7 +51,7 @@ def test_allowlist_and_concurrent_records_never_include_payloads(tmp_path):
     assert all(item["wall_ms"] > item["mono_ms"] > 0 for item in events)
     assert all(set(item) == {"v", "event", "clock_id", "seq", "wall_ms", "mono_ms", "character_uid", "route", "status"}
                for item in events)
-    assert "private-" not in path.read_text()
+    assert "private-" not in path.read_text(encoding="utf-8")
 
 
 def test_failed_observation_is_nonfatal_and_leaves_sequence_gap(tmp_path):
@@ -76,7 +76,7 @@ def test_assistant_source_diagnostic_only_accepts_fixed_metadata(tmp_path, event
     assert events[0]["source_origin"] == "agent"
     assert events[0]["source_reason"] == "nonchat_origin"
     assert set(events[1]) == {"v", "event", "clock_id", "seq", "wall_ms", "mono_ms"}
-    assert "private-" not in path.read_text()
+    assert "private-" not in path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("reason", ["local_saved", "local_save_unavailable", "local_save_failed"])
@@ -97,7 +97,7 @@ def test_source_event_follows_real_commit_and_rollback_has_no_event(tmp_path, mo
     with pytest.raises(sqlite3.IntegrityError):
         source.commit_unbound(UID, "e" * 32, ChatOriginal("user", "private-original"))
     assert trace._sequence == 1
-    assert "private-" not in path.read_text()
+    assert "private-" not in path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -131,9 +131,9 @@ async def test_runtime_reports_resolver_http_and_guarded_accepted_ids(tmp_path, 
         for item in (item for item in events if item["event"] == "http_begin"):
             span = [event["event"] for event in events if event.get("span_id") == item["span_id"]]
             assert span == ["http_begin", "http_send", "http_headers", "http_body_complete", "http_end"]
-        assert "private-original" not in path.read_text()
-        assert "synthetic-a" not in path.read_text()
-        assert "https://" not in path.read_text()
+        assert "private-original" not in path.read_text(encoding="utf-8")
+        assert "synthetic-a" not in path.read_text(encoding="utf-8")
+        assert "https://" not in path.read_text(encoding="utf-8")
     finally:
         await runtime.close()
 

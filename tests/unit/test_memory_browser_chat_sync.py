@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -100,7 +99,7 @@ def test_save_commits_exact_ids_and_keeps_tool_deletion_local(editor):
     assert response.json()["chat_deletion"]["localMessageIds"] == [LOCAL]
     runtime.delete.assert_awaited_once_with(UID, [MID], expected_binding=payload['chat_sync']['binding'])
     clear.assert_awaited_once_with(runtime, UID, [LOCAL])
-    assert json.loads(path.read_text()) == []
+    assert json.loads(path.read_text(encoding="utf-8")) == []
 
 
 @pytest.mark.parametrize("change", ["content", "binding"])
@@ -345,8 +344,10 @@ def test_sync_delete_confirmation_remains_explicit_without_a_loaded_translation(
             assert.equal(prompt,'Permanently delete 2 original chats from all synced devices?');
         })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('MISSING_KEY', json.dumps(missing_translation))
-    result = subprocess.run(['node', '-e', script, str(source_path)], capture_output=True, text=True, timeout=10)
+    from tests.node_harness import run_node_script
+    result = run_node_script('node', script.replace('process.argv[1]', json.dumps(str(source_path))),
+                             capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
-        locale = json.loads((source_path.parents[1] / 'locales' / (language + '.json')).read_text())
+        locale = json.loads((source_path.parents[1] / 'locales' / (language + '.json')).read_text(encoding="utf-8"))
         assert '{{count}}' in locale['memory']['chatDeleteConfirm']

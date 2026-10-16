@@ -26,7 +26,7 @@ import time
 from uuid import uuid4
 
 from services.chat_sync_ledger import ChatDomain, ChatOriginal, SourceLocator
-from services.chat_sync_protocol import MAX_ORIGIN_SEQ
+from services.chat_sync_protocol import MAX_ORIGIN_SEQ, decode_chat_original, encode_chat_original
 from services.chat_sync_trace import get_trace
 
 
@@ -48,7 +48,7 @@ class ChatOriginalSource:
                 required = {'source_identity', 'source_originals', 'source_unbound', 'source_local_replies',
                             'source_origin_streams', 'source_history_tasks', 'source_history_members',
                             'source_recovery_candidates', 'source_recovery_roles', 'source_recovery_delete_ids',
-                            'source_recovery_delete_tasks', 'source_recovery_delete_members'}
+                            'source_recovery_delete_tasks', 'source_recovery_delete_members', 'source_role_reassignments'}
                 migrations = {'source_originals': {'queued_at_ms', 'history_task_id', 'origin_stream_id', 'origin_seq'},
                               'source_unbound': {'origin_stream_id', 'origin_seq', 'verified_owner', 'deletion_pending'},
                               'source_history_tasks': {'device_id'},
@@ -76,6 +76,8 @@ class ChatOriginalSource:
                     original TEXT, original_hash TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS source_origin_streams (
                     uid TEXT PRIMARY KEY, stream_id TEXT NOT NULL UNIQUE, next_seq INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS source_role_reassignments (
+                    old_uid TEXT PRIMARY KEY, owner TEXT NOT NULL, new_uid TEXT NOT NULL UNIQUE);
                 CREATE TABLE IF NOT EXISTS source_history_tasks (
                     task_id TEXT PRIMARY KEY, uid TEXT NOT NULL, binding TEXT NOT NULL,
                     service_url TEXT NOT NULL, fingerprint TEXT NOT NULL,
@@ -144,6 +146,173 @@ class ChatOriginalSource:
         connection.execute("UPDATE source_origin_streams SET next_seq=next_seq+1 WHERE uid=?", (uid,))
         return stream, seq
 
+    @staticmethod
+    def _require_current_uid(connection, uid, owner=None):
+        """A late producer cannot recreate source authority for a retired cloud identity."""
+        if connection.execute("SELECT 1 FROM source_role_reassignments WHERE old_uid=?", (uid,)).fetchone():
+            raise ValueError("chat_source_role_reassigned")
+        previous = connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone()
+        if owner is not None and previous and previous["owner"] != owner:
+            raise ValueError("chat_sync_owner_mismatch")
+
+    def reassignment(self, old_uid):
+        """Return the fixed local transfer so config-write crash recovery reuses the same UID."""
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT owner,old_uid,new_uid FROM source_role_reassignments WHERE old_uid=?", (old_uid,)).fetchone()
+        return None if row is None else {"ownerId": row["owner"], "oldUid": row["old_uid"], "newUid": row["new_uid"]}
+
+    def reassign_role(self, owner, old_uid, new_uid, ledger):
+        """Keep local chat when an explicit save creates a new identity after cloud deletion.
+
+        The caller first pauses the retired binding and holds its writer/session commit guard.
+        This one source transaction is replayable before a separate config-file save. It never
+        changes the retired ledger, sends requests, approves history, or moves deletion tasks.
+        Only source-proven and validated downloaded originals can enter a later history grant;
+        unknown legacy source order and tool replies retain their local-only classification.
+        """
+        old_domain = ChatDomain(owner, old_uid)
+        ChatDomain(owner, new_uid)
+        if old_uid == new_uid:
+            raise ValueError("chat_sync_binding_conflict")
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute("SELECT owner,new_uid FROM source_role_reassignments WHERE old_uid=?", (old_uid,)).fetchone()
+            if previous:
+                if previous["owner"] != owner:
+                    raise ValueError("chat_sync_owner_mismatch")
+                if previous["new_uid"] != new_uid:
+                    raise ValueError("chat_sync_binding_conflict")
+                return new_uid
+            self._require_current_uid(connection, old_uid, owner)
+            for table in ("source_originals", "source_unbound", "source_local_replies", "source_origin_streams"):
+                if connection.execute(f"SELECT 1 FROM {table} WHERE uid=? LIMIT 1", (new_uid,)).fetchone():
+                    raise ValueError("chat_sync_binding_conflict")
+            if connection.execute("SELECT 1 FROM source_role_reassignments WHERE new_uid=? OR old_uid=?", (new_uid, new_uid)).fetchone():
+                raise ValueError("chat_sync_binding_conflict")
+            rows = connection.execute("SELECT * FROM source_originals WHERE uid=?", (old_uid,)).fetchall()
+            unbound = connection.execute("SELECT * FROM source_unbound WHERE uid=?", (old_uid,)).fetchall()
+            if any(row["owner"] != owner for row in rows) or any(
+                    row["verified_owner"] not in (None, owner) for row in unbound):
+                raise ValueError("chat_sync_owner_mismatch")
+            records = {row["record_id"]: dict(row) for row in unbound}
+            for row in rows:
+                existing = records.get(row["record_id"])
+                if existing and existing["original_hash"] != row["original_hash"]:
+                    raise ValueError("chat_source_integrity_error")
+                # A local deletion fence wins over a stale source/ledger copy.
+                if existing and existing["deleted"]:
+                    continue
+                records[row["record_id"]] = {**dict(row), "scope": "private-chat-original-v1"}
+            deleted = set(ledger.deleted_message_ids(old_domain))
+            for payload in ledger.visible_originals(old_domain):
+                record = decode_chat_original(payload)
+                if record["ownerId"] != owner or record["characterSyncId"] != old_uid:
+                    raise ValueError("chat_source_integrity_error")
+                identity = record["messageId"]
+                raw = ChatOriginal(record["role"], record["text"], record["originalTime"], record["timezone"],
+                    record["conversationId"], record["replyToMessageId"])
+                original = json.dumps(asdict(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                if identity in records:
+                    saved = records[identity]
+                    if not saved["deleted"] and saved["original"] is not None and saved["original"] != original:
+                        raise ValueError("chat_source_integrity_error")
+                    if not saved["deleted"] and saved["origin_stream_id"] is not None and (
+                            saved["origin_stream_id"], saved["origin_seq"]) != (record["originStreamId"], record["originSeq"]):
+                        raise ValueError("chat_source_integrity_error")
+                    continue
+                if identity in deleted:
+                    continue
+                if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=? UNION ALL "
+                    "SELECT 1 FROM source_unbound WHERE record_id=? AND uid!=? UNION ALL "
+                    "SELECT 1 FROM source_originals WHERE record_id=? AND uid!=?",
+                    (identity, identity, old_uid, identity, old_uid)).fetchone():
+                    raise ValueError("chat_source_identity_conflict")
+                records[identity] = {"record_id": identity, "original": original,
+                    "original_hash": hashlib.sha256(original.encode()).hexdigest(), "deleted": 0,
+                    "scope": "private-chat-original-v1", "queued_at_ms": time.time_ns() // 1_000_000,
+                    "origin_stream_id": record["originStreamId"], "origin_seq": record["originSeq"]}
+            for identity, row in records.items():
+                erased = row["deleted"] or identity in deleted
+                original = None if erased else row["original"]
+                if original is not None:
+                    if hashlib.sha256(original.encode()).hexdigest() != row["original_hash"]:
+                        raise ValueError("chat_source_integrity_error")
+                    ChatOriginal(**json.loads(original))
+                # Re-enrollment requires the next explicit combined consent; pending old
+                # bodies become unbound, and old tombstones never become new deletion jobs.
+                connection.execute("INSERT INTO source_unbound "
+                    "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq,verified_owner,deletion_pending) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(record_id) DO UPDATE SET "
+                    "uid=excluded.uid,scope=excluded.scope,original=excluded.original,original_hash=excluded.original_hash,"
+                    "queued_at_ms=excluded.queued_at_ms,deleted=excluded.deleted,origin_stream_id=excluded.origin_stream_id,"
+                    "origin_seq=excluded.origin_seq,verified_owner=excluded.verified_owner,deletion_pending=0",
+                    (identity, new_uid, row["scope"], original, row["original_hash"], row["queued_at_ms"] or 0,
+                     int(erased), row["origin_stream_id"], row["origin_seq"], owner))
+            connection.execute("DELETE FROM source_originals WHERE uid=? AND owner=?", (old_uid, owner))
+            connection.execute("UPDATE source_local_replies SET uid=? WHERE uid=?", (new_uid, old_uid))
+            connection.execute("UPDATE source_origin_streams SET uid=? WHERE uid=?", (new_uid, old_uid))
+            connection.execute("UPDATE source_history_tasks SET status='cancelled' WHERE uid=?", (old_uid,))
+            connection.execute("INSERT INTO source_role_reassignments VALUES (?,?,?)", (old_uid, owner, new_uid))
+        return new_uid
+
+    def read_role_originals(self, owner, uid, ledger=None):
+        """Restore transferred local chat while a new cloud grant is pending or rejected.
+
+        This is a local display projection, never an ACK or an upload authorization. The
+        original owner remains pinned, so signing into another account cannot publish it.
+        """
+        ChatDomain(owner, uid)
+        with closing(self._connect()) as connection:
+            mapping = connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone()
+            if mapping is None:
+                return []
+            if mapping["owner"] != owner:
+                raise ValueError("chat_sync_owner_mismatch")
+            rows = connection.execute("SELECT record_id,uid,scope,original,original_hash,queued_at_ms,deleted,"
+                "origin_stream_id,origin_seq,verified_owner,deletion_pending FROM source_unbound WHERE uid=? AND deleted=0 AND original IS NOT NULL "
+                "UNION ALL SELECT record_id,uid,'private-chat-original-v1',original,original_hash,queued_at_ms,deleted,"
+                "origin_stream_id,origin_seq,owner,0 FROM source_originals WHERE uid=? AND owner=? AND deleted=0 AND original IS NOT NULL",
+                (uid, uid, owner)).fetchall()
+            hidden = {row[0] for row in connection.execute("SELECT record_id FROM source_unbound WHERE uid=? AND deleted=1 "
+                "UNION SELECT record_id FROM source_originals WHERE uid=? AND owner=? AND deleted=1", (uid, uid, owner))}
+            ancestors, seen = [], {uid}
+            previous_uid = uid
+            while ledger is not None:
+                previous = connection.execute("SELECT owner,old_uid FROM source_role_reassignments WHERE new_uid=?", (previous_uid,)).fetchone()
+                if previous is None:
+                    break
+                if previous["owner"] != owner or previous["old_uid"] in seen:
+                    raise ValueError("chat_source_integrity_error")
+                previous_uid = previous["old_uid"]
+                ancestors.append(previous_uid)
+                seen.add(previous_uid)
+        result = {}
+        for row in rows:
+            if row["verified_owner"] != owner:
+                raise ValueError("chat_sync_owner_mismatch")
+            if hashlib.sha256(row["original"].encode()).hexdigest() != row["original_hash"]:
+                raise ValueError("chat_source_integrity_error")
+            if row["scope"] != "private-chat-original-v1" or row["origin_stream_id"] is None or row["origin_seq"] is None:
+                continue
+            original = ChatOriginal(**json.loads(row["original"]))
+            record = {"schemaVersion": 1, "ownerId": owner, "characterSyncId": uid, "channel": "chat", "scope": "private-chat",
+                "messageId": row["record_id"], "originStreamId": row["origin_stream_id"], "originSeq": row["origin_seq"], **original.fields()}
+            encode_chat_original(record)
+            result[row["record_id"]] = record
+        if ledger is not None:
+            # Legacy source order is deliberately not reconstructed for upload. Its old
+            # canonical ledger may still supply a local-only view across repeated UID changes.
+            # Read every predecessor fence first: a later local delete wins over all old views.
+            for identity in [uid, *ancestors]:
+                hidden.update(ledger.deleted_message_ids(ChatDomain(owner, identity)))
+            for ancestor in ancestors:
+                for payload in ledger.visible_originals(ChatDomain(owner, ancestor)):
+                    record = decode_chat_original(payload)
+                    if record["ownerId"] != owner or record["characterSyncId"] != ancestor:
+                        raise ValueError("chat_source_integrity_error")
+                    result.setdefault(record["messageId"], {**record, "characterSyncId": uid})
+        return [record for identity, record in result.items() if identity not in hidden]
+
     def commit_unbound(self, uid, record_id, original: ChatOriginal):
         """Keep producer-proven raw bytes without assigning an account or upload task."""
         from utils.config_manager.reserved_schema import is_valid_character_uid
@@ -153,6 +322,7 @@ class ChatOriginalSource:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._require_current_uid(connection, uid)
             if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
                 raise ValueError("chat_source_identity_conflict")
             old = connection.execute("SELECT uid,original_hash FROM source_unbound WHERE record_id=?", (record_id,)).fetchone()
@@ -163,9 +333,10 @@ class ChatOriginalSource:
                 return
             stream, seq = self._allocate_origin(connection, uid)
             connection.execute("INSERT INTO source_unbound "
-                               "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq) "
-                               "VALUES (?,?,?,?,?,?,0,?,?)",
-                               (record_id, uid, "private-chat-original-v1", payload, digest, time.time_ns() // 1_000_000, stream, seq))
+                               "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq,verified_owner) "
+                               "VALUES (?,?,?,?,?,?,0,?,?,?)",
+                               (record_id, uid, "private-chat-original-v1", payload, digest, time.time_ns() // 1_000_000, stream, seq,
+                                (connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone() or [None])[0]))
         get_trace().emit("source_committed", character_uid=uid, message_id=record_id, local_message_id=record_id)
 
     def commit(self, owner, uid, record_id, original: ChatOriginal):
@@ -177,6 +348,7 @@ class ChatOriginalSource:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._require_current_uid(connection, uid, owner)
             if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
                 raise ValueError("chat_source_identity_conflict")
             old = connection.execute("SELECT * FROM source_originals WHERE record_id=?", (record_id,)).fetchone()
@@ -216,6 +388,7 @@ class ChatOriginalSource:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._require_current_uid(connection, uid)
             for table in ("source_originals", "source_unbound"):
                 if connection.execute(f"SELECT 1 FROM {table} WHERE record_id=?", (record_id,)).fetchone():
                     raise ValueError("chat_source_identity_conflict")
@@ -448,6 +621,16 @@ class ChatOriginalSource:
                                (task_id, task_id))
         return self.task(uid, task_id)
 
+    def cancel_preview(self, uid, task_id):
+        """Cancel only the caller's unapproved snapshot, retaining raw sources and committed grants."""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("UPDATE source_history_members SET status='cancelled' WHERE task_id=? AND status='waiting' "
+                               "AND EXISTS (SELECT 1 FROM source_history_tasks WHERE uid=? AND task_id=? AND status='preview')",
+                               (task_id, uid, task_id))
+            connection.execute("UPDATE source_history_tasks SET status='cancelled' WHERE uid=? AND task_id=? AND status='preview'",
+                               (uid, task_id))
+
     def approve_history(self, uid, task_id):
         """Approve the persisted snapshot once without reading newer source rows."""
         with closing(self._connect()) as connection, connection:
@@ -672,6 +855,31 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
             print("[chat-sync] local_original_sync_unavailable")
             return None
         return record_id
+    except ValueError as error:
+        if str(error) != "chat_source_role_reassigned":
+            raise
+        # A producer can hold the old config across the source/config-file commit gap.
+        # Follow only the fixed local lineage, retaining raw text without recreating a
+        # retired cloud identity. A newer Off is observed under the same commit gate.
+        def retain_reassigned():
+            with runtime._commit_lock:
+                target, owner, seen = uid, None, set()
+                while mapping := source.reassignment(target):
+                    if target in seen or owner not in (None, mapping["ownerId"]):
+                        raise ValueError("chat_source_integrity_error")
+                    seen.add(target)
+                    owner, target = mapping["ownerId"], mapping["newUid"]
+                current = runtime.state.binding(target)
+                if current and current["owner_id"] != owner:
+                    raise ValueError("chat_sync_owner_mismatch")
+                if current and current["enabled"] and runtime.state.choices().get(target, True):
+                    # This is the existing producer grant, never a newly created consent.
+                    source.commit(owner, target, record_id, original)
+                else:
+                    source.commit_unbound(target, record_id, original)
+        await asyncio.to_thread(retain_reassigned)
+        runtime.wake_scheduler()
+        return record_id
     # Keep the original durable before the model starts; ledger replay belongs
     # to the owned scheduler, so the producer never waits for backlog processing.
     # This first transaction is the crash-recovery barrier. Scheduling an unsaved
@@ -694,7 +902,24 @@ async def save_local_reply(lanlan_name, text, proof, *, config_manager=None):
     runtime = await get_desktop_chat_sync_runtime(manager)
     source = await asyncio.to_thread(ChatOriginalSource, _source_path(runtime))
     original = ChatOriginal("assistant", text, original_time=proof["originalTime"], timezone="UTC")
-    await asyncio.to_thread(source.commit_local_reply, uid, proof["recordId"], original, proof["origin"])
+    try:
+        await asyncio.to_thread(source.commit_local_reply, uid, proof["recordId"], original, proof["origin"])
+    except ValueError as error:
+        if str(error) != "chat_source_role_reassigned":
+            raise
+        # A delayed tool completion belongs to the same local character after its
+        # fixed UID transfer. Follow only that lineage and keep the reply in the
+        # local-only lane; neither a new cloud grant nor a history approval is created.
+        def retain_local():
+            with runtime._commit_lock:
+                target, seen = uid, set()
+                while mapping := source.reassignment(target):
+                    if target in seen:
+                        raise ValueError("chat_source_integrity_error")
+                    seen.add(target)
+                    target = mapping["newUid"]
+                source.commit_local_reply(target, proof["recordId"], original, proof["origin"])
+        await asyncio.to_thread(retain_local)
     return proof["recordId"]
 
 

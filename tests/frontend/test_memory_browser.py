@@ -6156,7 +6156,7 @@ def test_memory_browser_chat_original_deletion_waits_for_save(
     posts = []
 
     def load(route):
-        route.fulfill(json={"content": seed_memory_file.read_text(),
+        route.fulfill(json={"content": seed_memory_file.read_text(encoding="utf-8"),
             "fingerprint": "fp", "identity_token": "token", "chat_sync": {
                 "characterSyncId": uid, "binding": None,
                 "originals": [{"messageId": mid, "role": "user", "text": "same exact text"}

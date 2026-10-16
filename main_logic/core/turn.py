@@ -388,6 +388,13 @@ class TurnMixin:
         # The outcome owner tracks both Agent and ordinary proactive injections. Transfer the explicit
         # origin, not the mere presence of an outcome callback, when Gemini opens its next host reply.
         injected_origin = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''), {}).get('origin')
+        if (injected_origin not in ('agent', 'proactive')
+            and callable(getattr(voice_session, "get_conversation_turn_type", None))
+            and voice_session.get_conversation_turn_type() == "proactive_reply"):
+            # Ordinary voice nudges have no text-path finish callback. Reuse
+            # the client's fixed inject-owner proof before the first output;
+            # an explicit Agent callback remains local under its own origin.
+            injected_origin = 'proactive'
         if self._takeover_active:
             logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
@@ -2854,6 +2861,17 @@ class TurnMixin:
             "request_id": effective_request_id,
         }
         # Source proof is server-created and immutable for this particular reply.
+        voice_session = getattr(self, "session", None)
+        gemini_source = getattr(voice_session, "_gemini_tool_response_source", None)
+        explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
+        if (getattr(voice_session, "_is_gemini", False) is True
+            and isinstance(gemini_source, tuple) and len(gemini_source) == 2
+            and explicit_origin not in ("proactive", "agent")
+            and voice_session._tool_task_owner_is_current(gemini_source[0])):
+            # Only actual Gemini tool dispatch/result continuation may label
+            # this response local. A still-current cancellation scope alone
+            # does not prove that a later SERVER_VAD voice reply used a tool.
+            mark_tool_turn(self, effective_turn_id)
         tool_owner = getattr(self, "_chat_original_tool_owner", None)
         if tool_owner is not None:
             session, scope, marked_speech_id = tool_owner

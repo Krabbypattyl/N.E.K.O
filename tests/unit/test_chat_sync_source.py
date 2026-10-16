@@ -53,6 +53,229 @@ def source_for(runtime):
     return ChatOriginalSource(Path(runtime.state.path).parent / "sources.sqlite3")
 
 
+def test_deleted_cloud_role_reassignment_retains_local_history_without_old_requests(tmp_path):
+    """An explicit new identity retains verified text, never the retired domain's grants or deletes."""
+    from services.chat_sync_protocol import decode_chat_original, encode_chat_original
+    runtime = make_runtime(tmp_path)
+    source, new_uid = source_for(runtime), "b" * 32
+    source.commit(OWNER, UID, "1" * 32, RAW)
+    source.commit_unbound(UID, "2" * 32, RAW)
+    source.commit_unbound(UID, "3" * 32, RAW)
+    source.purge(OWNER, UID, ["3" * 32])
+    source.commit_local_reply(UID, "4" * 32, ChatOriginal("assistant", "tool stays local"), "tool")
+    record = {"schemaVersion": 1, "ownerId": OWNER, "characterSyncId": UID,
+              "channel": "chat", "scope": "private-chat", "messageId": "5" * 32,
+              "originStreamId": "6" * 32, "originSeq": 7, **RAW.fields()}
+    runtime.ledger.apply_changes(DOMAIN, {"cursor": 1, "hasMore": False,
+        "originals": [encode_chat_original(record).decode()], "deletedMessageIds": []}, after=0)
+    old_ledger = runtime.ledger.visible_originals(DOMAIN)
+    assert source.reassign_role(OWNER, UID, new_uid, runtime.ledger) == new_uid
+    assert runtime.ledger.visible_originals(DOMAIN) == old_ledger
+    assert source.pending(200) == []
+    assert source.pending_deletions(new_uid, 200) == []
+    visible = {row["messageId"]: row for row in source.read_role_originals(OWNER, new_uid)}
+    assert set(visible) == {"1" * 32, "2" * 32, "5" * 32}
+    assert all(row["characterSyncId"] == new_uid and row["text"] == RAW.text for row in visible.values())
+    assert visible["5" * 32]["originStreamId"] == record["originStreamId"]
+    assert visible["5" * 32]["originSeq"] == 7
+    assert source.read_local_replies(source.path, new_uid)[0]["text"] == "tool stays local"
+    binding = {"owner_id": OWNER, "character_uid": new_uid, "binding_id": "8" * 32, "generation": 1}
+    task = source.prepare_history(binding, "https://sync.synthetic.test", "synthetic", "local", "cloud", device_id="9" * 32)
+    assert task["count"] == 3
+    task = source.approve_history(new_uid, task["task_id"])
+    assert source.advance_history(task, binding) == 3
+    for row, locator in source.pending(200):
+        runtime.ledger.capture(ChatDomain(OWNER, new_uid), locator, ChatOriginal(**json.loads(row["original"])),
+            message_id=row["record_id"], queue_lane="history", proven_source_origin=(row["origin_stream_id"], row["origin_seq"]))
+    new_records = [decode_chat_original(raw) for raw in runtime.ledger.visible_originals(ChatDomain(OWNER, new_uid))]
+    assert {row["messageId"] for row in new_records} == set(visible)
+    assert runtime.ledger.pending_deletions(ChatDomain(OWNER, new_uid)) == []
+
+
+def test_role_reassignment_is_fixed_idempotent_and_rejects_late_old_producer(tmp_path):
+    """Crash recovery reuses one new UID, and cannot move a later role or publish old account text."""
+    runtime = make_runtime(tmp_path)
+    source, new_uid = source_for(runtime), "b" * 32
+    source.commit(OWNER, UID, "1" * 32, RAW)
+    source.reassign_role(OWNER, UID, new_uid, runtime.ledger)
+    source.commit_unbound(new_uid, "2" * 32, RAW)
+    reopened = ChatOriginalSource(source.path)
+    assert reopened.reassign_role(OWNER, UID, new_uid, runtime.ledger) == new_uid
+    assert reopened.reassignment(UID) == {"ownerId": OWNER, "oldUid": UID, "newUid": new_uid}
+    assert len(reopened.read_role_originals(OWNER, new_uid)) == 2
+    with pytest.raises(ValueError, match="chat_source_role_reassigned"):
+        reopened.commit_unbound(UID, "3" * 32, RAW)
+    with pytest.raises(ValueError, match="chat_source_role_reassigned"):
+        reopened.commit(OWNER, UID, "3" * 32, RAW)
+    with pytest.raises(ValueError, match="chat_source_role_reassigned"):
+        reopened.commit_local_reply(UID, "3" * 32, ChatOriginal("assistant", "late"), "tool")
+    with pytest.raises(ValueError, match="chat_sync_binding_conflict"):
+        reopened.reassign_role(OWNER, UID, "c" * 32, runtime.ledger)
+    with pytest.raises(ValueError, match="chat_sync_owner_mismatch"):
+        reopened.reassign_role(OTHER, UID, new_uid, runtime.ledger)
+    with pytest.raises(ValueError, match="chat_sync_owner_mismatch"):
+        reopened.read_role_originals(OTHER, new_uid)
+
+
+def test_role_reassignment_rolls_back_and_keeps_unknown_or_deleted_sources_unpublished(tmp_path):
+    """A failed transfer leaves the old source intact; missing source order is never invented."""
+    runtime = make_runtime(tmp_path)
+    source, new_uid = source_for(runtime), "b" * 32
+    source.commit(OWNER, UID, "1" * 32, RAW)
+    source.commit_unbound(UID, "2" * 32, RAW)
+    with sqlite3.connect(source.path) as connection:
+        connection.execute("UPDATE source_unbound SET origin_seq=NULL,origin_stream_id=NULL WHERE record_id=?", ("2" * 32,))
+        connection.execute("CREATE TRIGGER fail_reassignment BEFORE INSERT ON source_role_reassignments "
+                           "BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="synthetic rollback"):
+        source.reassign_role(OWNER, UID, new_uid, runtime.ledger)
+    assert source.known_ids(OWNER, UID) == ["1" * 32, "2" * 32]
+    assert source.reassignment(UID) is None
+    with sqlite3.connect(source.path) as connection:
+        connection.execute("DROP TRIGGER fail_reassignment")
+    source.reassign_role(OWNER, UID, new_uid, runtime.ledger)
+    task = source.prepare_history({"owner_id": OWNER, "character_uid": new_uid}, "https://sync.synthetic.test",
+        "synthetic", "local", "cloud", device_id="9" * 32)
+    assert task["count"] == 1
+    with sqlite3.connect(source.path) as connection:
+        assert connection.execute("SELECT original FROM source_unbound WHERE record_id=?", ("2" * 32,)).fetchone()[0]
+
+
+@pytest.mark.parametrize("lane", ["another_role", "local_tool"])
+def test_role_reassignment_does_not_steal_another_roles_source_or_promote_tool_identity(tmp_path, lane):
+    """A downloaded ID collision must roll back the transfer rather than change its provenance."""
+    from services.chat_sync_protocol import encode_chat_original
+    runtime = make_runtime(tmp_path)
+    source = source_for(runtime)
+    if lane == "another_role":
+        source.commit_unbound("c" * 32, "1" * 32, RAW)
+    else:
+        source.commit_local_reply(UID, "1" * 32, ChatOriginal("assistant", "tool stays local"), "tool")
+    wire = {"schemaVersion": 1, "ownerId": OWNER, "characterSyncId": UID,
+        "channel": "chat", "scope": "private-chat", "messageId": "1" * 32,
+        "originStreamId": "6" * 32, "originSeq": 7, **RAW.fields()}
+    runtime.ledger.apply_changes(DOMAIN, {"cursor": 1, "hasMore": False,
+        "originals": [encode_chat_original(wire).decode()], "deletedMessageIds": []}, after=0)
+    with pytest.raises(ValueError, match="chat_source_identity_conflict"):
+        source.reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    assert source.reassignment(UID) is None
+    if lane == "another_role":
+        assert source.known_ids(None, "c" * 32) == ["1" * 32]
+    else:
+        assert source.read_local_replies(source.path, UID)[0]["text"] == "tool stays local"
+
+
+def test_role_reassignment_rejects_conflicting_ledger_text_without_moving_sources(tmp_path):
+    """A canonical but changed ledger body cannot silently replace proven source bytes."""
+    from services.chat_sync_protocol import encode_chat_original
+    runtime = make_runtime(tmp_path)
+    source = source_for(runtime)
+    source.commit(OWNER, UID, "1" * 32, RAW)
+    wire = {"schemaVersion": 1, "ownerId": OWNER, "characterSyncId": UID,
+        "channel": "chat", "scope": "private-chat", "messageId": "1" * 32,
+        "originStreamId": "6" * 32, "originSeq": 7, **RAW.fields(), "text": "different bytes"}
+    runtime.ledger.apply_changes(DOMAIN, {"cursor": 1, "hasMore": False,
+        "originals": [encode_chat_original(wire).decode()], "deletedMessageIds": []}, after=0)
+    with pytest.raises(ValueError, match="chat_source_integrity_error"):
+        source.reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    assert source.reassignment(UID) is None
+    assert source.known_ids(OWNER, UID) == ["1" * 32]
+
+
+def test_reassigned_sources_remain_pinned_to_the_original_account(tmp_path):
+    """Neither a late bound producer nor another reassignment can adopt another account's source."""
+    runtime = make_runtime(tmp_path)
+    source = source_for(runtime)
+    source.reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    with pytest.raises(ValueError, match="chat_sync_owner_mismatch"):
+        source.commit(OTHER, "b" * 32, "1" * 32, RAW)
+    with pytest.raises(ValueError, match="chat_sync_owner_mismatch"):
+        source.reassign_role(OTHER, "b" * 32, "c" * 32, runtime.ledger)
+
+
+def test_unknown_history_stays_visible_across_repeated_reassignment_without_upload_permission(tmp_path):
+    """Legacy source order stays unknown while its previous local ledger remains readable after a UID change."""
+    runtime = make_runtime(tmp_path)
+    source = source_for(runtime)
+    source.commit(OWNER, UID, "1" * 32, RAW)
+    row, locator = source.pending(1)[0]
+    runtime.ledger.capture(DOMAIN, locator, RAW, message_id=row["record_id"],
+        proven_source_origin=(row["origin_stream_id"], row["origin_seq"]))
+    with sqlite3.connect(source.path) as connection:
+        connection.execute("UPDATE source_originals SET origin_stream_id=NULL,origin_seq=NULL WHERE uid=?", (UID,))
+    source.reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    source.reassign_role(OWNER, "b" * 32, "c" * 32, runtime.ledger)
+    visible = source.read_role_originals(OWNER, "c" * 32, runtime.ledger)
+    assert [row["text"] for row in visible] == [RAW.text]
+    task = source.prepare_history({"owner_id": OWNER, "character_uid": "c" * 32}, "https://sync.synthetic.test",
+        "synthetic", "local", "cloud", device_id="9" * 32)
+    assert task["count"] == 0
+    source.purge(OWNER, "c" * 32, ["1" * 32])
+    assert source.read_role_originals(OWNER, "c" * 32, runtime.ledger) == []
+
+
+@pytest.mark.asyncio
+async def test_late_optional_source_save_after_uid_reassignment_does_not_break_normal_chat(tmp_path, monkeypatch):
+    """A producer holding an old config snapshot cannot recreate that domain or fail the primary conversation."""
+    import threading
+    runtime = make_runtime(tmp_path)
+    runtime._commit_lock = threading.Lock()
+    source_for(runtime).reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
+        "Lan": {"_reserved": {"character_uid": UID}},
+    }}))
+    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    assert await save_original("Lan", "user", RAW.text, record_id="2" * 32,
+        original_time=RAW.original_time, config_manager=manager) == "2" * 32
+    assert source_for(runtime).known_ids(OWNER, UID) == []
+    assert [row["text"] for row in source_for(runtime).read_role_originals(OWNER, "b" * 32)] == [RAW.text]
+    assert source_for(runtime).pending(200) == []
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.asyncio
+async def test_late_reassigned_producer_observes_current_new_uid_grant_and_off(tmp_path, monkeypatch, enabled):
+    """A saved On may capture a late producer normally; a newer Off leaves only unbound local text."""
+    import threading
+    runtime = make_runtime(tmp_path)
+    runtime._commit_lock = threading.Lock()
+    source = source_for(runtime)
+    source.reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    prepared = runtime.state.prepare_binding(ChatDomain(OWNER, "b" * 32))
+    runtime.state.activate(prepared, "c" * 32)
+    runtime.state.save_choice("b" * 32, enabled)
+    if not enabled:
+        runtime.state.pause("b" * 32)
+    manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
+        "Lan": {"_reserved": {"character_uid": UID}},
+    }}))
+    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    assert await save_original("Lan", "user", RAW.text, record_id="2" * 32,
+        original_time=RAW.original_time, config_manager=manager) == "2" * 32
+    assert len(source.pending(200)) == int(enabled)
+    assert [row["text"] for row in source.read_role_originals(OWNER, "b" * 32)] == [RAW.text]
+
+
+@pytest.mark.asyncio
+async def test_late_local_tool_reply_follows_fixed_uid_lineage_without_uploading(tmp_path, monkeypatch):
+    """A tool completion holding an old config stays visible locally after two cloud retirements."""
+    import threading
+    runtime = make_runtime(tmp_path)
+    runtime._commit_lock = threading.Lock()
+    source = source_for(runtime)
+    source.reassign_role(OWNER, UID, "b" * 32, runtime.ledger)
+    source.reassign_role(OWNER, "b" * 32, "c" * 32, runtime.ledger)
+    manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
+        "Lan": {"_reserved": {"character_uid": UID}},
+    }}))
+    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    proof = {"recordId": "5" * 32, "originalTime": RAW.original_time, "origin": "tool"}
+    assert await source_module.save_local_reply("Lan", RAW.text, proof, config_manager=manager) == proof["recordId"]
+    assert source.read_local_replies(source.path, "c" * 32)[0]["text"] == RAW.text
+    assert source.pending(200) == [] and source.known_ids(OWNER, "c" * 32) == []
+    runtime.wake_scheduler.assert_not_called()
+
+
 def test_local_only_reply_is_durable_exact_and_never_an_upload_candidate(tmp_path):
     """Local replies survive reopening without entering any source upload lane."""
     runtime = make_runtime(tmp_path)
@@ -646,12 +869,15 @@ async def test_realtime_tool_scope_keeps_preface_and_rotated_continuation_local(
     client = OmniRealtimeClient("wss://example.invalid/realtime", "synthetic", api_type=api_type,
                                get_host_turn_id=lambda: manager.current_speech_id)
     manager.session = client
-    client.ws = object()
+    client.ws = SimpleNamespace(send_tool_response=AsyncMock()) if api_type == "gemini" else object()
     if api_type == "gemini":
+        from main_logic.omni_realtime_client import _gemini_support
+        monkeypatch.setattr(_gemini_support, "types", SimpleNamespace(
+            FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs),
+        ))
         client._gemini_session = client.ws
     client._on_connection_attached()
     client._send_tool_results_openai_realtime = AsyncMock()
-    client._send_tool_result_gemini = AsyncMock()
     started, release = asyncio.Event(), asyncio.Event()
 
     async def execute(call):
@@ -674,6 +900,8 @@ async def test_realtime_tool_scope_keeps_preface_and_rotated_continuation_local(
     await asyncio.wait_for(started.wait(), 1)
     release.set()
     await _wait_for_tool_tasks(client)
+    if api_type == "gemini":
+        client.ws.send_tool_response.assert_awaited_once()
     # No-server-VAD terminal and Gemini continuation can rotate the host speech ID in the same tool scope.
     manager.current_speech_id = "tool-continuation"
     await TurnMixin.send_lanlan_response(manager, "tool reply", is_first_chunk=True)

@@ -119,10 +119,38 @@ class ToolCallingMixin:
         return n
 
     def _make_tool_call_handler(self, session):
+        if isinstance(session, OmniRealtimeClient):
+            # Accepting a provider call and executing it are different phases.
+            # The source marker must reach the queue before any terminal, even
+            # if the asynchronous handler has not received CPU yet.
+            session.on_tool_call_accepted = lambda call: self._note_realtime_tool_source(
+                call, invoking_session=session,
+            )
         async def _handle(call: ToolCall) -> ToolResult:
             return await self._on_tool_call(call, invoking_session=session)
 
         return _handle
+
+    def _note_realtime_tool_source(self, call: ToolCall, *, invoking_session) -> None:
+        owner = call.source_owner
+        if (owner is None or invoking_session is not getattr(self, "session", None)
+            or not invoking_session._tool_task_owner_is_current(owner)):
+            return
+        # Never borrow current_speech_id: the provider owner was frozen before
+        # scheduling and a terminal may already have rotated the live host ID.
+        speech_id = owner.host_turn_id
+        if call.provider_meta.get("chat_original_source") is not None:
+            return
+        mark_tool_turn(self, speech_id)
+        proof = getattr(self, "_chat_original_turns", {}).get(str(speech_id or ""))
+        if proof is not None:
+            # Reuse the fixed proof in existing per-call host metadata. The
+            # legacy async fallback must not requeue a completed reply's marker.
+            call.provider_meta["chat_original_source"] = dict(proof)
+        if not getattr(invoking_session, "_is_gemini", False):
+            # Raw continuations use the existing user scope. Gemini instead
+            # carries its explicit dispatch/tool-response source tokens.
+            self._chat_original_tool_owner = (invoking_session, owner, speech_id)
 
     async def _on_tool_call(
         self,
@@ -142,14 +170,9 @@ class ToolCallingMixin:
             if not getattr(owner, "turn_ended", False):
                 mark_tool_turn(self, getattr(owner, "speech_id", None))
         elif call.source_owner is not None:
-            # Realtime dispatch already validated this frozen connection/tool-scope owner. Never borrow
-            # current_speech_id here: a provider terminal can rotate it before the tool task gets CPU.
-            speech_id = call.source_owner.host_turn_id
-            mark_tool_turn(self, speech_id)
-            if invoking_session is getattr(self, "session", None):
-                # The same user scope may produce another provider response with a fresh speech ID.
-                # Keep that continuation local too; the client advances scope on actual user input.
-                self._chat_original_tool_owner = (invoking_session, call.source_owner, speech_id)
+            # Retain provenance for direct/legacy handler calls as well as the
+            # synchronous acceptance observer; both enforce the frozen owner.
+            self._note_realtime_tool_source(call, invoking_session=invoking_session)
         if call.reply_owner is not None:
             from main_logic.reply_tail import reply_tail_registry
 

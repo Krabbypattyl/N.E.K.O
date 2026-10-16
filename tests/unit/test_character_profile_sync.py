@@ -71,6 +71,10 @@ class ProfileService(SyntheticService):
         self.reject_detail = None
 
     async def request(self, request):
+        if request.url.path.endswith('/character-policy'):
+            self.policy_requests.append(request)
+            return httpx.Response(200, json={'ownerId': self.owner, 'revision': 1, 'characterLimit': 3,
+                'characterCount': 1, 'requiresSelection': False, 'selectedCharacterSyncIds': [UID]})
         if request.url.path.endswith("/profile"):
             self.requests.append(request)
             self.profile_requests.append(request)
@@ -232,7 +236,7 @@ async def test_invalid_profile_metadata_never_replaces_a_cached_definition(tmp_p
         await runtime.close()
 
 
-@pytest.mark.parametrize("case", json.loads((Path(__file__).parents[1] / "fixtures/character_profile_v1.json").read_text())["valid"])
+@pytest.mark.parametrize("case", json.loads((Path(__file__).parents[1] / "fixtures/character_profile_v1.json").read_text(encoding="utf-8"))["valid"])
 def test_shared_codec_fixture_matches_exact_wire(case):
     raw = encode_character_profile(case["profile"])
     assert raw.decode() == case["canonical"]
@@ -858,7 +862,7 @@ async def test_new_role_choice_cannot_override_later_local_decisions(tmp_path, c
         service.requests.clear()
         await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
         assert not service.requests
-        assert runtime.state.new_role(UID) is not None
+        assert (runtime.state.new_role(UID) is None) == (reason == 'pause')
         if reason == 'pause':
             assert not runtime.state.binding(UID)['enabled']
     finally:
@@ -1048,6 +1052,69 @@ async def test_changed_new_role_profile_blocks_retry_until_explicit_save(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+async def test_character_quota_failure_keeps_local_card_and_blocks_automatic_retry(tmp_path, config, manual):
+    """A full cloud account does not erase local data or repeatedly submit its denied registration."""
+    class QuotaService(ProfileService):
+        async def request(self, request):
+            if request.method == 'PUT' and request.url.path == '/prototype/chat-sync/characters/' + UID:
+                self.requests.append(request)
+                return httpx.Response(409, json={'detail': 'character_quota_exceeded'})
+            return await super().request(request)
+
+    runtime, service, _ = setup_runtime(tmp_path, QuotaService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    before = copy.deepcopy(config.data)
+    try:
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        request = runtime.state.new_role(UID)
+        if manual:
+            with pytest.raises(ValueError, match='^character_quota_exceeded$'):
+                await runtime.run_character_sync_choice(UID)
+        else:
+            await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        assert runtime.state.new_role_errors() == {UID: 'character_quota_exceeded'}
+        assert runtime.state.new_role(UID)['requestId'] == request['requestId']
+        assert not runtime.state.binding(UID)['enabled']
+        assert config.data == before and not config.saves and not service.records
+        assert runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key()) is None
+
+        service.requests.clear()
+        runtime.test_clock[0] += 60_000
+        await runtime._start_new_role_sync(await runtime.session_presence_provider())
+        assert service.requests == [] and 'new-role' not in runtime._flights
+        # A later explicit save retries the same user choice without inventing a quota-management flow.
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        assert 'error' not in runtime.state.new_role(UID)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        assert runtime.state.new_role_errors() == {UID: 'character_quota_exceeded'}
+        assert len([item for item in service.requests if item.method == 'PUT']) == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('other_route', [False, True])
+async def test_only_exact_registration_quota_responses_are_exposed(tmp_path, other_route):
+    """Unrelated routes or arbitrary error-body fields keep the generic safe error."""
+    class UnrecognizedQuotaService(ProfileService):
+        async def request(self, request):
+            body = {'detail': 'character_quota_exceeded'}
+            if not other_route:
+                body['untrusted'] = 'synthetic extra field'
+            return httpx.Response(409, json=body)
+
+    runtime, _, _ = setup_runtime(tmp_path, UnrecognizedQuotaService())
+    try:
+        await runtime.configure('https://sync.test')
+        path = '/prototype/chat-sync/characters/' + UID + ('/profile' if other_route else '')
+        with pytest.raises(ValueError, match='^chat_sync_service_rejected$'):
+            await runtime._request('PUT', path, 'synthetic-token')
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_card_resume_revalidates_owner_before_reenabling_a_paused_binding(tmp_path, config):
     from tests.unit.test_chat_sync_runtime import OTHER_OWNER
     runtime, service, _ = await bound(tmp_path, config)
@@ -1222,7 +1289,7 @@ async def test_newer_card_save_fences_the_older_history_approval_commit(tmp_path
         runtime.approve_history = save_newer_before_commit
         await runtime._run_new_role_sync(UID, old_request, await runtime.session_presence_provider())
         assert runtime.state.new_role(UID)['requestId'] != old_request['requestId']
-        assert source.task(UID)['status'] == 'preview'
+        assert source.task(UID)['status'] == 'cancelled'
         assert source.approved_tasks(UID) == []
     finally:
         await runtime.close()
@@ -1296,8 +1363,8 @@ async def test_combined_choice_with_no_history_does_not_leave_an_approved_empty_
 
 
 @pytest.mark.asyncio
-async def test_cloud_directory_pages_every_role_without_an_account_quota(tmp_path):
-    """Directory page size bounds transport, not the number of roles a beta account may own."""
+async def test_cloud_directory_pages_all_retained_roles_independently_of_registration_quota(tmp_path):
+    """A registration policy never silently truncates an existing paginated directory."""
     roles = [{"characterSyncId": f"{index:032x}", "displayName": f"Role {index}"} for index in range(1, 206)]
 
     class PagedDirectoryService(ProfileService):

@@ -9,7 +9,7 @@ import pytest
 from services.chat_sync_protocol import decode_chat_original, encode_chat_original
 
 
-FIXTURES = json.loads((Path(__file__).parents[1] / "fixtures/chat_sync_original_v1.json").read_text())
+FIXTURES = json.loads((Path(__file__).parents[1] / "fixtures/chat_sync_original_v1.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("case", FIXTURES["valid"], ids=lambda case: case["name"])

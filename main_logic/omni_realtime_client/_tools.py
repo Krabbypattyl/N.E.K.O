@@ -357,6 +357,9 @@ class _ToolingMixin:
         """Retire every tool owned by the preceding user/connection scope."""
 
         self._tool_scope_generation = getattr(self, "_tool_scope_generation", 0) + 1
+        # Source ownership is narrower than the cancellation scope: a fresh
+        # user/connection can never inherit a preceding Gemini tool response.
+        self._gemini_tool_response_source = None
         getattr(self, "_cancelled_tool_call_ids", set()).clear()
         # Batches are keyed by the scope they were opened in, so the entries
         # below could never be matched again anyway; dropping them keeps the
@@ -645,6 +648,15 @@ class _ToolingMixin:
             registry[key] = batch
         return batch
 
+    def _note_tool_call_accepted(self, call: ToolCall, owner: _ToolTaskOwner) -> None:
+        """Publish frozen source proof before a terminal can flush the reply."""
+        if not self._tool_task_owner_is_current(owner):
+            return
+        call.source_owner = owner
+        observer = getattr(self, "on_tool_call_accepted", None)
+        if observer is not None:
+            observer(call)
+
     def _start_raw_tool_call(
         self,
         call: ToolCall,
@@ -668,10 +680,11 @@ class _ToolingMixin:
         missing, and answered without it.
         """
 
+        self._note_tool_call_accepted(call, owner)
+
         async def _run() -> ToolResult | None:
             if not self._tool_task_owner_is_current(owner):
                 return None
-            call.source_owner = owner
             return await self._execute_tool_call(call)
 
         task = self._create_tool_task(_run(), call_ids=(call.call_id,))
@@ -698,10 +711,16 @@ class _ToolingMixin:
         calls: List[ToolCall],
         owner: _ToolTaskOwner,
     ) -> asyncio.Task:
+        # Gemini has no response IDs. The actual tool dispatch establishes
+        # source evidence for this response; a terminal retires this token,
+        # and the corresponding tool-result send establishes its continuation.
+        self._gemini_tool_response_source = (owner, object())
+        for call in calls:
+            self._note_tool_call_accepted(call, owner)
+
         async def _execute(call: ToolCall) -> ToolResult | None:
             if not self._tool_task_owner_is_current(owner):
                 return None
-            call.source_owner = owner
             return await self._execute_tool_call(call)
 
         # Gemini delivers the whole parallel batch in one ``tool_call`` event,

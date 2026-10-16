@@ -64,7 +64,7 @@ def test_single_database_rollback_is_detected_by_next_live_operation(tmp_path):
 
 def test_pending_old_head_quarantines_instead_of_guessing_crash_before_commit(tmp_path):
     writer = initialized(tmp_path)
-    state = json.loads(writer.path.read_text())
+    state = json.loads(writer.path.read_text(encoding="utf-8"))
     state['pending'] = {'database': 'sources.sqlite3', 'old': state['heads']['sources.sqlite3'],
                         'new': {'lineage': state['lineage'], 'revision': 1, 'token': 'f' * 32}}
     writer.path.write_text(json.dumps(state))
@@ -74,16 +74,16 @@ def test_pending_old_head_quarantines_instead_of_guessing_crash_before_commit(tm
 
 def test_pending_new_head_is_finalized_without_replaying_business_work(tmp_path):
     writer = initialized(tmp_path)
-    old_state = json.loads(writer.path.read_text())
+    old_state = json.loads(writer.path.read_text(encoding="utf-8"))
     save(writer)
-    state = json.loads(writer.path.read_text())
+    state = json.loads(writer.path.read_text(encoding="utf-8"))
     new = state['heads']['sources.sqlite3']
     state['heads'] = old_state['heads']
     state['pending'] = {'database': 'sources.sqlite3', 'old': old_state['heads']['sources.sqlite3'], 'new': new}
     writer.path.write_text(json.dumps(state))
     restarted = ChatSyncWriter(writer.directory, writer.path)
     restarted.check()
-    assert json.loads(writer.path.read_text())['pending'] is None
+    assert json.loads(writer.path.read_text(encoding="utf-8"))['pending'] is None
     with closing(restarted.connect(writer.directory / 'sources.sqlite3')) as conn:
         assert conn.execute('SELECT count(*) FROM originals').fetchone()[0] == 1
 
@@ -103,7 +103,7 @@ def test_corrupt_witness_cannot_be_replaced_by_constructor(tmp_path):
     writer.path.write_text('{broken')
     with pytest.raises(WriterQuarantined):
         ChatSyncWriter(writer.directory, writer.path).check()
-    assert writer.path.read_text() == '{broken'
+    assert writer.path.read_text(encoding="utf-8") == '{broken'
 
 
 def test_runtime_registers_all_databases_and_blocks_copied_binding(tmp_path):
@@ -119,11 +119,11 @@ def test_runtime_registers_all_databases_and_blocks_copied_binding(tmp_path):
     domain = ChatDomain('12345678-1234-4234-8234-123456789abc', 'a' * 32)
     prepared = runtime.state.prepare_binding(domain)
     runtime.state.activate(prepared, 'b' * 32)
-    assert set(json.loads(runtime.writer.path.read_text())['heads']) == {
+    assert set(json.loads(runtime.writer.path.read_text(encoding="utf-8"))['heads']) == {
         'state.sqlite3', 'originals.sqlite3', 'sources.sqlite3', 'profiles.sqlite3', 'scheduler.sqlite3'}
     clone = tmp_path / 'copied'
     clone.mkdir()
-    for name in json.loads(runtime.writer.path.read_text())['heads']:
+    for name in json.loads(runtime.writer.path.read_text(encoding="utf-8"))['heads']:
         backup(directory / name, clone / name)
     copied = DesktopChatSyncRuntime(clone, session, witness_path=tmp_path / 'other' / 'writer.json')
     with pytest.raises(WriterQuarantined):
@@ -179,7 +179,7 @@ def test_faulted_source_saves_raw_without_old_source_sequence(tmp_path):
     assert rows[0][0] == '1' * 32
     assert json.loads(rows[0][1])['text'] == 'offline'
     assert rows[0][2] == 1
-    assert runtime.writer.path.read_text() == '{broken'
+    assert runtime.writer.path.read_text(encoding="utf-8") == '{broken'
 
 
 def test_failed_sql_constraint_rolls_back_without_losing_writer_authority(tmp_path):
@@ -229,6 +229,9 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_history_and_d
         body = json.loads(request.content) if request.content else None
         if request.url.path == '/v1/chat-sync/identity':
             return httpx.Response(200, json={'ownerId': owner})
+        if request.url.path.endswith('/character-policy'):
+            return httpx.Response(200, json={'ownerId': owner, 'revision': 1, 'characterLimit': 3,
+                'characterCount': 1, 'requiresSelection': False, 'selectedCharacterSyncIds': [uid]})
         if request.url.path.endswith('/bindings'):
             return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'deviceId': body['deviceId'], 'bindingId': binding_id})
         if request.url.path.endswith('/recovery/deletions'):
@@ -319,7 +322,7 @@ def test_two_processes_serialize_reservation_and_commit_without_lost_heads(tmp_p
         process.join(10)
         assert process.exitcode == 0
     writer.check()
-    assert json.loads(writer.path.read_text())['heads']['sources.sqlite3']['revision'] == 2
+    assert json.loads(writer.path.read_text(encoding="utf-8"))['heads']['sources.sqlite3']['revision'] == 2
     with closing(sqlite3.connect(writer.directory / 'sources.sqlite3')) as conn:
         assert conn.execute('SELECT id FROM originals ORDER BY id').fetchall() == [('1',), ('2',)]
 

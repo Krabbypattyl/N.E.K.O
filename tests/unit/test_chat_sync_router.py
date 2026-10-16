@@ -126,7 +126,8 @@ def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client)
     assert role['binding']['enabled'] is False
 
 
-@pytest.mark.parametrize('error,status', [(None, 200), ('chat_sync_login_required', 401), ('chat_sync_unavailable', 503)])
+@pytest.mark.parametrize('error,status', [(None, 200), ('chat_sync_login_required', 401), ('chat_sync_unavailable', 503),
+                                        ('character_quota_exceeded', 409)])
 def test_manual_combined_choice_run_is_local_and_exposes_real_errors(local_client, error, status):
     """The separate run route consumes existing consent and never accepts a caller-supplied owner."""
     from unittest.mock import AsyncMock
@@ -136,6 +137,8 @@ def test_manual_combined_choice_run_is_local_and_exposes_real_errors(local_clien
     path = '/api/chat-sync/characters/' + UID + '/sync-choice/run'
     response = client.post(path)
     assert response.status_code == status
+    if error:
+        assert response.json() == {'detail': error}
     runtime.run_character_sync_choice.assert_awaited_once_with(UID)
     assert client.post(path, headers={'Origin': 'https://foreign.test'}).status_code == 403
     assert client.post('/api/chat-sync/characters/' + 'b' * 32 + '/sync-choice/run').status_code == 404
@@ -349,3 +352,51 @@ def test_browser_configuration_rejects_arbitrary_oauth_destinations(local_client
     client, runtime = local_client
     assert client.put('/api/chat-sync/configuration', json={'serviceUrl': origin}).status_code == 422
     assert runtime.calls == []
+
+
+@pytest.mark.parametrize('endpoint,body,expected', [
+    ('/cloud/character-policy', {'baseRevision': 7, 'selectedCharacterSyncIds': [UID], 'expectedOwner': OWNER}, ('select', 7, [UID], OWNER)),
+    ('/cloud/characters/' + UID + '/delete', {'baseRevision': 7, 'expectedOwner': OWNER}, ('cloud-delete', UID, 7, OWNER)),
+])
+def test_cloud_management_routes_forward_reviewed_revision_and_owner_guard_without_browser_operation(local_client, endpoint, body, expected):
+    client, runtime = local_client
+    async def select(revision, selected, *, expected_owner):
+        runtime.calls.append(('select', revision, selected, expected_owner))
+        return {'deletedCount': 1}
+    async def delete(uid, revision, *, expected_owner):
+        runtime.calls.append(('cloud-delete', uid, revision, expected_owner))
+        return {'deleted': True}
+    runtime.cloud = SimpleNamespace(select=select, delete=delete)
+    response = client.post('/api/chat-sync' + endpoint, json=body)
+    assert response.status_code == 200 and runtime.calls == [expected]
+    for bad in ({**body, 'ownerId': OWNER}, {**body, 'operationId': 'f' * 32}, {**body, 'baseRevision': True}):
+        assert client.post('/api/chat-sync' + endpoint, json=bad).status_code == 422
+    assert runtime.calls == [expected]
+
+
+def test_cloud_management_snapshot_is_one_runtime_coherent_directory(local_client):
+    client, runtime = local_client
+    snapshot = {'ownerId': OWNER, 'revision': 5, 'characterLimit': 3, 'characterCount': 1,
+                'requiresSelection': False, 'selectedCharacterSyncIds': [UID]}
+    async def refresh(*, force):
+        assert force
+        return snapshot
+    runtime.cloud = SimpleNamespace(refresh=refresh, directory=lambda owner: [{'characterSyncId': UID, 'displayName': 'Cloud synthetic'}],
+                                    pending_selection=lambda owner: None)
+    response = client.get('/api/chat-sync/cloud/character-policy')
+    assert response.status_code == 200
+    assert response.json() == {**snapshot, 'characters': [{'characterSyncId': UID, 'displayName': 'Cloud synthetic'}], 'pendingSelection': None}
+
+
+def test_retired_cloud_binding_cannot_render_a_pending_on_as_effective_sync(local_client):
+    client, runtime = local_client
+    original = runtime.status
+    async def status():
+        state = await original()
+        state['bindings'][0].update(cloudPolicyError='character_deleted', retired=True)
+        state['syncPendingChoices'] = {UID: True}
+        return state
+    runtime.status = status
+    role = client.get('/api/chat-sync/status').json()['characters'][0]
+    assert not role['syncEnabled'] and not role['syncPending']
+    assert role['binding']['retired']

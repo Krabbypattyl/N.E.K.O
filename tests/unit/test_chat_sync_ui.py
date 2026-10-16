@@ -3,9 +3,10 @@
 import json
 from pathlib import Path
 import re
-import subprocess
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,9 +45,8 @@ def run_script(assertions: str) -> None:
         const original = {messageId:id,characterSyncId:'c'.repeat(32),role:'user',text:'same',
             originalTime:'1791540000123',originStreamId:'d'.repeat(32),originSeq:1};
     """
-    result = subprocess.run(
-        ["node", "-e", bootstrap + assertions, str(SCRIPT)], capture_output=True, text=True, timeout=10,
-    )
+    script = (bootstrap + assertions).replace('process.argv[1]', json.dumps(str(SCRIPT)))
+    result = run_node_script("node", script, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
 
@@ -195,7 +195,7 @@ def test_realistic_queue_idle_event_only_after_current_owner_finishes(script):
     """Execute the actual queue function; a replaced owner cannot announce idle."""
     from tests.unit.test_app_websocket_static_routes import _block_after
 
-    source = (ROOT / "static/app" / script).read_text()
+    source = (ROOT / "static/app" / script).read_text(encoding="utf-8")
     body = _block_after(source, "async function processRealisticQueue(queueVersion) {")
     code = r"""
         global.CustomEvent=function(type){this.type=type;};
@@ -223,7 +223,7 @@ def test_current_local_socket_dispatches_history_hint_and_stale_socket_is_ignore
     """Execute the actual onmessage handler, preserving its socket replacement fence."""
     from tests.unit.test_app_websocket_static_routes import _block_after
 
-    source = (ROOT / "static/app/app-websocket.js").read_text()
+    source = (ROOT / "static/app/app-websocket.js").read_text(encoding="utf-8")
     body = _block_after(source, "S.socket.onmessage = function (event) {")
     run_script(r"""
         const calls=[], socket={}, S={socket}, _thisSocket=socket;
@@ -245,12 +245,12 @@ def test_pc_pet_ipc_bridge_delivers_committed_hint_to_full_chat_passive_refresh(
     harness = pc / "test/preload-bridge-lifecycle.test.js"
     if not harness.is_file():
         pytest.skip("optional NEKOPC checkout is unavailable")
-    source = harness.read_text()
+    source = harness.read_text(encoding="utf-8")
     helpers = "\n".join(
         opener + _block_after(source, opener) + "}"
         for opener in ("function createWindowHarness() {", "function createPetBridgeHarness() {")
     )
-    callback = _block_after((ROOT / "static/app/app-websocket.js").read_text(), "S.socket.onmessage = function (event) {")
+    callback = _block_after((ROOT / "static/app/app-websocket.js").read_text(encoding="utf-8"), "S.socket.onmessage = function (event) {")
     run_script(r"""
         const {EventEmitter}=require('node:events'), Module=require('node:module'), pc=PC_ROOT;
         const {createPreloadLifecycle}=require(pc+'/src/preload/shared/lifecycle');
@@ -367,7 +367,7 @@ def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused, 
     """.replace("PAUSED", json.dumps(paused)).replace("REQUESTED_NAME", json.dumps(name)))
 
 
-@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable'])
+@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable', 'character_quota_exceeded'])
 def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error):
     """Persisted consent survives a failed manual pass without hiding a login error."""
     run_script(r"""(async()=>{
@@ -388,10 +388,24 @@ def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error)
         assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
         assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
         const content=modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':'chatSync.initialHistoryFailed'));
+        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':
+            ERROR==='character_quota_exceeded'?'chatSync.characterQuotaExceeded':'chatSync.initialHistoryFailed'));
         assert.equal(requests.filter(path=>path.endsWith('/pause')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('ERROR',json.dumps(error)))
+
+
+def test_character_quota_setup_failure_remains_visible_when_reopening_settings():
+    """A retained denied intent has a clear limit message instead of a generic pending hint."""
+    run_script(r"""(async()=>{
+        global.fetch=async()=>({ok:true,json:async()=>({characters:[{displayName:'Neko',
+            characterSyncId:'c'.repeat(32),syncSetupError:'character_quota_exceeded',syncPending:true,binding:null}]})});
+        await window.nekoChatSync.openSettings();
+        const content=body.children[0].querySelectorAll('*').map(node=>node.textContent||'').join('\n');
+        assert.ok(content.includes('chatSync.characterQuotaExceeded'));
+        assert.equal(content.includes('chatSync.newSyncPending'),false);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
 
 
 def test_initial_default_origin_does_not_cancel_the_first_enable_click():
@@ -1179,8 +1193,8 @@ def test_clear_is_blocked_by_existing_unfinished_chat_states(busy):
 @pytest.mark.parametrize("locale", ["en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"])
 def test_sync_locale_namespace_is_complete(locale):
     """Every supported locale supplies the same feature labels and message placeholders."""
-    baseline = json.loads((ROOT / "static/locales/en.json").read_text())["chatSync"]
-    actual = json.loads((ROOT / f"static/locales/{locale}.json").read_text())["chatSync"]
+    baseline = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
+    actual = json.loads((ROOT / f"static/locales/{locale}.json").read_text(encoding="utf-8"))["chatSync"]
     assert actual.keys() == baseline.keys()
     assert "{{originals}}" in actual["pending"]
     assert "{{deletions}}" in actual["pending"]
@@ -1189,7 +1203,7 @@ def test_sync_locale_namespace_is_complete(locale):
 def test_both_served_pages_restore_sync_without_a_header_control():
     """Both chat entrypoints keep passive restoration without an extra user action."""
     for name in ("index", "chat"):
-        html = (ROOT / f"templates/{name}.html").read_text()
+        html = (ROOT / f"templates/{name}.html").read_text(encoding="utf-8")
         assert 'id="chatSyncButton"' not in html
         assert 'id="react-chat-window-root"' in html
         assert '/static/app/app-chat-sync.js?v=' in html
@@ -1244,7 +1258,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
     """Real CSS inheritance must allow modal clicks while chat/tutorial gates stay intact."""
     from playwright.sync_api import sync_playwright
 
-    template = (ROOT / ("templates/chat.html" if kind == "chat" else "templates/character_card_manager.html")).read_text()
+    template = (ROOT / ("templates/chat.html" if kind == "chat" else "templates/character_card_manager.html")).read_text(encoding="utf-8")
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
@@ -1306,7 +1320,7 @@ def test_history_consent_real_browser_shows_safe_names_and_submits_only_reviewed
     """The served dialog renders actual labels and explicit consent without cloud I/O."""
     from playwright.sync_api import sync_playwright
 
-    labels = json.loads((ROOT / "static/locales/en.json").read_text())["chatSync"]
+    labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
@@ -1364,7 +1378,7 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
     """Real served controls require cloud checks before either renewed permission."""
     from playwright.sync_api import sync_playwright
 
-    labels = json.loads((ROOT / "static/locales/en.json").read_text())["chatSync"]
+    labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:

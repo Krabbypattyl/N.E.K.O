@@ -404,7 +404,12 @@
                 originals: binding.pendingOriginals, deletions: binding.pendingDeletions
             });
         if (writerRecoveryRequired) statusNode.textContent = text('writerRecoveryRequired');
-        else if (role && role.syncSetupError) statusNode.textContent = text('setupNeedsSave', {name: name});
+        else if (binding && binding.retired) statusNode.textContent = text('cloudDeleted');
+        else if (binding && binding.cloudPolicyError) statusNode.textContent = text(
+            binding.cloudPolicyError === 'character_selection_required' || binding.cloudPolicyError === 'character_not_selected'
+                ? 'cloudSelectionRequired' : 'cloudOperationPending');
+        else if (role && role.syncSetupError) statusNode.textContent = text(role.syncSetupError === 'character_quota_exceeded'
+            ? 'characterQuotaExceeded' : 'setupNeedsSave', {name: name});
         else if (role && role.syncPending) statusNode.textContent = text('newSyncPending');
         // Automatic failures use existing localized progress labels; remote
         // bodies and internal retry metadata never become visible text.
@@ -502,7 +507,10 @@
             await loadHistory();
         } catch (error) {
             statusNode.textContent = text(error.message === 'chat_sync_login_required' ? 'loginRequired'
-                : enabledHere ? 'initialHistoryFailed' : 'failed');
+                : error.message === 'character_quota_exceeded' ? 'characterQuotaExceeded'
+                    : error.message === 'character_deleted' ? 'cloudDeleted'
+                        : error.message === 'character_selection_required' || error.message === 'character_not_selected' ? 'cloudSelectionRequired'
+                    : enabledHere ? 'initialHistoryFailed' : 'failed');
         } finally {
             if (action === 'sync') {
                 // Earlier pages can commit even when a later network page fails.

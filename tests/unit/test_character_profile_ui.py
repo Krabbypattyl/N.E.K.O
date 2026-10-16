@@ -2,9 +2,10 @@
 
 import json
 from pathlib import Path
-import subprocess
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +42,8 @@ def run_script(assertions):
         function button(panel,label){return flatten(panel).find(node=>node.tag==='button'&&node.textContent===label);}
         vm.runInThisContext(fs.readFileSync(process.argv[1],'utf8'));
     """
-    result = subprocess.run(["node", "-e", bootstrap + assertions, str(SCRIPT)], capture_output=True, text=True, timeout=10)
+    script = (bootstrap + assertions).replace('process.argv[1]', json.dumps(str(SCRIPT)))
+    result = run_node_script("node", script, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
 
@@ -114,7 +116,7 @@ def test_cloud_role_is_not_created_by_listing_or_preview():
     run_script(r"""
         (async()=>{
             let refreshed=0;window.loadCharacterCards=async()=>refreshed++;
-            response=(path)=>path.endsWith('/characters')?{characters:[{characterSyncId:uid,displayName:'Cloud Role'}]}:
+            response=(path)=>path.endsWith('/character-policy')?{revision:3,selectedCharacterSyncIds:[uid],characters:[{characterSyncId:uid,displayName:'Cloud Role'}]}:
                 path.endsWith('/profile')?{profile,revision:3,profileHash:'e'.repeat(64)}:{displayName:'Synthetic',existing:false};
             await window.nekoCharacterProfileSync.cloudImport();const panel=body.children[0];
             assert.equal(calls.length,1);await button(panel,'Cloud Role').events.click();assert.equal(calls.length,2);
@@ -174,8 +176,8 @@ def test_review_refreshes_cards_only_after_remote_apply_without_replacing_draft(
 def test_all_served_entrypoints_and_eight_locales_cover_profile_labels():
     """Classic scripts are served directly; template inclusion is the runtime entry."""
     for filename in ("index.html", "chat.html", "character_card_manager.html"):
-        assert "/static/app/app-character-profile-sync.js" in (ROOT / "templates" / filename).read_text()
-    locales = [json.loads((ROOT / "static/locales" / (language + ".json")).read_text())["chatSync"]
+        assert "/static/app/app-character-profile-sync.js" in (ROOT / "templates" / filename).read_text(encoding="utf-8")
+    locales = [json.loads((ROOT / "static/locales" / (language + ".json")).read_text(encoding="utf-8"))["chatSync"]
                for language in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW")]
     assert all(locale.keys() == locales[0].keys() for locale in locales)
     for key in ("profileConflict", "profileNeedsBinding", "profileStyle", "profileName", "cloudNameConflict", "cloudCreate"):
@@ -244,7 +246,7 @@ def test_card_save_freezes_known_sync_choice_before_async_work(enabled, loading)
 ])
 def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_hint(is_new, binding, choice, expected):
     from playwright.sync_api import sync_playwright
-    source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text()
+    source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding="utf-8")
     start = source.index("    {\n        const row = document.createElement('div');")
     switch_code = source[start:source.index('    const btnArea', start)]
     with sync_playwright() as playwright:
@@ -279,19 +281,28 @@ def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_h
             browser.close()
 
 
-@pytest.mark.parametrize('known', [False, True])
-def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied(known):
+def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied():
     run_script(r"""
         (async()=>{
             const messages=[];window.confirm=()=>{throw new Error('Unexpected confirmation');};
             window.showMessage=(text,kind)=>messages.push({text,kind});
             response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:
                 (()=>{throw new Error('synthetic failure');})();
-            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',KNOWN?true:undefined,false);
-            assert.equal(calls.length,KNOWN?2:0);
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true,false);
+            assert.equal(calls.length,2);
             assert.equal(messages[0].kind,'warning');assert.equal(alerts.length,0);
         })().catch(e=>{console.error(e);process.exitCode=1;});
-    """.replace('KNOWN',json.dumps(known)))
+    """)
+
+
+def test_card_save_before_choice_load_preserves_previous_consent_without_warning():
+    """A pending status read is not a failed sync save or new consent."""
+    run_script(r"""(async()=>{
+        const messages=[];window.showMessage=(text,kind)=>messages.push({text,kind});
+        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',undefined,false);
+        assert.deepEqual(calls,[]);assert.deepEqual(messages,[]);assert.deepEqual(alerts,[]);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
 
 
 def test_card_choice_uses_effective_pending_consent_while_binding_is_still_paused():
@@ -307,6 +318,144 @@ def test_card_choice_uses_effective_pending_consent_while_binding_is_still_pause
 def test_sync_navigation_copy_names_the_existing_more_settings_button_in_every_locale():
     """Recovery instructions point to the actual localized button label."""
     for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
-        locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text())['chatSync']
+        locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding="utf-8"))['chatSync']
         for key in ('setupNeedsSave', 'initialHistoryFailed', 'profileNeedsBinding'):
             assert locale['moreOptions'].casefold() in locale[key].casefold(), (language, key)
+
+
+def test_character_quota_setup_failure_is_visible_once_without_rejecting_local_card():
+    """An asynchronous cloud registration failure explains the limit and retains local use."""
+    run_script(r"""(async()=>{
+        const messages=[];window.showMessage=(text,kind)=>messages.push({text,kind});
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncSetupError:'character_quota_exceeded',binding:null}]});
+        await window.nekoCharacterProfileSync.poll();await window.nekoCharacterProfileSync.poll();
+        assert.deepEqual(messages,[{text:'chatSync.characterQuotaExceeded',kind:'warning'}]);
+        assert.equal(calls.filter(call=>call.init.method==='POST').length,0);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+    for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
+        locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding="utf-8"))['chatSync']
+        assert '3' in locale['characterQuotaExceeded']
+
+
+@pytest.mark.parametrize('outcome', ['cancel', 'success', 'stale', 'offline', 'pending'])
+def test_cloud_selection_dialog_uses_actual_dom_and_freezes_exact_deletion_scope(outcome):
+    """The served dialog lists destructive scope, enforces three, and retains failed drafts."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div id="local-card">Local synthetic card</div><textarea id="draft">Unsaved draft</textarea>')
+            page.add_style_tag(path=str(ROOT / 'static/css/index.css'))
+            translations = json.loads((ROOT / 'static/locales/en.json').read_text(encoding="utf-8"))['chatSync']
+            page.evaluate("""({translations,outcome}) => {
+                window.t = key => translations[key.replace('chatSync.','')] || key;
+                window.calls = []; window.refreshCount = 0;
+                window.loadCharacterCards = async () => { window.refreshCount++; };
+                window.showMessage = () => {};
+                const roles = [1,2,3,4].map(n => ({characterSyncId: n.toString(16).repeat(32), displayName: 'Role ' + n}));
+                const snapshot = {ownerId:'00000000-0000-4000-8000-000000000001',revision: 7, characterCount: 4, requiresSelection: true, selectedCharacterSyncIds: [], characters: roles};
+                if (outcome === 'pending') {
+                    Object.assign(snapshot, {revision:9, characterCount:3, requiresSelection:false, selectedCharacterSyncIds:roles.slice(0,3).map(role=>role.characterSyncId),
+                        characters:roles.slice(0,3),pendingSelection:{baseRevision:7,selectedCharacterSyncIds:roles.slice(0,3).map(role=>role.characterSyncId),characters:roles}});
+                }
+                window.fetch = async (path,init) => {
+                    window.calls.push({path,method:init.method,body:init.body ? JSON.parse(init.body) : null});
+                    if (path.endsWith('/status')) return {ok:true,json:async()=>({characters:[],characterPolicy:snapshot})};
+                    if (init.method === 'GET') return {ok:true,json:async()=>snapshot};
+                    if (outcome === 'offline') throw new Error('Synthetic transport failure');
+                    return {ok:['success','pending'].includes(outcome),json:async()=>['success','pending'].includes(outcome)?{}:{detail:'character_policy_changed'}};
+                };
+            }""", {'translations': translations, 'outcome': outcome})
+            page.add_script_tag(path=str(SCRIPT))
+            # A background local status poll actively opens the over-limit choice.
+            page.evaluate('window.nekoCharacterProfileSync.' + ('cloudImport()' if outcome == 'pending' else 'poll()'))
+            panel = page.locator('dialog[open]')
+            assert panel.count() == 1
+            assert 'permanently deleted' in panel.inner_text()
+            assert 'Local copies remain available' in panel.inner_text()
+            checkboxes = panel.locator('input[type="checkbox"]')
+            if outcome != 'pending':
+                for index in range(3):
+                    checkboxes.nth(index).check()
+            assert checkboxes.nth(3).is_disabled()
+            assert panel.locator('[data-cloud-deletion-list] li').all_text_contents() == ['Role 4']
+            if outcome == 'cancel':
+                panel.get_by_role('button', name='Cancel', exact=True).click()
+                assert page.evaluate("window.calls.filter(call=>call.method==='POST').length") == 0
+                assert page.locator('dialog[open]').count() == 0
+            else:
+                panel.locator('[data-cloud-confirm-selection]').click()
+                page.wait_for_function("window.calls.some(call=>call.method==='POST')")
+                approved = page.evaluate("window.calls.find(call=>call.method==='POST')")
+                assert approved['body'] == {'baseRevision': 7, 'selectedCharacterSyncIds': [str(n) * 32 for n in (1, 2, 3)], 'expectedOwner': '00000000-0000-4000-8000-000000000001'}
+                assert approved['path'] == '/api/chat-sync/cloud/character-policy'
+                if outcome in ('success', 'pending'):
+                    page.wait_for_function('window.refreshCount===1')
+                    assert page.locator('dialog[open]').count() == 0
+                else:
+                    page.wait_for_function("!document.querySelector('dialog [role=status]').textContent.includes('Working')")
+                    assert panel.count() == 1
+                    assert all(checkboxes.nth(index).is_disabled() for index in range(4))
+                    if outcome == 'stale':
+                        assert panel.get_by_role('button', name='Reload cloud list').is_visible()
+                        assert panel.locator('[data-cloud-confirm-selection]').is_disabled()
+                    else:
+                        panel.locator('[data-cloud-confirm-selection]').click()
+                        requests = page.evaluate("window.calls.filter(call=>call.method==='POST')")
+                        assert len(requests) == 2 and requests[0]['body'] == requests[1]['body']
+                    assert page.evaluate('window.refreshCount') == 0
+            assert page.locator('#local-card').inner_text() == 'Local synthetic card'
+            assert page.locator('#draft').input_value() == 'Unsaved draft'
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_cloud_individual_delete_requires_explicit_confirmation_and_preserves_local_ui(succeeded):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div id="local-card">Local synthetic card</div>')
+            page.evaluate("""succeeded => {
+                window.calls=[];window.refreshCount=0;window.confirmations=[];window.accept=false;
+                window.t=(key,values={})=>key+' '+(values.name||'');
+                window.confirm=message=>{window.confirmations.push(message);return window.accept;};
+                window.showMessage=()=>{};
+                window.loadCharacterCards=async()=>{window.refreshCount++;};
+                window.fetch=async(path,init)=>{
+                    window.calls.push({path,method:init.method,body:init.body?JSON.parse(init.body):null});
+                    if(init.method==='GET')return {ok:true,json:async()=>({ownerId:'00000000-0000-4000-8000-000000000001',revision:9,requiresSelection:false,
+                        selectedCharacterSyncIds:['a'.repeat(32)],characters:[{characterSyncId:'a'.repeat(32),displayName:'Synthetic Cloud'}]})};
+                    return {ok:succeeded,json:async()=>succeeded?{}:{detail:'character_policy_changed'}};
+                };
+            }""", succeeded)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate('window.nekoCharacterProfileSync.cloudImport()')
+            remove = page.locator('[data-cloud-delete]')
+            remove.click()
+            assert page.evaluate("window.calls.filter(call=>call.method==='POST').length") == 0
+            assert 'Synthetic Cloud' in page.evaluate('window.confirmations[0]')
+            page.evaluate('window.accept=true')
+            remove.click()
+            page.wait_for_function("window.calls.some(call=>call.method==='POST')")
+            posted = page.evaluate("window.calls.find(call=>call.method==='POST')")
+            assert posted == {'path': '/api/chat-sync/cloud/characters/' + 'a' * 32 + '/delete', 'method': 'POST', 'body': {'baseRevision': 9, 'expectedOwner': '00000000-0000-4000-8000-000000000001'}}
+            if succeeded:
+                page.wait_for_function('window.refreshCount===1')
+                assert page.locator('dialog[open]').count() == 0
+            else:
+                page.get_by_text('chatSync.cloudPolicyChanged ', exact=True).wait_for()
+                assert page.locator('dialog[open]').count() == 1
+                assert page.evaluate('window.refreshCount') == 0
+            assert page.locator('#local-card').inner_text() == 'Local synthetic card'
+        finally:
+            browser.close()

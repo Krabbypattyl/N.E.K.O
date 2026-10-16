@@ -17,7 +17,7 @@ from services import chat_sync_runtime
 def hooks(monkeypatch, *, blocked=False, fail_initialization=False):
     """Load only the real hooks, avoiding import-time application or user state."""
     path = Path(__file__).resolve().parents[2] / "app/main_server/__init__.py"
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     functions = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
                  and node.name in {"on_startup", "release_storage_startup_barrier"}]
     for function in functions:

@@ -6,7 +6,7 @@ import sqlite3
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from services.chat_sync_runtime import get_desktop_chat_sync_runtime
 from utils.config_manager import get_config_manager
@@ -86,6 +86,21 @@ class ProfileImportRequest(BaseModel):
     profileHash: StrictStr
 
 
+class CloudRevisionRequest(BaseModel):
+    """Pin the exact cloud management snapshot the local user reviewed."""
+
+    model_config = ConfigDict(extra="forbid")
+    baseRevision: Annotated[StrictInt, Field(ge=0, le=2**53 - 1)]
+    # This is a stale-page guard, never permission to choose the authenticated owner.
+    expectedOwner: StrictStr
+
+
+class CloudSelectionRequest(CloudRevisionRequest):
+    """The backend pins the owner and operation ID; the browser chooses only listed UIDs."""
+
+    selectedCharacterSyncIds: Annotated[list[StrictStr], Field(max_length=3)]
+
+
 async def _runtime():
     """Resolve the configured runtime root only after local authorization."""
     return await get_desktop_chat_sync_runtime(get_config_manager())
@@ -116,8 +131,10 @@ def _error(exc: ValueError) -> HTTPException:
     """Expose fixed adapter errors without bearer, network body or account PII."""
     code = str(exc)
     status = 401 if code == "chat_sync_login_required" else 409
-    if code in {"chat_sync_unavailable", "chat_sync_service_rejected", "chat_sync_retry_later"}:
+    if code in {"chat_sync_unavailable", "chat_sync_service_rejected", "chat_sync_retry_later", "character_policy_unavailable"}:
         status = 503
+    if code == "character_deleted":
+        status = 410
     return HTTPException(status, code, headers={"Cache-Control": "no-store"})
 
 
@@ -139,12 +156,15 @@ async def status(runtime: Runtime):
         # activate a paused binding. Editing the card must preserve that choice.
         character["syncPending"] = bool(pending_choices.get(character["characterSyncId"]))
         character["syncEnabled"] = (bool(binding["enabled"]) or character["syncPending"]) if paused_or_bound else choices.get(character["characterSyncId"], True)
+        if binding and binding.get('cloudPolicyError'):
+            character['syncEnabled'] = character['syncPending'] = False
         character["binding"] = None if binding is None else {
             "ownerId": binding["owner_id"], "bindingId": binding["binding_id"],
             "enabled": bool(binding["enabled"]), "generation": binding["generation"],
             **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch")},
             # Only fixed adapter codes are exposed, never remote response text.
             "lastSyncError": binding.get("lastSyncError"),
+            **{key: binding[key] for key in ('cloudPolicyError', 'retired') if key in binding},
             "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
             # Profile revision hints contain no raw settings or credential data.
             "profile": binding.get("profile"),
@@ -276,6 +296,41 @@ async def cloud_characters(runtime: Runtime):
         return await runtime.profiles.cloud_roles()
     except ValueError as exc:
         raise _error(exc) from None
+
+
+@router.get("/cloud/character-policy")
+async def cloud_character_policy(runtime: Runtime):
+    """Return one coherent policy/directory snapshot for an explicit management review."""
+    try:
+        policy = await runtime.cloud.refresh(force=True)
+        return {**policy, 'characters': runtime.cloud.directory(policy['ownerId']),
+                'pendingSelection': runtime.cloud.pending_selection(policy['ownerId'])}
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError('chat_sync_unavailable')) from None
+
+
+@router.post("/cloud/character-policy")
+async def select_cloud_characters(body: CloudSelectionRequest, runtime: Runtime):
+    """One confirmed fixed operation deletes every unselected cloud character, never local data."""
+    try:
+        return await runtime.cloud.select(body.baseRevision, body.selectedCharacterSyncIds, expected_owner=body.expectedOwner)
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError('chat_sync_unavailable')) from None
+
+
+@router.post("/cloud/characters/{character_uid}/delete")
+async def delete_cloud_character(character_uid: str, body: CloudRevisionRequest, runtime: Runtime):
+    """Delete a reviewed cloud UID even when it has no local card; preserve all local copies."""
+    try:
+        return await runtime.cloud.delete(character_uid, body.baseRevision, expected_owner=body.expectedOwner)
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError('chat_sync_unavailable')) from None
 
 
 @router.get("/cloud/characters/{character_uid}/profile")
