@@ -388,6 +388,32 @@ def test_cloud_management_snapshot_is_one_runtime_coherent_directory(local_clien
     assert response.json() == {**snapshot, 'characters': [{'characterSyncId': UID, 'displayName': 'Cloud synthetic'}], 'pendingSelection': None}
 
 
+@pytest.mark.parametrize('policy_error', [
+    'character_policy_unavailable', 'character_selection_required',
+    'character_delete_pending', 'character_not_selected',
+])
+@pytest.mark.parametrize('enabled,pending', [(True, False), (False, True), (False, False)])
+def test_cloud_policy_block_preserves_saved_card_choice(local_client, policy_error, enabled, pending):
+    """Temporary cloud admission cannot turn a nickname save into an implicit pause."""
+    client, runtime = local_client
+    original = runtime.status
+
+    async def status():
+        state = await original()
+        state['bindings'][0].update(enabled=int(enabled), cloudPolicyError=policy_error, retired=False)
+        state['syncChoices'] = {UID: enabled or pending}
+        state['syncPendingChoices'] = {UID: pending}
+        return state
+
+    runtime.status = status
+    role = client.get('/api/chat-sync/status').json()['characters'][0]
+    assert role['syncEnabled'] is (enabled or pending)
+    assert role['syncPending'] is pending
+    assert role['binding']['enabled'] is enabled
+    assert role['binding']['cloudPolicyError'] == policy_error
+    assert runtime.calls == []
+
+
 def test_retired_cloud_binding_cannot_render_a_pending_on_as_effective_sync(local_client):
     client, runtime = local_client
     original = runtime.status

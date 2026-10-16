@@ -88,8 +88,12 @@
     }
     function renderSelection(panel, snapshot) {
         var pending = snapshot.pendingSelection;
-        var roles = pending ? pending.characters : snapshot.characters;
+        // Keep the reviewed directory independent from later account/status updates.
+        var roles = (pending ? pending.characters : snapshot.characters).map(function (role) {
+            return {characterSyncId: role.characterSyncId, displayName: role.displayName};
+        });
         var revision = pending ? pending.baseRevision : snapshot.revision;
+        var owner = snapshot.ownerId;
         var selected = new Set(pending ? pending.selectedCharacterSyncIds : snapshot.selectedCharacterSyncIds);
         var instruction = document.createElement('p'); instruction.textContent = text(pending ? 'cloudOperationPending' : 'cloudSelectionRequired'); panel.appendChild(instruction);
         var list = document.createElement('div'); list.dataset.cloudSelection = 'true'; panel.appendChild(list);
@@ -136,7 +140,13 @@
             if (sending) return;
             // The approved selection and revision freeze before the first await.
             // Receipt loss keeps this same draft; retry never expands deletion scope.
-            var body = {baseRevision: revision, selectedCharacterSyncIds: Array.from(selected), expectedOwner: snapshot.ownerId};
+            var body = {baseRevision: revision, selectedCharacterSyncIds: Array.from(selected), expectedOwner: owner};
+            var deletedNames = roles.filter(function (role) {
+                return body.selectedCharacterSyncIds.indexOf(role.characterSyncId) < 0;
+            }).map(function (role) { return role.displayName; });
+            if (!window.confirm(text(body.selectedCharacterSyncIds.length ? 'cloudSelectionConfirm' : 'cloudSelectionDeleteAllConfirm', {
+                count: deletedNames.length, names: deletedNames.join('\n')
+            }))) return;
             sending = frozen = true; submit.disabled = close.disabled = true; update(); status.textContent = text('working');
             try {
                 await api('/cloud/character-policy', body);
@@ -160,7 +170,11 @@
         state.setAttribute('role', 'status'); panel.appendChild(state);
         var reload = document.createElement('button'); reload.type = 'button'; reload.hidden = true;
         reload.textContent = text('cloudReload');
-        reload.addEventListener('click', async function () { panel.close(); await cloudImport(); }); panel.appendChild(reload);
+        reload.addEventListener('click', function () {
+            // Native close is asynchronous; the earlier close listener releases dialog first.
+            panel.addEventListener('close', function () { cloudImport(); }, {once: true});
+            panel.close();
+        }); panel.appendChild(reload);
         var close = document.createElement('button'); close.textContent = text('close'); close.type = 'button';
         close.addEventListener('click', function () { panel.close(); }); panel.appendChild(close);
         try {

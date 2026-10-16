@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from typing import Annotated, Literal
 
@@ -156,7 +157,10 @@ async def status(runtime: Runtime):
         # activate a paused binding. Editing the card must preserve that choice.
         character["syncPending"] = bool(pending_choices.get(character["characterSyncId"]))
         character["syncEnabled"] = (bool(binding["enabled"]) or character["syncPending"]) if paused_or_bound else choices.get(character["characterSyncId"], True)
-        if binding and binding.get('cloudPolicyError'):
+        # Admission errors suspend cloud work, not the user's saved consent.
+        # Only a retired identity revokes that choice; a card save during a
+        # temporary policy failure must not silently turn synchronization off.
+        if binding and (binding.get('retired') or binding.get('cloudPolicyError') == 'character_deleted'):
             character['syncEnabled'] = character['syncPending'] = False
         character["binding"] = None if binding is None else {
             "ownerId": binding["owner_id"], "bindingId": binding["binding_id"],
@@ -303,8 +307,10 @@ async def cloud_character_policy(runtime: Runtime):
     """Return one coherent policy/directory snapshot for an explicit management review."""
     try:
         policy = await runtime.cloud.refresh(force=True)
-        return {**policy, 'characters': runtime.cloud.directory(policy['ownerId']),
-                'pendingSelection': runtime.cloud.pending_selection(policy['ownerId'])}
+        def cached_metadata():
+            return {'characters': runtime.cloud.directory(policy['ownerId']),
+                    'pendingSelection': runtime.cloud.pending_selection(policy['ownerId'])}
+        return {**policy, **await asyncio.to_thread(cached_metadata)}
     except ValueError as exc:
         raise _error(exc) from None
     except (OSError, sqlite3.Error):

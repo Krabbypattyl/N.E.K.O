@@ -165,6 +165,25 @@ async def test_gemini_voice_proactive_after_tool_uses_its_actual_inject_owner():
 
 
 @pytest.mark.asyncio
+async def test_gemini_tool_continuation_marks_each_new_reply_once():
+    manager, client, provider = _client_manager()
+    await _dispatch(client, provider, _event(text="tool preface"))
+    await _dispatch(client, provider, _gemini_response(calls=(("call-1", "lookup"),)))
+    await _wait_for_tool_tasks(client)
+    client._is_responding = False
+    client._ai_recent_activity_time = 0
+    for text in ("tool", " continuation", " tail"):
+        await _dispatch(client, provider, _event(text=text))
+    response = _responses(manager)[-1]
+    record_id = response["chat_original_source"]["recordId"]
+    assert response["chat_original_source"]["origin"] == "tool"
+    markers = [event for event in manager.sync_message_queue.messages
+               if event["type"] == "system" and event["data"] == "chat original tool"
+               and event["chat_original_id"] == record_id]
+    assert len(markers) == 1
+
+
+@pytest.mark.asyncio
 async def test_gemini_tool_source_cannot_cross_reconnection():
     manager, client, provider = _client_manager()
     await _dispatch(client, provider, _event(text="old preface"))

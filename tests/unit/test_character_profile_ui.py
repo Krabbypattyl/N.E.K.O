@@ -352,6 +352,7 @@ def test_cloud_selection_dialog_uses_actual_dom_and_freezes_exact_deletion_scope
             page.set_content('<div id="local-card">Local synthetic card</div><textarea id="draft">Unsaved draft</textarea>')
             page.add_style_tag(path=str(ROOT / 'static/css/index.css'))
             translations = json.loads((ROOT / 'static/locales/en.json').read_text(encoding="utf-8"))['chatSync']
+            page.on('dialog', lambda dialog: dialog.accept())
             page.evaluate("""({translations,outcome}) => {
                 window.t = key => translations[key.replace('chatSync.','')] || key;
                 window.calls = []; window.refreshCount = 0;
@@ -457,5 +458,133 @@ def test_cloud_individual_delete_requires_explicit_confirmation_and_preserves_lo
                 assert page.locator('dialog[open]').count() == 1
                 assert page.evaluate('window.refreshCount') == 0
             assert page.locator('#local-card').inner_text() == 'Local synthetic card'
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('rejection', ['character_policy_changed', 'chat_sync_account_mismatch'])
+def test_cloud_reload_waits_for_native_dialog_close_before_reopening(rejection):
+    """A native asynchronous close event releases the dialog before cloud discovery."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div id="local-card">Local synthetic card</div><textarea id="draft">Unsaved draft</textarea>')
+            page.add_style_tag(path=str(ROOT / 'static/css/index.css'))
+            page.evaluate("""rejection => {
+                window.timeline=[];window.gets=0;window.posts=0;
+                window.t=key=>key;window.confirm=()=>true;
+                window.fetch=async(path,init)=>{
+                    if(init.method==='POST'){
+                        window.posts++;
+                        return {ok:false,json:async()=>({detail:rejection})};
+                    }
+                    window.timeline.push('get');window.gets++;
+                    return {ok:true,json:async()=>({ownerId:'00000000-0000-4000-8000-000000000001',
+                        revision:window.gets,requiresSelection:false,selectedCharacterSyncIds:['a'.repeat(32)],
+                        characters:[{characterSyncId:'a'.repeat(32),displayName:'Cloud role '+window.gets}]})};
+                };
+            }""", rejection)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate('window.nekoCharacterProfileSync.cloudImport()')
+            page.evaluate("""() => {
+                window.originalDialog=document.querySelector('dialog');
+                window.originalDialog.addEventListener('close',()=>window.timeline.push('close'));
+            }""")
+            page.locator('[data-cloud-delete]').click()
+            reload = page.get_by_role('button', name='chatSync.cloudReload', exact=True)
+            reload.wait_for()
+            reload.click()
+            page.wait_for_function('window.gets===2', timeout=1500)
+            assert page.locator('dialog[open]').count() == 1
+            assert page.get_by_role('button', name='Cloud role 2', exact=True).is_visible()
+            assert page.evaluate('window.timeline') == ['get', 'close', 'get']
+            assert page.evaluate('document.body.contains(window.originalDialog)') is False
+            assert page.evaluate('window.posts') == 1
+            assert page.locator('#local-card').inner_text() == 'Local synthetic card'
+            assert page.locator('#draft').input_value() == 'Unsaved draft'
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('selected_count', [0, 2])
+@pytest.mark.parametrize('accepted', [False, True])
+def test_cloud_selection_requires_native_confirmation_for_exact_deletion_scope(selected_count, accepted):
+    """An empty selection may delete all, but only after a second native confirmation."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div id="local-card">Local synthetic card</div><textarea id="draft">Unsaved draft</textarea>')
+            page.add_style_tag(path=str(ROOT / 'static/css/index.css'))
+            translations = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
+            page.evaluate("""translations => {
+                window.calls=[];window.refreshCount=0;
+                window.t=(key,values={})=>(translations[key.replace('chatSync.','')]||key)
+                    .split('{{count}}').join(values.count??'').split('{{names}}').join(values.names??'');
+                window.loadCharacterCards=async()=>{window.refreshCount++;};window.showMessage=()=>{};
+                window.snapshot={ownerId:'00000000-0000-4000-8000-000000000001',revision:7,requiresSelection:true,
+                    selectedCharacterSyncIds:[],characters:[1,2,3,4].map(n=>({characterSyncId:String(n).repeat(32),displayName:'Role '+n}))};
+                window.fetch=async(path,init)=>{
+                    window.calls.push({path,method:init.method,body:init.body?JSON.parse(init.body):null});
+                    if(init.method==='GET')return {ok:true,json:async()=>window.snapshot};
+                    return await new Promise(resolve=>{window.finishPost=()=>resolve({ok:true,json:async()=>({})});});
+                };
+            }""", translations)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate('window.nekoCharacterProfileSync.cloudImport()')
+            panel = page.locator('dialog[open]')
+            for index in range(selected_count):
+                panel.locator('input[type="checkbox"]').nth(index).check()
+            deleted_names = [f'Role {index}' for index in range(selected_count + 1, 5)]
+            assert panel.locator('[data-cloud-deletion-list] li').all_text_contents() == deleted_names
+            confirmations = []
+
+            def confirm(dialog):
+                confirmations.append(dialog.message)
+                if accepted:
+                    dialog.accept()
+                else:
+                    dialog.dismiss()
+
+            page.on('dialog', confirm)
+            panel.locator('[data-cloud-confirm-selection]').click()
+            assert len(confirmations) == 1
+            prompt = confirmations[0]
+            assert f'{4-selected_count} cloud characters' in prompt
+            assert 'profiles and all cloud chats' in prompt
+            assert 'permanently' in prompt.lower() and 'Both devices keep' in prompt and 'sync off' in prompt
+            assert prompt.endswith('\n'.join(deleted_names))
+            for index in range(1, selected_count + 1):
+                assert f'Role {index}' not in prompt
+            if selected_count == 0:
+                assert 'ALL 4 cloud characters' in prompt
+            posts = page.evaluate("window.calls.filter(call=>call.method==='POST')")
+            if accepted:
+                assert len(posts) == 1
+                assert posts[0] == {'path': '/api/chat-sync/cloud/character-policy', 'method': 'POST', 'body': {
+                    'baseRevision': 7, 'selectedCharacterSyncIds': [str(index) * 32 for index in range(1, selected_count + 1)],
+                    'expectedOwner': '00000000-0000-4000-8000-000000000001'}}
+                # A later account/list update cannot expand the already reviewed request.
+                page.evaluate("""() => {
+                    window.snapshot.ownerId='00000000-0000-4000-8000-000000000002';window.snapshot.revision=99;
+                    window.snapshot.characters.push({characterSyncId:'f'.repeat(32),displayName:'Later role'});
+                    window.finishPost();
+                }""")
+                page.wait_for_function('window.refreshCount===1')
+                assert page.locator('dialog[open]').count() == 0
+                assert len(page.evaluate("window.calls.filter(call=>call.method==='POST')")) == 1
+            else:
+                assert posts == []
+                assert panel.count() == 1
+                assert panel.locator('[data-cloud-deletion-list] li').all_text_contents() == deleted_names
+            assert page.locator('#local-card').inner_text() == 'Local synthetic card'
+            assert page.locator('#draft').input_value() == 'Unsaved draft'
         finally:
             browser.close()

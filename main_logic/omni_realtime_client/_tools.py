@@ -40,6 +40,9 @@ class _ToolTaskOwner:
     host_turn_id: str | None
     provider_turn_host_id: str | None
     provider_session: Any
+    # Source evidence only: this does not change cancellation or current-owner
+    # checks. A new proactive injection must not inherit an older tool token.
+    proactive_outcome_owner: tuple | None = None
 
 
 @dataclass
@@ -136,6 +139,10 @@ class _ToolingMixin:
             # time: see ``_tool_task_owner_is_current``.
             provider_turn_host_id=getattr(self, "_current_turn_host_id", None),
             provider_session=provider_session,
+            proactive_outcome_owner=(
+                getattr(self, "_gemini_proactive_outcome_owner", None)
+                if self._is_gemini else None
+            ),
         )
 
     def _tool_task_owner_is_current(self, owner: _ToolTaskOwner) -> bool:

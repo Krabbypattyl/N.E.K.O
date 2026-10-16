@@ -40,7 +40,8 @@ def _policy(value, owner):
             raise ValueError
     except (TypeError, ValueError):
         raise ValueError('invalid_character_policy_response') from None
-    return value
+    # Selection order carries no authority; fixed request bytes remain untouched.
+    return {**value, 'selectedCharacterSyncIds': sorted(selected)}
 
 
 class DesktopCloudCharacterManagement:
@@ -99,7 +100,10 @@ class DesktopCloudCharacterManagement:
         if self.blocked_owner == owner:
             return 'character_policy_unavailable'
         with closing(self._connect()) as conn:
-            if conn.execute("SELECT 1 FROM sync_cloud_operations WHERE owner_id=? AND kind='delete' AND target=? AND status IN ('pending','blocked')",
+            # An explicit CAS rejection proves this request deleted nothing.
+            # Unknown receipts and authentication failures still need a fence.
+            if conn.execute("SELECT 1 FROM sync_cloud_operations WHERE owner_id=? AND kind='delete' AND target=? "
+                            "AND (status='pending' OR (status='blocked' AND (error IS NULL OR error!='character_policy_changed')))",
                             (owner, uid)).fetchone():
                 return 'character_delete_pending'
             selection = conn.execute("SELECT request FROM sync_cloud_operations WHERE owner_id=? AND kind='select' AND status='pending'", (owner,)).fetchone()
@@ -146,6 +150,8 @@ class DesktopCloudCharacterManagement:
 
     def _accept(self, owner, fingerprint, policy, roles):
         previous = self.cached(owner=owner)
+        if previous:
+            previous = _policy(previous, owner)
         if previous and (policy['revision'] < previous['revision'] or
                          (policy['revision'] == previous['revision'] and policy != previous)):
             raise ValueError('invalid_character_policy_response')
@@ -167,7 +173,7 @@ class DesktopCloudCharacterManagement:
                 token, fingerprint, owner = await self._auth()
             else:
                 token, fingerprint = authenticated
-            cached = self.cached(owner=owner)
+            cached = await asyncio.to_thread(self.cached, owner=owner)
             if self.blocked_presence == fingerprint and not force:
                 raise ValueError('character_policy_unavailable')
             if not force and cached and self.presence == fingerprint and self.runtime._clock() < self.next_at:
@@ -183,7 +189,16 @@ class DesktopCloudCharacterManagement:
                 first = _policy(await request('GET', '/prototype/chat-sync/character-policy', None), owner)
                 roles = (await read_character_directory(request, owner))['characters']
                 last = _policy(await request('GET', '/prototype/chat-sync/character-policy', None), owner)
-                if (first != last or len(roles) != last['characterCount']
+                if first != last:
+                    # Another device changed the directory while it was read.
+                    # Retry a fresh bracket rather than permanently blocking
+                    # this account or accepting an incomplete retirement proof.
+                    if last['revision'] > first['revision']:
+                        raise ValueError('character_policy_changed')
+                    # A rollback or conflicting same-version authority is
+                    # not a normal concurrent update and remains fail-closed.
+                    raise ValueError('invalid_character_policy_response')
+                if (len(roles) != last['characterCount']
                         or not set(last['selectedCharacterSyncIds']).issubset({role['characterSyncId'] for role in roles})):
                     raise ValueError('invalid_character_policy_response')
                 await self._commit(fingerprint, epoch, self._accept, owner, fingerprint, last, roles)
@@ -201,7 +216,7 @@ class DesktopCloudCharacterManagement:
 
     async def require(self, owner, uid, authenticated, *, registration=False):
         await self.refresh(authenticated=authenticated, owner=owner)
-        self.require_local(owner, uid, registration=registration)
+        await asyncio.to_thread(self.require_local, owner, uid, registration=registration)
 
     def invalidate(self):
         """A socket frame only schedules authoritative HTTP; it never retires a role or advances state."""
@@ -211,17 +226,23 @@ class DesktopCloudCharacterManagement:
     def due(self, presence):
         """Permanent protocol/auth failures wait for changed credentials or an explicit refresh."""
         policy = self.cached(presence=presence)
-        with closing(self._connect()) as conn:
-            # Another account's fixed approval must not turn this login into a
-            # continuous identity polling loop or consume its destructive intent.
-            pending = bool(policy) and conn.execute("SELECT 1 FROM sync_cloud_operations WHERE owner_id=? AND status='pending' AND next_at<=? LIMIT 1",
-                                   (policy['ownerId'], self.runtime._clock())).fetchone() is not None
+        # Another account's or installation's fixed approval must not turn
+        # this login into continuous identity polling or gain fresh authority.
+        pending = bool(policy) and bool(self._pending_operations(policy['ownerId'], ready=True))
         return self.blocked_presence != presence and (pending or self.presence != presence or self.next_at <= self.runtime._clock())
+
+    def _pending_operations(self, owner=None, *, ready=False):
+        epoch = self.runtime.writer.epoch()
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT * FROM sync_cloud_operations WHERE status='pending' "
+                                "AND (? IS NULL OR owner_id=?)", (owner, owner)).fetchall()
+        operations = [{**dict(row), 'request': json.loads(row['request'])} for row in rows]
+        return [row for row in operations if tuple(row['request']['epoch']) == epoch
+                and (not ready or row['next_at'] <= self.runtime._clock())]
 
     def has_pending_work(self):
         """Approved cloud deletion remains recoverable even with every local role paused."""
-        with closing(self._connect()) as conn:
-            return conn.execute("SELECT 1 FROM sync_cloud_operations WHERE status='pending' LIMIT 1").fetchone() is not None
+        return bool(self._pending_operations())
 
     def pending_selection(self, owner):
         """Reopening the UI reviews the original approved scope after a lost receipt."""
@@ -247,6 +268,18 @@ class DesktopCloudCharacterManagement:
         with closing(self._connect()) as conn, conn:
             conn.execute('UPDATE sync_cloud_operations SET status=?,error=?,next_at=? WHERE owner_id=? AND kind=? AND target=?',
                          (status, error, self.runtime._clock() + 30_000, owner, kind, target))
+
+    def _renew_confirmed_operation(self, owner, kind, target, reviewed, epoch):
+        """Renew only the installation proof for an explicitly reconfirmed fixed operation."""
+        current = self._operation(owner, kind, target)
+        if not current or current['status'] != 'pending' or current['request'] != reviewed:
+            raise ValueError('character_policy_changed')
+        # The manual entry reviewed the original scope again. Preserve the
+        # operation ID, exact body, role snapshot and original revision so a
+        # lost cloud receipt cannot turn into a new or expanded deletion.
+        renewed = {**reviewed, 'epoch': list(epoch)}
+        self._save_operation(owner, kind, target, renewed)
+        return renewed
 
     async def _send_operation(self, owner, kind, target, request, authenticated):
         token, fingerprint = authenticated
@@ -297,22 +330,32 @@ class DesktopCloudCharacterManagement:
     async def _run_operation(self, kind, target, base_revision, selected=None, *, expected_owner=None):
         from services.chat_sync_ledger import ChatDomain
         async with self.operation_lock:
+            # Only select/delete's confirmed manual entry can renew approval.
+            # Pin before authentication awaits: a concurrent second recovery
+            # must reject this confirmation rather than silently promoting it.
+            epoch = await asyncio.to_thread(self.runtime.writer.epoch)
             token, fingerprint, owner = await self._auth()
             if expected_owner is not None and expected_owner != owner:
                 raise ValueError('chat_sync_account_mismatch')
             authenticated = token, fingerprint
             if kind == 'delete':
                 ChatDomain(owner, target)
-            existing = self._operation(owner, kind, target)
+            existing = await asyncio.to_thread(self._operation, owner, kind, target)
             if existing and existing['status'] == 'pending':
                 # A pending destructive approval cannot be replaced by a later page/draft.
                 if kind == 'select' and existing['request']['body']['selectedCharacterSyncIds'] != selected:
                     raise ValueError('character_selection_pending')
-                return await self._send_operation(owner, kind, target, existing['request'], authenticated)
+                request = existing['request']
+                if tuple(request['epoch']) != epoch:
+                    request = await self._commit(fingerprint, epoch, self._renew_confirmed_operation,
+                                                 owner, kind, target, request, epoch)
+                # Automatic tick never enters this approval path and still
+                # refuses requests pinned to a retired installation epoch.
+                return await self._send_operation(owner, kind, target, request, authenticated)
             policy = await self.refresh(force=True, authenticated=authenticated, owner=owner)
             if policy['revision'] != base_revision:
                 raise ValueError('character_policy_changed')
-            roles = self.directory(owner)
+            roles = await asyncio.to_thread(self.directory, owner)
             available = {role['characterSyncId'] for role in roles}
             if kind == 'select':
                 if (not isinstance(selected, list) or len(selected) > 3 or any(uid not in available for uid in selected)
@@ -323,7 +366,6 @@ class DesktopCloudCharacterManagement:
                 if target not in available:
                     raise ValueError('character_deleted')
                 body = {'baseRevision': base_revision, 'operationId': uuid4().hex}
-            epoch = await asyncio.to_thread(self.runtime.writer.epoch)
             request = {'body': body, 'epoch': list(epoch), 'policy': policy, 'roles': roles}
             await self._commit(fingerprint, epoch, self._save_operation, owner, kind, target, request)
             return await self._send_operation(owner, kind, target, request, authenticated)
@@ -375,13 +417,13 @@ class DesktopCloudCharacterManagement:
     async def rebind(self, old_uid, name, *, include_history=True):
         """Only an explicit saved On creates a new UID after cloud retirement; offline saves remain local."""
         from services.character_profile_protocol import encode_character_profile
-        existing = self.reassignment(old_uid)
+        existing = await asyncio.to_thread(self.reassignment, old_uid)
         if existing and existing['new_uid'] == old_uid and not existing['completed']:
             old_uid = existing['old_uid']
         binding = await asyncio.to_thread(self.runtime.state.binding, old_uid)
-        if not binding or not self.retired(binding['owner_id'], old_uid):
+        if not binding or not await asyncio.to_thread(self.retired, binding['owner_id'], old_uid):
             raise ValueError('chat_sync_binding_changed')
-        existing = self.reassignment(old_uid)
+        existing = await asyncio.to_thread(self.reassignment, old_uid)
         new_uid = existing['new_uid'] if existing and not existing['completed'] else uuid4().hex
         try:
             profile = await self.runtime.profiles.adapter.read(old_uid)
@@ -397,7 +439,7 @@ class DesktopCloudCharacterManagement:
                 self.runtime.writer.require_epoch(epoch)
                 self._save_rebind(old_uid, new_uid, binding['owner_id'], request)
         await asyncio.to_thread(prepare)
-        await self._advance_rebind(self.reassignment(old_uid))
+        await self._advance_rebind(await asyncio.to_thread(self.reassignment, old_uid))
         return {'characterSyncId': new_uid, 'pending': True, 'enabled': False}
 
     async def _advance_rebind(self, intent):
@@ -451,10 +493,16 @@ class DesktopCloudCharacterManagement:
         """Recover local-only rebind work before automatic grants are considered after restart."""
         if self.runtime.profiles.adapter is None:
             return
-        with closing(self._connect()) as conn:
-            rows = conn.execute('SELECT old_uid FROM sync_cloud_rebinds WHERE completed=0').fetchall()
-        for row in rows:
-            intent = self.reassignment(row['old_uid'])
+        def pending():
+            with closing(self._connect()) as conn:
+                rows = conn.execute('SELECT * FROM sync_cloud_rebinds WHERE completed=0').fetchall()
+            return [{**dict(row), 'request': json.loads(row['request'])} for row in rows]
+        for intent in await asyncio.to_thread(pending):
+            # Recovery revokes the old installation's approvals. Keep its
+            # fixed local intent for explicit review, but never replay it or
+            # rewrite its epoch merely to let an automatic worker proceed.
+            if tuple(intent['request']['epoch']) != await asyncio.to_thread(self.runtime.writer.epoch):
+                continue
             if intent['request'].get('error') or intent['request'].get('nextAt', 0) > self.runtime._clock():
                 continue
             try:
@@ -463,13 +511,20 @@ class DesktopCloudCharacterManagement:
                 # One interrupted local rebind cannot stop other characters' sync.
                 # Changed definitions need a fresh explicit Save, while disk failures back off.
                 request = {**intent['request'], 'nextAt': self.runtime._clock() + 30_000}
+                if tuple(request['epoch']) != await asyncio.to_thread(self.runtime.writer.epoch):
+                    continue
                 if str(exc) in {'character_profile_changed', 'chat_sync_character_not_found', 'chat_sync_binding_conflict'}:
                     request['error'] = str(exc)
                 def retain():
                     with self.runtime._commit_lock, self.runtime.writer.locked():
                         self.runtime.writer.require_epoch(tuple(request['epoch']))
                         self._save_rebind(intent['old_uid'], intent['new_uid'], intent['owner_id'], request)
-                await asyncio.to_thread(retain)
+                try:
+                    await asyncio.to_thread(retain)
+                except (ValueError, OSError, sqlite3.Error):
+                    # A failed per-role retry write must not stop other roles.
+                    # A genuinely quarantined installation still fails closed.
+                    await asyncio.to_thread(self.runtime.writer.check)
 
     async def tick(self, presence=None):
         """Retry only previously confirmed fixed operations and refresh global metadata at a bounded cadence."""
@@ -483,9 +538,12 @@ class DesktopCloudCharacterManagement:
             raise
         authenticated = token, fingerprint
         async with self.operation_lock:
-            with closing(self._connect()) as conn:
-                rows = conn.execute("SELECT kind,target,request FROM sync_cloud_operations WHERE owner_id=? AND status='pending' AND next_at<=?",
-                                    (owner, self.runtime._clock())).fetchall()
-            for row in rows:
-                await self._send_operation(owner, row['kind'], row['target'], json.loads(row['request']), authenticated)
+            for row in await asyncio.to_thread(self._pending_operations, owner, ready=True):
+                try:
+                    await self._send_operation(owner, row['kind'], row['target'], row['request'], authenticated)
+                except (ValueError, OSError):
+                    # Each fixed operation retains its own blocked/retry state.
+                    # Epoch changes revoke only the old approval; a quarantined
+                    # writer still stops admission for this entire installation.
+                    await asyncio.to_thread(self.runtime.writer.check)
         return await self.refresh(authenticated=authenticated, owner=owner)

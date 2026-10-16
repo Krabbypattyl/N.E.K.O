@@ -3264,6 +3264,39 @@ def select_runtime_current(runtime, uid=UID):
 
 
 @pytest.mark.asyncio
+async def test_cloud_admission_wait_keeps_event_loop_responsive(tmp_path, monkeypatch):
+    """A busy local policy read cannot prevent a UI task from releasing it."""
+    runtime, service, _ = setup_runtime(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    released_while_waiting = []
+    task = None
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        capture(runtime)
+        service.requests.clear()
+
+        def busy_policy(*_args):
+            entered.set()
+            released_while_waiting.append(release.wait(timeout=2))
+            return 'character_policy_unavailable'
+
+        monkeypatch.setattr(runtime.cloud, 'local_error', busy_policy)
+        task = asyncio.create_task(runtime._automatic_channel('body', await runtime.session_presence_provider()))
+        assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 1), 2)
+        release.set()
+        await task
+        assert released_while_waiting == [True]
+        assert len(runtime.ledger.pending(DOMAIN)) == 1
+        assert service.requests == []
+    finally:
+        release.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("channel", ["body", "pull"])
 @pytest.mark.parametrize("selected_uid", [UID, OTHER_UID, None, "missing-provider"])
 async def test_current_role_automatic_channels_require_enabled_current_intersection(tmp_path, channel, selected_uid):

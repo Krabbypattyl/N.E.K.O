@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh all eight locale caches for chat sync settings and character quota controls.
-    const LOCALE_VERSION = '2026-10-16-chat-sync-character-quota';
+    const LOCALE_VERSION = '2026-10-16-chat-sync-cloud-delete-confirm';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

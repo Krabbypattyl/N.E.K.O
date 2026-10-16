@@ -545,7 +545,7 @@ class DesktopChatSyncRuntime:
             await self._stop_notifications()
             return
         presence = await self.session_presence_provider()
-        if presence and self.cloud.due(presence):
+        if presence and await asyncio.to_thread(self.cloud.due, presence):
             previous = self._flights.get('character-policy')
             if previous is None or previous.done():
                 task = asyncio.create_task(self.cloud.tick(presence))
@@ -763,8 +763,10 @@ class DesktopChatSyncRuntime:
     async def _automatic_channel(self, channel: str, presence: str) -> None:
         """Sync the selected opted-in role; independent deletes still visit all grants."""
         bindings = await asyncio.to_thread(self.state.bindings)
-        by_domain = {ChatDomain(item["owner_id"], item["character_uid"]).key(): item for item in bindings
-                     if item["enabled"] and item["binding_id"] and not self.cloud.local_error(item['owner_id'], item['character_uid'])}
+        def admitted_bindings():
+            return {ChatDomain(item["owner_id"], item["character_uid"]).key(): item for item in bindings
+                    if item["enabled"] and item["binding_id"] and not self.cloud.local_error(item['owner_id'], item['character_uid'])}
+        by_domain = await asyncio.to_thread(admitted_bindings)
         if channel != "deletion":
             current_uid = await self._current_character_uid()
             by_domain = {key: item for key, item in by_domain.items() if item["character_uid"] == current_uid}
@@ -1206,7 +1208,8 @@ class DesktopChatSyncRuntime:
         epoch = await asyncio.to_thread(self.writer.epoch)
         binding = await asyncio.to_thread(self.state.binding, uid)
         rebind = await asyncio.to_thread(self.cloud.reassignment, uid)
-        if enabled and ((binding and self.cloud.retired(binding['owner_id'], uid)) or (rebind and not rebind['completed'])):
+        retired = enabled and binding and await asyncio.to_thread(self.cloud.retired, binding['owner_id'], uid)
+        if enabled and (retired or (rebind and not rebind['completed'])):
             return await self.cloud.rebind(uid, name, include_history=include_history)
         if enabled and (not binding or not binding["binding_id"] or not binding["enabled"]):
             return await self.request_new_role_sync(uid, name, include_history=include_history, replace=True,
@@ -1420,7 +1423,7 @@ class DesktopChatSyncRuntime:
                 # rejected local rename must not break an existing chat binding.
                 raise ValueError("invalid_chat_sync_registration")
             await self.cloud.refresh(force=True, authenticated=(token, fingerprint), owner=owner)
-            self.cloud.require_local(owner, character_uid)
+            await asyncio.to_thread(self.cloud.require_local, owner, character_uid)
             await self._same_session(fingerprint)
             settings = await asyncio.to_thread(self.state.settings)
             receipt = await self._request("POST", base + "/bindings", token, body=_canonical({

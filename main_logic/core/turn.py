@@ -2866,11 +2866,19 @@ class TurnMixin:
         explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
         if (getattr(voice_session, "_is_gemini", False) is True
             and isinstance(gemini_source, tuple) and len(gemini_source) == 2
-            and explicit_origin not in ("proactive", "agent")
+            and explicit_origin not in ("agent", "tool")
+            and (explicit_origin != "proactive" or (
+                getattr(gemini_source[0], "proactive_outcome_owner", None) is not None
+                and gemini_source[0].proactive_outcome_owner
+                is getattr(voice_session, "_gemini_proactive_outcome_owner", None)
+            ))
             and voice_session._tool_task_owner_is_current(gemini_source[0])):
             # Only actual Gemini tool dispatch/result continuation may label
             # this response local. A still-current cancellation scope alone
             # does not prove that a later SERVER_VAD voice reply used a tool.
+            # A proactive reply can itself invoke tools, but requires that
+            # dispatch's frozen injection owner, not a preceding tool token.
+            # A fixed tool origin already carries this evidence on all chunks.
             mark_tool_turn(self, effective_turn_id)
         tool_owner = getattr(self, "_chat_original_tool_owner", None)
         if tool_owner is not None:

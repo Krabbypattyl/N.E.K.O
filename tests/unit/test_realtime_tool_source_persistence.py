@@ -196,3 +196,116 @@ async def test_realtime_source_acceptance_rejects_retired_owners(api_type, retir
     assert _tool_ids(manager) == set()
     assert manager._chat_original_turns[manager.current_speech_id]["origin"] == "chat"
     assert getattr(manager, "_chat_original_tool_owner", None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["proactive_tool", "combined_fast_terminal", "independent_proactive"])
+async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypatch, scenario):
+    from google.genai import types
+    from main_logic import cross_server
+    from main_logic.core.turn import TurnMixin
+    from main_logic.omni_realtime_client import _gemini_support
+    import services.chat_sync_source as source_module
+
+    runtime = make_runtime(tmp_path)
+    config = SimpleNamespace(aload_characters=AsyncMock(return_value={
+        "猫娘": {"Lan": {"_reserved": {"character_uid": UID}}},
+    }))
+    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", Mock())
+    monkeypatch.setattr("httpx.AsyncClient.send", AsyncMock(side_effect=AssertionError("unexpected_http")))
+    monkeypatch.setattr(_gemini_support, "types", types)
+    original_save, local_save = source_module.save_original, source_module.save_local_reply
+
+    async def save_original(name, role, text, **kwargs):
+        return await original_save(name, role, text, config_manager=config, **kwargs)
+
+    async def save_local(name, text, proof):
+        return await local_save(name, text, proof, config_manager=config)
+
+    monkeypatch.setattr(source_module, "save_original", save_original)
+    monkeypatch.setattr(source_module, "save_local_reply", save_local)
+    monkeypatch.setattr(cross_server, "_post_memory_server", AsyncMock(return_value=(True, "", {})))
+    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", AsyncMock(return_value=True))
+    manager, client, provider = _client_manager()
+    queue = asyncio.Queue()
+    manager.sync_message_queue = SimpleNamespace(put=queue.put_nowait)
+
+    async def finish_response():
+        TurnMixin._queue_turn_end(manager, None)
+
+    async def settled():
+        done = asyncio.get_running_loop().create_future()
+        queue.put_nowait({"type": "system", "data": "session end", "_memory_settlement_done": done})
+        await asyncio.wait_for(done, 5)
+
+    async def proactive_content(**_kwargs):
+        if scenario == "proactive_tool":
+            # Gemini may request a tool before the first visible reply. The
+            # first output then opens a new host identity under the injection.
+            await _dispatch(client, provider, _gemini_response(calls=(("call-1", "lookup"),)))
+            await _wait_for_tool_tasks(client)
+        await _dispatch(client, provider, _event(text="proactive reply"))
+        await _dispatch(client, provider, _event(text=" tail"))
+        await _dispatch(client, provider, _event(complete=True))
+
+    client.on_response_done = finish_response
+    connector = asyncio.create_task(cross_server.run_sync_connector(
+        queue, "Lan", config={"monitor": False, "bullet": False},
+    ))
+    try:
+        if scenario == "combined_fast_terminal":
+            async def allow_fast_result():
+                await _wait_for_tool_tasks(client)
+
+            manager._clear_tts_pipeline = allow_fast_result
+            combined = _gemini_response(calls=(("fast-1", "lookup"),))
+            combined.server_content = _event(text="combined tool reply", complete=True).server_content
+            await _dispatch(client, provider, combined)
+            assert provider.tool_responses
+            # The fast result replaced this frame's dispatch token while the
+            # host was opening. Its token belongs to the future continuation.
+            assert client._gemini_tool_response_source is not None
+            client._ai_recent_activity_time = 0
+            await _dispatch(client, provider, _event(text="fast tool continuation"))
+            await _dispatch(client, provider, _event(complete=True))
+            assert client._gemini_tool_response_source is None
+        else:
+            if scenario == "independent_proactive":
+                # An ordinary new injection must not inherit an earlier tool
+                # token even if the preceding provider omitted its terminal.
+                await _dispatch(client, provider, _event(text="old tool preface"))
+                await _dispatch(client, provider, _gemini_response(calls=(("old-1", "lookup"),)))
+                await _wait_for_tool_tasks(client)
+                client._is_responding = False
+                await settled()
+            client._ai_recent_activity_time = client._user_recent_activity_time = 0
+            provider.send_client_content = proactive_content
+            assert await client.prompt_ephemeral(language="en") is True
+        await settled()
+        source = source_for(runtime)
+        pending_text = [entry[0]["original"] for entry in source.pending(200)]
+        local_text = [entry["text"] for entry in source.read_local_replies(source.path, UID)]
+        if scenario == "proactive_tool":
+            assert {"local": local_text, "pending": pending_text} == {
+                "local": ["proactive reply tail"], "pending": [],
+            }
+        elif scenario == "combined_fast_terminal":
+            assert local_text == ["combined tool reply", "fast tool continuation"]
+            assert pending_text == []
+        else:
+            assert local_text == ["old tool preface"]
+            assert len(pending_text) == 1 and "proactive reply tail" in pending_text[0]
+        assert runtime.ledger.pending(DOMAIN) == []
+        client._ai_recent_activity_time = 0
+        await _dispatch(client, provider, _event(text="next ordinary voice"))
+        await _dispatch(client, provider, _event(complete=True))
+        await settled()
+        pending_after = [entry[0]["original"] for entry in source.pending(200)]
+        assert len(pending_after) == len(pending_text) + 1
+        assert any("next ordinary voice" in text for text in pending_after)
+        assert [entry["text"] for entry in source.read_local_replies(source.path, UID)] == local_text
+    finally:
+        await _wait_for_tool_tasks(client)
+        connector.cancel()
+        await asyncio.gather(connector, return_exceptions=True)
