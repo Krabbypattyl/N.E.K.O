@@ -411,8 +411,11 @@ class ChatOriginalSource:
                 "AND m.status='waiting' AND u.deleted=0", (uid,),
             ).fetchone()[0]
 
-    def prepare_history(self, binding, service_url, fingerprint, local_name, cloud_name, *, device_id, after_origin_seq=0):
+    def prepare_history(self, binding, service_url, fingerprint, local_name, cloud_name, *, device_id, after_origin_seq=0,
+                        through_origin_seq=None):
         """Freeze only trusted unbound source IDs in one SQLite snapshot."""
+        if through_origin_seq is not None and (type(through_origin_seq) is not int or through_origin_seq < 0):
+            raise ValueError("chat_sync_history_changed")
         uid, task_id = binding["character_uid"], uuid4().hex
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -431,11 +434,12 @@ class ChatOriginalSource:
                 "AND u.scope='private-chat-original-v1' AND u.original IS NOT NULL "
                 "AND u.origin_stream_id IS NOT NULL AND u.origin_seq IS NOT NULL "
                 "AND u.origin_seq>? "
+                + ("AND u.origin_seq<=? " if through_origin_seq is not None else "") +
                 "AND (u.verified_owner IS NULL OR u.verified_owner=?) "
                 "AND NOT EXISTS (SELECT 1 FROM source_originals o WHERE o.record_id=u.record_id) "
                 "AND NOT EXISTS (SELECT 1 FROM source_history_members m JOIN source_history_tasks t "
                 "ON t.task_id=m.task_id WHERE m.record_id=u.record_id AND t.status IN ('approved','registered'))",
-                (task_id, uid, after_origin_seq, binding["owner_id"]),
+                (task_id, uid, after_origin_seq, *((through_origin_seq,) if through_origin_seq is not None else ()), binding["owner_id"]),
             )
             connection.execute("UPDATE source_history_tasks SET count=(SELECT count(*) FROM source_history_members WHERE task_id=?) WHERE task_id=?",
                                (task_id, task_id))
@@ -650,6 +654,8 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
         return record_id
     # Keep the original durable before the model starts; ledger replay belongs
     # to the owned scheduler, so the producer never waits for backlog processing.
+    # This first transaction is the crash-recovery barrier. Scheduling an unsaved
+    # body in the background would lose accepted originals on process termination.
     runtime.wake_scheduler()
     return record_id
 

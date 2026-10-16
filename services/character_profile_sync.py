@@ -459,6 +459,17 @@ class DesktopProfileSync:
             raise ValueError("invalid_character_profile_response")
         return head
 
+    def _version(self, uid, owner, head):
+        """Validate small poll metadata independently of any retained/full definition."""
+        if (not isinstance(head, dict) or head.keys() != {"ownerId", "characterSyncId", "revision", "profileHash"}
+                or head["ownerId"] != owner or head["characterSyncId"] != uid
+                or type(head["revision"]) is not int or not 0 <= head["revision"] <= 2**53 - 1
+                or (head["revision"] == 0 and head["profileHash"] is not None)
+                or (head["revision"] > 0 and (not isinstance(head["profileHash"], str)
+                    or len(head["profileHash"]) != 64 or any(c not in "0123456789abcdef" for c in head["profileHash"])))):
+            raise ValueError("invalid_character_profile_response")
+        return head
+
     async def preview(self, uid):
         """Read a cloud profile for explicit import; this never creates or binds a role."""
         from services.chat_sync_ledger import ChatDomain
@@ -565,9 +576,29 @@ class DesktopProfileSync:
                         if not getattr(exc, "profile_conflict", False):
                             raise
                         await commit(self.store.conflict, operation["operation_id"])
-                head = await request("GET", path, None)
-                self._head(uid, binding["owner_id"], head)
-                await commit(self.store.remote, state["domain"], head)
+                state = await asyncio.to_thread(self.store.status, state["domain"])
+                head = await request("GET", path + "?metadataOnly=true", None)
+                if "profile" in head:
+                    # A pre-upgrade service ignores the new query and returns its old full response.
+                    self._head(uid, binding["owner_id"], head)
+                    await commit(self.store.remote, state["domain"], head)
+                else:
+                    version = self._version(uid, binding["owner_id"], head)
+                    if (version["revision"] < state["head_revision"] or (version["revision"] == state["head_revision"]
+                            and version["profileHash"] != state["head_hash"])):
+                        raise ValueError("invalid_character_profile_response")
+                    if version["revision"] != state["head_revision"] or (version["revision"] and state["head"] is None):
+                        head = self._head(uid, binding["owner_id"], await request("GET", path, None))
+                        # A concurrent publication may advance the full read, never roll it back or change an existing hash.
+                        if (head["revision"] < version["revision"] or (head["revision"] == version["revision"]
+                                and head["profileHash"] != version["profileHash"])):
+                            raise ValueError("invalid_character_profile_response")
+                        await commit(self.store.remote, state["domain"], head)
+                    elif (state["dirty"] or state["pending"]) and state["head"] is not None and state["local_hash"] == state["head_hash"]:
+                        # Reconcile from verified cached bytes after a config-save crash or an ACK of the
+                        # final local definition. ACK can already clear dirty while older approved entries
+                        # remain; remote() supersedes them so they cannot republish an obsolete persona.
+                        await commit(self.store.remote, state["domain"], {**version, "profile": state["head"]})
                 if choose_remote:
                     await commit(self.store.choose_remote, state["domain"], local_hash, revision)
                 state = await asyncio.to_thread(self.store.status, state["domain"])

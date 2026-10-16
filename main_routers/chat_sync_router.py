@@ -34,7 +34,7 @@ class ServiceConfiguration(BaseModel):
 
 
 class CharacterSyncChoice(BaseModel):
-    """Save the card switch without opting old history into automatic upload."""
+    """Accept explicit history consent; missing/old-client fields never expand a previous grant."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool

@@ -86,6 +86,8 @@ class ProfileService(SyntheticService):
                     raise httpx.ReadError("synthetic response loss")
                 return httpx.Response(200, json={key: self.head[key] for key in ("ownerId", "characterSyncId", "revision", "profileHash")}
                                       | {"operationId": body["operationId"]})
+            if request.url.params.get("metadataOnly") == "true":
+                return httpx.Response(200, json={key: self.head[key] for key in ("ownerId", "characterSyncId", "revision", "profileHash")})
             return httpx.Response(200, json=self.head)
         if request.url.path.endswith("/characters"):
             self.requests.append(request)
@@ -100,6 +102,134 @@ async def bound(tmp_path, config):
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Synthetic")
     return runtime, service, session
+
+
+@pytest.mark.asyncio
+async def test_unchanged_profile_poll_does_not_download_definition(tmp_path, config):
+    """Metadata polling retains the verified cached candidate without fetching its body again."""
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        service.head = head()
+        await runtime.profiles.step(UID, manual=True)
+        service.profile_requests.clear()
+        await runtime.profiles.step(UID, manual=True)
+        assert len(service.profile_requests) == 1
+        assert service.profile_requests[0].url.params.get("metadataOnly") == "true"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_version_only_poll_supersedes_queued_profiles_after_final_definition_converges(tmp_path, config):
+    """An ACK matching the latest saved definition must not replay obsolete intermediate profiles."""
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        for prompt in ("B", "A", "B", "A"):
+            config.data["猫娘"]["Synthetic"]["_reserved"]["system_prompt"] = prompt
+            candidate = await runtime.profiles.local(UID)
+            await runtime.profiles.approve(UID, candidate["local_hash"], candidate["head_revision"])
+
+        state = await runtime.profiles.step(UID, manual=True)
+        assert state["dirty"] and state["pending"] == 3
+        state = await runtime.profiles.step(UID, manual=True)
+        assert not state["dirty"] and state["pending"] == 0
+
+        # The third poll is metadata-only; the cloud must keep the final saved A.
+        await runtime.profiles.step(UID, manual=True)
+        published = [json.loads(request.content)["profile"]["systemPrompt"]
+                     for request in service.profile_requests if request.method == "PUT"]
+        assert published == ["B", "A"]
+        assert service.head["profile"]["systemPrompt"] == "A"
+        assert all(request.url.params.get("metadataOnly") == "true"
+                   for request in service.profile_requests if request.method == "GET")
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_version_only_poll_reconciles_config_saved_before_baseline_commit(tmp_path, config):
+    """A crash after applying config does not turn the same cloud definition into a new upload."""
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        service.head = head()
+        await runtime.profiles.step(UID, manual=True)
+        domain = ChatDomain(OWNER, UID).key()
+        service.head = head({**copy.deepcopy(PROFILE), 'systemPrompt': 'saved before crash'}, 2)
+        runtime.profiles.store.remote(domain, service.head)
+        config.data['猫娘']['Synthetic']['_reserved']['system_prompt'] = 'saved before crash'
+        service.profile_requests.clear()
+        state = await runtime.profiles.step(UID, manual=True)
+        assert not state['dirty'] and state['base_revision'] == 2 and state['pending'] == 0
+        assert len(service.profile_requests) == 1 and service.profile_requests[0].url.query
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_new_only_intent_stays_narrow_until_explicit_resave(tmp_path, config):
+    """Updating the application/recovering does not grant new access to old originals."""
+    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync_ledger import ChatOriginal
+    runtime, _, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+    try:
+        source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'legacy old'))
+        await runtime.request_new_role_sync(UID, 'Synthetic', include_history=False)
+        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'approved new'))
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime._advance_history(UID); await runtime._recover_originals()
+        assert len(runtime.ledger.pending(ChatDomain(OWNER, UID))) == 1
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime._advance_history(UID); await runtime._recover_originals()
+        assert len(runtime.ledger.pending(ChatDomain(OWNER, UID))) == 2
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_combined_card_consent_survives_failure_before_profile_approval(tmp_path, config, monkeypatch):
+    """An already saved card's approved history must not depend on a later profile transaction succeeding."""
+    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync_ledger import ChatOriginal
+    runtime, _, _ = await bound(tmp_path, config)
+    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+    try:
+        source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'approved old'))
+        approve = runtime.profiles.store.approve
+        def fail(*_args, **_kwargs):
+            raise RuntimeError('synthetic stage interruption')
+        monkeypatch.setattr(runtime.profiles.store, 'approve', fail)
+        with pytest.raises(RuntimeError, match='synthetic stage interruption'):
+            await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        request = runtime.state.new_role(UID)
+        assert request and request['afterSeq'] == 0
+        # Even a later unbound row cannot enlarge the old range approved by this save.
+        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'later unbound'))
+        monkeypatch.setattr(runtime.profiles.store, 'approve', approve)
+        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        await runtime._advance_history(UID); await runtime._recover_originals()
+        assert [json.loads(row[0])['text'] for row in runtime.ledger.pending(ChatDomain(OWNER, UID))] == ['approved old']
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['owner', 'rollback', 'hash'])
+async def test_invalid_profile_metadata_never_replaces_a_cached_definition(tmp_path, config, change):
+    """A small response obeys the same identity and monotonicity rules as a full profile."""
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        service.head = head()
+        await runtime.profiles.step(UID, manual=True)
+        before = runtime.profiles.store.status(ChatDomain(OWNER, UID).key())
+        service.head = head(None, 0) if change == 'rollback' else {**head(), **({'ownerId': OTHER_OWNER} if change == 'owner' else {'profileHash': '0' * 64})}
+        with pytest.raises(ValueError, match='invalid_character_profile_response'):
+            await runtime.profiles.step(UID, manual=True)
+        assert runtime.profiles.store.status(before['domain'])['head'] == before['head']
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize("case", json.loads((Path(__file__).parents[1] / "fixtures/character_profile_v1.json").read_text())["valid"])
@@ -235,7 +365,7 @@ async def test_late_profile_head_cannot_apply_after_consent_or_session_changes(t
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def block(request):
-            if request.method == "GET" and request.url.path.endswith("/profile"):
+            if request.method == "GET" and request.url.path.endswith("/profile") and not request.url.query:
                 entered.set()
                 await release.wait()
 
@@ -589,7 +719,7 @@ async def test_current_role_profile_get_response_is_retained_after_switch_withou
         service.head = head({**copy.deepcopy(PROFILE), "systemPrompt": "pending after switch"}, 2)
 
         async def switch(request):
-            if request.method == "GET" and request.url.path.endswith("/profile"):
+            if request.method == "GET" and request.url.path.endswith("/profile") and not request.url.query:
                 selected[0] = "b" * 32
                 config.data["当前猫娘"] = "Other"
 
@@ -771,7 +901,7 @@ async def test_new_role_setup_stops_before_registration_when_current_role_change
 
 
 @pytest.mark.asyncio
-async def test_old_card_choice_is_durable_and_does_not_approve_preexisting_chats(tmp_path, config):
+async def test_old_card_choice_is_durable_and_approves_trusted_preexisting_chats(tmp_path, config):
     from services.chat_sync_source import ChatOriginalSource
     from services.chat_sync_ledger import ChatOriginal
     runtime, service, session = setup_runtime(tmp_path, ProfileService())
@@ -791,10 +921,10 @@ async def test_old_card_choice_is_durable_and_does_not_approve_preexisting_chats
         await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
         await runtime._advance_history(UID); await runtime._recover_originals()
         texts = [json.loads(row[0])['text'] for row in runtime.ledger.pending(ChatDomain(OWNER, UID))]
-        assert texts == ['new after choice']
+        assert texts == ['old history', 'new after choice']
         import sqlite3
         with sqlite3.connect(source.path) as conn:
-            assert json.loads(conn.execute('SELECT original FROM source_unbound WHERE record_id=?', ('c' * 32,)).fetchone()[0])['text'] == 'old history'
+            assert conn.execute('SELECT original FROM source_unbound WHERE record_id=?', ('c' * 32,)).fetchone()[0] is None
     finally:
         await runtime.close()
 

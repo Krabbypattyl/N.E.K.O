@@ -336,60 +336,55 @@ def test_history_consent_approves_only_the_reviewed_task_as_background_work():
     """)
 
 
-@pytest.mark.parametrize("include_history", [False, True])
-def test_initial_enable_queues_history_only_with_explicit_checkbox(include_history):
-    """The single enable confirmation defaults to new chats, with an opt-in fixed history task."""
+@pytest.mark.parametrize("paused", [False, True])
+def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused):
+    """Opening does not grant anything; the labeled action approves all eligible chat once."""
     run_script(r"""(async()=>{
-        const uid='c'.repeat(32), task='f'.repeat(32), requests=[];
-        let binding=null;
+        const uid='c'.repeat(32), requests=[];
+        let binding=PAUSED?{enabled:false,ownerId:'owner',bindingId:'binding',generation:2}:null;
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
             if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
-            if(path.endsWith('/enable')){binding={enabled:true,ownerId:'owner',bindingId:'binding',generation:1};return binding;}
-            if(path.endsWith('/history/preview'))return {taskId:task,count:3,localName:'Neko',cloudName:'Cloud Neko'};
-            if(path.endsWith('/history/approve'))return {taskId:task,status:'approved'};
+            if(path.endsWith('/sync-choice'))return {pending:true};
             if(path.endsWith('/history'))return {originals:[]};
             throw new Error('Unexpected request '+path);
         }});
         documentEvents.DOMContentLoaded();await headerButton.events.click();
-        const modal=body.children[0], checkbox=modal.querySelectorAll('*').find(n=>n.id==='chat-sync-include-history');
-        assert.ok(checkbox);assert.equal(checkbox.checked,false);
-        checkbox.checked=INCLUDE;
+        const modal=body.children[0];
+        assert.equal(modal.querySelectorAll('*').some(n=>n.id==='chat-sync-include-history'),false);
+        assert.equal(requests.filter(x=>x.path.endsWith('/sync-choice')).length,0);
         await modal.querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(x=>x.path.endsWith('/enable')).length,1);
-        const approvals=requests.filter(x=>x.path.endsWith('/history/approve'));
-        assert.equal(approvals.length,INCLUDE?1:0);
-        assert.equal(requests.filter(x=>x.path.endsWith('/history/preview')).length,INCLUDE?1:0);
-        if(INCLUDE)assert.deepEqual(JSON.parse(approvals[0].body),{taskId:task});
+        const choices=requests.filter(x=>x.path.endsWith('/sync-choice'));
+        assert.equal(choices.length,1);
+        assert.deepEqual(JSON.parse(choices[0].body),{enabled:true,includeHistory:true});
+        assert.equal(requests.filter(x=>x.path.endsWith('/history/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("INCLUDE", json.dumps(include_history)))
+    """.replace("PAUSED", json.dumps(paused)))
 
 
-@pytest.mark.parametrize("change", ["role", "closed", "binding", "paused", "service"])
-def test_initial_checked_history_rejects_a_changed_context(change):
-    """A checked first-enable choice cannot follow a late response into another context."""
+@pytest.mark.parametrize("change", ["role", "closed", "binding", "service"])
+def test_combined_enable_rejects_context_changed_before_consent(change):
+    """A stale UI response cannot authorize another role, grant or origin."""
     run_script(r"""(async()=>{
-        const uid='c'.repeat(32), requests=[];let binding=null,service='https://sync.test';
+        const uid='c'.repeat(32), requests=[];let binding=null,service='https://sync.test',reads=0;
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push(path);
-            if(path.endsWith('/status'))return {serviceUrl:service,characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
-            if(path.endsWith('/enable')){binding={enabled:true,ownerId:'owner',bindingId:'binding',generation:1};return binding;}
-            if(path.endsWith('/history/preview')){
-                if(CHANGE==='role')window.lanlan_config.lanlan_name='Other';
-                if(CHANGE==='closed')modal.children.find(n=>n.textContent==='chatSync.close').events.click();
-                if(CHANGE==='binding')binding={...binding,generation:2};
-                if(CHANGE==='paused')binding={...binding,enabled:false};
-                if(CHANGE==='service')service='https://other.test';
-                return {taskId:'f'.repeat(32),count:3};
+            if(path.endsWith('/status')){
+                if(++reads===2){
+                    if(CHANGE==='role')window.lanlan_config.lanlan_name='Other';
+                    if(CHANGE==='closed')modal.children.find(n=>n.textContent==='chatSync.close').events.click();
+                    if(CHANGE==='binding')binding={enabled:true,ownerId:'owner',bindingId:'other',generation:2};
+                    if(CHANGE==='service')service='https://other.test';
+                }
+                return {serviceUrl:service,characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
             }
             if(path.endsWith('/history'))return {originals:[]};
-            throw new Error('Unexpected request '+path);
+            throw new Error('Unexpected mutation '+path);
         }});
         documentEvents.DOMContentLoaded();await headerButton.events.click();
-        const modal=body.children[0];modal.querySelectorAll('*').find(n=>n.id==='chat-sync-include-history').checked=true;
+        const modal=body.children[0];
         await modal.querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(p=>p.endsWith('/enable')).length,1);
-        assert.equal(requests.filter(p=>p.endsWith('/history/approve')).length,0);
+        assert.equal(requests.filter(p=>p.endsWith('/sync-choice')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace("CHANGE", json.dumps(change)))
 

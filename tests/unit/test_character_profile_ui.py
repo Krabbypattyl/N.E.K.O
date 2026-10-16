@@ -193,7 +193,7 @@ def test_card_save_uses_one_choice_without_a_second_profile_confirmation(enabled
             await window.nekoCharacterProfileSync.afterCardSave('Synthetic',ENABLED,IS_NEW);
             assert.equal(asked,0);assert.equal(alerts.length,0);assert.equal(calls.length,2);
             assert.equal(calls[1].path,'/api/chat-sync/characters/'+uid+'/sync-choice');
-            assert.deepEqual(JSON.parse(calls[1].init.body),{enabled:ENABLED,includeHistory:IS_NEW});
+            assert.deepEqual(JSON.parse(calls[1].init.body),{enabled:ENABLED,includeHistory:true});
             assert.equal(messages[0].text,'chatSync.syncChoiceSaved');
         })().catch(e=>{console.error(e);process.exitCode=1;});
     """.replace('ENABLED', json.dumps(enabled)).replace('IS_NEW', json.dumps(is_new)))
@@ -217,7 +217,7 @@ def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_h
             page.set_content('<div class="settings-form-layout panel-tab-settings"><form id="test-card"></form></div>')
             page.add_style_tag(path=str(ROOT / 'static/css/character_card_manager.css'))
             page.evaluate("""role => {
-                window.t=key=>key==='chatSync.newRoleSync'?'Sync character and chats':key;
+                window.t=key=>key==='chatSync.newRoleSync'?'Sync character and chats (including history)':key;
                 window.setInterval=()=>1;window.fetchCalls=[];
                 window.fetch=async path=>{fetchCalls.push(path);return {ok:true,json:async()=>({characters:[role]})};};
             }""", {'displayName': 'Synthetic', 'characterSyncId': 'a' * 32, 'binding': binding, 'syncEnabled': choice})
@@ -229,7 +229,9 @@ def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_h
             }""", {'code': switch_code, 'isNew': is_new})
             toggle=page.get_by_role('switch')
             assert toggle.is_checked() == expected and toggle.is_enabled()
-            assert page.locator('.character-chat-sync-row').inner_text() == 'Sync character and chats'
+            assert page.locator('.character-chat-sync-row').inner_text().splitlines()[0] == 'Sync character and chats (including history)'
+            # The existing advanced recovery entry remains available on saved cards.
+            assert page.get_by_text('chatSync.moreOptions').count() == (0 if is_new else 1)
             assert page.locator('.character-chat-sync-row').bounding_box()['height'] < 80
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             toggle.focus();toggle.press('Space')

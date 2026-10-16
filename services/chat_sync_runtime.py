@@ -939,7 +939,7 @@ class DesktopChatSyncRuntime:
             metadata["awaitingRegistration"] = await asyncio.to_thread(source.awaiting_registration, character_uid)
         return metadata
 
-    async def preview_history(self, character_uid, local_name, *, after_origin_seq=0):
+    async def preview_history(self, character_uid, local_name, *, after_origin_seq=0, through_origin_seq=None):
         """Pin authenticated cloud identity and a fixed trusted local member set."""
         from services.chat_sync_source import ChatOriginalSource
         async with self._lock:
@@ -963,7 +963,7 @@ class DesktopChatSyncRuntime:
             settings = await asyncio.to_thread(self.state.settings)
             source = await asyncio.to_thread(ChatOriginalSource, self.state.path.parent / "sources.sqlite3")
             task = await commit(source.prepare_history, binding, settings["service_url"], authenticated[1], local_name, names[character_uid],
-                                device_id=settings["device_id"], after_origin_seq=after_origin_seq)
+                                device_id=settings["device_id"], after_origin_seq=after_origin_seq, through_origin_seq=through_origin_seq)
             return source.metadata(task)
 
     @staticmethod
@@ -1064,40 +1064,45 @@ class DesktopChatSyncRuntime:
         async with self._lock:
             await asyncio.to_thread(self.state.configure, service_url)
 
+    def _queue_sync_choice(self, uid, name, profile, binding, epoch, *, include_history, replace):
+        """Pin one saved definition/range under the caller's writer lock before dependent work."""
+        from services.character_profile_protocol import encode_character_profile
+        request = {"requestId": uuid4().hex, "epoch": list(epoch), "displayName": name,
+                   "canonical": encode_character_profile(profile).decode("utf-8")}
+        if replace and binding:
+            request["resumeGeneration"] = binding["generation"]
+        with closing(store_connection(self.state.path.parent / "sources.sqlite3")) as conn:
+            row = conn.execute("SELECT next_seq FROM source_origin_streams WHERE uid=?", (uid,)).fetchone()
+        cutoff = row[0] - 1 if row else 0
+        request["afterSeq"] = 0 if include_history else cutoff
+        if binding and binding["binding_id"]:
+            # Bound saves approve a fixed old range; later originals keep their existing increment lane.
+            request.update(throughSeq=cutoff, historyBinding=binding)
+        previous = self.state.new_role(uid)
+        if previous and tuple(previous["epoch"]) == epoch:
+            request["afterSeq"] = min(previous.get("afterSeq", 0), request["afterSeq"])
+        self.state.queue_new_role(uid, request, replace=replace)
+
     async def request_new_role_sync(self, character_uid, display_name, *, include_history=True, replace=False):
         """Persist card consent locally; login and network never block saving a card."""
-        from services.character_profile_protocol import encode_character_profile
         binding = await asyncio.to_thread(self.state.binding, character_uid)
-        if binding is not None and binding["binding_id"] and binding["enabled"]:
-            return {"pending": False, "enabled": bool(binding["enabled"])}
         if self.profiles.adapter is None:
             raise ValueError("character_profile_unavailable")
         epoch = await asyncio.to_thread(self.writer.epoch)
         profile = await self.profiles.adapter.read(character_uid)
-        request = {"requestId": uuid4().hex, "epoch": list(epoch), "displayName": display_name,
-                   "canonical": encode_character_profile(profile).decode("utf-8")}
-        if replace and binding:
-            request["resumeGeneration"] = binding["generation"]
         def commit():
             with self.writer.locked():
                 self.writer.require_epoch(epoch)
-                source = self.state.path.parent / "sources.sqlite3"
-                if include_history:
-                    request["afterSeq"] = 0
-                else:
-                    with closing(store_connection(source)) as conn:
-                        row = conn.execute("SELECT next_seq FROM source_origin_streams WHERE uid=?", (character_uid,)).fetchone()
-                        request["afterSeq"] = row[0] - 1 if row else 0
-                previous = self.state.new_role(character_uid)
-                if previous and tuple(previous["epoch"]) == epoch:
-                    request["afterSeq"] = min(previous.get("afterSeq", 0), request["afterSeq"])
-                self.state.queue_new_role(character_uid, request, replace=replace)
+                if self.state.binding(character_uid) != binding:
+                    raise ValueError("chat_sync_binding_changed")
+                self._queue_sync_choice(character_uid, display_name, profile, binding, epoch,
+                                        include_history=include_history, replace=replace)
                 self.state.save_choice(character_uid, True)
         await asyncio.to_thread(commit)
         self.wake_scheduler()
         return {"pending": True, "enabled": False}
 
-    async def save_character_sync_choice(self, uid, name, enabled, *, include_history=False):
+    async def save_character_sync_choice(self, uid, name, enabled, *, include_history=True):
         """A card save is explicit consent; no login or cloud request blocks local saving."""
         epoch = await asyncio.to_thread(self.writer.epoch)
         binding = await asyncio.to_thread(self.state.binding, uid)
@@ -1109,6 +1114,9 @@ class DesktopChatSyncRuntime:
                 self.writer.require_epoch(epoch)
                 if self.state.binding(uid) != binding:
                     raise ValueError("chat_sync_binding_changed")
+                if enabled and include_history:
+                    # Queue first: a crash/failure during profile approval must retain the combined consent.
+                    self._queue_sync_choice(uid, name, candidate["local"], binding, epoch, include_history=True, replace=True)
                 if enabled and candidate and candidate["dirty"]:
                     self.profiles.store.approve(candidate["domain"], candidate["local_hash"], candidate["head_revision"])
                 self.state.save_choice(uid, enabled)
@@ -1116,7 +1124,7 @@ class DesktopChatSyncRuntime:
                     if binding:
                         self.state.pause(uid)
                     self.state.finish_new_role(uid)
-                elif (pending := self.state.new_role(uid)) and tuple(pending["epoch"]) == epoch:
+                elif not include_history and (pending := self.state.new_role(uid)) and tuple(pending["epoch"]) == epoch:
                     # Keep the original chat cutoff while explicitly approving the newer saved definition.
                     pending.update(requestId=uuid4().hex, displayName=name)
                     pending.pop("error", None)
@@ -1184,7 +1192,12 @@ class DesktopChatSyncRuntime:
             await active()
             await asyncio.to_thread(approve)
             # Saved while first login was unavailable: these are this new role's already approved chats.
-            preview = await self.preview_history(uid, request["displayName"], after_origin_seq=request.get("afterSeq", 0))
+            current = await asyncio.to_thread(self.state.binding, uid)
+            pinned = request.get("historyBinding")
+            if pinned and any(pinned[key] != current[key] for key in ("owner_id", "character_uid", "binding_id", "request_id")):
+                raise ValueError("chat_sync_binding_changed")
+            preview = await self.preview_history(uid, request["displayName"], after_origin_seq=request.get("afterSeq", 0),
+                                                 through_origin_seq=request.get("throughSeq"))
             await active()
             await self.approve_history(uid, preview["taskId"])
             await active()

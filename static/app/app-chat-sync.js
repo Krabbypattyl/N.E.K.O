@@ -20,8 +20,6 @@
     var statusNode = null;
     var DEFAULT_SERVICE_URL = 'https://sync.nekotech.cn';
     var configuredServiceUrl = null;
-    var includeHistoryInput = null;
-    var includeHistoryLabel = null;
     var activeBindingKey = null;
     var activeBinding = null;
     var operationRunning = false;
@@ -289,7 +287,6 @@
         // Dismissed consent never survives a role switch or a later local response.
         historyConsentGeneration++;
         historyPreview = null;
-        if (includeHistoryInput) includeHistoryInput.checked = false;
         if (historyPreviewNode) historyPreviewNode.replaceChildren();
     }
 
@@ -306,8 +303,6 @@
         dialog.querySelector('[data-sync-action="sync"]').hidden = !activeBinding || !activeBinding.enabled || writerRecoveryRequired;
         dialog.querySelector('[data-sync-action="pause"]').hidden = !activeBinding || !activeBinding.enabled || writerRecoveryRequired;
         dialog.querySelector('[data-sync-action="recover"]').hidden = !writerRecoveryRequired;
-        includeHistoryLabel.hidden = !!activeBinding || writerRecoveryRequired;
-        includeHistoryInput.disabled = operationRunning;
         if (writerRecoveryRequired) {
             ['sync', 'pause', 'history', 'profile', 'cloud'].forEach(function (action) {
                 dialog.querySelector('[data-sync-action="' + action + '"]').disabled = true;
@@ -428,13 +423,13 @@
         var requestedName = characterName();
         var requestedUid = activeUid;
         var requestedBindingKey = activeBindingKey;
-        var includeHistory = action === 'enable' && !activeBinding && includeHistoryInput.checked;
+        var requestedServiceUrl = configuredServiceUrl;
         var enabledHere = false;
         try {
             if (!await refreshStatus() || characterName() !== requestedName
                     || (requestedUid && activeUid !== requestedUid)) return;
             requestedUid = activeUid;
-            if (action === 'enable' && requestedBindingKey !== activeBindingKey) return;
+            if (action === 'enable' && (requestedBindingKey !== activeBindingKey || requestedServiceUrl !== configuredServiceUrl)) return;
             statusNode.textContent = text('working');
             if (['enable', 'pause', 'clear'].includes(action)) clearHistoryPreview();
             var consentGeneration = historyConsentGeneration;
@@ -467,21 +462,10 @@
                     if (!configuredServiceUrl) await api('/configuration', 'PUT', { serviceUrl: (configuredServiceUrl || DEFAULT_SERVICE_URL) });
                     if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid
                             || consentGeneration !== historyConsentGeneration) return;
-                    await api(path + '/enable', 'POST');
+                    // One labeled enable/resume action durably approves the saved persona and trusted history.
+                    // The backend owns retries; opening this dialog never enlarges an older grant.
+                    await api(path + '/sync-choice', 'POST', {enabled: true, includeHistory: true});
                     enabledHere = true;
-                    if (includeHistory) {
-                        if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
-                                || activeUid !== requestedUid || consentGeneration !== historyConsentGeneration) return;
-                        var bindingKey = activeBindingKey;
-                        // This single opt-in approves one trusted fixed snapshot, not restored delete operations.
-                        var snapshot = await api(path + '/history/preview', 'POST');
-                        if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
-                                || activeUid !== requestedUid || bindingKey !== activeBindingKey
-                                || consentGeneration !== historyConsentGeneration) return;
-                        if (snapshot.count > 0) await api(path + '/history/approve', 'POST', { taskId: snapshot.taskId });
-                    }
-                    // Chat consent never silently publishes the current persona.
-                    if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(requestedName, true);
                 }
                 if (action === 'pause') await api(path + '/pause', 'POST');
                 if (action === 'clear') {
@@ -507,7 +491,7 @@
             await refreshStatus();
             await loadHistory();
         } catch (error) {
-            statusNode.textContent = text(enabledHere && includeHistory ? 'initialHistoryFailed'
+            statusNode.textContent = text(enabledHere ? 'initialHistoryFailed'
                 : error.message === 'chat_sync_login_required' ? 'loginRequired' : 'failed');
         } finally {
             if (action === 'sync') {
@@ -535,17 +519,6 @@
         statusNode = document.createElement('p');
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
-        includeHistoryLabel = document.createElement('label');
-        includeHistoryLabel.id = 'chat-sync-include-history-choice';
-        includeHistoryInput = document.createElement('input');
-        includeHistoryInput.id = 'chat-sync-include-history';
-        includeHistoryInput.type = 'checkbox';
-        includeHistoryInput.checked = false;
-        includeHistoryLabel.appendChild(includeHistoryInput);
-        var includeText = document.createElement('span');
-        includeText.textContent = text('includeHistory');
-        includeHistoryLabel.appendChild(includeText);
-        dialog.appendChild(includeHistoryLabel);
         [['recover', 'recoverWriter'], ['enable', 'enable'], ['pause', 'pause'], ['sync', 'syncNow'], ['history', 'previewHistory'], ['profile', 'profileReview'], ['cloud', 'cloudImport'], ['clear', 'clearKnown']].forEach(function (item) {
             var button = document.createElement('button');
             button.type = 'button';

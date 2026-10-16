@@ -135,7 +135,8 @@
             const status = await api('/status');
             const role = status.characters.find(item => item.displayName === name);
             if (!role) throw new Error('chat_sync_character_not_found');
-            await api('/characters/' + role.characterSyncId + '/sync-choice', {enabled, includeHistory: !!isNew});
+            // The labeled card switch is the sole affirmative action for saved settings and trusted history.
+            await api('/characters/' + role.characterSyncId + '/sync-choice', {enabled, includeHistory: true});
             window.showMessage(text('syncChoiceSaved'), 'success');
         } catch (_) {
             // The card is already saved; an unreadable switch must preserve its previous consent.
