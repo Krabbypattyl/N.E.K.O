@@ -103,11 +103,43 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     assert response.json()["characters"] == [{
-        "characterSyncId": UID, "displayName": "Neko", "syncEnabled": False,
+        "characterSyncId": UID, "displayName": "Neko", "syncEnabled": False, "syncPending": False,
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None},
     }]
+
+
+def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client):
+    """Reopening an editor cannot turn a pending explicit resume into a new Off save."""
+    from unittest.mock import AsyncMock
+    client, runtime = local_client
+    state = client.get('/api/chat-sync/status').json()
+    runtime.status = AsyncMock(return_value={
+        'bindings': [{'character_uid': UID, 'owner_id': OWNER, 'binding_id': 'd' * 32, 'enabled': 0, 'generation': 3,
+                      'pendingOriginals': 0, 'pendingDeletions': 0, 'cursor': 0, 'hasSealedBatch': False}],
+        'syncChoices': {UID: True}, 'syncPendingChoices': {UID: True},
+        'serviceUrl': state['serviceUrl'], 'deviceId': state['deviceId'],
+    })
+    role = client.get('/api/chat-sync/status').json()['characters'][0]
+    assert role['syncEnabled'] and role['syncPending']
+    assert role['binding']['enabled'] is False
+
+
+@pytest.mark.parametrize('error,status', [(None, 200), ('chat_sync_login_required', 401), ('chat_sync_unavailable', 503)])
+def test_manual_combined_choice_run_is_local_and_exposes_real_errors(local_client, error, status):
+    """The separate run route consumes existing consent and never accepts a caller-supplied owner."""
+    from unittest.mock import AsyncMock
+    client, runtime = local_client
+    runtime.run_character_sync_choice = AsyncMock(return_value={'completed': True, 'pending': False},
+                                                 side_effect=ValueError(error) if error else None)
+    path = '/api/chat-sync/characters/' + UID + '/sync-choice/run'
+    response = client.post(path)
+    assert response.status_code == status
+    runtime.run_character_sync_choice.assert_awaited_once_with(UID)
+    assert client.post(path, headers={'Origin': 'https://foreign.test'}).status_code == 403
+    assert client.post('/api/chat-sync/characters/' + 'b' * 32 + '/sync-choice/run').status_code == 404
+    assert runtime.run_character_sync_choice.await_count == 1
 
 
 def test_history_keeps_local_only_replies_outside_canonical_originals(local_client):

@@ -1,6 +1,8 @@
 """Memory Browser saves freeze exact chat IDs without touching real user data."""
 
 import json
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -314,3 +316,37 @@ def test_unfinished_reply_blocks_canonical_deletion_without_writing_memory(edito
     assert path.read_bytes() == before
     runtime.delete.assert_not_called()
     clear.assert_not_called()
+
+
+@pytest.mark.parametrize('missing_translation', [False, True])
+def test_sync_delete_confirmation_remains_explicit_without_a_loaded_translation(missing_translation):
+    """A missing i18n loader/key cannot turn permanent multi-device deletion into an empty prompt."""
+    source_path = Path(__file__).parents[2] / 'static/js/memory_browser.js'
+    script = r"""
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1],'utf8');
+        let prompt;
+        global.window={confirm(text){prompt=text;return false;}};
+        if(MISSING_KEY)window.t=key=>key;
+        global.currentMemoryFile='recent_Synthetic.json';
+        global.currentMemoryFingerprint='synthetic-fingerprint';
+        global.currentMemoryIdentityToken='synthetic-token';
+        global.memoryFileRequestId=1;global.memorySaveRequestId=0;global.memoryEditRevision=1;
+        global.chatData=[];global.chatSyncSnapshot={characterSyncId:'a'.repeat(32),binding:{}};
+        global.deletedOriginalIds=new Set(['b'.repeat(32),'c'.repeat(32)]);
+        global.deletedLocalReplyIds=new Set();
+        global.fetch=()=>{throw new Error('Cancelled deletion must not send anything');};
+        vm.runInThisContext(source.slice(source.indexOf('    function interpolateText('),
+            source.indexOf('    function setElementText(')));
+        vm.runInThisContext(source.slice(source.indexOf('    async function saveCurrentMemoryOnce('),
+            source.indexOf('    function announceChatDeletion(')));
+        (async()=>{
+            assert.equal(await saveCurrentMemoryOnce(),false);
+            assert.equal(prompt,'Permanently delete 2 original chats from all synced devices?');
+        })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('MISSING_KEY', json.dumps(missing_translation))
+    result = subprocess.run(['node', '-e', script, str(source_path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
+        locale = json.loads((source_path.parents[1] / 'locales' / (language + '.json')).read_text())
+        assert '{{count}}' in locale['memory']['chatDeleteConfirm']

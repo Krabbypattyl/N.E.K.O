@@ -127,6 +127,7 @@ async def status(runtime: Runtime):
     state = await runtime.status()
     bindings = {item["character_uid"]: item for item in state.pop("bindings")}
     choices = state.pop("syncChoices", {})
+    pending_choices = state.pop("syncPendingChoices", {})
     setup_errors = state.pop("syncSetupErrors", {})
     characters = await _characters()
     for character in characters:
@@ -134,7 +135,10 @@ async def status(runtime: Runtime):
             character["syncSetupError"] = setup_errors[character["characterSyncId"]]
         binding = bindings.get(character["characterSyncId"])
         paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
-        character["syncEnabled"] = bool(binding["enabled"]) if paused_or_bound else choices.get(character["characterSyncId"], True)
+        # Pending On is the saved user choice even before online owner checks
+        # activate a paused binding. Editing the card must preserve that choice.
+        character["syncPending"] = bool(pending_choices.get(character["characterSyncId"]))
+        character["syncEnabled"] = (bool(binding["enabled"]) or character["syncPending"]) if paused_or_bound else choices.get(character["characterSyncId"], True)
         character["binding"] = None if binding is None else {
             "ownerId": binding["owner_id"], "bindingId": binding["binding_id"],
             "enabled": bool(binding["enabled"]), "generation": binding["generation"],
@@ -195,6 +199,18 @@ async def enable(character_uid: str, runtime: Runtime):
         raise _error(exc) from None
     runtime.start_deletion_flush(character_uid)
     return {"characterSyncId": character_uid, "ownerId": binding["owner_id"], "enabled": True}
+
+
+@router.post("/characters/{character_uid}/sync-choice/run")
+async def run_sync_choice(character_uid: str, runtime: Runtime, body: None = Body(default=None)):
+    """Run saved consent for an explicit target without suppressing login or network errors."""
+    await _character(character_uid)
+    try:
+        return await runtime.run_character_sync_choice(character_uid)
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
 
 
 @router.post("/characters/{character_uid}/pause")

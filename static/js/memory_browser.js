@@ -5716,7 +5716,9 @@
             messageIds: Array.from(deletedOriginalIds),
             localMessageIds: Array.from(deletedLocalReplyIds)
         } : null;
-        if (syncEdit && syncEdit.messageIds.length && !window.confirm(translate('memory.chatDeleteConfirm', '', {
+        // Permanent cross-device deletion must remain explicit even before i18n has loaded.
+        if (syncEdit && syncEdit.messageIds.length && !window.confirm(translate('memory.chatDeleteConfirm',
+            'Permanently delete {{count}} original chats from all synced devices?', {
             count: syncEdit.messageIds.length
         }))) return false;
         // 处理备忘录为空的情况

@@ -34,7 +34,7 @@ from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
 from main_logic.session_state import SessionEvent, TurnOwner
-from services.chat_sync_source import is_chat_input_source, mark_turn_origin, save_original
+from services.chat_sync_source import is_chat_input_source, mark_tool_turn, mark_turn_origin, save_original
 from main_logic.agent_event_bus import (
     dispatch_user_utterance,
     publish_conversation_turn_observed_best_effort,
@@ -385,6 +385,9 @@ class TurnMixin:
         """Handle new model output: clear the TTS queue and notify the frontend"""
         voice_session = getattr(self, 'session', None)
         agent_owner = getattr(voice_session, '_gemini_proactive_outcome_owner', None)
+        # The outcome owner tracks both Agent and ordinary proactive injections. Transfer the explicit
+        # origin, not the mere presence of an outcome callback, when Gemini opens its next host reply.
+        injected_origin = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''), {}).get('origin')
         if self._takeover_active:
             logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
@@ -412,16 +415,15 @@ class TurnMixin:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             new_sid = self.current_speech_id
-            if (isinstance(agent_owner, tuple) and len(agent_owner) == 5
+            if (injected_origin in ('agent', 'proactive') and isinstance(agent_owner, tuple) and len(agent_owner) == 5
                 and agent_owner[0] == getattr(voice_session, '_connection_generation', None)
                 and agent_owner[1] is getattr(voice_session, '_gemini_session', None)
                 and agent_owner[4] == getattr(voice_session, '_tool_scope_generation', None)
                 and voice_session is getattr(self, "session", None)
                 and agent_owner is getattr(voice_session, "_gemini_proactive_outcome_owner", None)):
-                # Gemini opens a new host turn after the explicit Agent inject.
-                # Transfer origin only while its provider generation still owns
-                # the response; a real user's changed tool scope cannot inherit it.
-                mark_turn_origin(self, new_sid, 'agent')
+                # Keep ordinary proactive speech syncable, while Agent stays local.
+                # A real user's changed provider generation or tool scope cannot inherit either origin.
+                mark_turn_origin(self, new_sid, injected_origin)
             # 必须在 self.lock 内同步翻 _preempted 标记，使新 sid + preempt 对
             # 同样在 self.lock 内复查 is_proactive_preempted 的 prepare_proactive_delivery
             # 原子可见；否则 proactive 会插到 lock 释放 ~ fire() 之间把 user sid
@@ -2852,6 +2854,22 @@ class TurnMixin:
             "request_id": effective_request_id,
         }
         # Source proof is server-created and immutable for this particular reply.
+        tool_owner = getattr(self, "_chat_original_tool_owner", None)
+        if tool_owner is not None:
+            session, scope, marked_speech_id = tool_owner
+            explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
+            if effective_turn_id != marked_speech_id and explicit_origin in ("proactive", "agent"):
+                # A later explicit injection is independent, even when it intentionally keeps the
+                # provider tool scope. In particular, ordinary proactive speech must not inherit tools.
+                self._chat_original_tool_owner = None
+            elif session is getattr(self, "session", None) and session._tool_task_owner_is_current(scope):
+                if effective_turn_id != marked_speech_id:
+                    # Provider continuations may rotate speech IDs inside one user tool scope.
+                    # Mark each fixed reply once, retaining pre-tool prefixes and never tainting a new user turn.
+                    mark_tool_turn(self, effective_turn_id)
+                    self._chat_original_tool_owner = (session, scope, effective_turn_id)
+            else:
+                self._chat_original_tool_owner = None
         proof = mark_turn_origin(self, effective_turn_id, 'chat')
         message['chat_original_source'] = proof
         message['chat_original_id'] = proof['recordId']

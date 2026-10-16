@@ -671,6 +671,7 @@ class _ToolingMixin:
         async def _run() -> ToolResult | None:
             if not self._tool_task_owner_is_current(owner):
                 return None
+            call.source_owner = owner
             return await self._execute_tool_call(call)
 
         task = self._create_tool_task(_run(), call_ids=(call.call_id,))
@@ -700,6 +701,7 @@ class _ToolingMixin:
         async def _execute(call: ToolCall) -> ToolResult | None:
             if not self._tool_task_owner_is_current(owner):
                 return None
+            call.source_owner = owner
             return await self._execute_tool_call(call)
 
         # Gemini delivers the whole parallel batch in one ``tool_call`` event,

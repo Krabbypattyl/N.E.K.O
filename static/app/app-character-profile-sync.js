@@ -124,6 +124,8 @@
         const status = await api('/status');
         const role = status.characters.find(item => item.displayName === name);
         if (!role) throw new Error('chat_sync_character_not_found');
+        // The backend includes a durable pending resume in the effective saved choice.
+        if (typeof role.syncEnabled === 'boolean') return role.syncEnabled;
         // A first grant still being issued is pending, not an explicit user pause.
         if (role.binding && (role.binding.bindingId !== null || role.binding.generation > 1)) return !!role.binding.enabled;
         return role.syncEnabled !== false;

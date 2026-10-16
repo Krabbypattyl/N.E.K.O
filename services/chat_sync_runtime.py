@@ -251,6 +251,26 @@ class DesktopSyncState:
             return {row[0]: request["error"] for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
                     if (request := json.loads(row[1])).get("error")}
 
+    @staticmethod
+    def choice_matches_binding(request, binding):
+        """A retained On grants only its pinned domain and explicit paused generation."""
+        pinned = request.get("historyBinding")
+        if pinned and (binding is None or any(pinned[key] != binding[key]
+                                             for key in ("owner_id", "character_uid", "binding_id", "request_id"))):
+            return False
+        return not (binding and not binding["enabled"] and (binding["binding_id"] or binding["generation"] > 1)
+                    and request.get("resumeGeneration") != binding["generation"])
+
+    def pending_choices(self, epoch):
+        """Report durable affirmative choices without presenting copied or revoked grants as On."""
+        with closing(self._connect()) as conn:
+            bindings = {row["character_uid"]: dict(row) for row in conn.execute("SELECT * FROM sync_bindings")}
+            return {uid: True for uid, raw in conn.execute(
+                "SELECT r.character_uid,r.request FROM sync_new_roles r JOIN sync_choices c "
+                "ON c.character_uid=r.character_uid WHERE c.enabled=1")
+                if tuple((request := json.loads(raw))["epoch"]) == epoch
+                and self.choice_matches_binding(request, bindings.get(uid))}
+
     def defer_new_role(self, uid, deadline):
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE sync_new_roles SET next_at=? WHERE character_uid=?", (deadline, uid))
@@ -358,6 +378,9 @@ class DesktopChatSyncRuntime:
         self._deletion_lock = asyncio.Lock()
         self._pull_lock = asyncio.Lock()
         self._marker_flight_lock = asyncio.Lock()
+        # Manual setup and automatic recovery consume the same fixed consent;
+        # only one may prepare/finish its history snapshot at a time.
+        self._sync_choice_lock = asyncio.Lock()
         # This short gate never covers HTTP: pause and local response commits
         # have one order even when a worker starts after its async session check.
         self._commit_lock = threading.Lock()
@@ -910,6 +933,7 @@ class DesktopChatSyncRuntime:
             binding["historyBackfill"] = await self._history_status(binding["character_uid"])
         return {"serviceUrl": settings["service_url"], "deviceId": settings["device_id"], "bindings": bindings,
                 "syncSetupErrors": await asyncio.to_thread(self.state.new_role_errors),
+                "syncPendingChoices": await asyncio.to_thread(self.state.pending_choices, await asyncio.to_thread(self.writer.epoch)),
                 "syncChoices": await asyncio.to_thread(self.state.choices), "writerRecoveryRequired": False}
 
     def _quarantined_status(self):
@@ -939,31 +963,24 @@ class DesktopChatSyncRuntime:
             metadata["awaitingRegistration"] = await asyncio.to_thread(source.awaiting_registration, character_uid)
         return metadata
 
-    async def preview_history(self, character_uid, local_name, *, after_origin_seq=0, through_origin_seq=None):
+    async def preview_history(self, character_uid, local_name, *, after_origin_seq=0, through_origin_seq=None,
+                              supersede_preview=True):
         """Pin authenticated cloud identity and a fixed trusted local member set."""
         from services.chat_sync_source import ChatOriginalSource
         async with self._lock:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
             authenticated = await self._session()
             _, request, commit = await self._bound_transport(character_uid, authenticated=authenticated, expected_binding=binding)
-            roles = await request("GET", "/prototype/chat-sync/characters", None)
-            if roles.keys() != {"characters"} or not isinstance(roles["characters"], list):
-                raise ValueError("invalid_chat_sync_registration")
-            names = {}
-            for role in roles["characters"]:
-                if not isinstance(role, dict) or role.keys() != {"characterSyncId", "displayName"}:
-                    raise ValueError("invalid_chat_sync_registration")
-                ChatDomain(binding["owner_id"], role["characterSyncId"])
-                name = role["displayName"]
-                if not isinstance(name, str) or not name or len(name) > 200 or len(name.encode("utf-8")) > 800 or role["characterSyncId"] in names:
-                    raise ValueError("invalid_chat_sync_registration")
-                names[role["characterSyncId"]] = name
+            from services.character_profile_sync import read_character_directory
+            roles = await read_character_directory(request, binding["owner_id"])
+            names = {role["characterSyncId"]: role["displayName"] for role in roles["characters"]}
             if character_uid not in names:
                 raise ValueError("chat_sync_character_not_found")
             settings = await asyncio.to_thread(self.state.settings)
             source = await asyncio.to_thread(ChatOriginalSource, self.state.path.parent / "sources.sqlite3")
             task = await commit(source.prepare_history, binding, settings["service_url"], authenticated[1], local_name, names[character_uid],
-                                device_id=settings["device_id"], after_origin_seq=after_origin_seq, through_origin_seq=through_origin_seq)
+                                device_id=settings["device_id"], after_origin_seq=after_origin_seq, through_origin_seq=through_origin_seq,
+                                supersede_preview=supersede_preview)
             return source.metadata(task)
 
     @staticmethod
@@ -973,7 +990,7 @@ class DesktopChatSyncRuntime:
         return (task["service_url"] == settings["service_url"] and task["device_id"] == settings["device_id"] and all(pinned[key] == binding[key]
                 for key in ("character_uid", "owner_id", "binding_id", "request_id")))
 
-    async def approve_history(self, character_uid, task_id):
+    async def approve_history(self, character_uid, task_id, *, expected_request_id=None):
         """Accept one reviewed task ID; the client supplies no names, counts or owner."""
         from services.chat_sync_source import ChatOriginalSource
         if not isinstance(task_id, str) or not _HEX_ID.fullmatch(task_id):
@@ -992,7 +1009,16 @@ class DesktopChatSyncRuntime:
                     raise ValueError("chat_sync_history_changed")
             elif task["status"] not in ("approved", "registered"):
                 raise ValueError("chat_sync_history_changed")
-            approved = await commit(source.approve_history, character_uid, task_id)
+            def approve():
+                # The bound commit already holds writer/session/generation
+                # gates. A later card save must also win over an old worker
+                # that waited after its last asynchronous request check.
+                if expected_request_id is not None:
+                    latest = self.state.new_role(character_uid)
+                    if not latest or latest["requestId"] != expected_request_id:
+                        raise ValueError("chat_sync_binding_changed")
+                return source.approve_history(character_uid, task_id)
+            approved = await commit(approve)
             self.wake_scheduler()
             return source.metadata(approved)
 
@@ -1153,11 +1179,36 @@ class DesktopChatSyncRuntime:
         self._flights["new-role"] = task
         self._track(task)
 
-    async def _run_new_role_sync(self, uid, request, presence):
+    async def run_character_sync_choice(self, uid):
+        """Consume a saved grant for an explicit target and advance one bounded manual pass."""
+        _, presence = await self._session()
+        async with self._sync_choice_lock:
+            # The scheduler may have completed this grant while the manual
+            # request waited. Read after admission rather than replaying a
+            # stale snapshot and falsely reporting a successful setup as failed.
+            request = await asyncio.to_thread(self.state.new_role, uid)
+            if request:
+                await self._consume_sync_choice(uid, request, presence, manual=True)
+        # These are the existing manual exceptions to current-role scheduling.
+        # Both channels retain their durable retry, owner and writer checks.
+        await self.profiles.step(uid, manual=True)
+        await self.sync(uid, byte_budget=_AUTO_BYTE_BUDGET, max_pull_pages=1)
+        pending = await asyncio.to_thread(self.state.new_role, uid)
+        return {"completed": pending is None, "pending": pending is not None}
+
+    async def _run_new_role_sync(self, uid, request, presence, *, manual=False):
+        """Serialize manual setup with the scheduler's consumer of the same grant."""
+        async with self._sync_choice_lock:
+            return await self._consume_sync_choice(uid, request, presence, manual=manual)
+
+    async def _consume_sync_choice(self, uid, request, presence, *, manual):
         """Reuse binding, fixed profile approval and trusted-history tasks under writer fences."""
         from services.character_profile_protocol import encode_character_profile
         async def active():
-            await self._require_automatic_character(uid)
+            if self._closing:
+                raise ValueError("chat_sync_closing")
+            if not manual:
+                await self._require_automatic_character(uid)
             await asyncio.to_thread(self.writer.require_epoch, tuple(request["epoch"]))
             if await self.session_presence_provider() != presence:
                 raise ValueError("chat_sync_session_changed")
@@ -1171,8 +1222,8 @@ class DesktopChatSyncRuntime:
                 raise ValueError("character_profile_changed")
             binding = await asyncio.to_thread(self.state.binding, uid)
             # A user pause always wins over a create-form default, including after a restart.
-            if binding and not binding["enabled"] and (binding["binding_id"] or binding["generation"] > 1) and request.get("resumeGeneration") != binding["generation"]:
-                return
+            if not self.state.choice_matches_binding(request, binding):
+                raise ValueError("chat_sync_binding_changed")
             if not binding or not binding["binding_id"] or not binding["enabled"]:
                 await self.enable(uid, request["displayName"], expected_writer_epoch=tuple(request["epoch"]), before_send=active)
             await active()
@@ -1186,6 +1237,10 @@ class DesktopChatSyncRuntime:
                     current = self.state.binding(uid)
                     if not current or not current["enabled"]:
                         raise ValueError("chat_sync_binding_inactive")
+                    latest = self.state.new_role(uid)
+                    if (not latest or latest["requestId"] != request["requestId"]
+                            or not self.state.choice_matches_binding(request, current)):
+                        raise ValueError("chat_sync_binding_changed")
                     if candidate["dirty"]:
                         self.profiles.store.approve(candidate["domain"], expected_hash, candidate["head_revision"],
                                                     operation_id=request["requestId"])
@@ -1193,23 +1248,26 @@ class DesktopChatSyncRuntime:
             await asyncio.to_thread(approve)
             # Saved while first login was unavailable: these are this new role's already approved chats.
             current = await asyncio.to_thread(self.state.binding, uid)
-            pinned = request.get("historyBinding")
-            if pinned and any(pinned[key] != current[key] for key in ("owner_id", "character_uid", "binding_id", "request_id")):
+            if not self.state.choice_matches_binding(request, current):
                 raise ValueError("chat_sync_binding_changed")
             preview = await self.preview_history(uid, request["displayName"], after_origin_seq=request.get("afterSeq", 0),
-                                                 through_origin_seq=request.get("throughSeq"))
+                                                 through_origin_seq=request.get("throughSeq"), supersede_preview=False)
             await active()
-            await self.approve_history(uid, preview["taskId"])
+            await self.approve_history(uid, preview["taskId"], expected_request_id=request["requestId"])
             await active()
             def finish():
                 with self.writer.locked():
                     self.writer.require_epoch(tuple(request["epoch"]))
+                    latest = self.state.new_role(uid)
+                    if not latest or latest["requestId"] != request["requestId"]:
+                        raise ValueError("chat_sync_binding_changed")
                     self.state.finish_new_role(uid)
             await asyncio.to_thread(finish)
         except ValueError as error:
             code = str(error)
             if code in {"character_profile_changed", "character_profile_name_conflict", "character_profile_unsupported_value",
-                        "character_profile_conflict", "profile_revision_conflict", "prototype_idempotency_conflict"}:
+                        "character_profile_conflict", "profile_revision_conflict", "prototype_idempotency_conflict",
+                        "chat_sync_binding_changed"}:
                 def block():
                     with self.writer.locked():
                         self.writer.require_epoch(tuple(request["epoch"]))
@@ -1217,9 +1275,12 @@ class DesktopChatSyncRuntime:
                         if latest and latest["requestId"] == request["requestId"]:
                             self.state.queue_new_role(uid, {**request, "error": code}, replace=True)
                 await asyncio.to_thread(block)
+            if manual:
+                raise
         except (AutomaticRoleInactive, OSError, sqlite3.Error):
             # The protected intent and its durable retry deadline remain; local chat stays available.
-            pass
+            if manual:
+                raise
         finally:
             self.wake_scheduler()
 

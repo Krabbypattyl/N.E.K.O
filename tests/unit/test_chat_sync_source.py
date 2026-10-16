@@ -630,6 +630,74 @@ async def test_tool_dispatch_marks_its_owner_before_await_and_ignores_closed_or_
     assert "new" not in manager._chat_original_turns
     assert len(manager.sync_message_queue.messages) == 1
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_type", ["gpt", "gemini"])
+@pytest.mark.parametrize("tool_error", [False, True])
+async def test_realtime_tool_scope_keeps_preface_and_rotated_continuation_local(monkeypatch, api_type, tool_error):
+    """Real tool dispatch carries frozen provenance across provider responses, not across user turns."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    from main_logic.core.turn import TurnMixin
+    from main_logic.tool_calling import ToolCall, ToolResult
+    from tests.unit.test_core_game_route_memory_contract import _make_manager
+    from tests.unit.test_realtime_tool_ownership import _wait_for_tool_tasks
+
+    manager = _make_manager()
+    client = OmniRealtimeClient("wss://example.invalid/realtime", "synthetic", api_type=api_type,
+                               get_host_turn_id=lambda: manager.current_speech_id)
+    manager.session = client
+    client.ws = object()
+    if api_type == "gemini":
+        client._gemini_session = client.ws
+    client._on_connection_attached()
+    client._send_tool_results_openai_realtime = AsyncMock()
+    client._send_tool_result_gemini = AsyncMock()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def execute(call):
+        started.set()
+        await release.wait()
+        if tool_error:
+            raise RuntimeError("synthetic tool failure")
+        return ToolResult(name=call.name, call_id=call.call_id, output={"value": "synthetic"})
+
+    manager.tool_registry = SimpleNamespace(get=lambda _name: None, execute=execute)
+    client.on_tool_call = manager._make_tool_call_handler(client)
+    await TurnMixin.send_lanlan_response(manager, "preface", is_first_chunk=True)
+    original_proof = dict(manager._chat_original_turns[manager.current_speech_id])
+    owner = client._capture_tool_task_owner(client.ws)
+    call = ToolCall(name="synthetic", arguments={}, call_id="source-scope-test")
+    if api_type == "gemini":
+        client._start_gemini_tool_batch([call], owner)
+    else:
+        client._start_raw_tool_call(call, owner)
+    await asyncio.wait_for(started.wait(), 1)
+    release.set()
+    await _wait_for_tool_tasks(client)
+    # No-server-VAD terminal and Gemini continuation can rotate the host speech ID in the same tool scope.
+    manager.current_speech_id = "tool-continuation"
+    await TurnMixin.send_lanlan_response(manager, "tool reply", is_first_chunk=True)
+    # Ordinary proactive speech intentionally reuses the provider tool scope; its explicit origin starts a new reply.
+    manager.current_speech_id = "ordinary-proactive"
+    mark_turn_origin(manager, manager.current_speech_id, "proactive")
+    await TurnMixin.send_lanlan_response(manager, "ordinary proactive", is_first_chunk=True)
+    client.note_user_turn_started()
+    manager.current_speech_id = "next-user-turn"
+    await TurnMixin.send_lanlan_response(manager, "ordinary reply", is_first_chunk=True)
+    save, local = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(source_module, "save_original", save)
+    monkeypatch.setattr(source_module, "save_local_reply", local)
+    buffer = AssistantOriginalBuffer()
+    for event in manager.sync_message_queue.messages:
+        if event["type"] == "system" and event["data"] == "chat original tool":
+            buffer.mark_tool(event["chat_original_id"])
+        elif event["type"] == "json" and event["data"]["type"] == "gemini_response":
+            buffer.append(event["data"])
+    await buffer.finish("Lan")
+    assert [call.args[1] for call in local.await_args_list] == ["preface", "tool reply"]
+    assert [call.args[2] for call in save.await_args_list] == ["ordinary proactive", "ordinary reply"]
+    assert manager._chat_original_turns["old-speech"] == original_proof
+
 @pytest.mark.asyncio
 async def test_source_diagnostic_exclusion_is_once_per_reply_and_never_uploads(monkeypatch):
     """Actual collector exclusions identify one reply without logging every chunk."""
@@ -1042,7 +1110,8 @@ async def test_recovery_filters_ineligible_rows_before_applying_the_page_limit(t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("preempted", [False, True])
-async def test_gemini_agent_origin_follows_only_its_owned_provider_response(preempted):
+@pytest.mark.parametrize("origin", ["agent", "proactive"])
+async def test_gemini_agent_origin_follows_only_its_owned_provider_response(preempted, origin):
     from main_logic.core.turn import TurnMixin
     provider = object()
     session = SimpleNamespace(_connection_generation=2, _gemini_session=provider, _tool_scope_generation=3)
@@ -1050,10 +1119,11 @@ async def test_gemini_agent_origin_follows_only_its_owned_provider_response(pree
     manager = SimpleNamespace(session=session, _takeover_active=False, audio_resampler=Mock(),
         _reset_ai_turn_buffer=Mock(), send_user_activity=AsyncMock(), lock=asyncio.Lock(),
         state=SimpleNamespace(mark_user_input_preempt=Mock(), fire=AsyncMock()), current_speech_id="old")
+    mark_turn_origin(manager, "old", origin)
     async def clear():
         if preempted:
             session._tool_scope_generation += 1
     manager._clear_tts_pipeline = clear
     await TurnMixin.handle_new_message(manager)
     proof = mark_turn_origin(manager, manager.current_speech_id, "chat")
-    assert proof['origin'] == ('chat' if preempted else 'agent')
+    assert proof['origin'] == ('chat' if preempted else origin)

@@ -70,6 +70,48 @@ def export_profile(name: str, raw: dict) -> dict:
     return decode_character_profile(encode_character_profile(profile))
 
 
+async def read_character_directory(request, owner):
+    """Read bounded owner-scoped pages without silently truncating cloud characters."""
+    from services.chat_sync_ledger import ChatDomain
+
+    # Beta accounts have no role quota. Pagination bounds each response; any future
+    # paid-plan quota is separate server policy, never an accidental page-size limit.
+    roles, seen, after = [], set(), None
+    while True:
+        path = '/prototype/chat-sync/characters?limit=100' + (f'&after={after}' if after else '')
+        result = await request('GET', path, None)
+        if (not isinstance(result, dict) or result.keys() not in ({'characters'}, {'characters', 'nextCursor'})
+                or not isinstance(result['characters'], list)):
+            raise ValueError('invalid_character_profile_response')
+        paginated = 'nextCursor' in result
+        page = result['characters']
+        # A legacy server can ignore the query only on the first, complete read.
+        # Accepting that shape midway through paging could lose or duplicate roles.
+        if (not paginated and after is not None) or (paginated and len(page) > 100):
+            raise ValueError('invalid_character_profile_response')
+        previous = after
+        for role in page:
+            if not isinstance(role, dict) or role.keys() != {'characterSyncId', 'displayName'}:
+                raise ValueError('invalid_character_profile_response')
+            uid, name = role['characterSyncId'], role['displayName']
+            try:
+                ChatDomain(owner, uid)
+                if not isinstance(name, str) or not name or len(name) > 200 or len(name.encode('utf-8')) > 800:
+                    raise ValueError('invalid_character_profile_response')
+            except ValueError:
+                raise ValueError('invalid_character_profile_response') from None
+            if uid in seen or (paginated and previous is not None and uid <= previous):
+                raise ValueError('invalid_character_profile_response')
+            roles.append(role)
+            seen.add(uid)
+            previous = uid
+        if not paginated or result['nextCursor'] is None:
+            return {'characters': roles}
+        if not page or result['nextCursor'] != page[-1]['characterSyncId']:
+            raise ValueError('invalid_character_profile_response')
+        after = result['nextCursor']
+
+
 class ProfileStore:
     """Retain local/remote versions and approved immutable requests per bound owner."""
 
@@ -435,15 +477,14 @@ class DesktopProfileSync:
         """List only roles belonging to the service-verified currently logged-in owner."""
         token, fingerprint = await self.runtime._session()
         owner = await self.runtime._identity(token)
-        result = await self.runtime._request("GET", "/prototype/chat-sync/characters", token)
+
+        async def request(method, path, body):
+            # Every page keeps the original credential snapshot, including before send.
+            return await self.runtime._request(method, path, token, body=body,
+                before_send=lambda: self.runtime._same_session(fingerprint))
+
+        result = await read_character_directory(request, owner)
         await self.runtime._same_session(fingerprint)
-        if result.keys() != {"characters"} or not isinstance(result["characters"], list):
-            raise ValueError("invalid_character_profile_response")
-        from services.chat_sync_ledger import ChatDomain
-        for role in result["characters"]:
-            if not isinstance(role, dict) or role.keys() != {"characterSyncId", "displayName"} or not isinstance(role["displayName"], str):
-                raise ValueError("invalid_character_profile_response")
-            ChatDomain(owner, role["characterSyncId"])
         return result
 
     def _head(self, uid, owner, head):

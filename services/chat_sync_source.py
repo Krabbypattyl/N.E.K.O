@@ -412,7 +412,7 @@ class ChatOriginalSource:
             ).fetchone()[0]
 
     def prepare_history(self, binding, service_url, fingerprint, local_name, cloud_name, *, device_id, after_origin_seq=0,
-                        through_origin_seq=None):
+                        through_origin_seq=None, supersede_preview=True):
         """Freeze only trusted unbound source IDs in one SQLite snapshot."""
         if through_origin_seq is not None and (type(through_origin_seq) is not int or through_origin_seq < 0):
             raise ValueError("chat_sync_history_changed")
@@ -422,7 +422,10 @@ class ChatOriginalSource:
             identity = connection.execute("SELECT * FROM source_identity WHERE singleton=1").fetchone()
             # A fresh preview supersedes only unapproved consent. Approved
             # snapshots retain their exact members and can resume independently.
-            connection.execute("UPDATE source_history_tasks SET status='cancelled' WHERE uid=? AND status='preview'", (uid,))
+            # A background snapshot consumes already saved combined consent;
+            # it must not invalidate a manual preview currently on screen.
+            if supersede_preview:
+                connection.execute("UPDATE source_history_tasks SET status='cancelled' WHERE uid=? AND status='preview'", (uid,))
             connection.execute("INSERT INTO source_history_tasks "
                                "(task_id,uid,binding,service_url,fingerprint,database_id,generation,local_name,cloud_name,status,count,device_id) "
                                "VALUES (?,?,?,?,?,?,?,?,?,'preview',0,?)",
@@ -453,8 +456,24 @@ class ChatOriginalSource:
             identity = connection.execute("SELECT * FROM source_identity WHERE singleton=1").fetchone()
             if task is None or (task["database_id"], task["generation"]) != (identity["database_id"], identity["generation"]):
                 raise ValueError("chat_sync_history_changed")
+            if task["status"] == "preview":
+                # A manual preview can coexist with a background combined
+                # grant. Already covered IDs retain their first registration;
+                # confirming the older preview cannot register them twice.
+                connection.execute(
+                    "UPDATE source_history_members SET status='cancelled' WHERE task_id=? AND status='waiting' "
+                    "AND (EXISTS (SELECT 1 FROM source_originals o WHERE o.record_id=source_history_members.record_id) "
+                    "OR EXISTS (SELECT 1 FROM source_history_members m JOIN source_history_tasks t ON t.task_id=m.task_id "
+                    "WHERE m.record_id=source_history_members.record_id AND m.task_id!=? AND t.status IN ('approved','registered')))",
+                    (task_id, task_id),
+                )
             connection.execute("UPDATE source_history_tasks SET status='approved' WHERE uid=? AND task_id=? AND status='preview'",
                                (uid, task_id))
+            # Empty and fully covered snapshots are complete without leaving an
+            # approved job that can never consume a registration page.
+            connection.execute("UPDATE source_history_tasks SET status='registered' WHERE uid=? AND task_id=? AND status='approved' "
+                               "AND NOT EXISTS (SELECT 1 FROM source_history_members WHERE task_id=? AND status='waiting')",
+                               (uid, task_id, task_id))
         return self.task(uid, task_id)
 
     def advance_history(self, task, binding, *, maximum=200):
@@ -637,8 +656,9 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
             return None
         source = await asyncio.to_thread(ChatOriginalSource, _source_path(runtime))
         if binding is None or await asyncio.to_thread(role_pending, runtime, uid):
-            # Recovery cannot turn a fresh binding into automatic approval for
-            # outage/old originals; retain raw proof for the reviewed history lane.
+            # Rebinding alone does not approve outage/old originals. A later
+            # explicit Save/On including history may approve this trusted lane;
+            # recovery deletion markers still need their separate confirmation.
             await asyncio.to_thread(source.commit_unbound, uid, record_id, original)
             return record_id
         await asyncio.to_thread(source.commit, binding["owner_id"], uid, record_id, original)

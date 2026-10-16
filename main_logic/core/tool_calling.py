@@ -141,6 +141,15 @@ class ToolCallingMixin:
         if owner is not None:
             if not getattr(owner, "turn_ended", False):
                 mark_tool_turn(self, getattr(owner, "speech_id", None))
+        elif call.source_owner is not None:
+            # Realtime dispatch already validated this frozen connection/tool-scope owner. Never borrow
+            # current_speech_id here: a provider terminal can rotate it before the tool task gets CPU.
+            speech_id = call.source_owner.host_turn_id
+            mark_tool_turn(self, speech_id)
+            if invoking_session is getattr(self, "session", None):
+                # The same user scope may produce another provider response with a fresh speech ID.
+                # Keep that continuation local too; the client advances scope on actual user input.
+                self._chat_original_tool_owner = (invoking_session, call.source_owner, speech_id)
         if call.reply_owner is not None:
             from main_logic.reply_tail import reply_tail_registry
 

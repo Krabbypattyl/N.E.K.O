@@ -337,19 +337,21 @@ def test_history_consent_approves_only_the_reviewed_task_as_background_work():
 
 
 @pytest.mark.parametrize("paused", [False, True])
-def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused):
+@pytest.mark.parametrize("name", ["Neko", "Other"])
+def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused, name):
     """Opening does not grant anything; the labeled action approves all eligible chat once."""
     run_script(r"""(async()=>{
         const uid='c'.repeat(32), requests=[];
         let binding=PAUSED?{enabled:false,ownerId:'owner',bindingId:'binding',generation:2}:null;
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
-            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
+            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:REQUESTED_NAME,characterSyncId:uid,binding}]};
             if(path.endsWith('/sync-choice'))return {pending:true};
+            if(path.endsWith('/sync-choice/run')){binding={enabled:true};return {completed:true,pending:false};}
             if(path.endsWith('/history'))return {originals:[]};
             throw new Error('Unexpected request '+path);
         }});
-        documentEvents.DOMContentLoaded();await headerButton.events.click();
+        documentEvents.DOMContentLoaded();await window.nekoChatSync.openSettings(REQUESTED_NAME);
         const modal=body.children[0];
         assert.equal(modal.querySelectorAll('*').some(n=>n.id==='chat-sync-include-history'),false);
         assert.equal(requests.filter(x=>x.path.endsWith('/sync-choice')).length,0);
@@ -357,9 +359,80 @@ def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused):
         const choices=requests.filter(x=>x.path.endsWith('/sync-choice'));
         assert.equal(choices.length,1);
         assert.deepEqual(JSON.parse(choices[0].body),{enabled:true,includeHistory:true});
+        const runs=requests.filter(x=>x.path.endsWith('/sync-choice/run'));
+        assert.equal(runs.length,1);
+        assert.ok(requests.indexOf(choices[0])<requests.indexOf(runs[0]));
         assert.equal(requests.filter(x=>x.path.endsWith('/history/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("PAUSED", json.dumps(paused)))
+    """.replace("PAUSED", json.dumps(paused)).replace("REQUESTED_NAME", json.dumps(name)))
+
+
+@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable'])
+def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error):
+    """Persisted consent survives a failed manual pass without hiding a login error."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32),requests=[];
+        global.fetch=async(path,options)=>{
+            requests.push(path);
+            return {ok:!path.endsWith('/sync-choice/run'),async json(){
+                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{
+                    displayName:'Other',characterSyncId:uid,binding:null,syncPending:true}]};
+                if(path.endsWith('/sync-choice'))return {pending:true};
+                if(path.endsWith('/sync-choice/run'))return {detail:ERROR};
+                throw new Error('Unexpected request '+path);
+            }};
+        };
+        await window.nekoChatSync.openSettings('Other');
+        const modal=body.children[0];
+        await modal.querySelector('[data-sync-action="enable"]').events.click();
+        assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
+        assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
+        const content=modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
+        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':'chatSync.initialHistoryFailed'));
+        assert.equal(requests.filter(path=>path.endsWith('/pause')).length,0);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ERROR',json.dumps(error)))
+
+
+def test_initial_default_origin_does_not_cancel_the_first_enable_click():
+    """An absent setting and the built-in origin are the same service, not a context switch."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32),requests=[];let reads=0;
+        global.fetch=async(path)=>({ok:true,async json(){
+            requests.push(path);
+            if(path.endsWith('/status'))return {serviceUrl:++reads===1?null:'https://sync.nekotech.cn',
+                characters:[{displayName:'Neko',characterSyncId:uid,binding:null}]};
+            if(path.endsWith('/sync-choice'))return {pending:true};
+            if(path.endsWith('/sync-choice/run'))return {completed:true,pending:false};
+            if(path.endsWith('/history'))return {originals:[]};
+            throw new Error('Unexpected request '+path);
+        }});
+        await window.nekoChatSync.openSettings();
+        await body.children[0].querySelector('[data-sync-action="enable"]').events.click();
+        assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
+        assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+def test_empty_history_consumes_its_cursor_and_only_reloads_after_it_changes():
+    """Successful empty restoration must not refetch the same history every local poll."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32),requests=[];let cursor=1;
+        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages(){throw new Error('Empty merge');}};
+        global.fetch=async(path)=>({ok:true,async json(){
+            requests.push(path);
+            return path.endsWith('/status')?{characters:[{displayName:'Neko',characterSyncId:uid,binding:{cursor}}]}:
+                {originals:[],localReplies:[]};
+        }});
+        documentEvents.DOMContentLoaded();
+        const tick=intervals.find(item=>item.delay===5000).callback;
+        await tick();await tick();
+        assert.equal(requests.filter(path=>path.endsWith('/history')).length,1);
+        cursor=2;await tick();
+        assert.equal(requests.filter(path=>path.endsWith('/history')).length,2);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
 
 
 @pytest.mark.parametrize("change", ["role", "closed", "binding", "service"])

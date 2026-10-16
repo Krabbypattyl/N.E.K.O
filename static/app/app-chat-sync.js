@@ -160,7 +160,11 @@
         (deletedLocalIds.get(activeUid) || new Set()).forEach(function (id) { previous.add(id); });
         var localDeleted = deletedLocalIds.get(activeUid) || new Set();
         var localReplies = (result.localReplies || []).filter(function (record) { return !localDeleted.has(record.messageId); });
-        if (!result.originals.length && !localReplies.length && !previous.size) return true;
+        if (!result.originals.length && !localReplies.length && !previous.size) {
+            // An empty read is still a successful restoration of this exact cursor.
+            if (role.binding) knownCursors.set(activeUid, role.binding.cursor);
+            return true;
+        }
         var merged = mergeHistory(host.getState().messages || [], result.originals, previous, liveIds, name, assistantTurns, localReplies);
         // setMessages is passive: appendMessage would enqueue message reactions.
         traceHistoryMerge(result.originals, activeUid);
@@ -401,6 +405,7 @@
             });
         if (writerRecoveryRequired) statusNode.textContent = text('writerRecoveryRequired');
         else if (role && role.syncSetupError) statusNode.textContent = text('setupNeedsSave', {name: name});
+        else if (role && role.syncPending) statusNode.textContent = text('newSyncPending');
         // Automatic failures use existing localized progress labels; remote
         // bodies and internal retry metadata never become visible text.
         if (binding && binding.lastSyncError) statusNode.textContent += ' ' + text(
@@ -429,7 +434,9 @@
             if (!await refreshStatus() || characterName() !== requestedName
                     || (requestedUid && activeUid !== requestedUid)) return;
             requestedUid = activeUid;
-            if (action === 'enable' && (requestedBindingKey !== activeBindingKey || requestedServiceUrl !== configuredServiceUrl)) return;
+            // Missing configuration already means the built-in project service.
+            if (action === 'enable' && (requestedBindingKey !== activeBindingKey
+                    || (requestedServiceUrl || DEFAULT_SERVICE_URL) !== (configuredServiceUrl || DEFAULT_SERVICE_URL))) return;
             statusNode.textContent = text('working');
             if (['enable', 'pause', 'clear'].includes(action)) clearHistoryPreview();
             var consentGeneration = historyConsentGeneration;
@@ -466,6 +473,9 @@
                     // The backend owns retries; opening this dialog never enlarges an older grant.
                     await api(path + '/sync-choice', 'POST', {enabled: true, includeHistory: true});
                     enabledHere = true;
+                    // This explicit action may target an edited, inactive role. Run its saved intent
+                    // once without changing the selected chat; offline card saves still only queue.
+                    await api(path + '/sync-choice/run', 'POST');
                 }
                 if (action === 'pause') await api(path + '/pause', 'POST');
                 if (action === 'clear') {
@@ -491,8 +501,8 @@
             await refreshStatus();
             await loadHistory();
         } catch (error) {
-            statusNode.textContent = text(enabledHere ? 'initialHistoryFailed'
-                : error.message === 'chat_sync_login_required' ? 'loginRequired' : 'failed');
+            statusNode.textContent = text(error.message === 'chat_sync_login_required' ? 'loginRequired'
+                : enabledHere ? 'initialHistoryFailed' : 'failed');
         } finally {
             if (action === 'sync') {
                 // Earlier pages can commit even when a later network page fails.

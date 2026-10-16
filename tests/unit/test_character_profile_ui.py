@@ -199,9 +199,47 @@ def test_card_save_uses_one_choice_without_a_second_profile_confirmation(enabled
     """.replace('ENABLED', json.dumps(enabled)).replace('IS_NEW', json.dumps(is_new)))
 
 
+@pytest.mark.parametrize('enabled,loading', [(False, False), (True, False), (True, True)])
+def test_card_save_freezes_known_sync_choice_before_async_work(enabled, loading):
+    """Late checkbox edits or preference loading cannot enlarge the clicked Save's consent."""
+    run_script(r"""(async()=>{
+        const source=fs.readFileSync(CARD_SOURCE,'utf8');
+        vm.runInThisContext(source.slice(source.indexOf('async function saveCatgirlFromPanel('),
+            source.indexOf('async function ensureCanModifyCardsOutsideVoiceMode(')));
+        const toggle={checked:ENABLED,disabled:LOADING}, name={value:'Synthetic',readOnly:true};
+        let releaseVoices,releaseChoice;
+        const form={dataset:{},parentNode:{},_previousVoiceId:'',
+            _voicesLoadPromise:new Promise(resolve=>{releaseVoices=resolve;}),
+            _chatSyncLoadPromise:new Promise(resolve=>{releaseChoice=resolve;}),
+            querySelector(selector){return selector.includes('chat_sync_enabled')?toggle:
+                selector.includes('档案名')?name:selector.includes('voice_id')?{value:''}:null;}};
+        global.ensureSafeExistingCharacterPathName=async()=>true;
+        global.collectCharacterFields=()=>({data:{'档案名':'Synthetic'},fieldOrder:[]});
+        global.attachCharacterFieldOrderPayload=()=>{};
+        global.buildLocalCatgirlRawData=(_name,data)=>data;
+        global.syncCharacterCardCache=()=>{};
+        global.setLocalRawDataFieldOrder=()=>{};
+        global.mergeFreshCatgirlRawDataWithLocal=(_fresh,local)=>local;
+        global.buildCatgirlDetailForm=()=>{};
+        global.loadCharacterData=async()=>({'猫娘':{Synthetic:{}}});
+        global.loadCharacterCards=async()=>{};
+        global.showMessage=window.showMessage=()=>{};
+        response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:{};
+        const saving=saveCatgirlFromPanel(form,'Synthetic',false);
+        // Resolve the original preference and edit the switch while voice loading still blocks saving.
+        toggle.checked=!ENABLED;toggle.disabled=false;releaseChoice();releaseVoices();
+        assert.equal(await saving,true);
+        const grants=calls.filter(call=>call.path.endsWith('/sync-choice'));
+        assert.equal(grants.length,LOADING?0:1);
+        if(!LOADING)assert.deepEqual(JSON.parse(grants[0].init.body),{enabled:ENABLED,includeHistory:true});
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CARD_SOURCE', json.dumps(str(ROOT / 'static/js/character_card_manager/card-form-and-actions.js')))
+        .replace('ENABLED', json.dumps(enabled)).replace('LOADING', json.dumps(loading)))
+
+
 @pytest.mark.parametrize('is_new,binding,choice,expected', [
     (True, None, None, True), (False, None, None, True),
-    (False, {'enabled': False}, True, False), (False, None, False, False),
+    (False, {'enabled': False}, False, False), (False, None, False, False),
     (False, {'enabled': False, 'bindingId': None, 'generation': 1}, True, True),
 ])
 def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_hint(is_new, binding, choice, expected):
@@ -254,3 +292,21 @@ def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied(known)
             assert.equal(messages[0].kind,'warning');assert.equal(alerts.length,0);
         })().catch(e=>{console.error(e);process.exitCode=1;});
     """.replace('KNOWN',json.dumps(known)))
+
+
+def test_card_choice_uses_effective_pending_consent_while_binding_is_still_paused():
+    """A durable resume choice is visible before an offline binding can activate."""
+    run_script(r"""(async()=>{
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncEnabled:true,syncPending:true,binding:{enabled:false,bindingId:'binding',generation:2}}]});
+        assert.equal(await window.nekoCharacterProfileSync.getSyncChoice('Synthetic'),true);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_sync_navigation_copy_names_the_existing_more_settings_button_in_every_locale():
+    """Recovery instructions point to the actual localized button label."""
+    for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
+        locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text())['chatSync']
+        for key in ('setupNeedsSave', 'initialHistoryFailed', 'profileNeedsBinding'):
+            assert locale['moreOptions'].casefold() in locale[key].casefold(), (language, key)

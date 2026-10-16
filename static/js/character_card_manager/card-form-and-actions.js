@@ -2062,6 +2062,10 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         return false;
     }
     form.dataset.submitting = 'true';
+    // Save grants only the choice visible at this click, before any async form work.
+    // A disabled/loading preference stays unknown; a late load cannot authorize history.
+    const syncChoice = form.querySelector('[name="chat_sync_enabled"]');
+    const syncEnabledAtSaveStart = syncChoice && !syncChoice.disabled ? syncChoice.checked : undefined;
 
     try {
         // 等待音色加载完成
@@ -2313,10 +2317,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
         // The same saved switch approves both new and edited cards; no second profile prompt.
         if (window.nekoCharacterProfileSync) {
-            if (form._chatSyncLoadPromise) await form._chatSyncLoadPromise;
-            const choice = form.querySelector('[name="chat_sync_enabled"]');
-            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName,
-                choice && !choice.disabled ? choice.checked : undefined, isNew);
+            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName, syncEnabledAtSaveStart, isNew);
         }
         return true;
     } catch (error) {
