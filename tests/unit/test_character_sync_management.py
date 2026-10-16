@@ -732,3 +732,99 @@ async def test_reconfirmed_operation_keeps_fixed_scope_on_new_failure(tmp_path, 
         assert len(set(requests)) == 1
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cached_policy', [False, True])
+async def test_empty_management_polling_does_not_sample_writer_epoch(tmp_path, monkeypatch, cached_policy):
+    from unittest.mock import Mock
+    runtime, service, _ = setup_runtime(tmp_path, ManagedService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        presence = await runtime.session_presence_provider()
+        if cached_policy:
+            await runtime.cloud.refresh(force=True)
+        runtime.cloud.presence = presence
+        runtime.cloud.next_at = runtime._clock() + 120_000
+        epoch = Mock(wraps=runtime.writer.epoch)
+        monkeypatch.setattr(runtime.writer, 'epoch', epoch)
+        service.requests.clear()
+        for _ in range(5):
+            assert not runtime.cloud.has_pending_work()
+            assert not runtime.cloud.due(presence)
+            await runtime.cloud.resume_rebinds()
+        assert epoch.call_count == 0
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_operation_filters_owner_and_deadline_before_sampling_epoch(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from tests.unit.test_chat_sync_runtime import OTHER_OWNER
+    runtime, _, _ = setup_runtime(tmp_path, ManagedService())
+    try:
+        request = {'epoch': list(runtime.writer.epoch())}
+        runtime.cloud._save_operation(OWNER, 'delete', UID, request)
+        runtime.cloud._finish_operation(OWNER, 'delete', UID, 'pending')
+        runtime.cloud._save_operation(OTHER_OWNER, 'delete', OTHER_UID, request)
+        epoch = Mock(wraps=runtime.writer.epoch)
+        monkeypatch.setattr(runtime.writer, 'epoch', epoch)
+        assert runtime.cloud._pending_operations(OWNER, ready=True) == []
+        assert epoch.call_count == 0
+        # A deliberate unrestricted work check still validates real candidates.
+        assert runtime.cloud.has_pending_work()
+        assert epoch.call_count == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['blocked', 'refresh_due', 'new_login'])
+async def test_policy_due_short_circuits_unnecessary_pending_probes(tmp_path, monkeypatch, state):
+    from unittest.mock import Mock
+    runtime, _, _ = setup_runtime(tmp_path, ManagedService())
+    try:
+        await runtime.cloud.refresh(force=True)
+        presence = runtime.cloud.presence
+        runtime.cloud._save_operation(OWNER, 'delete', UID, {'epoch': list(runtime.writer.epoch())})
+        if state == 'blocked':
+            runtime.cloud.blocked_presence = presence
+        elif state == 'refresh_due':
+            runtime.cloud.next_at = 0
+        else:
+            presence = 'a different synthetic login'
+        epoch = Mock(wraps=runtime.writer.epoch)
+        cached = Mock(wraps=runtime.cloud.cached)
+        monkeypatch.setattr(runtime.writer, 'epoch', epoch)
+        monkeypatch.setattr(runtime.cloud, 'cached', cached)
+        assert runtime.cloud.due(presence) is (state != 'blocked')
+        assert epoch.call_count == 0 and cached.call_count == 0
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('eligible', [False, True])
+async def test_rebind_admission_samples_one_epoch_only_when_candidates_are_ready(tmp_path, monkeypatch, eligible):
+    from unittest.mock import AsyncMock, Mock
+    runtime, _, _ = setup_runtime(tmp_path, ManagedService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        request = {'epoch': list(runtime.writer.epoch())}
+        first = request if eligible else {**request, 'error': 'character_profile_changed'}
+        second = request if eligible else {**request, 'nextAt': runtime._clock() + 30_000}
+        runtime.cloud._save_rebind(UID, 'e' * 32, OWNER, first)
+        runtime.cloud._save_rebind(OTHER_UID, 'f' * 32, OWNER, second)
+        runtime.cloud._save_rebind('1' * 32, '2' * 32, OWNER,
+                                  {'epoch': ['0' * 32, '0' * 32], **({} if eligible else {'error': 'character_profile_changed'})})
+        epoch = Mock(wraps=runtime.writer.epoch)
+        advance = AsyncMock()
+        monkeypatch.setattr(runtime.writer, 'epoch', epoch)
+        monkeypatch.setattr(runtime.cloud, '_advance_rebind', advance)
+        await runtime.cloud.resume_rebinds()
+        assert epoch.call_count == int(eligible)
+        assert [call.args[0]['old_uid'] for call in advance.await_args_list] == ([UID, OTHER_UID] if eligible else [])
+    finally:
+        await runtime.close()

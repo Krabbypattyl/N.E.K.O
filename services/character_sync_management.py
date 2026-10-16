@@ -225,20 +225,30 @@ class DesktopCloudCharacterManagement:
 
     def due(self, presence):
         """Permanent protocol/auth failures wait for changed credentials or an explicit refresh."""
+        if self.blocked_presence == presence:
+            return False
+        if self.presence != presence or self.next_at <= self.runtime._clock():
+            return True
         policy = self.cached(presence=presence)
         # Another account's or installation's fixed approval must not turn
         # this login into continuous identity polling or gain fresh authority.
-        pending = bool(policy) and bool(self._pending_operations(policy['ownerId'], ready=True))
-        return self.blocked_presence != presence and (pending or self.presence != presence or self.next_at <= self.runtime._clock())
+        return bool(policy) and bool(self._pending_operations(policy['ownerId'], ready=True))
 
     def _pending_operations(self, owner=None, *, ready=False):
-        epoch = self.runtime.writer.epoch()
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT * FROM sync_cloud_operations WHERE status='pending' "
-                                "AND (? IS NULL OR owner_id=?)", (owner, owner)).fetchall()
+            query = "SELECT * FROM sync_cloud_operations WHERE status='pending' AND (? IS NULL OR owner_id=?)"
+            arguments = (owner, owner)
+            if ready:
+                query += " AND next_at<=?"
+                arguments += (self.runtime._clock(),)
+            rows = conn.execute(query, arguments).fetchall()
+        if not rows:
+            return []
+        # A checked metadata read is still required, but an empty poll has no
+        # approval to validate and must not trigger another all-store head check.
+        epoch = self.runtime.writer.epoch()
         operations = [{**dict(row), 'request': json.loads(row['request'])} for row in rows]
-        return [row for row in operations if tuple(row['request']['epoch']) == epoch
-                and (not ready or row['next_at'] <= self.runtime._clock())]
+        return [row for row in operations if tuple(row['request']['epoch']) == epoch]
 
     def has_pending_work(self):
         """Approved cloud deletion remains recoverable even with every local role paused."""
@@ -497,13 +507,18 @@ class DesktopCloudCharacterManagement:
             with closing(self._connect()) as conn:
                 rows = conn.execute('SELECT * FROM sync_cloud_rebinds WHERE completed=0').fetchall()
             return [{**dict(row), 'request': json.loads(row['request'])} for row in rows]
+        epoch = None
         for intent in await asyncio.to_thread(pending):
+            if intent['request'].get('error') or intent['request'].get('nextAt', 0) > self.runtime._clock():
+                continue
+            if epoch is None:
+                # Share only admission's snapshot. Transfers and retry writes
+                # still revalidate their original epoch under the commit locks.
+                epoch = await asyncio.to_thread(self.runtime.writer.epoch)
             # Recovery revokes the old installation's approvals. Keep its
             # fixed local intent for explicit review, but never replay it or
             # rewrite its epoch merely to let an automatic worker proceed.
-            if tuple(intent['request']['epoch']) != await asyncio.to_thread(self.runtime.writer.epoch):
-                continue
-            if intent['request'].get('error') or intent['request'].get('nextAt', 0) > self.runtime._clock():
+            if tuple(intent['request']['epoch']) != epoch:
                 continue
             try:
                 await self._advance_rebind(intent)
@@ -511,8 +526,6 @@ class DesktopCloudCharacterManagement:
                 # One interrupted local rebind cannot stop other characters' sync.
                 # Changed definitions need a fresh explicit Save, while disk failures back off.
                 request = {**intent['request'], 'nextAt': self.runtime._clock() + 30_000}
-                if tuple(request['epoch']) != await asyncio.to_thread(self.runtime.writer.epoch):
-                    continue
                 if str(exc) in {'character_profile_changed', 'chat_sync_character_not_found', 'chat_sync_binding_conflict'}:
                     request['error'] = str(exc)
                 def retain():

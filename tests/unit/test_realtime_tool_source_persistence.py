@@ -199,7 +199,11 @@ async def test_realtime_source_acceptance_rejects_retired_owners(api_type, retir
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["proactive_tool", "combined_fast_terminal", "independent_proactive"])
+@pytest.mark.parametrize("scenario", [
+    "proactive_tool", "combined_fast_terminal", "independent_proactive",
+    "proactive_tool_separate_terminal", "proactive_tool_combined_terminal",
+    "proactive_tool_preface_separate_terminal", "proactive_tool_preface_combined_terminal",
+])
 async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypatch, scenario):
     from google.genai import types
     from main_logic import cross_server
@@ -240,11 +244,38 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
         await asyncio.wait_for(done, 5)
 
     async def proactive_content(**_kwargs):
-        if scenario == "proactive_tool":
+        if scenario.startswith("proactive_tool"):
             # Gemini may request a tool before the first visible reply. The
             # first output then opens a new host identity under the injection.
-            await _dispatch(client, provider, _gemini_response(calls=(("call-1", "lookup"),)))
+            if "preface" in scenario:
+                await _dispatch(client, provider, _event(text="proactive tool preface"))
+            if "terminal" in scenario:
+                started, release = asyncio.Event(), asyncio.Event()
+
+                async def delayed_tool(call):
+                    started.set()
+                    await release.wait()
+                    return ToolResult(name=call.name, call_id=call.call_id, output={"ok": True})
+
+                manager.tool_registry.execute = delayed_tool
+            call_event = _gemini_response(calls=(("call-1", "lookup"),))
+            if "combined_terminal" in scenario:
+                call_event.server_content = _event(complete=True).server_content
+            await _dispatch(client, provider, call_event)
+            if "terminal" in scenario:
+                await asyncio.wait_for(started.wait(), 1)
+                if "separate_terminal" in scenario:
+                    await _dispatch(client, provider, _event(complete=True))
+                # Exercise the review's lifecycle edge through the real receiver:
+                # the outcome has settled before the delayed result is sent.
+                try:
+                    assert client._gemini_proactive_outcome_owner is None
+                finally:
+                    release.set()
             await _wait_for_tool_tasks(client)
+            assert provider.tool_responses
+            if "terminal" in scenario:
+                client._ai_recent_activity_time = 0
         await _dispatch(client, provider, _event(text="proactive reply"))
         await _dispatch(client, provider, _event(text=" tail"))
         await _dispatch(client, provider, _event(complete=True))
@@ -286,9 +317,10 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
         source = source_for(runtime)
         pending_text = [entry[0]["original"] for entry in source.pending(200)]
         local_text = [entry["text"] for entry in source.read_local_replies(source.path, UID)]
-        if scenario == "proactive_tool":
+        if scenario.startswith("proactive_tool"):
             assert {"local": local_text, "pending": pending_text} == {
-                "local": ["proactive reply tail"], "pending": [],
+                "local": (["proactive tool preface"] if "preface" in scenario else []) + ["proactive reply tail"],
+                "pending": [],
             }
         elif scenario == "combined_fast_terminal":
             assert local_text == ["combined tool reply", "fast tool continuation"]
