@@ -402,7 +402,7 @@
         statusNode.textContent = !binding ? text('enableHint', { name: name })
             : text(binding.enabled ? 'enabled' : 'paused') + ' ' + text('pending', {
                 originals: binding.pendingOriginals, deletions: binding.pendingDeletions
-            });
+            }) + (binding.localOnlyOriginals ? ' ' + text('oversizedLocalOnly', { count: binding.localOnlyOriginals }) : '');
         if (writerRecoveryRequired) statusNode.textContent = text('writerRecoveryRequired');
         else if (binding && binding.retired) statusNode.textContent = text('cloudDeleted');
         else if (binding && binding.cloudPolicyError) statusNode.textContent = text(

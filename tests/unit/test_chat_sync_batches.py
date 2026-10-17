@@ -16,6 +16,7 @@ from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F4
 from services.chat_sync_ledger import (
     ChatDomain,
     ChatOriginal,
+    MAX_SYNC_ORIGINAL_BYTES,
     ChatSyncLedger,
     OriginalNeedsFragmentation,
     SourceLocator,
@@ -90,6 +91,30 @@ def test_first_oversized_original_reports_fragmentation_without_skipping(tmp_pat
         assert conn.execute("SELECT COUNT(*) FROM chat_batches").fetchone()[0] == 0
     batch = ledger.seal_batch(DOMAIN, byte_budget=len(pending[0][0]))
     assert [member[0] for member in batch.members] == [first["messageId"]]
+
+
+def test_original_too_large_for_any_batch_stays_local_without_blocking_later_ones(tmp_path):
+    """One unsendable original leaves the upload queue; later originals keep uploading."""
+    ledger = ChatSyncLedger(tmp_path / "sync.db")
+    huge = capture(ledger, 1, "x" * (MAX_SYNC_ORIGINAL_BYTES + 1))
+    small = capture(ledger, 2, "small")
+    batch = ledger.seal_batch(DOMAIN, byte_budget=MAX_SYNC_ORIGINAL_BYTES)
+    assert [member[0] for member in batch.members] == [small["messageId"]]
+    assert ledger.stats(DOMAIN)["localOnlyOriginals"] == 1
+    assert ledger.stats(DOMAIN)["pendingOriginals"] == 1
+    with sqlite3.connect(ledger.path) as conn:
+        # The local original and its identity remain; only its upload task ended.
+        assert conn.execute("SELECT COUNT(*) FROM chat_originals WHERE message_id=?", (huge["messageId"],)).fetchone()[0] == 1
+
+
+def test_queue_of_only_oversized_originals_commits_their_local_only_state(tmp_path):
+    """A batch with no sendable member still records the skipped originals durably."""
+    ledger = ChatSyncLedger(tmp_path / "sync.db")
+    capture(ledger, 1, "x" * (MAX_SYNC_ORIGINAL_BYTES + 1))
+    assert ledger.seal_batch(DOMAIN, byte_budget=MAX_SYNC_ORIGINAL_BYTES) is None
+    restarted = ChatSyncLedger(ledger.path)
+    assert restarted.pending(DOMAIN) == []
+    assert restarted.stats(DOMAIN)["localOnlyOriginals"] == 1
 
 
 @pytest.mark.parametrize("other", [

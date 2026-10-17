@@ -74,8 +74,22 @@ def save_outage_deletions(directory, uid, identities):
         conn.execute('CREATE TABLE IF NOT EXISTS outage_deletions '
                      '(uid TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(uid,message_id))')
         conn.executemany('INSERT OR IGNORE INTO outage_deletions VALUES (?,?)', [(uid, identity) for identity in ids])
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='outage_originals'").fetchone():
-            conn.executemany('UPDATE outage_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=?', [(uid, identity) for identity in ids])
+        _erase_outage_originals(conn, uid, ids)
+
+
+def _erase_outage_originals(conn, uid, ids):
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='outage_originals'").fetchone():
+        conn.executemany('UPDATE outage_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=?', [(uid, identity) for identity in ids])
+
+
+def purge_outage_originals(directory, uid, ids):
+    """Erase readable outage copies of exact deleted IDs while keeping their identities."""
+    path = Path(directory) / 'outage.sqlite3'
+    if not path.exists():
+        return
+    with closing(sqlite3.connect(path, timeout=10)) as conn, conn:
+        conn.execute('PRAGMA synchronous=FULL')
+        _erase_outage_originals(conn, uid, ids)
 
 
 def stage_authority(runtime):

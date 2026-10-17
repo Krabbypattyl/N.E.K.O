@@ -167,7 +167,7 @@ async def status(runtime: Runtime):
         character["binding"] = None if binding is None else {
             "ownerId": binding["owner_id"], "bindingId": binding["binding_id"],
             "enabled": bool(binding["enabled"]), "generation": binding["generation"],
-            **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch")},
+            **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch", "localOnlyOriginals")},
             # Only fixed adapter codes are exposed, never remote response text.
             "lastSyncError": binding.get("lastSyncError"),
             **{key: binding[key] for key in ('cloudPolicyError', 'retired') if key in binding},

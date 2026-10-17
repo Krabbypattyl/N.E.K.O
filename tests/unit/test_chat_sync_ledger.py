@@ -81,6 +81,23 @@ def test_fixed_utf8_payload_sample(tmp_path, monkeypatch):
     assert ledger.pending(DOMAIN) == [(expected, hashlib.sha256(expected).hexdigest())]
 
 
+def test_identity_backfill_runs_once_not_on_every_poll(tmp_path, monkeypatch):
+    """Polling an empty page does not reread and re-verify the whole saved history."""
+    ledger = ChatSyncLedger(tmp_path / "sync.db")
+    for row in range(3):
+        ledger.capture(DOMAIN, SourceLocator("durable-db-id", "generation-a", f"row-{row}"), ChatOriginal("user", str(row)))
+    seen, real = [], ledger_module._remember_origin_identity
+    monkeypatch.setattr(ledger_module, "_remember_origin_identity",
+                        lambda conn, domain, record: (seen.append(record["messageId"]), real(conn, domain, record)))
+    def empty(cursor):
+        return {"cursor": cursor, "hasMore": False, "originals": [], "deletedMessageIds": []}
+    ledger.apply_changes(DOMAIN, empty(1), after=0)
+    assert len(seen) == 3
+    seen.clear()
+    ChatSyncLedger(ledger.path).apply_changes(DOMAIN, empty(2), after=1)
+    assert seen == []
+
+
 def test_restart_keeps_alias_and_fixed_bytes(tmp_path):
     path = tmp_path / "sync.db"
     ledger = ChatSyncLedger(path)

@@ -505,6 +505,9 @@ class ChatOriginalSource:
         """Remove readable originals while retaining immutable deletion identities."""
         if not message_ids:
             return
+        from services.chat_sync_recovery import purge_outage_originals
+        # Outage copies live outside this database and may be the only readable copy.
+        purge_outage_originals(self.path.parent, uid, message_ids)
         with closing(self._connect()) as connection, connection:
             dirty = None
             for offset in range(0, len(message_ids), 200):
@@ -513,8 +516,10 @@ class ChatOriginalSource:
                 dirty = connection.execute(
                     "SELECT 1 FROM source_originals WHERE owner=? AND uid=? AND (original IS NOT NULL OR pending=1 OR deleted=0) "
                     "AND record_id IN (" + placeholders + ") UNION ALL "
-                    "SELECT 1 FROM source_unbound WHERE uid=? AND deleted=0 AND record_id IN (" + placeholders + ") LIMIT 1",
-                    (owner, uid, *page, uid, *page),
+                    "SELECT 1 FROM source_unbound WHERE uid=? AND deleted=0 AND record_id IN (" + placeholders + ") UNION ALL "
+                    "SELECT 1 FROM source_recovery_candidates WHERE uid=? AND (original IS NOT NULL OR payload IS NOT NULL) "
+                    "AND record_id IN (" + placeholders + ") LIMIT 1",
+                    (owner, uid, *page, uid, *page, uid, *page),
                 ).fetchone()
                 if dirty is not None:
                     break
@@ -531,6 +536,9 @@ class ChatOriginalSource:
             connection.executemany("UPDATE source_unbound SET original=NULL,"
                                    "deletion_pending=CASE WHEN deleted=0 THEN 1 ELSE deletion_pending END,deleted=1 WHERE uid=? AND record_id=?",
                                    [(uid, identity) for identity in message_ids])
+            # Recovery candidates keep their deletion identity, never the readable body.
+            connection.executemany("UPDATE source_recovery_candidates SET original=NULL,payload=NULL,deleted=1 "
+                                   "WHERE uid=? AND record_id=?", [(uid, identity) for identity in message_ids])
             connection.executemany(
                 "UPDATE source_history_members SET status='cancelled' WHERE record_id=? AND task_id IN "
                 "(SELECT task_id FROM source_history_tasks WHERE uid=?)",
@@ -954,11 +962,18 @@ def mark_tool_turn(manager, turn_id):
 class AssistantOriginalBuffer:
     """Collect emitted text per stable message ID; persist only at final boundaries."""
 
+    # Completed replies remembered so their late tails keep the same policy.
+    _FINISHED_LIMIT = 64
+
     def __init__(self):
         """Start without inferred identities for legacy or system messages."""
         self.records = {}
         self._traced_exclusions = set()
         self._tool_records = set()
+        # Completed reply ID -> its persisted origin, or "excluded".
+        self._finished = {}
+        # Completed reply ID -> identity of its still-open late tail.
+        self._tails = {}
 
     def mark_tool(self, record_id):
         """Retain late tool evidence even when ordinary chunks arrived first."""
@@ -1003,7 +1018,13 @@ class AssistantOriginalBuffer:
         if not isinstance(text, str):
             self._trace_exclusion(proof, "invalid_text")
             return
-        entry = self.records.setdefault(record_id, {"proof": dict(proof), "chunks": []})
+        base = record_id
+        if base in self._finished:
+            # Gemini can stream transcript after its turn terminal. The saved
+            # reply is immutable, so the late text becomes its own original.
+            record_id = self._tails.setdefault(base, uuid4().hex)
+            proof = {**proof, "recordId": record_id}
+        entry = self.records.setdefault(record_id, {"proof": dict(proof), "chunks": [], "base": base})
         if entry["proof"] != proof:
             raise ValueError("chat_source_identity_conflict")
         entry["chunks"].append(text)
@@ -1011,17 +1032,25 @@ class AssistantOriginalBuffer:
     async def finish(self, lanlan_name, record_id=None, *, excluded=False):
         """Persist only the matching completed original, never normalized projections."""
         ids = [record_id] if record_id else list(self.records)
+        if record_id:
+            # A late tail has no terminal of its own; the next one completes it.
+            ids += [tail for tail in self._tails.values() if tail in self.records and tail != record_id]
         for identity in ids:
             entry = self.records.get(identity)
             if not entry:
                 self._tool_records.discard(identity)
                 continue
-            if not excluded:
+            base = entry["base"]
+            inherited = self._finished.get(base) if base != identity else None
+            skip = inherited == "excluded" if inherited else excluded
+            if not skip:
                 # Current scope selects local-only storage for Agent/tool replies.
                 # Future sync belongs at this policy boundary, with matching
                 # protocol/consent/deletion tests; keep producer origin truthful.
                 proof = entry["proof"]
-                if identity in self._tool_records and proof["origin"] in ("chat", "proactive"):
+                if inherited:
+                    proof = {**proof, "origin": inherited}
+                elif identity in self._tool_records and proof["origin"] in ("chat", "proactive"):
                     proof = {**proof, "origin": "tool"}
                 local_only = proof["origin"] in ("agent", "tool")
                 try:
@@ -1043,6 +1072,12 @@ class AssistantOriginalBuffer:
                                  source_reason="terminal_excluded", outcome="success")
             self.records.pop(identity, None)
             self._tool_records.discard(identity)
+            if inherited:
+                self._tails.pop(base, None)
+            else:
+                self._finished[base] = "excluded" if skip else proof["origin"]
+                while len(self._finished) > self._FINISHED_LIMIT:
+                    self._finished.pop(next(iter(self._finished)))
         if record_id is None:
             self._tool_records.intersection_update(self.records)
         self._traced_exclusions = {key for key in self._traced_exclusions
@@ -1053,3 +1088,5 @@ class AssistantOriginalBuffer:
         self.records.clear()
         self._traced_exclusions.clear()
         self._tool_records.clear()
+        self._finished.clear()
+        self._tails.clear()

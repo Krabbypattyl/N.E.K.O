@@ -6170,6 +6170,8 @@ def test_memory_browser_chat_original_deletion_waits_for_save(
 
     mock_page.route("**/api/memory/recent_file?**", load)
     mock_page.route("**/api/memory/recent_file/save", save)
+    confirms = []
+    mock_page.on("dialog", lambda dialog: (confirms.append(dialog.message), dialog.accept()))
     mock_page.goto(f"{running_server}/memory_browser")
     originals = mock_page.locator('[data-chat-sync-kind="original"]')
     expect(originals).to_have_count(2)
@@ -6190,13 +6192,16 @@ def test_memory_browser_chat_original_deletion_waits_for_save(
         expect(originals).to_have_count(2)
         mock_page.locator('#save-memory-btn').click()
         expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
-        assert posts[0]['chat_sync']['messageIds'] == []
-        assert posts[0]['chat_sync']['localMessageIds'] == []
+        # Discarded deletions leave no exact-ID edit, so the save carries no sync request.
+        assert 'chat_sync' not in posts[0]
+        assert confirms == []
     else:
         mock_page.locator('#save-memory-btn').click()
         expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
         assert posts[0]['chat_sync']['messageIds'] == ([first, second] if operation == "clear" else [first])
         assert posts[0]['chat_sync']['localMessageIds'] == ([local] if operation == "clear" else [])
+        # Deleting exact originals on both ends always asks first.
+        assert len(confirms) == 1
     assert all('chat_sync_kind' not in item and 'messageId' not in item for item in posts[0]['chat'])
     assert posts[0]['chat'][0]['role'] == 'system'
 

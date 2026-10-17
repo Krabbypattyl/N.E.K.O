@@ -28,7 +28,7 @@ from uuid import uuid4
 
 import httpx
 
-from services.chat_sync_ledger import ChatDomain, ChatOriginal, ChatSyncLedger, SourceLocator
+from services.chat_sync_ledger import MAX_SYNC_ORIGINAL_BYTES, ChatDomain, ChatOriginal, ChatSyncLedger, SourceLocator
 from services.chat_sync_protocol import decode_chat_original, validate_sync_domain
 from services.chat_sync_prototype import PrototypeChatSyncClient
 from services.chat_sync_scheduler import ChatSyncScheduler, body_eligible_at, now_ms
@@ -42,7 +42,7 @@ _COMMUNITY_ORIGIN = "https://community.project-neko.cn"
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _LOCAL_CA_ENV = "NEKO_CHAT_SYNC_LOCAL_CA_FILE"
 _LOCAL_WAKE_SECONDS = 1
-_AUTO_BYTE_BUDGET = 256 * 1024
+_AUTO_BYTE_BUDGET = MAX_SYNC_ORIGINAL_BYTES
 _AUTO_PULL_PAGES = 10
 _PULL_NETWORK_SECONDS = 3
 
@@ -992,7 +992,8 @@ class DesktopChatSyncRuntime:
                 settings = dict(conn.execute("SELECT device_id,service_url FROM sync_settings").fetchone())
                 for row in conn.execute("SELECT * FROM sync_bindings"):
                     bindings.append({**dict(row), "enabled": 0, "pendingOriginals": 0, "pendingDeletions": 0,
-                                     "cursor": 0, "hasSealedBatch": False, "writerRecoveryRequired": True})
+                                     "cursor": 0, "hasSealedBatch": False, "localOnlyOriginals": 0,
+                                     "writerRecoveryRequired": True})
         except sqlite3.Error:
             pass
         return {"serviceUrl": settings["service_url"], "deviceId": settings["device_id"], "bindings": bindings,

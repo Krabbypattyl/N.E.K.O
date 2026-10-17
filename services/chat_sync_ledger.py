@@ -31,6 +31,10 @@ from services.chat_sync_protocol import (
 # source's unknown arrival clock through recovery without inventing a date.
 _CAPTURE_TIME_NOW = object()
 
+# The largest original one automatic batch can carry. A larger original can
+# never be uploaded, so it stays on this device instead of blocking the queue.
+MAX_SYNC_ORIGINAL_BYTES = 256 * 1024
+
 
 class IdentityConflict(ValueError):
     """A stable identity was presented with different immutable content."""
@@ -316,6 +320,10 @@ class ChatSyncLedger:
                 );
                 CREATE TABLE IF NOT EXISTS chat_lane_rotation (
                     domain TEXT PRIMARY KEY, new_batches INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS chat_identity_backfills (domain TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS chat_oversized (
+                    domain TEXT NOT NULL, message_id TEXT NOT NULL, byte_length INTEGER NOT NULL,
+                    PRIMARY KEY (domain, message_id));
                 CREATE TABLE IF NOT EXISTS chat_downloaded (
                     domain TEXT NOT NULL,
                     message_id TEXT NOT NULL,
@@ -555,8 +563,11 @@ class ChatSyncLedger:
                 "WHERE t.domain=o.domain AND t.message_id=o.message_id) ORDER BY o.rowid LIMIT ?",
                 (domain.key(), lane, limit),
             ).fetchall()
-            members, used_bytes = [], 0
+            members, used_bytes, oversized = [], 0, []
             for message_id, byte_length, original_digest in candidates:
+                if byte_length > MAX_SYNC_ORIGINAL_BYTES:
+                    oversized.append((domain.key(), message_id, byte_length))
+                    continue
                 if used_bytes + byte_length > byte_budget:
                     if not members:
                         raise OriginalNeedsFragmentation(message_id, byte_length)
@@ -569,7 +580,14 @@ class ChatSyncLedger:
                 _validate_batch_member(domain, message_id, payload, original_digest)
                 members.append([message_id, payload.decode("utf-8"), original_digest])
                 used_bytes += byte_length
+            if oversized:
+                # Keep the local original and its identity; only its upload task ends.
+                conn.executemany("INSERT OR IGNORE INTO chat_oversized VALUES (?, ?, ?)", oversized)
+                conn.executemany("DELETE FROM chat_pending WHERE domain=? AND message_id=?",
+                                 [item[:2] for item in oversized])
             if not members:
+                if oversized:
+                    conn.commit()
                 return None
             batch_id = uuid4().hex
             sealed_bytes = _encode({
@@ -701,7 +719,7 @@ class ChatSyncLedger:
                 deleted = {row[0] for row in conn.execute("SELECT message_id FROM chat_tombstones WHERE domain=?", (key,))}
                 if any(member[0] in deleted for member in batch.members):
                     conn.execute("DELETE FROM chat_batches WHERE domain=?", (key,))
-            for table in ("chat_pending", "chat_originals", "chat_downloaded"):
+            for table in ("chat_pending", "chat_originals", "chat_downloaded", "chat_oversized"):
                 conn.execute(f"DELETE FROM {table} WHERE domain=? AND message_id IN "
                              "(SELECT message_id FROM chat_tombstones WHERE domain=?)", (key, key))
             conn.commit()
@@ -764,7 +782,13 @@ class ChatSyncLedger:
             deletions = conn.execute("SELECT COUNT(*) FROM chat_deletions WHERE domain=?", (domain.key(),)).fetchone()[0]
             cursor = conn.execute("SELECT cursor FROM chat_cursors WHERE domain=?", (domain.key(),)).fetchone()
             sealed = conn.execute("SELECT 1 FROM chat_batches WHERE domain=?", (domain.key(),)).fetchone()
-            return {"pendingOriginals": originals, "pendingDeletions": deletions, "cursor": cursor[0] if cursor else 0, "hasSealedBatch": sealed is not None}
+            oversized = conn.execute(
+                "SELECT COUNT(*) FROM chat_oversized s WHERE s.domain=? AND NOT EXISTS "
+                "(SELECT 1 FROM chat_tombstones t WHERE t.domain=s.domain AND t.message_id=s.message_id)",
+                (domain.key(),),
+            ).fetchone()[0]
+            return {"pendingOriginals": originals, "pendingDeletions": deletions, "cursor": cursor[0] if cursor else 0,
+                    "hasSealedBatch": sealed is not None, "localOnlyOriginals": oversized}
 
     def queue_state(self, domain: ChatDomain) -> dict:
         """Read all live pending arrivals and raw UTF-8 sizes in one snapshot.
@@ -850,14 +874,17 @@ class ChatSyncLedger:
             # Only this feature's raw-original tables are backfilled. Verify
             # existing records before registering immutable identities; never
             # scan or migrate the old memory/time-index projection databases.
-            prior_records = conn.execute(
-                "SELECT message_id, payload, sha256 FROM chat_originals WHERE domain=? UNION ALL "
-                "SELECT message_id, payload, NULL FROM chat_downloaded WHERE domain=?", (key, key),
-            ).fetchall()
-            for message_id, payload, digest in prior_records:
-                _validate_batch_member(domain, message_id, payload,
-                                       digest if digest is not None else hashlib.sha256(payload).hexdigest())
-                _remember_origin_identity(conn, domain, decode_chat_original(payload))
+            # Every later write registers its own identity, so this runs once.
+            if conn.execute("SELECT 1 FROM chat_identity_backfills WHERE domain=?", (key,)).fetchone() is None:
+                prior_records = conn.execute(
+                    "SELECT message_id, payload, sha256 FROM chat_originals WHERE domain=? UNION ALL "
+                    "SELECT message_id, payload, NULL FROM chat_downloaded WHERE domain=?", (key, key),
+                ).fetchall()
+                for message_id, payload, digest in prior_records:
+                    _validate_batch_member(domain, message_id, payload,
+                                           digest if digest is not None else hashlib.sha256(payload).hexdigest())
+                    _remember_origin_identity(conn, domain, decode_chat_original(payload))
+                conn.execute("INSERT INTO chat_identity_backfills VALUES (?)", (key,))
             # Remember identities even when their originals are hidden below.
             # Deletion never removes this mapping, so an old source sequence
             # cannot return under a fresh ID after its body was discarded.

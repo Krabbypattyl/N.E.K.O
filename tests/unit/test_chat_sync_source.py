@@ -53,6 +53,26 @@ def source_for(runtime):
     return ChatOriginalSource(Path(runtime.state.path).parent / "sources.sqlite3")
 
 
+def test_purge_erases_recovery_and_outage_copies_but_keeps_identities(tmp_path):
+    """A permanent local delete leaves no readable body in recovery or outage storage."""
+    from services.chat_sync_recovery import save_outage
+    runtime = make_runtime(tmp_path)
+    source, directory = source_for(runtime), Path(runtime.state.path).parent
+    candidate, outage = "1" * 32, "2" * 32
+    with sqlite3.connect(source.path) as conn:
+        conn.execute("INSERT INTO source_recovery_candidates (record_id,owner,uid,original,original_hash,payload,kind) "
+                     "VALUES (?,?,?,?,?,?,'local')", (candidate, OWNER, UID, "candidate text", "h", b"candidate payload"))
+    save_outage(directory, UID, outage, ChatOriginal("user", "outage text"))
+    # Nothing else holds these IDs, so the recovery copy alone must make the purge run.
+    source.purge(OWNER, UID, [candidate, outage])
+    with sqlite3.connect(source.path) as conn:
+        assert conn.execute("SELECT original,payload,deleted FROM source_recovery_candidates WHERE record_id=?",
+                            (candidate,)).fetchone() == (None, None, 1)
+    with sqlite3.connect(directory / "outage.sqlite3") as conn:
+        assert conn.execute("SELECT original,deleted FROM outage_originals WHERE record_id=?",
+                            (outage,)).fetchone() == (None, 1)
+
+
 def test_deleted_cloud_role_reassignment_retains_local_history_without_old_requests(tmp_path):
     """An explicit new identity retains verified text, never the retired domain's grants or deletes."""
     from services.chat_sync_protocol import decode_chat_original, encode_chat_original
@@ -426,10 +446,11 @@ async def test_local_only_buffer_discard_terminal_exclusion_and_retry(monkeypatc
     buffer.append(message)
     await buffer.finish("Lan", proof["recordId"], excluded=True)
     local.assert_not_awaited()
-    buffer.append(message)
-    await buffer.finish("Lan", proof["recordId"])
-    assert proof["recordId"] in buffer.records
-    await buffer.finish("Lan", proof["recordId"])
+    retry = {**proof, "recordId": "6" * 32}
+    buffer.append({"chat_original_source": retry, "text": RAW.text})
+    await buffer.finish("Lan", retry["recordId"])
+    assert retry["recordId"] in buffer.records
+    await buffer.finish("Lan", retry["recordId"])
     assert local.await_count == 2
     assert buffer.records == {}
 
@@ -975,21 +996,65 @@ async def test_source_diagnostic_distinguishes_finish_and_preserves_retry(monkey
         "assistant_source_finished", message_id=proof["recordId"], source_origin="chat",
         source_reason="save_unavailable", outcome="error",
     )
-    buffer.append({"chat_original_source": proof, "text": "private-original"})
-    save.return_value = proof["recordId"]
-    await buffer.finish("private-role", proof["recordId"])
+    saved = {**proof, "recordId": "f" * 32}
+    buffer.append({"chat_original_source": saved, "text": "private-original"})
+    save.return_value = saved["recordId"]
+    await buffer.finish("private-role", saved["recordId"])
     trace.emit.assert_called_with(
-        "assistant_source_finished", message_id=proof["recordId"], source_origin="chat",
+        "assistant_source_finished", message_id=saved["recordId"], source_origin="chat",
         source_reason="saved", outcome="success",
     )
-    buffer.append({"chat_original_source": proof, "text": "private-original"})
-    await buffer.finish("private-role", proof["recordId"], excluded=True)
+    excluded = {**proof, "recordId": "d" * 32}
+    buffer.append({"chat_original_source": excluded, "text": "private-original"})
+    await buffer.finish("private-role", excluded["recordId"], excluded=True)
     trace.emit.assert_called_with(
-        "assistant_source_finished", message_id=proof["recordId"], source_origin="chat",
+        "assistant_source_finished", message_id=excluded["recordId"], source_origin="chat",
         source_reason="terminal_excluded", outcome="success",
     )
     assert save.await_count == 3
     assert "private-" not in str(trace.emit.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_transcript_after_terminal_is_saved_as_its_own_original(monkeypatch):
+    """Gemini text after turn_complete is kept whole instead of conflicting with the saved reply."""
+    remote = AsyncMock(side_effect=lambda name, role, text, *, record_id, original_time: record_id)
+    monkeypatch.setattr(source_module, "save_original", remote)
+    proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
+    following = {"recordId": "6" * 32, "originalTime": "124", "origin": "chat"}
+    buffer = AssistantOriginalBuffer()
+    buffer.append({"chat_original_source": proof, "text": "first half"})
+    await buffer.finish("Lan", proof["recordId"])
+    for text in (" late", " tail"):
+        buffer.append({"chat_original_source": proof, "text": text})
+    buffer.append({"chat_original_source": following, "text": "next reply"})
+    await buffer.finish("Lan", following["recordId"])
+    saved = [(call.args[2], call.kwargs["record_id"]) for call in remote.await_args_list]
+    assert saved[0] == ("first half", proof["recordId"])
+    assert saved[1] == ("next reply", following["recordId"])
+    tail_text, tail_id = saved[2]
+    assert tail_text == " late tail" and tail_id not in (proof["recordId"], following["recordId"])
+    assert buffer.records == {}
+
+
+@pytest.mark.parametrize("marked_tool,excluded", [(True, False), (False, True)])
+@pytest.mark.asyncio
+async def test_late_tail_inherits_local_only_or_excluded_policy(monkeypatch, marked_tool, excluded):
+    """A late tail can never upload text its completed reply kept local or excluded."""
+    remote, local = AsyncMock(return_value="x"), AsyncMock(return_value="x")
+    monkeypatch.setattr(source_module, "save_original", remote)
+    monkeypatch.setattr(source_module, "save_local_reply", local)
+    proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
+    buffer = AssistantOriginalBuffer()
+    buffer.append({"chat_original_source": proof, "text": "reply"})
+    if marked_tool:
+        buffer.mark_tool(proof["recordId"])
+    await buffer.finish("Lan", proof["recordId"], excluded=excluded)
+    buffer.append({"chat_original_source": proof, "text": " late"})
+    await buffer.finish("Lan")
+    remote.assert_not_awaited()
+    assert [call.args[1] for call in local.await_args_list] == (["reply", " late"] if marked_tool else [])
+    assert buffer.records == {}
 
 
 @pytest.mark.parametrize("kind,reason", [

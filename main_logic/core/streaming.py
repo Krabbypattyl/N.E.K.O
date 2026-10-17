@@ -948,7 +948,7 @@ class StreamingMixin:
                             _message_source: str = message_source if memory_text else '',
                             _transcript_metadata: dict | None = transcript_metadata,
                             _request_id=text_request_id,
-                            _original_text: str = data,
+                            _original_text: str = record_data,
                             _original_source: str = message_source,
                         ) -> None:
                             # Keep complete visible input; the provider strips its callback argument.

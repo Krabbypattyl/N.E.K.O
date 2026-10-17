@@ -28,6 +28,7 @@ class SyntheticRuntime:
         return {"serviceUrl": "https://sync.test", "deviceId": "c" * 32, "bindings": [{
             "character_uid": UID, "owner_id": OWNER, "binding_id": "d" * 32, "enabled": 0, "generation": 3,
             "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
+            "localOnlyOriginals": 0,
         }]}
 
     async def configure(self, url):
@@ -106,6 +107,7 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
         "characterSyncId": UID, "displayName": "Neko", "syncEnabled": False, "syncPending": False,
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
+                    "localOnlyOriginals": 0,
                     "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None},
     }]
 
@@ -128,7 +130,8 @@ def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client)
     state = client.get('/api/chat-sync/status').json()
     runtime.status = AsyncMock(return_value={
         'bindings': [{'character_uid': UID, 'owner_id': OWNER, 'binding_id': 'd' * 32, 'enabled': 0, 'generation': 3,
-                      'pendingOriginals': 0, 'pendingDeletions': 0, 'cursor': 0, 'hasSealedBatch': False}],
+                      'pendingOriginals': 0, 'pendingDeletions': 0, 'cursor': 0, 'hasSealedBatch': False,
+                      'localOnlyOriginals': 0}],
         'syncChoices': {UID: True}, 'syncPendingChoices': {UID: True},
         'serviceUrl': state['serviceUrl'], 'deviceId': state['deviceId'],
     })

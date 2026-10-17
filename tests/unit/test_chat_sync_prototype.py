@@ -126,7 +126,8 @@ def test_pull_only_does_not_seal_or_send_pending_originals_or_markers(tmp_path):
         assert receipt["pullPages"] == 1
         assert len(requests) == 1 and requests[0][0] == "GET"
         assert ledger.stats(DOMAIN) == {"pendingOriginals": 1, "pendingDeletions": 1,
-                                       "cursor": 1, "hasSealedBatch": False}
+                                       "cursor": 1, "hasSealedBatch": False,
+                                       "localOnlyOriginals": 0}
     asyncio.run(scenario())
 
 
@@ -209,6 +210,7 @@ def test_old_temporary_records_are_validated_before_identity_backfill(tmp_path, 
     with sqlite3.connect(ledger.path) as conn:
         # Reproduce a temporary ledger from before identity registration existed.
         conn.execute("DELETE FROM chat_origin_identities")
+        conn.execute("DELETE FROM chat_identity_backfills")
     conflict = {**first, "messageId": "f" * 32}
     with pytest.raises(IdentityConflict, match="origin_identity_conflict"):
         ledger.apply_changes(DOMAIN, page(after + 1, [conflict], [first["messageId"]]), after=after)
