@@ -1080,6 +1080,9 @@ class AssistantOriginalBuffer:
 
     async def _seal(self, lanlan_name, identity, excluded):
         entry = self.records[identity]
+        # Close the identity before awaiting: a chunk arriving mid-save is
+        # dropped visibly instead of joining an entry that is about to vanish.
+        self._sealed[identity] = None
         if not excluded:
             # Current scope selects local-only storage for Agent/tool replies.
             # Future sync belongs at this policy boundary, with matching
@@ -1098,6 +1101,8 @@ class AssistantOriginalBuffer:
                 get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
                                  source_reason="local_save_failed" if local_only else "save_failed", outcome="error")
                 print("[chat-sync] original_save_failed")
+                # A failed save stays retryable under the same identity.
+                self._sealed.pop(identity, None)
                 return
             get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
                              source_reason=("local_saved" if saved else "local_save_unavailable") if local_only
@@ -1107,7 +1112,6 @@ class AssistantOriginalBuffer:
                              source_reason="terminal_excluded", outcome="success")
         self.records.pop(identity, None)
         self._tool_records.discard(identity)
-        self._sealed[identity] = None
         while len(self._sealed) > self._SEALED_LIMIT:
             self._sealed.pop(next(iter(self._sealed)))
 

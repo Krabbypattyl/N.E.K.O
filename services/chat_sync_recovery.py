@@ -82,12 +82,23 @@ def _erase_outage_originals(conn, uid, ids):
         conn.executemany('UPDATE outage_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=?', [(uid, identity) for identity in ids])
 
 
+def _outage_has_originals(conn, uid, ids):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='outage_originals'").fetchone():
+        return False
+    return any(conn.execute(
+        'SELECT 1 FROM outage_originals WHERE uid=? AND original IS NOT NULL AND record_id IN (' + ','.join('?' for _ in page) + ') LIMIT 1',
+        (uid, *page)).fetchone() for page in (ids[offset:offset + 200] for offset in range(0, len(ids), 200)))
+
+
 def purge_outage_originals(directory, uid, ids):
     """Erase readable outage copies of exact deleted IDs while keeping their identities."""
     path = Path(directory) / 'outage.sqlite3'
     if not path.exists():
         return
     with closing(sqlite3.connect(path, timeout=10)) as conn, conn:
+        # Most deletes have no outage copy; only an actual body needs a durable write.
+        if not _outage_has_originals(conn, uid, ids):
+            return
         conn.execute('PRAGMA synchronous=FULL')
         _erase_outage_originals(conn, uid, ids)
 
@@ -164,6 +175,8 @@ def stage_authority(runtime):
         for table in ('chat_pending', 'chat_batches', 'chat_deletions', 'chat_originals', 'chat_downloaded',
                       'chat_sources', 'chat_lane_rotation', 'chat_cursors', 'chat_recovery_deletion_pages'):
             ledger.execute(f'DELETE FROM {table}')
+        if ledger.execute("SELECT 1 FROM sqlite_master WHERE name='chat_oversized'").fetchone():
+            ledger.execute('DELETE FROM chat_oversized')
     with closing(store_connection(directory / 'state.sqlite3')) as state, state:
         state.execute('UPDATE sync_settings SET device_id=?', (uuid4().hex,))
         for row in state.execute('SELECT character_uid FROM sync_bindings').fetchall():

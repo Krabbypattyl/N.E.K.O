@@ -1044,6 +1044,29 @@ async def test_transcript_after_terminal_joins_the_same_original_within_grace(mo
 
 
 @pytest.mark.asyncio
+async def test_chunk_during_save_is_dropped_and_failed_save_stays_retryable(monkeypatch):
+    """The identity closes before the save awaits; a failure reopens it for retry."""
+    proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
+    buffer = AssistantOriginalBuffer()
+    calls = []
+
+    async def save(name, role, text, *, record_id, original_time):
+        calls.append(text)
+        buffer.append({"chat_original_source": proof, "text": " mid-save"})
+        if len(calls) == 1:
+            raise OSError("synthetic fault")
+        return record_id
+
+    monkeypatch.setattr(source_module, "save_original", save)
+    buffer.append({"chat_original_source": proof, "text": "reply"})
+    await buffer.finish("Lan", proof["recordId"])
+    assert proof["recordId"] in buffer.records
+    await buffer.finish("Lan", proof["recordId"])
+    assert calls == ["reply", "reply"]
+    assert buffer.records == {}
+
+
+@pytest.mark.asyncio
 async def test_repeated_terminal_keeps_the_stricter_exclusion(monkeypatch):
     """A later ordinary terminal cannot undo an earlier exclusion of the same reply."""
     remote = AsyncMock(return_value="5" * 32)
