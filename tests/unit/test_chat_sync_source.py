@@ -819,7 +819,10 @@ async def test_tool_evidence_survives_failed_local_save_and_is_cleared_on_discar
     save.assert_not_awaited()
     buffer.mark_tool(proof["recordId"])
     buffer.discard()
-    buffer.append({"chat_original_source": proof, "text": "replacement"})
+    replacement = mark_turn_origin(SimpleNamespace(), "replacement", "chat")
+    buffer.mark_tool(replacement["recordId"])
+    buffer.discard()
+    buffer.append({"chat_original_source": replacement, "text": "replacement"})
     await buffer.finish("Lan")
     save.assert_awaited_once()
 
@@ -1032,10 +1035,27 @@ async def test_transcript_after_terminal_joins_the_same_original_within_grace(mo
     await asyncio.sleep(0.2)
     remote.assert_awaited_once_with("Lan", "assistant", "first half late tail",
                                     record_id=proof["recordId"], original_time="123")
-    # Text after sealing cannot reuse the immutable identity.
+    # Text after sealing cannot reuse the immutable identity, even after a discard.
+    buffer.discard()
     buffer.append({"chat_original_source": proof, "text": " too late"})
     await buffer.finish("Lan")
     remote.assert_awaited_once()
+    assert buffer.records == {}
+
+
+@pytest.mark.asyncio
+async def test_repeated_terminal_keeps_the_stricter_exclusion(monkeypatch):
+    """A later ordinary terminal cannot undo an earlier exclusion of the same reply."""
+    remote = AsyncMock(return_value="5" * 32)
+    monkeypatch.setattr(source_module, "save_original", remote)
+    proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
+    buffer = AssistantOriginalBuffer(tail_grace=30)
+    buffer.append({"chat_original_source": proof, "text": "avatar"})
+    await buffer.finish("Lan", proof["recordId"], excluded=True)
+    buffer.append({"chat_original_source": proof, "text": " late"})
+    await buffer.finish("Lan", proof["recordId"])
+    await buffer.flush_terminated("Lan")
+    remote.assert_not_awaited()
     assert buffer.records == {}
 
 

@@ -1054,7 +1054,10 @@ class AssistantOriginalBuffer:
         """Persist only the matching completed original, never normalized projections."""
         if record_id is not None and self._tail_grace > 0:
             if record_id in self.records:
-                self.records[record_id]["terminal"] = (lanlan_name, excluded)
+                entry = self.records[record_id]
+                # A repeated terminal can only make the reply stricter.
+                excluded = excluded or entry.get("terminal", (None, False))[1]
+                entry["terminal"] = (lanlan_name, excluded)
                 self._defer(record_id)
             else:
                 self._tool_records.discard(record_id)
@@ -1124,4 +1127,3 @@ class AssistantOriginalBuffer:
         self.records = {identity: entry for identity, entry in self.records.items() if "terminal" in entry}
         self._traced_exclusions.clear()
         self._tool_records.intersection_update(self.records)
-        self._sealed.clear()
