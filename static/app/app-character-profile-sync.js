@@ -73,144 +73,24 @@
             panel.appendChild(button);
         });
     }
-    function managementError(error) {
-        var keys = {character_quota_exceeded: 'characterQuotaExceeded', character_policy_changed: 'cloudPolicyChanged',
-            chat_sync_account_mismatch: 'cloudPolicyChanged',
-            character_selection_pending: 'cloudOperationPending', character_delete_pending: 'cloudOperationPending',
-            character_selection_required: 'cloudSelectionRequired', character_not_selected: 'cloudSelectionRequired',
-            character_deleted: 'cloudDeleted', chat_sync_login_required: 'loginRequired'};
-        return text(keys[error.message] || 'cloudManagementFailed');
-    }
-    async function refreshLocalCards() {
-        // Cloud removal never removes a local card or changes an editor's draft.
-        if (typeof window.loadCharacterCards === 'function') await window.loadCharacterCards();
-        window.dispatchEvent(new CustomEvent('neko-character-profile-imported'));
-    }
-    function renderSelection(panel, snapshot) {
-        var pending = snapshot.pendingSelection;
-        // Keep the reviewed directory independent from later account/status updates.
-        var roles = (pending ? pending.characters : snapshot.characters).map(function (role) {
-            return {characterSyncId: role.characterSyncId, displayName: role.displayName};
-        });
-        var revision = pending ? pending.baseRevision : snapshot.revision;
-        var owner = snapshot.ownerId;
-        var selected = new Set(pending ? pending.selectedCharacterSyncIds : snapshot.selectedCharacterSyncIds);
-        var instruction = document.createElement('p'); instruction.textContent = text(pending ? 'cloudOperationPending' : 'cloudSelectionRequired'); panel.appendChild(instruction);
-        var list = document.createElement('div'); list.dataset.cloudSelection = 'true'; panel.appendChild(list);
-        var deleted = document.createElement('ul'); deleted.dataset.cloudDeletionList = 'true';
-        var warning = document.createElement('p'); warning.textContent = text('cloudSelectionWarning'); panel.appendChild(warning); panel.appendChild(deleted);
-        var status = document.createElement('p'); status.setAttribute('role', 'status'); panel.appendChild(status);
-        var submit = document.createElement('button'); submit.type = 'button'; submit.dataset.cloudConfirmSelection = 'true';
-        submit.textContent = text('cloudConfirmSelection');
-        var reload = document.createElement('button'); reload.type = 'button'; reload.hidden = true; reload.textContent = text('cloudReload');
-        var close = document.createElement('button'); close.type = 'button'; close.textContent = text('historyCancel');
-        var inputs = [], sending = false, frozen = !!pending;
-        panel.addEventListener('cancel', function (event) { if (sending) event.preventDefault(); });
-        function update() {
-            deleted.replaceChildren();
-            roles.filter(function (role) { return !selected.has(role.characterSyncId); }).forEach(function (role) {
-                var item = document.createElement('li'); item.textContent = role.displayName; deleted.appendChild(item);
-            });
-            inputs.forEach(function (input) { input.disabled = frozen || (!input.checked && selected.size >= 3); });
-        }
-        roles.forEach(function (role) {
-            var label = document.createElement('label'); label.style.display = 'block';
-            var input = document.createElement('input'); input.type = 'checkbox'; input.dataset.cloudUid = role.characterSyncId;
-            input.checked = selected.has(role.characterSyncId); inputs.push(input);
-            input.addEventListener('change', function () {
-                if (frozen) { input.checked = selected.has(role.characterSyncId); return; }
-                if (input.checked && selected.size < 3) selected.add(role.characterSyncId);
-                else { selected.delete(role.characterSyncId); input.checked = false; }
-                update();
-            });
-            label.appendChild(input); label.appendChild(document.createTextNode(' ' + role.displayName)); list.appendChild(label);
-        });
-        close.addEventListener('click', function () { if (!sending) panel.close(); });
-        reload.addEventListener('click', async function () {
-            if (sending) return;
-            reload.disabled = true;
-            try {
-                var latest = await api('/cloud/character-policy');
-                if (dialog !== panel) return;
-                panel.replaceChildren(); var title = document.createElement('h2'); title.textContent = text('cloudManage'); panel.appendChild(title);
-                renderSelection(panel, latest);
-            } catch (error) { status.textContent = managementError(error); reload.disabled = false; }
-        });
-        submit.addEventListener('click', async function () {
-            if (sending) return;
-            // The approved selection and revision freeze before the first await.
-            // Receipt loss keeps this same draft; retry never expands deletion scope.
-            var body = {baseRevision: revision, selectedCharacterSyncIds: Array.from(selected), expectedOwner: owner};
-            var deletedNames = roles.filter(function (role) {
-                return body.selectedCharacterSyncIds.indexOf(role.characterSyncId) < 0;
-            }).map(function (role) { return role.displayName; });
-            if (!window.confirm(text(body.selectedCharacterSyncIds.length ? 'cloudSelectionConfirm' : 'cloudSelectionDeleteAllConfirm', {
-                count: deletedNames.length, names: deletedNames.join('\n')
-            }))) return;
-            sending = frozen = true; submit.disabled = close.disabled = true; update(); status.textContent = text('working');
-            try {
-                await api('/cloud/character-policy', body);
-                panel.close(); await refreshLocalCards();
-                if (typeof window.showMessage === 'function') window.showMessage(text('cloudSelectionSaved'), 'success');
-            } catch (error) {
-                status.textContent = managementError(error);
-                if (error.message === 'character_policy_changed' || error.message === 'chat_sync_account_mismatch') { reload.hidden = false; submit.disabled = true; }
-                else submit.disabled = false;
-            } finally { sending = false; close.disabled = false; }
-        });
-        if (pending) status.textContent = text('cloudOperationPending');
-        panel.appendChild(submit); panel.appendChild(reload); panel.appendChild(close); update();
-    }
     async function cloudImport() {
-        // The existing cloud role entry also manages the account quota. Discovery
-        // alone never binds a role; confirmed removal affects cloud data only.
+        // Import is an explicit user action. Listing or previewing alone never
+        // binds, enables or creates a local character.
         if (dialog) return;
-        var panel = openDialog('cloudManage'), state = document.createElement('p');
-        panel.style.maxWidth = 'min(640px, 90vw)'; panel.style.maxHeight = '85vh'; panel.style.overflow = 'auto';
+        var panel = openDialog('cloudImport'), state = document.createElement('p');
         state.setAttribute('role', 'status'); panel.appendChild(state);
-        var reload = document.createElement('button'); reload.type = 'button'; reload.hidden = true;
-        reload.textContent = text('cloudReload');
-        reload.addEventListener('click', function () {
-            // Native close is asynchronous; the earlier close listener releases dialog first.
-            panel.addEventListener('close', function () { cloudImport(); }, {once: true});
-            panel.close();
-        }); panel.appendChild(reload);
         var close = document.createElement('button'); close.textContent = text('close'); close.type = 'button';
         close.addEventListener('click', function () { panel.close(); }); panel.appendChild(close);
         try {
-            var snapshot = await api('/cloud/character-policy');
-            if (dialog !== panel) return;
-            if (snapshot.requiresSelection || snapshot.pendingSelection) {
-                state.remove(); close.remove(); reload.remove(); renderSelection(panel, snapshot); return;
-            }
-            if (!snapshot.characters.length) state.textContent = text('cloudEmpty');
-            snapshot.characters.forEach(function (role) {
-                var row = document.createElement('div'); row.dataset.cloudRole = role.characterSyncId;
+            var roles = await api('/cloud/characters');
+            if (!roles.characters.length) state.textContent = text('cloudEmpty');
+            roles.characters.forEach(function (role) {
                 var choose = document.createElement('button'); choose.type = 'button'; choose.textContent = role.displayName;
-                var remove = document.createElement('button'); remove.type = 'button'; remove.dataset.cloudDelete = role.characterSyncId;
-                remove.textContent = text('cloudDelete');
-                remove.addEventListener('click', async function () {
-                    if (!window.confirm(text('cloudDeleteConfirm', {name: role.displayName}))) return;
-                    remove.disabled = true;
-                    try {
-                        await api('/cloud/characters/' + role.characterSyncId + '/delete', {baseRevision: snapshot.revision, expectedOwner: snapshot.ownerId});
-                        panel.close(); await refreshLocalCards();
-                        if (typeof window.showMessage === 'function') window.showMessage(text('cloudDeleted'), 'success');
-                    } catch (error) {
-                        if (error.message === 'character_deleted') { panel.close(); await refreshLocalCards(); return; }
-                        state.textContent = managementError(error);
-                        remove.disabled = false;
-                        if (error.message === 'character_policy_changed' || error.message === 'chat_sync_account_mismatch') {
-                            reload.hidden = false; remove.disabled = true;
-                        }
-                        // A stale revision requires a fresh deliberate review; it
-                        // must never delete using a silently updated account scope.
-                    }
-                });
                 choose.addEventListener('click', async function () {
                     choose.disabled = true;
                     try {
                         var head = await api('/cloud/characters/' + role.characterSyncId + '/profile');
+                        // A closed dialog cannot issue a late import request.
                         if (dialog !== panel) return;
                         var old = panel.querySelector('[data-profile-preview]'); if (old) old.remove();
                         var section = document.createElement('section'); section.dataset.profilePreview = 'true'; panel.appendChild(section);
@@ -223,19 +103,22 @@
                                 var result = await api('/cloud/characters/' + role.characterSyncId + '/import', {
                                     revision: head.revision, profileHash: head.profileHash});
                                 state.textContent = text(result.existing ? 'cloudExisting' : 'cloudCreated', {name: result.displayName});
-                                await refreshLocalCards();
+                                // Refresh the existing local card list without
+                                // selecting a role or invoking a conversation.
+                                if (typeof window.loadCharacterCards === 'function') await window.loadCharacterCards();
+                                window.dispatchEvent(new CustomEvent('neko-character-profile-imported'));
                             } catch (error) {
                                 state.textContent = text(error.message === 'character_profile_name_conflict' ? 'cloudNameConflict' : 'profileChanged');
                                 create.disabled = false;
                             }
                         });
                         section.appendChild(create);
-                    } catch (error) { state.textContent = managementError(error); }
+                    } catch (_) { state.textContent = text('profileSaveFailed'); }
                     finally { choose.disabled = false; }
                 });
-                row.appendChild(choose); row.appendChild(remove); panel.insertBefore(row, close);
+                panel.insertBefore(choose, close);
             });
-        } catch (error) { state.textContent = managementError(error); }
+        } catch (_) { state.textContent = text('profileSaveFailed'); }
     }
     async function getSyncChoice(name) {
         const status = await api('/status');
@@ -259,9 +142,9 @@
             // The labeled card switch is the sole affirmative action for saved settings and trusted history.
             await api('/characters/' + role.characterSyncId + '/sync-choice', {enabled, includeHistory: true});
             window.showMessage(text('syncChoiceSaved'), 'success');
-        } catch (error) {
+        } catch (_) {
             // The card is already saved; an unreadable switch must preserve its previous consent.
-            window.showMessage(error.message === 'character_quota_exceeded' ? text('characterQuotaExceeded') : text('newSyncFailed'), 'warning');
+            window.showMessage(text('newSyncFailed'), 'warning');
         }
     }
 
@@ -298,18 +181,12 @@
         polling = true;
         try {
             var state = await api('/status');
-            if (state.characterPolicy && state.characterPolicy.requiresSelection) {
-                var policyKey = 'cloud-policy:' + state.characterPolicy.ownerId + ':' + state.characterPolicy.revision;
-                if (!reviewed.has(policyKey)) { reviewed.add(policyKey); await cloudImport(); }
-                return;
-            }
             for (var role of state.characters) {
                 if (role.syncSetupError) {
                     var setupKey = role.characterSyncId + ':setup:' + role.syncSetupError;
                     if (!reviewed.has(setupKey)) {
                         reviewed.add(setupKey);
-                        window.showMessage(role.syncSetupError === 'character_quota_exceeded'
-                            ? text('characterQuotaExceeded') : text('setupNeedsSave', {name: role.displayName}), 'warning');
+                        window.showMessage(text('setupNeedsSave', {name: role.displayName}), 'warning');
                     }
                 }
                 var profile = role.binding && role.binding.profile;

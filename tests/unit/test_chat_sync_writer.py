@@ -229,9 +229,6 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_history_and_d
         body = json.loads(request.content) if request.content else None
         if request.url.path == '/v1/chat-sync/identity':
             return httpx.Response(200, json={'ownerId': owner})
-        if request.url.path.endswith('/character-policy'):
-            return httpx.Response(200, json={'ownerId': owner, 'revision': 1, 'characterLimit': 3,
-                'characterCount': 1, 'requiresSelection': False, 'selectedCharacterSyncIds': [uid]})
         if request.url.path.endswith('/bindings'):
             return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'deviceId': body['deviceId'], 'bindingId': binding_id})
         if request.url.path.endswith('/recovery/deletions'):

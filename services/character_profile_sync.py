@@ -74,9 +74,8 @@ async def read_character_directory(request, owner):
     """Read bounded owner-scoped pages without silently truncating cloud characters."""
     from services.chat_sync_ledger import ChatDomain
 
-    # Registration separately enforces the current three-character account quota.
-    # Pagination bounds reads, including retained records; future paid-plan limits
-    # remain registration policy rather than an accidental directory page-size limit.
+    # Beta accounts have no role quota. Pagination bounds each response; any future
+    # paid-plan quota is separate server policy, never an accidental page-size limit.
     roles, seen, after = [], set(), None
     while True:
         path = '/prototype/chat-sync/characters?limit=100' + (f'&after={after}' if after else '')
