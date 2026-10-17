@@ -1016,44 +1016,47 @@ async def test_source_diagnostic_distinguishes_finish_and_preserves_retry(monkey
 
 
 @pytest.mark.asyncio
-async def test_transcript_after_terminal_is_saved_as_its_own_original(monkeypatch):
-    """Gemini text after turn_complete is kept whole instead of conflicting with the saved reply."""
-    remote = AsyncMock(side_effect=lambda name, role, text, *, record_id, original_time: record_id)
+async def test_transcript_after_terminal_joins_the_same_original_within_grace(monkeypatch):
+    """Gemini text after turn_complete is saved with its reply, under the bubble's own ID."""
+    remote = AsyncMock(return_value="5" * 32)
     monkeypatch.setattr(source_module, "save_original", remote)
     proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
-    following = {"recordId": "6" * 32, "originalTime": "124", "origin": "chat"}
-    buffer = AssistantOriginalBuffer()
+    buffer = AssistantOriginalBuffer(tail_grace=0.05)
     buffer.append({"chat_original_source": proof, "text": "first half"})
     await buffer.finish("Lan", proof["recordId"])
+    remote.assert_not_awaited()
     for text in (" late", " tail"):
         buffer.append({"chat_original_source": proof, "text": text})
-    buffer.append({"chat_original_source": following, "text": "next reply"})
-    await buffer.finish("Lan", following["recordId"])
-    saved = [(call.args[2], call.kwargs["record_id"]) for call in remote.await_args_list]
-    assert saved[0] == ("first half", proof["recordId"])
-    assert saved[1] == ("next reply", following["recordId"])
-    tail_text, tail_id = saved[2]
-    assert tail_text == " late tail" and tail_id not in (proof["recordId"], following["recordId"])
+    # The pending reply survives a later response's discard.
+    buffer.discard()
+    await asyncio.sleep(0.2)
+    remote.assert_awaited_once_with("Lan", "assistant", "first half late tail",
+                                    record_id=proof["recordId"], original_time="123")
+    # Text after sealing cannot reuse the immutable identity.
+    buffer.append({"chat_original_source": proof, "text": " too late"})
+    await buffer.finish("Lan")
+    remote.assert_awaited_once()
     assert buffer.records == {}
 
 
 @pytest.mark.parametrize("marked_tool,excluded", [(True, False), (False, True)])
 @pytest.mark.asyncio
-async def test_late_tail_inherits_local_only_or_excluded_policy(monkeypatch, marked_tool, excluded):
-    """A late tail can never upload text its completed reply kept local or excluded."""
+async def test_deferred_seal_keeps_local_only_and_excluded_decisions(monkeypatch, marked_tool, excluded):
+    """Waiting for late text never turns a local-only or excluded reply into an upload."""
     remote, local = AsyncMock(return_value="x"), AsyncMock(return_value="x")
     monkeypatch.setattr(source_module, "save_original", remote)
     monkeypatch.setattr(source_module, "save_local_reply", local)
     proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
-    buffer = AssistantOriginalBuffer()
+    buffer = AssistantOriginalBuffer(tail_grace=30)
     buffer.append({"chat_original_source": proof, "text": "reply"})
     if marked_tool:
         buffer.mark_tool(proof["recordId"])
     await buffer.finish("Lan", proof["recordId"], excluded=excluded)
     buffer.append({"chat_original_source": proof, "text": " late"})
-    await buffer.finish("Lan")
+    # Shutdown seals completed replies at once instead of waiting out the grace.
+    await buffer.flush_terminated("Lan")
     remote.assert_not_awaited()
-    assert [call.args[1] for call in local.await_args_list] == (["reply", " late"] if marked_tool else [])
+    assert [call.args[1] for call in local.await_args_list] == (["reply late"] if marked_tool else [])
     assert buffer.records == {}
 
 

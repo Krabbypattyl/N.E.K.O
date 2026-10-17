@@ -8,8 +8,10 @@
         var response = await fetch('/api/chat-sync' + path, {method: body === undefined ? 'GET' : 'POST', cache: 'no-store',
             headers: body === undefined ? {} : {'Content-Type': 'application/json'},
             body: body === undefined ? undefined : JSON.stringify(body)});
-        var value = await response.json();
-        if (!response.ok) throw new Error(typeof value.detail === 'string' ? value.detail : 'profile_unavailable');
+        var value;
+        try { value = await response.json(); }
+        catch (_) { throw new Error('profile_unavailable'); }
+        if (!response.ok) throw new Error(value && typeof value.detail === 'string' ? value.detail : 'profile_unavailable');
         return value;
     }
     function preview(parent, profile) {

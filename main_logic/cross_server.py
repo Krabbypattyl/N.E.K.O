@@ -47,7 +47,7 @@ from utils.language_utils import is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
-from services.chat_sync_source import AssistantOriginalBuffer
+from services.chat_sync_source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -945,7 +945,7 @@ async def run_sync_connector(
     text_output_cache = ''  # lanlan的当前消息
     text_output_request_id = None
     # Raw originals use server-created identities and never normalized memory text.
-    original_output = AssistantOriginalBuffer()
+    original_output = AssistantOriginalBuffer(tail_grace=LATE_TEXT_GRACE_SECONDS)
     current_turn = 'user'
     had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
     current_turn_start_index = 0
@@ -1573,6 +1573,11 @@ async def run_sync_connector(
     except asyncio.CancelledError:
         raise
     finally:
+        # Completed replies may still wait out their late-transcript grace.
+        try:
+            await original_output.flush_terminated(lanlan_name)
+        except Exception:
+            print("[chat-sync] original_save_failed")
         # cleanup 顺序：先 cancel maintainer + reader（停止新建连接 / 读循环），
         # 再 close 现存的 ws + session。maintainer 自己持有 session 引用，cancel
         # 后我们从 slot 里读出来一并关。

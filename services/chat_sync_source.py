@@ -959,21 +959,27 @@ def mark_tool_turn(manager, turn_id):
     queue.put({"type": "system", "data": "chat original tool", "chat_original_id": proof["recordId"]})
 
 
+# Gemini keeps streaming transcript of a reply for up to three seconds after
+# its turn terminal; the realtime client treats that text as the same reply.
+# Sealing waits slightly longer so the saved original holds the whole reply.
+LATE_TEXT_GRACE_SECONDS = 3.5
+
+
 class AssistantOriginalBuffer:
     """Collect emitted text per stable message ID; persist only at final boundaries."""
 
-    # Completed replies remembered so their late tails keep the same policy.
-    _FINISHED_LIMIT = 64
+    # Sealed IDs remembered so text arriving after the grace is dropped, not conflicting.
+    _SEALED_LIMIT = 64
 
-    def __init__(self):
+    def __init__(self, *, tail_grace=0.0):
         """Start without inferred identities for legacy or system messages."""
         self.records = {}
         self._traced_exclusions = set()
         self._tool_records = set()
-        # Completed reply ID -> its persisted origin, or "excluded".
-        self._finished = {}
-        # Completed reply ID -> identity of its still-open late tail.
-        self._tails = {}
+        self._tail_grace = tail_grace
+        # Record ID -> pending deferred seal after its terminal.
+        self._deferred = {}
+        self._sealed = {}
 
     def mark_tool(self, record_id):
         """Retain late tool evidence even when ordinary chunks arrived first."""
@@ -1008,9 +1014,13 @@ class AssistantOriginalBuffer:
             self._trace_exclusion(proof, "nonchat_origin" if isinstance(proof, dict)
                                   and proof.get("origin") in ("agent", "avatar", "system", "tool", "mirror") else "unknown_origin")
             return
+        record_id = proof.get("recordId")
+        if record_id in self._sealed:
+            # The saved original is immutable; reusing its ID would only conflict.
+            self._trace_exclusion(proof, "late_after_seal")
+            return
         if proof.get("origin") in ("agent", "tool"):
             self._trace_exclusion(proof, "nonchat_origin")
-        record_id = proof.get("recordId")
         if not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
             self._trace_exclusion(proof, "invalid_identity")
             return
@@ -1018,75 +1028,100 @@ class AssistantOriginalBuffer:
         if not isinstance(text, str):
             self._trace_exclusion(proof, "invalid_text")
             return
-        base = record_id
-        if base in self._finished:
-            # Gemini can stream transcript after its turn terminal. The saved
-            # reply is immutable, so the late text becomes its own original.
-            record_id = self._tails.setdefault(base, uuid4().hex)
-            proof = {**proof, "recordId": record_id}
-        entry = self.records.setdefault(record_id, {"proof": dict(proof), "chunks": [], "base": base})
+        entry = self.records.setdefault(record_id, {"proof": dict(proof), "chunks": []})
         if entry["proof"] != proof:
             raise ValueError("chat_source_identity_conflict")
         entry["chunks"].append(text)
+        if record_id in self._deferred:
+            # Late transcript of a terminated reply restarts its grace.
+            self._defer(record_id)
+
+    def _defer(self, record_id):
+        previous = self._deferred.pop(record_id, None)
+        if previous is not None:
+            previous.cancel()
+        self._deferred[record_id] = asyncio.create_task(self._seal_later(record_id))
+
+    async def _seal_later(self, record_id):
+        await asyncio.sleep(self._tail_grace)
+        self._deferred.pop(record_id, None)
+        entry = self.records.get(record_id)
+        if entry is not None:
+            lanlan_name, excluded = entry["terminal"]
+            await self._seal(lanlan_name, record_id, excluded)
 
     async def finish(self, lanlan_name, record_id=None, *, excluded=False):
         """Persist only the matching completed original, never normalized projections."""
+        if record_id is not None and self._tail_grace > 0:
+            if record_id in self.records:
+                self.records[record_id]["terminal"] = (lanlan_name, excluded)
+                self._defer(record_id)
+            else:
+                self._tool_records.discard(record_id)
+            return
         ids = [record_id] if record_id else list(self.records)
-        if record_id:
-            # A late tail has no terminal of its own; the next one completes it.
-            ids += [tail for tail in self._tails.values() if tail in self.records and tail != record_id]
         for identity in ids:
+            pending = self._deferred.pop(identity, None)
+            if pending is not None:
+                pending.cancel()
             entry = self.records.get(identity)
             if not entry:
                 self._tool_records.discard(identity)
                 continue
-            base = entry["base"]
-            inherited = self._finished.get(base) if base != identity else None
-            skip = inherited == "excluded" if inherited else excluded
-            if not skip:
-                # Current scope selects local-only storage for Agent/tool replies.
-                # Future sync belongs at this policy boundary, with matching
-                # protocol/consent/deletion tests; keep producer origin truthful.
-                proof = entry["proof"]
-                if inherited:
-                    proof = {**proof, "origin": inherited}
-                elif identity in self._tool_records and proof["origin"] in ("chat", "proactive"):
-                    proof = {**proof, "origin": "tool"}
-                local_only = proof["origin"] in ("agent", "tool")
-                try:
-                    if local_only:
-                        saved = await save_local_reply(lanlan_name, "".join(entry["chunks"]), proof)
-                    else:
-                        saved = await save_original(lanlan_name, "assistant", "".join(entry["chunks"]), record_id=identity,
-                                                    original_time=entry["proof"]["originalTime"])
-                except Exception:
-                    get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
-                                     source_reason="local_save_failed" if local_only else "save_failed", outcome="error")
-                    print("[chat-sync] original_save_failed")
-                    continue
-                get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
-                                 source_reason=("local_saved" if saved else "local_save_unavailable") if local_only
-                                 else ("saved" if saved else "save_unavailable"), outcome="success" if saved else "error")
-            else:
-                get_trace().emit("assistant_source_finished", message_id=identity, source_origin=entry["proof"]["origin"],
-                                 source_reason="terminal_excluded", outcome="success")
-            self.records.pop(identity, None)
-            self._tool_records.discard(identity)
-            if inherited:
-                self._tails.pop(base, None)
-            else:
-                self._finished[base] = "excluded" if skip else proof["origin"]
-                while len(self._finished) > self._FINISHED_LIMIT:
-                    self._finished.pop(next(iter(self._finished)))
+            # A terminated reply keeps its own terminal's exclusion decision.
+            await self._seal(lanlan_name, identity, entry["terminal"][1] if "terminal" in entry else excluded)
         if record_id is None:
             self._tool_records.intersection_update(self.records)
         self._traced_exclusions = {key for key in self._traced_exclusions
                                    if record_id is not None and key[0] not in (None, record_id)}
 
+    async def _seal(self, lanlan_name, identity, excluded):
+        entry = self.records[identity]
+        if not excluded:
+            # Current scope selects local-only storage for Agent/tool replies.
+            # Future sync belongs at this policy boundary, with matching
+            # protocol/consent/deletion tests; keep producer origin truthful.
+            proof = entry["proof"]
+            if identity in self._tool_records and proof["origin"] in ("chat", "proactive"):
+                proof = {**proof, "origin": "tool"}
+            local_only = proof["origin"] in ("agent", "tool")
+            try:
+                if local_only:
+                    saved = await save_local_reply(lanlan_name, "".join(entry["chunks"]), proof)
+                else:
+                    saved = await save_original(lanlan_name, "assistant", "".join(entry["chunks"]), record_id=identity,
+                                                original_time=entry["proof"]["originalTime"])
+            except Exception:
+                get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
+                                 source_reason="local_save_failed" if local_only else "save_failed", outcome="error")
+                print("[chat-sync] original_save_failed")
+                return
+            get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
+                             source_reason=("local_saved" if saved else "local_save_unavailable") if local_only
+                             else ("saved" if saved else "save_unavailable"), outcome="success" if saved else "error")
+        else:
+            get_trace().emit("assistant_source_finished", message_id=identity, source_origin=entry["proof"]["origin"],
+                             source_reason="terminal_excluded", outcome="success")
+        self.records.pop(identity, None)
+        self._tool_records.discard(identity)
+        self._sealed[identity] = None
+        while len(self._sealed) > self._SEALED_LIMIT:
+            self._sealed.pop(next(iter(self._sealed)))
+
+    async def flush_terminated(self, lanlan_name):
+        """Seal every reply already past its terminal now, e.g. before shutdown."""
+        for identity in [key for key, entry in self.records.items() if "terminal" in entry]:
+            pending = self._deferred.pop(identity, None)
+            if pending is not None:
+                pending.cancel()
+            await self._seal(lanlan_name, identity, self.records[identity]["terminal"][1])
+
     def discard(self):
-        """Drop temporary output when the existing persistence path discards it."""
-        self.records.clear()
+        """Drop temporary output when the existing persistence path discards it.
+
+        A reply already past its terminal is complete and keeps its pending seal.
+        """
+        self.records = {identity: entry for identity, entry in self.records.items() if "terminal" in entry}
         self._traced_exclusions.clear()
-        self._tool_records.clear()
-        self._finished.clear()
-        self._tails.clear()
+        self._tool_records.intersection_update(self.records)
+        self._sealed.clear()
