@@ -3187,11 +3187,14 @@ async def test_pull_deadline_never_cancels_started_page_commit(tmp_path, monkeyp
     entered, release = threading.Event(), threading.Event()
     original = runtime._commit_bound
     hints = []
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    network_budget = 60
 
     def slow_commit(binding, operation, *args, **kwargs):
         if operation == runtime.ledger.apply_changes:
             entered.set()
-            assert release.wait(2)
+            assert release.wait(5)
         return original(binding, operation, *args, **kwargs)
 
     async def notify(uid):
@@ -3199,11 +3202,17 @@ async def test_pull_deadline_never_cancels_started_page_commit(tmp_path, monkeyp
 
     runtime.history_changed = notify
     monkeypatch.setattr(runtime, "_commit_bound", slow_commit)
-    monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", .1)
+    # Setup and worker admission must finish before this test expires the budget.
+    # Windows SQLite/witness checks need not fit an artificial 100 ms deadline.
+    monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", network_budget)
     task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
     try:
-        assert await asyncio.to_thread(entered.wait, 1)
-        await asyncio.sleep(.15)
+        assert await asyncio.to_thread(entered.wait, 5)
+        # Expire the actual loop clock only after the commit owns its worker.
+        # Two turns also run any incorrectly retained outer timeout callback.
+        monkeypatch.setattr(loop, "time", lambda: real_time() + network_budget + 1)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
         assert not task.done() and runtime.ledger.cursor(DOMAIN) == 0
         release.set()
         if has_more:
@@ -3217,6 +3226,7 @@ async def test_pull_deadline_never_cancels_started_page_commit(tmp_path, monkeyp
         assert runtime.ledger.cursor(DOMAIN) == 1
         assert sum(request.url.path.endswith("/changes") for request in service.requests) == 1
     finally:
+        monkeypatch.setattr(loop, "time", real_time)
         release.set()
         await asyncio.gather(task, return_exceptions=True)
         await runtime.close()
