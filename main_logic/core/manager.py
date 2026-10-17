@@ -46,6 +46,7 @@ from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .turn_context import TurnContextMixin
 from .takeover import TakeoverMixin, TakeoverToken, HoldToken
 
 
@@ -65,6 +66,7 @@ class LLMSessionManager(
     StreamingMixin,
     NotifyMixin,
     TakeoverMixin,
+    TurnContextMixin,
 ):
     # Ceiling for a missing voice_play_end before the playback gate self-heals:
     # above a normal single reply, but recovers a dropped end-signal reasonably
@@ -201,6 +203,10 @@ class LLMSessionManager(
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
         self.session_start_time = None
+        # When the conversation began: set by a real session start, kept by a
+        # hot swap (which only renews the provider session). Passive memory
+        # recall leaves out facts written since (their turns are in context).
+        self._turn_context_conversation_started_at = None
         self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None

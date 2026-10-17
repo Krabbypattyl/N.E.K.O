@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh all eight locale caches for chat sync settings and character quota controls.
-    const LOCALE_VERSION = '2026-10-16-chat-sync-cloud-delete-confirm';
+    // Merge main into chat sync: refresh all eight locale caches for chat sync settings and main's passive-turn context copy.
+    const LOCALE_VERSION = '2026-10-17-chat-sync-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
