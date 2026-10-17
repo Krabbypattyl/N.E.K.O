@@ -240,7 +240,7 @@ def test_card_save_freezes_known_sync_choice_before_async_work(enabled, loading)
 
 
 @pytest.mark.parametrize('is_new,binding,choice,expected', [
-    (True, None, None, True), (False, None, None, True),
+    (True, None, None, False), (False, None, None, False),
     (False, {'enabled': False}, False, False), (False, None, False, False),
     (False, {'enabled': False, 'bindingId': None, 'generation': 1}, True, True),
 ])

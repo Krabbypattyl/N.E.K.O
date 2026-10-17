@@ -110,6 +110,17 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
     }]
 
 
+@pytest.mark.parametrize('choices,expected', [({}, False), ({UID: False}, False), ({UID: True}, True)])
+def test_status_defaults_an_unconfigured_role_to_off(local_client, choices, expected):
+    """New and existing roles without a saved choice stay Off until the user opts in."""
+    from unittest.mock import AsyncMock
+    client, runtime = local_client
+    runtime.status = AsyncMock(return_value={'bindings': [], 'syncChoices': choices, 'syncPendingChoices': {}})
+    role = client.get('/api/chat-sync/status').json()['characters'][0]
+    assert role['syncEnabled'] is expected and role['syncPending'] is False
+    assert role['binding'] is None
+
+
 def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client):
     """Reopening an editor cannot turn a pending explicit resume into a new Off save."""
     from unittest.mock import AsyncMock

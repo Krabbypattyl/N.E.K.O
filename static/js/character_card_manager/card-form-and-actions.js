@@ -984,7 +984,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         toggle.id = form.id + '-chat-sync';
         title.htmlFor = toggle.id;
         toggle.name = 'chat_sync_enabled';
-        toggle.checked = true;
+        toggle.checked = false;
         toggle.disabled = !isNew;
         const track = document.createElement('span');
         track.className = 'character-chat-sync-track';

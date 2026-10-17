@@ -156,7 +156,9 @@ async def status(runtime: Runtime):
         # Pending On is the saved user choice even before online owner checks
         # activate a paused binding. Editing the card must preserve that choice.
         character["syncPending"] = bool(pending_choices.get(character["characterSyncId"]))
-        character["syncEnabled"] = (bool(binding["enabled"]) or character["syncPending"]) if paused_or_bound else choices.get(character["characterSyncId"], True)
+        # A role without a saved choice is Off, matching cloud saves: only an
+        # explicit checked save grants sync.
+        character["syncEnabled"] = (bool(binding["enabled"]) or character["syncPending"]) if paused_or_bound else choices.get(character["characterSyncId"], False)
         # Admission errors suspend cloud work, not the user's saved consent.
         # Only a retired identity revokes that choice; a card save during a
         # temporary policy failure must not silently turn synchronization off.

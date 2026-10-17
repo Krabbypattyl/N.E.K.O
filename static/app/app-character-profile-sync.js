@@ -245,7 +245,7 @@
         if (typeof role.syncEnabled === 'boolean') return role.syncEnabled;
         // A first grant still being issued is pending, not an explicit user pause.
         if (role.binding && (role.binding.bindingId !== null || role.binding.generation > 1)) return !!role.binding.enabled;
-        return role.syncEnabled !== false;
+        return role.syncEnabled === true;
     }
 
     async function afterCardSave(name, enabled, isNew) {
