@@ -833,6 +833,23 @@ async def character_uid_for(lanlan_name, config_manager=None):
     return get_character_uid(data.get("猫娘", {}).get(lanlan_name, {}))
 
 
+def _saved_capture_consent(directory, uid):
+    """Read existing local capture consent without admitting a quarantined writer."""
+    try:
+        path = (Path(directory) / "state.sqlite3").resolve()
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+            # Match normal capture eligibility, including retained paused bindings.
+            # This grants only local outage retention, never writer or cloud authority.
+            return bool(conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM sync_bindings WHERE character_uid=?) OR "
+                "EXISTS(SELECT 1 FROM sync_choices WHERE character_uid=? AND enabled=1)",
+                (uid, uid),
+            ).fetchone()[0])
+    except (OSError, sqlite3.Error):
+        # Read-only mode cannot create a missing store or turn unknown state into On.
+        return False
+
+
 async def save_original(lanlan_name, role, text, *, record_id=None, original_time=None, config_manager=None,
                         character_uid=None):
     """Commit a new accepted original before best-effort ledger delivery, without HTTP."""
@@ -865,6 +882,8 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
         await asyncio.to_thread(source.commit, binding["owner_id"], uid, record_id, original)
     except WriterQuarantined:
         directory = runtime.state.path.parent if 'runtime' in locals() else Path(manager.app_docs_dir) / 'chat_sync'
+        if not await asyncio.to_thread(_saved_capture_consent, directory, uid):
+            return None
         try:
             await asyncio.to_thread(save_outage, directory, uid, record_id, original)
         except (OSError, sqlite3.Error, ValueError):

@@ -192,25 +192,132 @@ def test_failed_sql_constraint_rolls_back_without_losing_writer_authority(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_source_primary_save_continues_when_witness_is_corrupt(tmp_path, monkeypatch):
+@pytest.mark.parametrize('runtime_available', [True, False])
+async def test_source_primary_save_continues_when_witness_is_corrupt(tmp_path, monkeypatch, runtime_available):
     from types import SimpleNamespace
     from services.chat_sync.runtime import DesktopChatSyncRuntime
     from services.chat_sync.source import save_original
     from services.chat_sync import runtime as chat_sync_runtime
     async def session():
         return {'logged_in': False}
-    runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json')
+    runtime = DesktopChatSyncRuntime(tmp_path / 'chat_sync', session, witness_path=tmp_path / 'device' / 'writer.json')
+    runtime.state.save_choice('a' * 32, True)
     runtime.writer.path.write_text('{broken')
     async def get_runtime(_manager):
+        if not runtime_available:
+            runtime.writer.check()
         return runtime
     async def characters():
         return {'猫娘': {'Neko': {'_reserved': {'character_uid': 'a' * 32}}}}
     monkeypatch.setattr(chat_sync_runtime, 'get_desktop_chat_sync_runtime', get_runtime)
-    manager = SimpleNamespace(aload_characters=characters)
+    manager = SimpleNamespace(aload_characters=characters, app_docs_dir=tmp_path)
     identity = await save_original('Neko', 'user', 'local continues', config_manager=manager)
     assert identity is not None
     with sqlite3.connect(runtime.state.path.parent / 'outage.sqlite3') as conn:
         assert conn.execute('SELECT record_id FROM outage_originals').fetchone()[0] == identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('choice', ['unset', 'off', 'other_role_on'])
+async def test_quarantined_source_does_not_capture_without_role_consent(tmp_path, monkeypatch, choice):
+    from types import SimpleNamespace
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import save_original
+    from services.chat_sync import runtime as chat_sync_runtime
+
+    async def session():
+        return {'logged_in': False}
+
+    runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json')
+    if choice == 'off':
+        runtime.state.save_choice('a' * 32, False)
+    elif choice == 'other_role_on':
+        runtime.state.save_choice('b' * 32, True)
+    state_before = runtime.state.path.read_bytes()
+    runtime.writer.path.write_text('{broken')
+
+    async def get_runtime(_manager):
+        return runtime
+
+    monkeypatch.setattr(chat_sync_runtime, 'get_desktop_chat_sync_runtime', get_runtime)
+    identity = await save_original('Neko', 'user', 'local memory only', config_manager=SimpleNamespace(),
+                                   character_uid='a' * 32)
+    assert identity is None
+    assert not (runtime.state.path.parent / 'outage.sqlite3').exists()
+    assert runtime.state.path.read_bytes() == state_before
+    assert runtime.writer.path.read_text(encoding='utf-8') == '{broken'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paused', [False, True])
+async def test_quarantined_source_retains_bound_role_local_recovery(tmp_path, monkeypatch, paused):
+    from types import SimpleNamespace
+    from services.chat_sync.ledger import ChatDomain
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import save_original
+    from services.chat_sync import runtime as chat_sync_runtime
+
+    async def session():
+        return {'logged_in': False}
+
+    runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json')
+    domain = ChatDomain('12345678-1234-4234-8234-123456789abc', 'a' * 32)
+    prepared = runtime.state.prepare_binding(domain)
+    runtime.state.activate(prepared, 'b' * 32)
+    assert runtime.state.choices() == {}
+    if paused:
+        runtime.state.pause(domain.character_uid)
+    state_before = runtime.state.path.read_bytes()
+    runtime.writer.path.write_text('{broken')
+
+    async def get_runtime(_manager):
+        return runtime
+
+    monkeypatch.setattr(chat_sync_runtime, 'get_desktop_chat_sync_runtime', get_runtime)
+    identity = await save_original('Neko', 'user', 'retained locally', config_manager=SimpleNamespace(),
+                                   character_uid=domain.character_uid)
+    assert identity is not None
+    with sqlite3.connect(runtime.state.path.parent / 'outage.sqlite3') as conn:
+        row = conn.execute('SELECT uid,record_id,original FROM outage_originals').fetchone()
+    assert row[:2] == (domain.character_uid, identity)
+    assert json.loads(row[2])['text'] == 'retained locally'
+    assert runtime.state.path.read_bytes() == state_before
+    assert runtime.writer.path.read_text(encoding='utf-8') == '{broken'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state_condition', ['missing', 'corrupt'])
+async def test_quarantined_source_fails_closed_when_saved_consent_is_unreadable(tmp_path, monkeypatch, state_condition):
+    from types import SimpleNamespace
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import save_original
+    from services.chat_sync import runtime as chat_sync_runtime
+
+    async def session():
+        return {'logged_in': False}
+
+    runtime = DesktopChatSyncRuntime(tmp_path / 'chat_sync', session, witness_path=tmp_path / 'device' / 'writer.json')
+    runtime.state.save_choice('a' * 32, True)
+    runtime.writer.path.write_text('{broken')
+    if state_condition == 'missing':
+        runtime.state.path.rename(tmp_path / 'missing-state.sqlite3')
+    else:
+        runtime.state.path.write_bytes(b'not a SQLite database')
+
+    async def get_runtime(_manager):
+        runtime.writer.check()
+        return runtime
+
+    monkeypatch.setattr(chat_sync_runtime, 'get_desktop_chat_sync_runtime', get_runtime)
+    identity = await save_original('Neko', 'user', 'local memory only',
+                                   config_manager=SimpleNamespace(app_docs_dir=tmp_path), character_uid='a' * 32)
+    assert identity is None
+    assert not (runtime.state.path.parent / 'outage.sqlite3').exists()
+    if state_condition == 'missing':
+        assert not runtime.state.path.exists()
+    else:
+        assert runtime.state.path.read_bytes() == b'not a SQLite database'
+    assert runtime.writer.path.read_text(encoding='utf-8') == '{broken'
 
 
 @pytest.mark.asyncio
