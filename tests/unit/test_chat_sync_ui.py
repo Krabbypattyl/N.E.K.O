@@ -1245,6 +1245,11 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
     from playwright.sync_api import sync_playwright
 
     template = (ROOT / ("templates/chat.html" if kind == "chat" else "templates/character_card_manager.html")).read_text(encoding="utf-8")
+    stylesheets = re.findall(r'<link rel="stylesheet" href="([^"?]+)', template)
+    # static/react/ is a gitignored vite output; build-desktop.yml rebuilds and
+    # checks it. Without the built bundle this inheritance check cannot run.
+    if any(href.startswith("/static/react/") and not (ROOT / href.lstrip("/")).is_file() for href in stylesheets):
+        pytest.skip("react chat bundle not built (static/react/ is a gitignored vite output)")
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
@@ -1254,7 +1259,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             page.set_content(('<body class="electron-chat-window subtitle-web-host yui-guide-chat-buttons-disabled">' if kind == 'chat' else '<body>') +
                              '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div>'
                              '<button id="chatSyncButton">Sync</button></body>')
-            for href in re.findall(r'<link rel="stylesheet" href="([^"?]+)', template):
+            for href in stylesheets:
                 page.add_style_tag(path=str(ROOT / href.lstrip("/")))
             for css in re.findall(r"<style>(.*?)</style>", template, re.DOTALL):
                 page.add_style_tag(content=css)

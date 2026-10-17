@@ -25,6 +25,10 @@ from services.chat_sync_protocol import encode_chat_original
 from services.chat_sync_source import ChatOriginalSource
 
 
+# Lifecycle, cancellation and recovery scenarios with many durable SQLite
+# commits; they run in the runtime shard instead of the main xdist gate.
+pytestmark = pytest.mark.runtime
+
 OWNER = "00000000-0000-4000-8000-000000000001"
 OTHER_OWNER = "00000000-0000-4000-8000-000000000002"
 UID = "a" * 32
@@ -2339,7 +2343,8 @@ def test_saved_session_commit_guard_shares_the_actual_logout_file_lock(tmp_path,
             pytest.fail("A completed logout allowed an old response commit")
 
 
-@pytest.mark.parametrize("body", [b"x" * (4 * 1024 * 1024 + 1), b"not-json", b"[" * 2000 + b"]" * 2000])
+@pytest.mark.parametrize("body", [b"x" * (4 * 1024 * 1024 + 1), b"not-json", b"[" * 2000 + b"]" * 2000],
+                         ids=["oversized", "malformed", "deeply-nested"])
 def test_http_response_is_bounded_safely_parsed_and_always_closed(tmp_path, body):
     """Oversized, malformed and deeply nested service bodies never reach ledger state."""
     async def scenario():
@@ -2842,9 +2847,10 @@ def test_sqlite_worker_failure_is_bounded_observed_and_private(tmp_path, monkeyp
             raise sqlite3.OperationalError("synthetic private path and SQL")
 
         monkeypatch.setattr(runtime.scheduler, "arm_wake", failed_arm)
-        monkeypatch.setattr(module, "_LOCAL_WAKE_SECONDS", 0.01)
+        # Stay above the Windows event-loop clock resolution (~15.6 ms).
+        monkeypatch.setattr(module, "_LOCAL_WAKE_SECONDS", 0.05)
         runtime.start_scheduler()
-        await asyncio.sleep(0.035)
+        await asyncio.sleep(0.1)
         assert 1 <= calls <= 5
         assert not runtime._scheduler_task.done()
         await runtime.close()
@@ -2978,7 +2984,7 @@ async def test_pull_network_budget_releases_stalled_get(tmp_path, monkeypatch, e
     try:
         with pytest.raises(ValueError, match="^chat_sync_pull_timeout$"):
             await asyncio.wait_for(runtime._channel_pass(UID, "pull", manual=True), .5)
-        assert cancelled.is_set()
+        await asyncio.wait_for(cancelled.wait(), 1)
         assert not runtime._pull_lock.locked()
         assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_pull_timeout"
         assert runtime.ledger.cursor(DOMAIN) == 0
@@ -3246,7 +3252,8 @@ async def test_pull_timeout_leaves_inactive_role_until_it_becomes_current(tmp_pa
         assert runtime.scheduler.last_error(other.key()) is None
         assert not runtime._pull_lock.locked()
         selected[0] = OTHER_UID
-        await asyncio.wait_for(runtime._automatic_channel("pull", presence), 1)
+        monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", 5)
+        await asyncio.wait_for(runtime._automatic_channel("pull", presence), 6)
         assert runtime.ledger.cursor(other) == 1
         assert runtime.ledger.cursor(DOMAIN) == 0
     finally:
