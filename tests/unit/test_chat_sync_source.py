@@ -1023,6 +1023,7 @@ async def test_transcript_after_terminal_joins_the_same_original_within_grace(mo
     """Gemini text after turn_complete is saved with its reply, under the bubble's own ID."""
     remote = AsyncMock(return_value="5" * 32)
     monkeypatch.setattr(source_module, "save_original", remote)
+    monkeypatch.setattr(source_module, "character_uid_for", AsyncMock(return_value=UID))
     proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
     buffer = AssistantOriginalBuffer(tail_grace=0.05)
     buffer.append({"chat_original_source": proof, "text": "first half"})
@@ -1034,7 +1035,7 @@ async def test_transcript_after_terminal_joins_the_same_original_within_grace(mo
     buffer.discard()
     await asyncio.sleep(0.2)
     remote.assert_awaited_once_with("Lan", "assistant", "first half late tail",
-                                    record_id=proof["recordId"], original_time="123")
+                                    record_id=proof["recordId"], original_time="123", character_uid=UID)
     # Text after sealing cannot reuse the immutable identity, even after a discard.
     buffer.discard()
     buffer.append({"chat_original_source": proof, "text": " too late"})
@@ -1050,7 +1051,7 @@ async def test_chunk_during_save_is_dropped_and_failed_save_stays_retryable(monk
     buffer = AssistantOriginalBuffer()
     calls = []
 
-    async def save(name, role, text, *, record_id, original_time):
+    async def save(name, role, text, *, record_id, original_time, character_uid=None):
         calls.append(text)
         buffer.append({"chat_original_source": proof, "text": " mid-save"})
         if len(calls) == 1:
@@ -1067,17 +1068,56 @@ async def test_chunk_during_save_is_dropped_and_failed_save_stays_retryable(monk
 
 
 @pytest.mark.asyncio
+async def test_rename_during_grace_still_saves_under_the_pinned_uid(monkeypatch):
+    """The UID is resolved at the terminal, so a rename before the seal loses nothing."""
+    remote = AsyncMock(return_value="5" * 32)
+    monkeypatch.setattr(source_module, "save_original", remote)
+    resolve = AsyncMock(return_value=UID)
+    monkeypatch.setattr(source_module, "character_uid_for", resolve)
+    proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
+    buffer = AssistantOriginalBuffer(tail_grace=30)
+    buffer.append({"chat_original_source": proof, "text": "reply"})
+    await buffer.finish("Old name", proof["recordId"])
+    # After a rename the old name resolves to nothing.
+    resolve.return_value = None
+    await buffer.flush_terminated()
+    assert remote.await_args.kwargs["character_uid"] == UID
+    resolve.assert_awaited_once_with("Old name")
+
+
+@pytest.mark.asyncio
+async def test_clear_snapshot_first_saves_only_that_characters_waiting_replies(monkeypatch):
+    """A clear right after a reply includes it instead of letting it upload afterwards."""
+    remote = AsyncMock(return_value="x")
+    monkeypatch.setattr(source_module, "save_original", remote)
+    uids = {"Lan": UID, "Other": "b" * 32}
+    monkeypatch.setattr(source_module, "character_uid_for", AsyncMock(side_effect=lambda name: uids[name]))
+    buffer = AssistantOriginalBuffer(tail_grace=30)
+    mine = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
+    other = {"recordId": "6" * 32, "originalTime": "124", "origin": "chat"}
+    buffer.append({"chat_original_source": mine, "text": "mine"})
+    buffer.append({"chat_original_source": other, "text": "other"})
+    await buffer.finish("Lan", mine["recordId"])
+    await buffer.finish("Other", other["recordId"])
+    await source_module.flush_terminated_originals(UID)
+    assert [call.args[2] for call in remote.await_args_list] == ["mine"]
+    assert list(buffer.records) == [other["recordId"]]
+    await buffer.flush_terminated()
+
+
+@pytest.mark.asyncio
 async def test_repeated_terminal_keeps_the_stricter_exclusion(monkeypatch):
     """A later ordinary terminal cannot undo an earlier exclusion of the same reply."""
     remote = AsyncMock(return_value="5" * 32)
     monkeypatch.setattr(source_module, "save_original", remote)
+    monkeypatch.setattr(source_module, "character_uid_for", AsyncMock(return_value=UID))
     proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
     buffer = AssistantOriginalBuffer(tail_grace=30)
     buffer.append({"chat_original_source": proof, "text": "avatar"})
     await buffer.finish("Lan", proof["recordId"], excluded=True)
     buffer.append({"chat_original_source": proof, "text": " late"})
     await buffer.finish("Lan", proof["recordId"])
-    await buffer.flush_terminated("Lan")
+    await buffer.flush_terminated()
     remote.assert_not_awaited()
     assert buffer.records == {}
 
@@ -1089,6 +1129,7 @@ async def test_deferred_seal_keeps_local_only_and_excluded_decisions(monkeypatch
     remote, local = AsyncMock(return_value="x"), AsyncMock(return_value="x")
     monkeypatch.setattr(source_module, "save_original", remote)
     monkeypatch.setattr(source_module, "save_local_reply", local)
+    monkeypatch.setattr(source_module, "character_uid_for", AsyncMock(return_value=UID))
     proof = {"recordId": "5" * 32, "originalTime": "123", "origin": "chat"}
     buffer = AssistantOriginalBuffer(tail_grace=30)
     buffer.append({"chat_original_source": proof, "text": "reply"})
@@ -1097,7 +1138,7 @@ async def test_deferred_seal_keeps_local_only_and_excluded_decisions(monkeypatch
     await buffer.finish("Lan", proof["recordId"], excluded=excluded)
     buffer.append({"chat_original_source": proof, "text": " late"})
     # Shutdown seals completed replies at once instead of waiting out the grace.
-    await buffer.flush_terminated("Lan")
+    await buffer.flush_terminated()
     remote.assert_not_awaited()
     assert [call.args[1] for call in local.await_args_list] == (["reply late"] if marked_tool else [])
     assert buffer.records == {}

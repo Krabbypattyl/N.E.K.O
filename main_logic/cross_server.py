@@ -1575,7 +1575,7 @@ async def run_sync_connector(
     finally:
         # Completed replies may still wait out their late-transcript grace.
         try:
-            await original_output.flush_terminated(lanlan_name)
+            await original_output.flush_terminated()
         except Exception:
             print("[chat-sync] original_save_failed")
         # cleanup 顺序：先 cancel maintainer + reader（停止新建连接 / 读循环），

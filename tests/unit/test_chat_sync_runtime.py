@@ -223,6 +223,26 @@ async def test_local_only_reply_history_delegates_without_auth_or_sync_work(tmp_
 
 
 @pytest.mark.asyncio
+async def test_clear_saves_replies_waiting_out_their_grace_before_its_snapshot(tmp_path, monkeypatch):
+    """A reply that just finished is saved first, so the fixed clear snapshot includes it."""
+    from unittest.mock import AsyncMock
+    import services.chat_sync_source as source
+
+    runtime, _, _ = setup_runtime(tmp_path)
+    events = []
+    monkeypatch.setattr(source, "flush_terminated_originals",
+                        AsyncMock(side_effect=lambda uid: events.append(("flush", uid))))
+    monkeypatch.setattr(source, "local_reply_ids", AsyncMock(return_value=[]), raising=False)
+    monkeypatch.setattr(source, "known_source_ids", AsyncMock(return_value=[]))
+    runtime.history = AsyncMock(side_effect=lambda uid: events.append(("snapshot", uid)) or [])
+    try:
+        await runtime.clear(UID)
+        assert events == [("flush", UID), ("snapshot", UID)]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("has_originals", [False, True])
 async def test_clear_keeps_local_reply_ids_outside_canonical_deletion(tmp_path, monkeypatch, has_originals):
     """Local cleanup runs after canonical deletion, including an empty sync boundary."""

@@ -24,6 +24,7 @@ import sqlite3
 from services.chat_sync_writer import store_connection
 import time
 from uuid import uuid4
+import weakref
 
 from services.chat_sync_ledger import ChatDomain, ChatOriginal, SourceLocator
 from services.chat_sync_protocol import MAX_ORIGIN_SEQ, decode_chat_original, encode_chat_original
@@ -822,16 +823,25 @@ async def purge_source_originals(runtime, character_uid, message_ids):
         await asyncio.to_thread(source.purge, binding["owner_id"] if binding else None, character_uid, message_ids)
 
 
-async def save_original(lanlan_name, role, text, *, record_id=None, original_time=None, config_manager=None):
-    """Commit a new accepted original before best-effort ledger delivery, without HTTP."""
-    from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+async def character_uid_for(lanlan_name, config_manager=None):
+    """Resolve the saved UID behind a character name at this moment."""
     from utils.config_manager import get_config_manager
     from utils.config_manager.reserved_schema import get_character_uid
 
     manager = config_manager or get_config_manager()
     data = await manager.aload_characters()
-    profile = data.get("猫娘", {}).get(lanlan_name, {})
-    uid = get_character_uid(profile)
+    return get_character_uid(data.get("猫娘", {}).get(lanlan_name, {}))
+
+
+async def save_original(lanlan_name, role, text, *, record_id=None, original_time=None, config_manager=None,
+                        character_uid=None):
+    """Commit a new accepted original before best-effort ledger delivery, without HTTP."""
+    from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+    from utils.config_manager import get_config_manager
+
+    manager = config_manager or get_config_manager()
+    # A UID pinned at the reply's terminal survives a later rename.
+    uid = character_uid or await character_uid_for(lanlan_name, manager)
     if not uid:
         return None
     record_id = record_id or uuid4().hex
@@ -896,15 +906,13 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
     return record_id
 
 
-async def save_local_reply(lanlan_name, text, proof, *, config_manager=None):
+async def save_local_reply(lanlan_name, text, proof, *, config_manager=None, character_uid=None):
     """Persist newly emitted local-only bytes under the actual local role UID."""
     from services.chat_sync_runtime import get_desktop_chat_sync_runtime
     from utils.config_manager import get_config_manager
-    from utils.config_manager.reserved_schema import get_character_uid
 
     manager = config_manager or get_config_manager()
-    data = await manager.aload_characters()
-    uid = get_character_uid(data.get("猫娘", {}).get(lanlan_name, {}))
+    uid = character_uid or await character_uid_for(lanlan_name, manager)
     if not uid:
         return None
     runtime = await get_desktop_chat_sync_runtime(manager)
@@ -964,6 +972,15 @@ def mark_tool_turn(manager, turn_id):
 # Sealing waits slightly longer so the saved original holds the whole reply.
 LATE_TEXT_GRACE_SECONDS = 3.5
 
+# Live buffers, so a clear can first save replies still waiting out their grace.
+_LIVE_BUFFERS = weakref.WeakSet()
+
+
+async def flush_terminated_originals(character_uid):
+    """Save one character's completed replies before a fixed deletion snapshot."""
+    for buffer in list(_LIVE_BUFFERS):
+        await buffer.flush_terminated(character_uid=character_uid)
+
 
 class AssistantOriginalBuffer:
     """Collect emitted text per stable message ID; persist only at final boundaries."""
@@ -980,6 +997,7 @@ class AssistantOriginalBuffer:
         # Record ID -> pending deferred seal after its terminal.
         self._deferred = {}
         self._sealed = {}
+        _LIVE_BUFFERS.add(self)
 
     def mark_tool(self, record_id):
         """Retain late tool evidence even when ordinary chunks arrived first."""
@@ -1045,22 +1063,27 @@ class AssistantOriginalBuffer:
     async def _seal_later(self, record_id):
         await asyncio.sleep(self._tail_grace)
         self._deferred.pop(record_id, None)
-        entry = self.records.get(record_id)
-        if entry is not None:
-            lanlan_name, excluded = entry["terminal"]
-            await self._seal(lanlan_name, record_id, excluded)
+        if record_id in self.records:
+            await self._seal(record_id)
 
     async def finish(self, lanlan_name, record_id=None, *, excluded=False):
         """Persist only the matching completed original, never normalized projections."""
         if record_id is not None and self._tail_grace > 0:
-            if record_id in self.records:
-                entry = self.records[record_id]
-                # A repeated terminal can only make the reply stricter.
-                excluded = excluded or entry.get("terminal", (None, False))[1]
-                entry["terminal"] = (lanlan_name, excluded)
-                self._defer(record_id)
-            else:
+            if record_id not in self.records:
                 self._tool_records.discard(record_id)
+                return
+            previous = self.records[record_id].get("terminal")
+            try:
+                uid = previous["uid"] if previous else await character_uid_for(lanlan_name)
+            except Exception:
+                uid = None
+            entry = self.records.get(record_id)
+            if entry is None:
+                return
+            # A repeated terminal can only make the reply stricter.
+            entry["terminal"] = {"name": lanlan_name, "uid": uid,
+                                 "excluded": excluded or bool(previous and previous["excluded"])}
+            self._defer(record_id)
             return
         ids = [record_id] if record_id else list(self.records)
         for identity in ids:
@@ -1071,15 +1094,19 @@ class AssistantOriginalBuffer:
             if not entry:
                 self._tool_records.discard(identity)
                 continue
-            # A terminated reply keeps its own terminal's exclusion decision.
-            await self._seal(lanlan_name, identity, entry["terminal"][1] if "terminal" in entry else excluded)
+            if "terminal" not in entry:
+                entry["terminal"] = {"name": lanlan_name, "uid": None, "excluded": excluded}
+            # A terminated reply keeps its own terminal's decision and pinned UID.
+            await self._seal(identity)
         if record_id is None:
             self._tool_records.intersection_update(self.records)
         self._traced_exclusions = {key for key in self._traced_exclusions
                                    if record_id is not None and key[0] not in (None, record_id)}
 
-    async def _seal(self, lanlan_name, identity, excluded):
+    async def _seal(self, identity):
         entry = self.records[identity]
+        terminal = entry["terminal"]
+        lanlan_name, excluded = terminal["name"], terminal["excluded"]
         # Close the identity before awaiting: a chunk arriving mid-save is
         # dropped visibly instead of joining an entry that is about to vanish.
         self._sealed[identity] = None
@@ -1091,12 +1118,14 @@ class AssistantOriginalBuffer:
             if identity in self._tool_records and proof["origin"] in ("chat", "proactive"):
                 proof = {**proof, "origin": "tool"}
             local_only = proof["origin"] in ("agent", "tool")
+            # A UID pinned at the terminal survives a rename before this seal.
+            pinned = {"character_uid": terminal["uid"]} if terminal["uid"] else {}
             try:
                 if local_only:
-                    saved = await save_local_reply(lanlan_name, "".join(entry["chunks"]), proof)
+                    saved = await save_local_reply(lanlan_name, "".join(entry["chunks"]), proof, **pinned)
                 else:
                     saved = await save_original(lanlan_name, "assistant", "".join(entry["chunks"]), record_id=identity,
-                                                original_time=entry["proof"]["originalTime"])
+                                                original_time=entry["proof"]["originalTime"], **pinned)
             except Exception:
                 get_trace().emit("assistant_source_finished", message_id=identity, source_origin=proof["origin"],
                                  source_reason="local_save_failed" if local_only else "save_failed", outcome="error")
@@ -1115,13 +1144,15 @@ class AssistantOriginalBuffer:
         while len(self._sealed) > self._SEALED_LIMIT:
             self._sealed.pop(next(iter(self._sealed)))
 
-    async def flush_terminated(self, lanlan_name):
-        """Seal every reply already past its terminal now, e.g. before shutdown."""
-        for identity in [key for key, entry in self.records.items() if "terminal" in entry]:
+    async def flush_terminated(self, *, character_uid=None):
+        """Seal replies already past their terminal now, e.g. before shutdown or a clear."""
+        for identity in [key for key, entry in self.records.items() if "terminal" in entry
+                         and character_uid in (None, entry["terminal"]["uid"])]:
             pending = self._deferred.pop(identity, None)
             if pending is not None:
                 pending.cancel()
-            await self._seal(lanlan_name, identity, self.records[identity]["terminal"][1])
+            if identity in self.records:
+                await self._seal(identity)
 
     def discard(self):
         """Drop temporary output when the existing persistence path discards it.

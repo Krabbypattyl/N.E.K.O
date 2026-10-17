@@ -1834,9 +1834,12 @@ class DesktopChatSyncRuntime:
 
     async def clear(self, character_uid: str) -> dict:
         """Clear known sync originals and separately erase this role's local replies."""
-        from services.chat_sync_source import clear_local_replies, known_source_ids, local_reply_ids
+        from services.chat_sync_source import clear_local_replies, flush_terminated_originals, known_source_ids, local_reply_ids
         from services.chat_sync_writer import WriterQuarantined
         from services.chat_sync_recovery import quarantined_local_ids
+        # A reply that just finished may still wait out its late-text grace;
+        # save it first so the fixed snapshot below includes it.
+        await flush_terminated_originals(character_uid)
         local_ids = await local_reply_ids(self, character_uid)
         try:
             originals = await self.history(character_uid)
