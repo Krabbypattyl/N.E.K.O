@@ -1246,10 +1246,11 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
 
     template = (ROOT / ("templates/chat.html" if kind == "chat" else "templates/character_card_manager.html")).read_text(encoding="utf-8")
     stylesheets = re.findall(r'<link rel="stylesheet" href="([^"?]+)', template)
-    # static/react/ is a gitignored vite output; build-desktop.yml rebuilds and
-    # checks it. Without the built bundle this inheritance check cannot run.
-    if any(href.startswith("/static/react/") and not (ROOT / href.lstrip("/")).is_file() for href in stylesheets):
-        pytest.skip("react chat bundle not built (static/react/ is a gitignored vite output)")
+    # static/react/ is a gitignored vite output that unit jobs never build. Its
+    # chat rules come from the plain source stylesheet, so load that instead and
+    # keep this click check running in clean CI (vendor @imports carry no gates).
+    react_source = re.sub(r"^@import[^;]*;", "", (ROOT / "frontend/react-neko-chat/src/styles.css").read_text(encoding="utf-8"),
+                          flags=re.MULTILINE)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
@@ -1260,7 +1261,11 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                              '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div>'
                              '<button id="chatSyncButton">Sync</button></body>')
             for href in stylesheets:
-                page.add_style_tag(path=str(ROOT / href.lstrip("/")))
+                built = ROOT / href.lstrip("/")
+                if href.startswith("/static/react/") and not built.is_file():
+                    page.add_style_tag(content=react_source)
+                else:
+                    page.add_style_tag(path=str(built))
             for css in re.findall(r"<style>(.*?)</style>", template, re.DOTALL):
                 page.add_style_tag(content=css)
             page.evaluate("""() => {
