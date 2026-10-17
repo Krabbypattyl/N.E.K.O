@@ -140,8 +140,7 @@ def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client)
     assert role['binding']['enabled'] is False
 
 
-@pytest.mark.parametrize('error,status', [(None, 200), ('chat_sync_login_required', 401), ('chat_sync_unavailable', 503),
-                                        ('character_quota_exceeded', 409)])
+@pytest.mark.parametrize('error,status', [(None, 200), ('chat_sync_login_required', 401), ('chat_sync_unavailable', 503)])
 def test_manual_combined_choice_run_is_local_and_exposes_real_errors(local_client, error, status):
     """The separate run route consumes existing consent and never accepts a caller-supplied owner."""
     from unittest.mock import AsyncMock
@@ -368,75 +367,16 @@ def test_browser_configuration_rejects_arbitrary_oauth_destinations(local_client
     assert runtime.calls == []
 
 
-@pytest.mark.parametrize('endpoint,body,expected', [
-    ('/cloud/character-policy', {'baseRevision': 7, 'selectedCharacterSyncIds': [UID], 'expectedOwner': OWNER}, ('select', 7, [UID], OWNER)),
-    ('/cloud/characters/' + UID + '/delete', {'baseRevision': 7, 'expectedOwner': OWNER}, ('cloud-delete', UID, 7, OWNER)),
-])
-def test_cloud_management_routes_forward_reviewed_revision_and_owner_guard_without_browser_operation(local_client, endpoint, body, expected):
-    client, runtime = local_client
-    async def select(revision, selected, *, expected_owner):
-        runtime.calls.append(('select', revision, selected, expected_owner))
-        return {'deletedCount': 1}
-    async def delete(uid, revision, *, expected_owner):
-        runtime.calls.append(('cloud-delete', uid, revision, expected_owner))
-        return {'deleted': True}
-    runtime.cloud = SimpleNamespace(select=select, delete=delete)
-    response = client.post('/api/chat-sync' + endpoint, json=body)
-    assert response.status_code == 200 and runtime.calls == [expected]
-    for bad in ({**body, 'ownerId': OWNER}, {**body, 'operationId': 'f' * 32}, {**body, 'baseRevision': True}):
-        assert client.post('/api/chat-sync' + endpoint, json=bad).status_code == 422
-    assert runtime.calls == [expected]
 
-
-def test_cloud_management_snapshot_is_one_runtime_coherent_directory(local_client):
+def test_status_and_routes_expose_no_account_character_policy(local_client):
+    """Synchronization status and routes never depend on an account policy endpoint."""
     client, runtime = local_client
-    snapshot = {'ownerId': OWNER, 'revision': 5, 'characterLimit': 3, 'characterCount': 1,
-                'requiresSelection': False, 'selectedCharacterSyncIds': [UID]}
-    async def refresh(*, force):
-        assert force
-        return snapshot
-    runtime.cloud = SimpleNamespace(refresh=refresh, directory=lambda owner: [{'characterSyncId': UID, 'displayName': 'Cloud synthetic'}],
-                                    pending_selection=lambda owner: None)
-    response = client.get('/api/chat-sync/cloud/character-policy')
+    response = client.get('/api/chat-sync/status')
     assert response.status_code == 200
-    assert response.json() == {**snapshot, 'characters': [{'characterSyncId': UID, 'displayName': 'Cloud synthetic'}], 'pendingSelection': None}
-
-
-@pytest.mark.parametrize('policy_error', [
-    'character_policy_unavailable', 'character_selection_required',
-    'character_delete_pending', 'character_not_selected',
-])
-@pytest.mark.parametrize('enabled,pending', [(True, False), (False, True), (False, False)])
-def test_cloud_policy_block_preserves_saved_card_choice(local_client, policy_error, enabled, pending):
-    """Temporary cloud admission cannot turn a nickname save into an implicit pause."""
-    client, runtime = local_client
-    original = runtime.status
-
-    async def status():
-        state = await original()
-        state['bindings'][0].update(enabled=int(enabled), cloudPolicyError=policy_error, retired=False)
-        state['syncChoices'] = {UID: enabled or pending}
-        state['syncPendingChoices'] = {UID: pending}
-        return state
-
-    runtime.status = status
-    role = client.get('/api/chat-sync/status').json()['characters'][0]
-    assert role['syncEnabled'] is (enabled or pending)
-    assert role['syncPending'] is pending
-    assert role['binding']['enabled'] is enabled
-    assert role['binding']['cloudPolicyError'] == policy_error
+    assert 'characterPolicy' not in response.json()
+    binding = response.json()['characters'][0]['binding']
+    assert 'cloudPolicyError' not in binding and 'retired' not in binding
+    assert client.get('/api/chat-sync/cloud/character-policy').status_code == 404
+    assert client.post('/api/chat-sync/cloud/character-policy', json={}).status_code == 404
+    assert client.post('/api/chat-sync/cloud/characters/' + UID + '/delete', json={}).status_code == 404
     assert runtime.calls == []
-
-
-def test_retired_cloud_binding_cannot_render_a_pending_on_as_effective_sync(local_client):
-    client, runtime = local_client
-    original = runtime.status
-    async def status():
-        state = await original()
-        state['bindings'][0].update(cloudPolicyError='character_deleted', retired=True)
-        state['syncPendingChoices'] = {UID: True}
-        return state
-    runtime.status = status
-    role = client.get('/api/chat-sync/status').json()['characters'][0]
-    assert not role['syncEnabled'] and not role['syncPending']
-    assert role['binding']['retired']

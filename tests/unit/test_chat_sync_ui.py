@@ -367,7 +367,7 @@ def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused, 
     """.replace("PAUSED", json.dumps(paused)).replace("REQUESTED_NAME", json.dumps(name)))
 
 
-@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable', 'character_quota_exceeded'])
+@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable'])
 def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error):
     """Persisted consent survives a failed manual pass without hiding a login error."""
     run_script(r"""(async()=>{
@@ -388,24 +388,10 @@ def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error)
         assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
         assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
         const content=modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':
-            ERROR==='character_quota_exceeded'?'chatSync.characterQuotaExceeded':'chatSync.initialHistoryFailed'));
+        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':'chatSync.initialHistoryFailed'));
         assert.equal(requests.filter(path=>path.endsWith('/pause')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('ERROR',json.dumps(error)))
-
-
-def test_character_quota_setup_failure_remains_visible_when_reopening_settings():
-    """A retained denied intent has a clear limit message instead of a generic pending hint."""
-    run_script(r"""(async()=>{
-        global.fetch=async()=>({ok:true,json:async()=>({characters:[{displayName:'Neko',
-            characterSyncId:'c'.repeat(32),syncSetupError:'character_quota_exceeded',syncPending:true,binding:null}]})});
-        await window.nekoChatSync.openSettings();
-        const content=body.children[0].querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-        assert.ok(content.includes('chatSync.characterQuotaExceeded'));
-        assert.equal(content.includes('chatSync.newSyncPending'),false);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
 
 
 def test_initial_default_origin_does_not_cancel_the_first_enable_click():

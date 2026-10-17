@@ -43,20 +43,9 @@ class SyntheticService:
         self.records = []
         self.deleted = []
         self.on_request = None
-        self.policy_requests = []
 
     async def request(self, request):
         """Use a real httpx request while never accepting production credentials."""
-        # Account metadata has a separate observable lane; older assertions below
-        # remain about actual registration/original/deletion requests.
-        if request.url.path.endswith('/character-policy'):
-            self.policy_requests.append(request)
-            return httpx.Response(200, json={'ownerId': self.owner, 'revision': 1, 'characterLimit': 3,
-                'characterCount': 2, 'requiresSelection': False, 'selectedCharacterSyncIds': [UID, OTHER_UID]})
-        if request.url.path.endswith('/characters'):
-            self.policy_requests.append(request)
-            return httpx.Response(200, json={'characters': [{'characterSyncId': UID, 'displayName': 'Neko'},
-                {'characterSyncId': OTHER_UID, 'displayName': 'Other'}], 'nextCursor': None})
         self.requests.append(request)
         if self.on_request is not None:
             await self.on_request(request)
@@ -1191,17 +1180,11 @@ class HistoryService(SyntheticService):
 
     async def request(self, request):
         """Keep history preview metadata separate from uploaded raw payloads."""
-        if request.url.path.endswith('/character-policy'):
-            self.policy_requests.append(request)
-            roles = getattr(self, 'directory_uids', [UID])
-            return httpx.Response(200, json={'ownerId': self.owner, 'revision': len(roles), 'characterLimit': 3,
-                'characterCount': len(roles), 'requiresSelection': False, 'selectedCharacterSyncIds': roles})
         if request.url.path == "/prototype/chat-sync/characters":
             self.requests.append(request)
             if self.on_request is not None:
                 await self.on_request(request)
-            return httpx.Response(200, json={"characters": [{"characterSyncId": uid, "displayName": "Cloud Neko"}
-                for uid in getattr(self, 'directory_uids', [UID])]})
+            return httpx.Response(200, json={"characters": [{"characterSyncId": UID, "displayName": "Cloud Neko"}]})
         return await super().request(request)
 
 
@@ -1402,7 +1385,7 @@ async def test_approved_history_resumes_after_pause_and_source_page_crash_withou
 @pytest.mark.asyncio
 async def test_history_preview_leaves_unknown_legacy_and_other_role_sources_local(tmp_path):
     """Unknown scope and legacy rows never become candidates by matching text or UID."""
-    runtime, service, _ = setup_runtime(tmp_path, HistoryService())
+    runtime, _, _ = setup_runtime(tmp_path, HistoryService())
     source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
     source.commit_unbound(UID, "1" * 32, ChatOriginal("user", "same text"))
     source.commit_unbound(UID, "2" * 32, ChatOriginal("user", "unknown scope"))
@@ -1421,8 +1404,6 @@ async def test_history_preview_leaves_unknown_legacy_and_other_role_sources_loca
     preview = await runtime.preview_history(UID, "Neko")
     assert preview["count"] == 1 and preview["unverifiedCount"] is None
     other_domain = ChatDomain(OWNER, OTHER_UID)
-    service.directory_uids = [UID, OTHER_UID]
-    await runtime.cloud.refresh(force=True)
     prepared = runtime.state.prepare_binding(other_domain)
     runtime.state.activate(prepared, BINDING)
     with pytest.raises(ValueError, match="chat_sync_history_changed"):
@@ -3264,39 +3245,6 @@ def select_runtime_current(runtime, uid=UID):
 
 
 @pytest.mark.asyncio
-async def test_cloud_admission_wait_keeps_event_loop_responsive(tmp_path, monkeypatch):
-    """A busy local policy read cannot prevent a UI task from releasing it."""
-    runtime, service, _ = setup_runtime(tmp_path)
-    entered, release = threading.Event(), threading.Event()
-    released_while_waiting = []
-    task = None
-    try:
-        await runtime.configure('https://sync.test')
-        await runtime.enable(UID, 'Neko')
-        capture(runtime)
-        service.requests.clear()
-
-        def busy_policy(*_args):
-            entered.set()
-            released_while_waiting.append(release.wait(timeout=2))
-            return 'character_policy_unavailable'
-
-        monkeypatch.setattr(runtime.cloud, 'local_error', busy_policy)
-        task = asyncio.create_task(runtime._automatic_channel('body', await runtime.session_presence_provider()))
-        assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 1), 2)
-        release.set()
-        await task
-        assert released_while_waiting == [True]
-        assert len(runtime.ledger.pending(DOMAIN)) == 1
-        assert service.requests == []
-    finally:
-        release.set()
-        if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
-        await runtime.close()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("channel", ["body", "pull"])
 @pytest.mark.parametrize("selected_uid", [UID, OTHER_UID, None, "missing-provider"])
 async def test_current_role_automatic_channels_require_enabled_current_intersection(tmp_path, channel, selected_uid):
@@ -3575,9 +3523,7 @@ async def test_current_role_missing_constructor_provider_cannot_resume_saved_aut
         service.requests.clear()
         await reopened.scheduler_tick()
         await finish_automatic_flights(reopened)
-        # Account policy metadata may refresh without a selected local role;
-        # no role-specific chat or profile request can resume automatically.
-        assert all(request.url.path == '/v1/chat-sync/identity' for request in service.requests)
+        assert service.requests == []
         assert reopened.ledger.cursor(DOMAIN) == 0
         assert reopened.state.binding(UID)["enabled"]
     finally:
