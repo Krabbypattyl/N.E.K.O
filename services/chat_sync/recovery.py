@@ -9,9 +9,9 @@ import sqlite3
 import time
 from uuid import uuid4
 
-from services.chat_sync_ledger import ChatDomain, ChatOriginal
-from services.chat_sync_protocol import decode_chat_original, encode_chat_original
-from services.chat_sync_writer import store_connection
+from services.chat_sync.ledger import ChatDomain, ChatOriginal
+from services.chat_sync.protocol import decode_chat_original, encode_chat_original
+from services.chat_sync.writer import store_connection
 
 
 SCHEMA = '''
@@ -67,7 +67,7 @@ def save_outage(directory, uid, record_id, original):
 
 def save_outage_deletions(directory, uid, identities):
     """Keep new local hiding separate from every copied deletion request."""
-    from services.chat_sync_ledger import _message_ids
+    from services.chat_sync.ledger import _message_ids
     ids = _message_ids(identities)
     with closing(sqlite3.connect(Path(directory) / 'outage.sqlite3', timeout=10)) as conn, conn:
         conn.execute('PRAGMA synchronous=FULL')
@@ -139,7 +139,7 @@ def stage_authority(runtime):
                                 record['originStreamId'], record['originSeq'], payload, kind))
             for domain, payload in ledger.execute('SELECT domain,payload FROM chat_deletions'):
                 try:
-                    from services.chat_sync_ledger import _message_ids
+                    from services.chat_sync.ledger import _message_ids
                     owner, uid, channel, scope = json.loads(domain)
                     ChatDomain(owner, uid, channel, scope)
                     identities = _message_ids(json.loads(payload)['messageIds'])
@@ -279,7 +279,7 @@ def apply_cloud_deletions(runtime, domain, identities):
 
 def apply_checked_candidates(runtime, domain, candidates, results):
     """Only cloud-proven delivery becomes visible; missing local proof awaits consent."""
-    from services.chat_sync_ledger import _remember_origin_identity
+    from services.chat_sync.ledger import _remember_origin_identity
     for row, result in zip(candidates, results):
         identity, state = row['record_id'], result['state']
         if state == 'deleted':

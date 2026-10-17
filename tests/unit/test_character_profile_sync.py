@@ -13,9 +13,9 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.character_profile_protocol import decode_character_profile, encode_character_profile
-from services.character_profile_sync import DesktopProfileAdapter, ProfileStore, export_profile
-from services.chat_sync_ledger import ChatDomain
+from services.chat_sync.profile_protocol import decode_character_profile, encode_character_profile
+from services.chat_sync.profile_sync import DesktopProfileAdapter, ProfileStore, export_profile
+from services.chat_sync.ledger import ChatDomain
 from tests.unit.test_chat_sync_runtime import DOMAIN, OWNER, OTHER_OWNER, UID, SyntheticService, setup_runtime
 
 
@@ -168,8 +168,8 @@ async def test_version_only_poll_reconciles_config_saved_before_baseline_commit(
 @pytest.mark.asyncio
 async def test_legacy_new_only_intent_stays_narrow_until_explicit_resave(tmp_path, config):
     """Updating the application/recovering does not grant new access to old originals."""
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, _, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
@@ -191,8 +191,8 @@ async def test_legacy_new_only_intent_stays_narrow_until_explicit_resave(tmp_pat
 @pytest.mark.asyncio
 async def test_combined_card_consent_survives_failure_before_profile_approval(tmp_path, config, monkeypatch):
     """An already saved card's approved history must not depend on a later profile transaction succeeding."""
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, _, _ = await bound(tmp_path, config)
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
@@ -812,8 +812,8 @@ async def test_new_role_choice_is_local_durable_and_current_role_only(tmp_path, 
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     try:
         session['logged_in'] = False
-        from services.chat_sync_source import ChatOriginalSource
-        from services.chat_sync_ledger import ChatOriginal
+        from services.chat_sync.source import ChatOriginalSource
+        from services.chat_sync.ledger import ChatOriginal
         source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
         source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'saved before login'))
         assert await runtime.request_new_role_sync(UID, 'Synthetic') == {'pending': True, 'enabled': False}
@@ -902,8 +902,8 @@ async def test_new_role_setup_stops_before_registration_when_current_role_change
 
 @pytest.mark.asyncio
 async def test_old_card_choice_is_durable_and_approves_trusted_preexisting_chats(tmp_path, config):
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, service, session = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
@@ -1013,8 +1013,8 @@ async def test_card_save_does_not_publish_an_identical_profile_again_after_setup
 
 @pytest.mark.asyncio
 async def test_repeated_offline_card_save_retains_the_original_approved_chat_cutoff(tmp_path, config):
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, service, session = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     session['logged_in'] = False
@@ -1050,8 +1050,8 @@ async def test_changed_new_role_profile_blocks_retry_until_explicit_save(tmp_pat
 @pytest.mark.asyncio
 async def test_sync_never_depends_on_an_account_character_policy_route(tmp_path, config):
     """A service without any character policy route still enables, uploads, pulls and syncs profiles."""
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     from tests.unit.test_chat_sync_runtime import capture, finish_automatic_flights
 
     class NoPolicyService(ProfileService):
@@ -1184,8 +1184,8 @@ async def test_manual_choice_waits_for_the_background_consumer_without_a_false_f
 @pytest.mark.asyncio
 async def test_manual_combined_choice_runs_for_the_selected_inactive_role(tmp_path, config):
     """An explicit settings action advances its target without changing the current role."""
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     from tests.unit.test_chat_sync_runtime import select_runtime_current
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
@@ -1209,7 +1209,7 @@ async def test_manual_combined_choice_runs_for_the_selected_inactive_role(tmp_pa
 @pytest.mark.parametrize('reason', ['logout', 'network', 'owner', 'retry'])
 async def test_manual_combined_choice_exposes_failures_and_retains_the_grant(tmp_path, config, reason):
     """The manual UI receives real setup errors while its fixed local grant remains durable."""
-    from services.chat_sync_runtime import ChatSyncServiceError
+    from services.chat_sync.runtime import ChatSyncServiceError
     runtime, service, session = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     try:
@@ -1272,8 +1272,8 @@ async def test_combined_choice_blocks_a_changed_history_binding(tmp_path, config
 @pytest.mark.asyncio
 async def test_newer_card_save_fences_the_older_history_approval_commit(tmp_path, config):
     """A superseded request cannot approve history while waiting for the local commit gate."""
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, _, _ = await bound(tmp_path, config)
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
@@ -1296,8 +1296,8 @@ async def test_newer_card_save_fences_the_older_history_approval_commit(tmp_path
 @pytest.mark.asyncio
 async def test_combined_choice_does_not_cancel_an_open_manual_history_preview(tmp_path, config):
     """Background consent keeps the user's reviewed task usable without duplicate registration."""
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, _, _ = await bound(tmp_path, config)
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
@@ -1320,8 +1320,8 @@ async def test_combined_choice_does_not_cancel_an_open_manual_history_preview(tm
 async def test_explicit_history_save_includes_only_same_owner_trusted_recovery_originals(tmp_path, config):
     """Combined history consent covers verified recovery bytes without crossing account or delete pins."""
     from contextlib import closing
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
     runtime, _, _ = await bound(tmp_path, config)
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
@@ -1348,7 +1348,7 @@ async def test_explicit_history_save_includes_only_same_owner_trusted_recovery_o
 @pytest.mark.asyncio
 async def test_combined_choice_with_no_history_does_not_leave_an_approved_empty_task(tmp_path, config):
     """Repeated card saves cannot retain empty approved history jobs forever."""
-    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync.source import ChatOriginalSource
     runtime, _, _ = await bound(tmp_path, config)
     try:
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
@@ -1393,7 +1393,7 @@ async def test_cloud_directory_pages_every_role_without_an_account_quota(tmp_pat
                                     'bad-uid', 'empty-name', 'extra-role-field', 'legacy-second'])
 async def test_cloud_directory_rejects_invalid_or_nonprogressing_pages(invalid):
     """A truncated or changed pagination contract must fail instead of losing cloud characters."""
-    from services.character_profile_sync import read_character_directory
+    from services.chat_sync.profile_sync import read_character_directory
     first = {'characterSyncId': 'a' * 32, 'displayName': 'A'}
     second = {'characterSyncId': 'b' * 32, 'displayName': 'B'}
     pages = [{'characters': [first], 'nextCursor': first['characterSyncId']},
@@ -1428,7 +1428,7 @@ async def test_cloud_directory_rejects_invalid_or_nonprogressing_pages(invalid):
 @pytest.mark.asyncio
 async def test_cloud_directory_accepts_one_complete_legacy_response():
     """Old services may ignore the query, keeping their original complete ordering."""
-    from services.character_profile_sync import read_character_directory
+    from services.chat_sync.profile_sync import read_character_directory
     roles = [{'characterSyncId': 'b' * 32, 'displayName': 'B'}, {'characterSyncId': 'a' * 32, 'displayName': 'A'}]
     calls = []
 

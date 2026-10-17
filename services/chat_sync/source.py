@@ -21,14 +21,14 @@ from pathlib import Path
 import re
 import sqlite3
 
-from services.chat_sync_writer import store_connection
+from services.chat_sync.writer import store_connection
 import time
 from uuid import uuid4
 import weakref
 
-from services.chat_sync_ledger import ChatDomain, ChatOriginal, SourceLocator
-from services.chat_sync_protocol import MAX_ORIGIN_SEQ, decode_chat_original, encode_chat_original
-from services.chat_sync_trace import get_trace
+from services.chat_sync.ledger import ChatDomain, ChatOriginal, SourceLocator
+from services.chat_sync.protocol import MAX_ORIGIN_SEQ, decode_chat_original, encode_chat_original
+from services.chat_sync.trace import get_trace
 
 
 def is_chat_input_source(source):
@@ -89,7 +89,7 @@ class ChatOriginalSource:
                     task_id TEXT NOT NULL, record_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'waiting', PRIMARY KEY(task_id,record_id));
             """)
-            from services.chat_sync_recovery import SCHEMA
+            from services.chat_sync.recovery import SCHEMA
             connection.executescript(SCHEMA)
             # Legacy source arrivals are unknown. Migration must not reset their
             # age, and concurrent producers must agree on this additive schema.
@@ -506,7 +506,7 @@ class ChatOriginalSource:
         """Remove readable originals while retaining immutable deletion identities."""
         if not message_ids:
             return
-        from services.chat_sync_recovery import purge_outage_originals
+        from services.chat_sync.recovery import purge_outage_originals
         # Outage copies live outside this database and may be the only readable copy.
         purge_outage_originals(self.path.parent, uid, message_ids)
         with closing(self._connect()) as connection, connection:
@@ -715,7 +715,7 @@ def _source_path(runtime):
 
 async def local_replies(runtime, uid):
     """Restore local-only replies without auth, capture, backfill or cloud I/O."""
-    from services.chat_sync_writer import WriterQuarantined
+    from services.chat_sync.writer import WriterQuarantined
     try:
         await asyncio.to_thread(runtime.writer.check)
     except WriterQuarantined:
@@ -836,7 +836,7 @@ async def character_uid_for(lanlan_name, config_manager=None):
 async def save_original(lanlan_name, role, text, *, record_id=None, original_time=None, config_manager=None,
                         character_uid=None):
     """Commit a new accepted original before best-effort ledger delivery, without HTTP."""
-    from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+    from services.chat_sync.runtime import get_desktop_chat_sync_runtime
     from utils.config_manager import get_config_manager
 
     manager = config_manager or get_config_manager()
@@ -846,8 +846,8 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
         return None
     record_id = record_id or uuid4().hex
     original = ChatOriginal(role, text, original_time=original_time or str(time.time_ns() // 1_000_000), timezone="UTC")
-    from services.chat_sync_writer import WriterQuarantined
-    from services.chat_sync_recovery import role_pending, save_outage
+    from services.chat_sync.writer import WriterQuarantined
+    from services.chat_sync.recovery import role_pending, save_outage
     try:
         runtime = await get_desktop_chat_sync_runtime(manager)
         binding = await asyncio.to_thread(runtime.state.binding, uid)
@@ -908,7 +908,7 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
 
 async def save_local_reply(lanlan_name, text, proof, *, config_manager=None, character_uid=None):
     """Persist newly emitted local-only bytes under the actual local role UID."""
-    from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+    from services.chat_sync.runtime import get_desktop_chat_sync_runtime
     from utils.config_manager import get_config_manager
 
     manager = config_manager or get_config_manager()

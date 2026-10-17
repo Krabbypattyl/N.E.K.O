@@ -6,8 +6,8 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.chat_sync_runtime import ChatSyncServiceError
-from services.chat_sync_scheduler import BODY_INTERVAL_MS, ChatSyncScheduler, body_eligible, body_eligible_at
+from services.chat_sync.runtime import ChatSyncServiceError
+from services.chat_sync.scheduler import BODY_INTERVAL_MS, ChatSyncScheduler, body_eligible, body_eligible_at
 
 
 def queue(**values):

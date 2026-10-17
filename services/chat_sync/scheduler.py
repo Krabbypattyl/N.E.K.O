@@ -9,7 +9,7 @@ from pathlib import Path
 import random
 import sqlite3
 
-from services.chat_sync_writer import store_connection
+from services.chat_sync.writer import store_connection
 import time
 
 

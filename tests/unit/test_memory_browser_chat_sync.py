@@ -27,8 +27,8 @@ def isolated_conversation_state(monkeypatch):
 def editor(tmp_path, monkeypatch):
     import httpx
     import utils.config_manager as config
-    import services.chat_sync_runtime as runtime_module
-    import services.chat_sync_source as sources
+    import services.chat_sync.runtime as runtime_module
+    import services.chat_sync.source as sources
 
     path = tmp_path / "Role" / "recent.json"
     path.parent.mkdir()
@@ -178,11 +178,11 @@ async def test_saved_deletions_survive_restart_and_reach_a_second_device(tmp_pat
     """Use real SQLite and the normal marker transport with synthetic accounts."""
     import httpx
     from starlette.requests import Request
-    import services.chat_sync_runtime as runtime_module
+    import services.chat_sync.runtime as runtime_module
     import utils.config_manager as config
-    from services.chat_sync_ledger import ChatOriginal, SourceLocator
-    from services.chat_sync_protocol import encode_chat_original
-    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal, SourceLocator
+    from services.chat_sync.protocol import encode_chat_original
+    from services.chat_sync.source import ChatOriginalSource
     from tests.unit.test_chat_sync_runtime import DOMAIN, setup_runtime
 
     desktop, service, _ = setup_runtime(tmp_path / 'desktop')
@@ -304,7 +304,7 @@ async def test_save_with_one_default_pool_worker_cannot_deadlock_its_deletion_ca
 
 
 def test_unfinished_reply_blocks_canonical_deletion_without_writing_memory(editor, monkeypatch):
-    from services.character_profile_sync import DesktopProfileAdapter
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     client, path, runtime, clear = editor
     payload = save_payload(snapshot(client))
     before = path.read_bytes()

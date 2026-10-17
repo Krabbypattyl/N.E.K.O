@@ -9,9 +9,9 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.character_profile_protocol import encode_character_profile
-from services.character_profile_sync import ProfileStore
-from services.chat_sync_ledger import ChatDomain
+from services.chat_sync.profile_protocol import encode_character_profile
+from services.chat_sync.profile_sync import ProfileStore
+from services.chat_sync.ledger import ChatDomain
 
 
 DOMAIN = ChatDomain("00000000-0000-4000-8000-000000000001", "a" * 32).key()

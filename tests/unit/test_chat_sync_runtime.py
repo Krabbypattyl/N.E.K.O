@@ -17,12 +17,12 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.chat_sync_ledger import ChatDomain, ChatOriginal, SourceLocator
-from services.chat_sync_runtime import (
+from services.chat_sync.ledger import ChatDomain, ChatOriginal, SourceLocator
+from services.chat_sync.runtime import (
     ChatSyncServiceError, DesktopChatSyncRuntime, DesktopSyncState, _load_local_ca_context, _saved_session_commit_guard,
 )
-from services.chat_sync_protocol import encode_chat_original
-from services.chat_sync_source import ChatOriginalSource
+from services.chat_sync.protocol import encode_chat_original
+from services.chat_sync.source import ChatOriginalSource
 
 
 # Lifecycle, cancellation and recovery scenarios with many durable SQLite
@@ -205,7 +205,7 @@ def capture(runtime, index=1):
 async def test_local_only_reply_history_delegates_without_auth_or_sync_work(tmp_path, monkeypatch):
     """The passive local lane never authenticates, recovers ledger work or sends HTTP."""
     from unittest.mock import AsyncMock
-    import services.chat_sync_source as source
+    import services.chat_sync.source as source
 
     runtime, service, session = setup_runtime(tmp_path)
     session["logged_in"] = False
@@ -230,7 +230,7 @@ async def test_local_only_reply_history_delegates_without_auth_or_sync_work(tmp_
 async def test_clear_saves_replies_waiting_out_their_grace_before_its_snapshot(tmp_path, monkeypatch):
     """A reply that just finished is saved first, so the fixed clear snapshot includes it."""
     from unittest.mock import AsyncMock
-    import services.chat_sync_source as source
+    import services.chat_sync.source as source
 
     runtime, _, _ = setup_runtime(tmp_path)
     events = []
@@ -251,7 +251,7 @@ async def test_clear_saves_replies_waiting_out_their_grace_before_its_snapshot(t
 async def test_clear_keeps_local_reply_ids_outside_canonical_deletion(tmp_path, monkeypatch, has_originals):
     """Local cleanup runs after canonical deletion, including an empty sync boundary."""
     from unittest.mock import AsyncMock
-    import services.chat_sync_source as source
+    import services.chat_sync.source as source
 
     runtime, service, _ = setup_runtime(tmp_path)
     canonical_id, local_id = "d" * 32, "e" * 32
@@ -294,7 +294,7 @@ async def test_clear_keeps_local_reply_ids_outside_canonical_deletion(tmp_path, 
 async def test_clear_does_not_report_success_when_local_reply_cleanup_fails(tmp_path, monkeypatch):
     """A local-only storage failure must remain visible instead of claiming completion."""
     from unittest.mock import AsyncMock
-    import services.chat_sync_source as source
+    import services.chat_sync.source as source
 
     runtime, _, _ = setup_runtime(tmp_path)
     runtime.history = AsyncMock(return_value=[])
@@ -312,9 +312,9 @@ async def test_clear_does_not_report_success_when_local_reply_cleanup_fails(tmp_
 async def test_clear_preserves_canonical_writer_outage_receipt(tmp_path, monkeypatch):
     """Local cleanup cannot replace the existing canonical outage deletion contract."""
     from unittest.mock import AsyncMock
-    import services.chat_sync_recovery as recovery
-    import services.chat_sync_source as source
-    from services.chat_sync_writer import WriterQuarantined
+    import services.chat_sync.recovery as recovery
+    import services.chat_sync.source as source
+    from services.chat_sync.writer import WriterQuarantined
 
     runtime, _, _ = setup_runtime(tmp_path)
     canonical_id, local_id = "d" * 32, "e" * 32
@@ -440,7 +440,7 @@ async def test_local_history_hint_observes_only_committed_download_and_is_owned(
 @pytest.mark.asyncio
 async def test_production_history_notifier_routes_only_exact_local_character_uid(tmp_path, monkeypatch):
     """The production factory sends the safe hint through the existing role socket."""
-    import services.chat_sync_runtime as module
+    import services.chat_sync.runtime as module
     import main_routers.shared_state as shared
 
     sent = []
@@ -753,7 +753,7 @@ async def test_late_subscribed_cannot_repair_a_login_blocker_after_authority_cha
             runtime.writer.recover(lambda: None)
             assert runtime.writer.epoch() != epoch
         else:
-            from services.chat_sync_writer import WriterQuarantined
+            from services.chat_sync.writer import WriterQuarantined
 
             def require_epoch(expected):
                 raise WriterQuarantined()
@@ -1023,7 +1023,7 @@ async def test_late_notification_cannot_borrow_changed_authority(tmp_path, chang
 @pytest.mark.asyncio
 async def test_notification_disconnect_backoff_and_foreground_keep_http_fences(tmp_path):
     """Transient connection loss wakes fallback but cannot erase HTTP backoff."""
-    from services.chat_sync_runtime import ChatSyncServiceError
+    from services.chat_sync.runtime import ChatSyncServiceError
     runtime, _, _ = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
@@ -1167,8 +1167,8 @@ async def test_bounded_pull_continues_next_pass_until_terminal_without_periodic_
 @pytest.mark.parametrize("case", ["approved", "draft", "retry", "throttled", "auth"])
 async def test_approved_profile_wakes_promptly_without_approving_drafts_or_bypassing_errors(tmp_path, case):
     """Only an already sealed approved operation bypasses periodic profile due."""
-    from services.character_profile_sync import DesktopProfileAdapter
-    from services.chat_sync_runtime import ChatSyncServiceError
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from services.chat_sync.runtime import ChatSyncServiceError
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())
@@ -2559,7 +2559,7 @@ def test_local_ca_verified_https_loads_in_worker_and_ignores_proxy(tmp_path, loc
         loads.append(path)
         return _load_local_ca_context(path)
 
-    monkeypatch.setattr("services.chat_sync_runtime._load_local_ca_context", load)
+    monkeypatch.setattr("services.chat_sync.runtime._load_local_ca_context", load)
 
     async def scenario():
         """Use synthetic bearer bytes only against the disposable localhost listener."""
@@ -2612,7 +2612,7 @@ def test_local_ca_refuses_remote_configuration_and_previously_saved_origin(tmp_p
         """A remote target must be rejected before trying to parse any CA file."""
         pytest.fail("Remote origin reached local CA loading")
 
-    monkeypatch.setattr("services.chat_sync_runtime._load_local_ca_context", forbidden_load)
+    monkeypatch.setattr("services.chat_sync.runtime._load_local_ca_context", forbidden_load)
 
     async def scenario():
         """Represent an older saved remote endpoint without touching actual state."""
@@ -2837,7 +2837,7 @@ def test_retry_after_covers_control_markers_pull_and_fixed_batch_restart(tmp_pat
 def test_sqlite_worker_failure_is_bounded_observed_and_private(tmp_path, monkeypatch, capsys):
     """Disk failures neither crash chat startup nor create an unobserved hot loop."""
     async def scenario():
-        from services import chat_sync_runtime as module
+        from services.chat_sync import runtime as module
         runtime, _, _ = setup_runtime(tmp_path)
         calls = 0
 
@@ -2863,7 +2863,7 @@ def test_sqlite_worker_failure_is_bounded_observed_and_private(tmp_path, monkeyp
 def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path, monkeypatch, bootstrap):
     """Cancelled boot and late requests cannot register a runtime after shutdown."""
     async def scenario():
-        from services import chat_sync_runtime as module
+        from services.chat_sync import runtime as module
         entered, release, completed = threading.Event(), threading.Event(), threading.Event()
         created = []
         original = module.DesktopChatSyncRuntime
@@ -2907,7 +2907,7 @@ import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
-from services import chat_sync_runtime as module
+from services.chat_sync import runtime as module
 
 entered, release = threading.Event(), threading.Event()
 created = []
@@ -2964,7 +2964,7 @@ assert connections and all(connection.was_closed for connection in connections)
 @pytest.mark.parametrize("endpoint", ["identity", "changes"])
 async def test_pull_network_budget_releases_stalled_get(tmp_path, monkeypatch, endpoint):
     """A download deadline releases the lock without accepting an incomplete page."""
-    import services.chat_sync_runtime as module
+    import services.chat_sync.runtime as module
     runtime, service, _ = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
@@ -2995,7 +2995,7 @@ async def test_pull_network_budget_releases_stalled_get(tmp_path, monkeypatch, e
 @pytest.mark.asyncio
 async def test_pull_budget_is_shared_and_external_cancel_stays_cancelled(tmp_path, monkeypatch):
     """Identity consumes the page budget; caller cancellation is not a retry error."""
-    import services.chat_sync_runtime as module
+    import services.chat_sync.runtime as module
     runtime, _, _ = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
@@ -3039,7 +3039,7 @@ def chat_ledger_rows(runtime):
 @pytest.mark.parametrize("stop", ["timeout", "cancel", "pause", "logout", "close"])
 async def test_pull_stall_preserves_complete_outbox(tmp_path, monkeypatch, endpoint, stop):
     """No incomplete download can alter pending bytes, fixed IDs or tombstones."""
-    import services.chat_sync_runtime as module
+    import services.chat_sync.runtime as module
     runtime, service, session = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
@@ -3098,8 +3098,8 @@ async def test_pull_stall_preserves_complete_outbox(tmp_path, monkeypatch, endpo
 @pytest.mark.parametrize("phase", ["identity", "write"])
 async def test_pull_timeout_does_not_cancel_shared_client_writes(tmp_path, monkeypatch, channel, phase):
     """Only download I/O expires while an exact approved write stays in flight."""
-    import services.chat_sync_runtime as module
-    from services.character_profile_sync import DesktopProfileAdapter
+    import services.chat_sync.runtime as module
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())
@@ -3172,7 +3172,7 @@ async def test_pull_timeout_does_not_cancel_shared_client_writes(tmp_path, monke
 @pytest.mark.parametrize("has_more", [False, True])
 async def test_pull_deadline_never_cancels_started_page_commit(tmp_path, monkeypatch, has_more):
     """An accepted worker commit may outlive network budget and still notify once."""
-    import services.chat_sync_runtime as module
+    import services.chat_sync.runtime as module
     class PagedService(SyntheticService):
         async def request(self, request):
             if request.url.path.endswith("/changes"):
@@ -3226,7 +3226,7 @@ async def test_pull_deadline_never_cancels_started_page_commit(tmp_path, monkeyp
 @pytest.mark.parametrize("endpoint", ["identity", "changes"])
 async def test_pull_timeout_leaves_inactive_role_until_it_becomes_current(tmp_path, monkeypatch, endpoint):
     """A timed out current GET releases its flight without downloading inactive roles."""
-    import services.chat_sync_runtime as module
+    import services.chat_sync.runtime as module
     runtime, service, _ = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
@@ -3618,7 +3618,7 @@ async def test_current_role_initial_notification_wait_rechecks_before_outbound_f
 
 @pytest.mark.asyncio
 async def test_idle_recovery_does_not_advance_durable_writer_heads(tmp_path):
-    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync.source import ChatOriginalSource
     runtime, service, _ = setup_runtime(tmp_path)
     try:
         await runtime.configure("https://sync.test")
@@ -3637,7 +3637,7 @@ async def test_idle_recovery_does_not_advance_durable_writer_heads(tmp_path):
 @pytest.mark.parametrize('bound_role', [False, True])
 async def test_explicit_pause_revokes_retained_on_without_a_setup_error(tmp_path, bound_role):
     """A real pause cancels saved On but retains local originals and deletion work."""
-    from services.character_profile_sync import DesktopProfileAdapter
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())
@@ -3665,7 +3665,7 @@ async def test_explicit_pause_revokes_retained_on_without_a_setup_error(tmp_path
 @pytest.mark.asyncio
 async def test_active_bound_card_history_is_not_reported_as_awaiting_enable(tmp_path):
     """Deferred history processing for a non-current role does not falsify enabled UI state."""
-    from services.character_profile_sync import DesktopProfileAdapter
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, _, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())
@@ -3685,7 +3685,7 @@ async def test_active_bound_card_history_is_not_reported_as_awaiting_enable(tmp_
 @pytest.mark.parametrize('change', ['generation', 'domain'])
 async def test_binding_race_blocks_only_a_changed_saved_domain(tmp_path, monkeypatch, change):
     """A transient same-domain response fence is retryable; an account/binding replacement is not."""
-    from services.character_profile_sync import DesktopProfileAdapter
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, _, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())
@@ -3714,7 +3714,7 @@ async def test_binding_race_blocks_only_a_changed_saved_domain(tmp_path, monkeyp
 @pytest.mark.parametrize('after_approval', [False, True])
 async def test_failed_combined_history_cancels_only_its_own_unapproved_preview(tmp_path, monkeypatch, after_approval):
     """Failed setup does not accumulate preview jobs or revoke a manual/approved snapshot."""
-    from services.character_profile_sync import DesktopProfileAdapter
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, _, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())
@@ -3744,7 +3744,7 @@ async def test_failed_combined_history_cancels_only_its_own_unapproved_preview(t
 @pytest.mark.asyncio
 async def test_cancelled_setup_cleans_preview_committed_before_thread_returns(tmp_path, monkeypatch):
     """Cancellation cannot orphan a background snapshot hidden in a running SQLite thread."""
-    from services.character_profile_sync import DesktopProfileAdapter
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
     runtime, _, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(Config())

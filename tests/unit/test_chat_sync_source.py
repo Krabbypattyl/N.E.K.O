@@ -14,13 +14,13 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.chat_sync_ledger import ChatDomain, ChatOriginal, ChatSyncLedger
-from services.chat_sync_protocol import MAX_ORIGIN_SEQ
-from services.chat_sync_runtime import DesktopSyncState
-from services.chat_sync_trace import ChatSyncTrace
-from services.chat_sync_writer import registered_writer, WriterQuarantined
-import services.chat_sync_source as source_module
-from services.chat_sync_source import (
+from services.chat_sync.ledger import ChatDomain, ChatOriginal, ChatSyncLedger
+from services.chat_sync.protocol import MAX_ORIGIN_SEQ
+from services.chat_sync.runtime import DesktopSyncState
+from services.chat_sync.trace import ChatSyncTrace
+from services.chat_sync.writer import registered_writer, WriterQuarantined
+import services.chat_sync.source as source_module
+from services.chat_sync.source import (
     AssistantOriginalBuffer, ChatOriginalSource, known_source_ids, mark_turn_origin,
     purge_source_originals, recover_sources, save_original,
 )
@@ -55,7 +55,7 @@ def source_for(runtime):
 
 def test_purge_erases_recovery_and_outage_copies_but_keeps_identities(tmp_path):
     """A permanent local delete leaves no readable body in recovery or outage storage."""
-    from services.chat_sync_recovery import save_outage
+    from services.chat_sync.recovery import save_outage
     runtime = make_runtime(tmp_path)
     source, directory = source_for(runtime), Path(runtime.state.path).parent
     candidate, outage = "1" * 32, "2" * 32
@@ -75,7 +75,7 @@ def test_purge_erases_recovery_and_outage_copies_but_keeps_identities(tmp_path):
 
 def test_deleted_cloud_role_reassignment_retains_local_history_without_old_requests(tmp_path):
     """An explicit new identity retains verified text, never the retired domain's grants or deletes."""
-    from services.chat_sync_protocol import decode_chat_original, encode_chat_original
+    from services.chat_sync.protocol import decode_chat_original, encode_chat_original
     runtime = make_runtime(tmp_path)
     source, new_uid = source_for(runtime), "b" * 32
     source.commit(OWNER, UID, "1" * 32, RAW)
@@ -164,7 +164,7 @@ def test_role_reassignment_rolls_back_and_keeps_unknown_or_deleted_sources_unpub
 @pytest.mark.parametrize("lane", ["another_role", "local_tool"])
 def test_role_reassignment_does_not_steal_another_roles_source_or_promote_tool_identity(tmp_path, lane):
     """A downloaded ID collision must roll back the transfer rather than change its provenance."""
-    from services.chat_sync_protocol import encode_chat_original
+    from services.chat_sync.protocol import encode_chat_original
     runtime = make_runtime(tmp_path)
     source = source_for(runtime)
     if lane == "another_role":
@@ -187,7 +187,7 @@ def test_role_reassignment_does_not_steal_another_roles_source_or_promote_tool_i
 
 def test_role_reassignment_rejects_conflicting_ledger_text_without_moving_sources(tmp_path):
     """A canonical but changed ledger body cannot silently replace proven source bytes."""
-    from services.chat_sync_protocol import encode_chat_original
+    from services.chat_sync.protocol import encode_chat_original
     runtime = make_runtime(tmp_path)
     source = source_for(runtime)
     source.commit(OWNER, UID, "1" * 32, RAW)
@@ -244,7 +244,7 @@ async def test_late_optional_source_save_after_uid_reassignment_does_not_break_n
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     assert await save_original("Lan", "user", RAW.text, record_id="2" * 32,
         original_time=RAW.original_time, config_manager=manager) == "2" * 32
     assert source_for(runtime).known_ids(OWNER, UID) == []
@@ -269,7 +269,7 @@ async def test_late_reassigned_producer_observes_current_new_uid_grant_and_off(t
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     assert await save_original("Lan", "user", RAW.text, record_id="2" * 32,
         original_time=RAW.original_time, config_manager=manager) == "2" * 32
     assert len(source.pending(200)) == int(enabled)
@@ -288,7 +288,7 @@ async def test_late_local_tool_reply_follows_fixed_uid_lineage_without_uploading
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     proof = {"recordId": "5" * 32, "originalTime": RAW.original_time, "origin": "tool"}
     assert await source_module.save_local_reply("Lan", RAW.text, proof, config_manager=manager) == proof["recordId"]
     assert source.read_local_replies(source.path, "c" * 32)[0]["text"] == RAW.text
@@ -367,7 +367,7 @@ async def test_local_only_save_and_restore_never_require_a_cloud_binding(tmp_pat
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     proof = {"recordId": "5" * 32, "originalTime": RAW.original_time, "origin": "agent"}
     assert await source_module.save_local_reply("Lan", RAW.text, proof, config_manager=manager) == proof["recordId"]
     assert await source_module.local_replies(runtime, UID) == [{
@@ -561,7 +561,7 @@ async def test_legacy_source_recovery_keeps_unknown_queue_age(tmp_path):
         conn.execute("INSERT INTO source_originals VALUES (?,?,?,?,?,1,0)",
                      (identity, OWNER, UID, payload, hashlib.sha256(payload.encode("utf-8")).hexdigest()))
     source = source_for(runtime)
-    from services.chat_sync_writer import WriterQuarantined
+    from services.chat_sync.writer import WriterQuarantined
     with pytest.raises(WriterQuarantined):
         source.pending(1)
     with sqlite3.connect(source.path) as conn:
@@ -642,7 +642,7 @@ async def test_save_preserves_unbound_proof_without_upload_and_keeps_paused_owne
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     assert await save_original("Lan", "user", RAW.text, config_manager=manager) is None
     assert not (tmp_path / "sources.sqlite3").exists()
     runtime.state.save_choice(UID, True)
@@ -676,7 +676,7 @@ async def test_save_keeps_pending_when_ledger_temporarily_fails(tmp_path, monkey
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     capture = runtime.ledger.capture
     runtime.ledger.capture = Mock(side_effect=RuntimeError("synthetic unavailable"))
     identity = await save_original("Lan", "user", RAW.text, config_manager=manager)
@@ -693,7 +693,7 @@ async def test_save_does_not_wake_before_original_commit_succeeds(tmp_path, monk
     manager = SimpleNamespace(aload_characters=AsyncMock(return_value={"猫娘": {
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     monkeypatch.setattr(ChatOriginalSource, "commit", Mock(side_effect=sqlite3.OperationalError("synthetic disk failure")))
     with pytest.raises(sqlite3.OperationalError, match="synthetic disk failure"):
         await save_original("Lan", "user", RAW.text, config_manager=manager)
@@ -1350,7 +1350,7 @@ async def test_actual_tool_dispatch_keeps_whole_reply_local(
         )
     )
     monkeypatch.setattr(
-        "services.chat_sync_runtime.get_desktop_chat_sync_runtime",
+        "services.chat_sync.runtime.get_desktop_chat_sync_runtime",
         AsyncMock(return_value=runtime),
     )
     original_save, local_save = (

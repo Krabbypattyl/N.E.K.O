@@ -9,15 +9,15 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.chat_sync_ledger import (
+from services.chat_sync.ledger import (
     ChatDomain,
     ChatOriginal,
     ChatSyncLedger,
     IdentityConflict,
     SourceLocator,
 )
-import services.chat_sync_ledger as ledger_module
-from services.chat_sync_protocol import MAX_ORIGIN_SEQ, decode_chat_original, encode_chat_original
+import services.chat_sync.ledger as ledger_module
+from services.chat_sync.protocol import MAX_ORIGIN_SEQ, decode_chat_original, encode_chat_original
 from tests.fake_clock import patch_module_clock
 
 
@@ -26,7 +26,7 @@ SOURCE = SourceLocator("durable-db-id", "generation-a", "row-1")
 
 
 def _crash_before_pending_commit(path, witness):
-    from services.chat_sync_writer import ChatSyncWriter, _WriterConnection
+    from services.chat_sync.writer import ChatSyncWriter, _WriterConnection
     writer = ChatSyncWriter(path.parent, witness, database_names=(path.name,))
     with writer.initialize():
         ledger = ChatSyncLedger(path)
@@ -40,7 +40,7 @@ def _crash_before_pending_commit(path, witness):
 
 
 def test_process_exit_before_pending_commit_requires_recovery(tmp_path):
-    from services.chat_sync_writer import WriterQuarantined, registered_writer
+    from services.chat_sync.writer import WriterQuarantined, registered_writer
     path = tmp_path / "sync.db"
     ChatSyncLedger(path)
     writer = registered_writer(path.parent)

@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from services.chat_sync_writer import ChatSyncWriter, WriterQuarantined
+from services.chat_sync.writer import ChatSyncWriter, WriterQuarantined
 
 
 def initialized(tmp_path):
@@ -108,8 +108,8 @@ def test_corrupt_witness_cannot_be_replaced_by_constructor(tmp_path):
 
 def test_runtime_registers_all_databases_and_blocks_copied_binding(tmp_path):
     from contextlib import nullcontext
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_ledger import ChatDomain
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.ledger import ChatDomain
     async def session():
         return {'logged_in': False}
     directory = tmp_path / 'runtime'
@@ -132,9 +132,9 @@ def test_runtime_registers_all_databases_and_blocks_copied_binding(tmp_path):
 
 @pytest.mark.parametrize("corrupt", [None, "payload", "domain"])
 def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path, corrupt):
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_ledger import ChatDomain, ChatOriginal
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
     async def session():
         return {'logged_in': False}
     directory = tmp_path / 'runtime'
@@ -167,8 +167,8 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
 
 
 def test_faulted_source_saves_raw_without_old_source_sequence(tmp_path):
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.ledger import ChatOriginal
     async def session():
         return {'logged_in': False}
     runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json')
@@ -194,9 +194,9 @@ def test_failed_sql_constraint_rolls_back_without_losing_writer_authority(tmp_pa
 @pytest.mark.asyncio
 async def test_source_primary_save_continues_when_witness_is_corrupt(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_source import save_original
-    from services import chat_sync_runtime
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import save_original
+    from services.chat_sync import runtime as chat_sync_runtime
     async def session():
         return {'logged_in': False}
     runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json')
@@ -217,9 +217,9 @@ async def test_source_primary_save_continues_when_witness_is_corrupt(tmp_path, m
 async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_history_and_delete_approval(tmp_path):
     from contextlib import nullcontext
     import httpx
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_source import ChatOriginalSource, recover_sources
-    from services.chat_sync_ledger import ChatDomain, ChatOriginal
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource, recover_sources
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
     owner, uid, binding_id = '12345678-1234-4234-8234-123456789abc', 'a' * 32, 'b' * 32
     calls = []
     async def session():
@@ -326,7 +326,7 @@ def test_two_processes_serialize_reservation_and_commit_without_lost_heads(tmp_p
 
 @pytest.mark.parametrize('database', ['sources.sqlite3', 'state.sqlite3', 'originals.sqlite3', 'profiles.sqlite3', 'scheduler.sqlite3'])
 def test_each_runtime_database_rollback_blocks_other_writers(tmp_path, database):
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
     async def session():
         return {'logged_in': False}
     runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'installation' / 'writer.json')
@@ -349,7 +349,7 @@ def test_witness_reservation_write_failure_keeps_database_unchanged(tmp_path, mo
         if Path(target) == writer.path:
             raise PermissionError('synthetic unwritable witness')
         return real_replace(source, target)
-    monkeypatch.setattr('services.chat_sync_writer.os.replace', unwritable)
+    monkeypatch.setattr('services.chat_sync.writer.os.replace', unwritable)
     with pytest.raises(WriterQuarantined):
         save(writer)
     with closing(sqlite3.connect(writer.directory / 'sources.sqlite3')) as conn:
@@ -365,10 +365,10 @@ def test_invalid_database_head_uses_fixed_quarantine_error(tmp_path):
 
 
 def deletion_recovery_task(tmp_path, count):
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_ledger import ChatDomain
-    from services.chat_sync_recovery import finish_role
-    from services.chat_sync_writer import store_connection
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.ledger import ChatDomain
+    from services.chat_sync.recovery import finish_role
+    from services.chat_sync.writer import store_connection
     async def session():
         return {'logged_in': False}
     runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json')
@@ -381,8 +381,8 @@ def deletion_recovery_task(tmp_path, count):
 
 
 def test_recovery_keeps_unverifiable_donor_bytes_hidden(tmp_path):
-    from services.chat_sync_writer import store_connection
-    from services.chat_sync_recovery import pending_candidates
+    from services.chat_sync.writer import store_connection
+    from services.chat_sync.recovery import pending_candidates
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     damaged = b'{"synthetic-unknown-original":true}'
     with closing(store_connection(runtime.ledger.path)) as conn, conn:
@@ -395,10 +395,10 @@ def test_recovery_keeps_unverifiable_donor_bytes_hidden(tmp_path):
 
 
 def test_recovery_keeps_same_message_id_in_distinct_domains(tmp_path):
-    from services.chat_sync_ledger import ChatDomain
-    from services.chat_sync_protocol import encode_chat_original
-    from services.chat_sync_recovery import apply_cloud_deletions, apply_checked_candidates, pending_candidates
-    from services.chat_sync_writer import store_connection
+    from services.chat_sync.ledger import ChatDomain
+    from services.chat_sync.protocol import encode_chat_original
+    from services.chat_sync.recovery import apply_cloud_deletions, apply_checked_candidates, pending_candidates
+    from services.chat_sync.writer import store_connection
     runtime, first, _, _ = deletion_recovery_task(tmp_path, 0)
     domains = (first, ChatDomain(first.owner_id, 'b' * 32),
                ChatDomain('12345678-1234-4234-8234-123456789abd', first.character_uid))
@@ -432,10 +432,10 @@ def test_recovery_keeps_same_message_id_in_distinct_domains(tmp_path):
 @pytest.mark.asyncio
 async def test_repeated_outage_recovery_coalesces_identical_bound_and_unbound_proof(tmp_path):
     import hashlib
-    from services.chat_sync_ledger import ChatOriginal
-    from services.chat_sync_prototype import PrototypeChatSyncClient
-    from services.chat_sync_recovery import apply_checked_candidates, finish_role, pending_candidates
-    from services.chat_sync_source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
+    from services.chat_sync.prototype import PrototypeChatSyncClient
+    from services.chat_sync.recovery import apply_checked_candidates, finish_role, pending_candidates
+    from services.chat_sync.source import ChatOriginalSource
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     identity = '1' * 32
     runtime.save_outage_original(domain.character_uid, identity, ChatOriginal('user', 'outage'))
@@ -472,9 +472,9 @@ async def test_repeated_outage_recovery_coalesces_identical_bound_and_unbound_pr
 def test_recovery_conflicting_null_and_bound_proof_stays_hidden(tmp_path):
     from dataclasses import asdict
     import hashlib
-    from services.chat_sync_ledger import ChatOriginal
-    from services.chat_sync_recovery import pending_candidates
-    from services.chat_sync_writer import store_connection
+    from services.chat_sync.ledger import ChatOriginal
+    from services.chat_sync.recovery import pending_candidates
+    from services.chat_sync.writer import store_connection
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     runtime.save_outage_original(domain.character_uid, '1' * 32, ChatOriginal('user', 'outage'))
     runtime.prepare_writer_recovery()
@@ -491,7 +491,7 @@ def test_recovery_conflicting_null_and_bound_proof_stays_hidden(tmp_path):
 
 @pytest.mark.asyncio
 async def test_recovery_deletion_preview_coalesces_outage_and_bound_marker_ids(tmp_path):
-    from services.chat_sync_recovery import finish_role
+    from services.chat_sync.recovery import finish_role
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     runtime.ledger.queue_deletion(domain, ['1' * 32])
     runtime.writer.path.write_text('{broken')
@@ -505,8 +505,8 @@ async def test_recovery_deletion_preview_coalesces_outage_and_bound_marker_ids(t
 
 
 def test_approved_recovery_deletion_pages_resume_and_ack_gap_does_not_recreate_request(tmp_path, monkeypatch):
-    from services.chat_sync_recovery import approve_deletions
-    from services.chat_sync_writer import _WriterConnection
+    from services.chat_sync.recovery import approve_deletions
+    from services.chat_sync.writer import _WriterConnection
     runtime, domain, binding, snapshot = deletion_recovery_task(tmp_path, 403)
     real_execute = _WriterConnection.executemany
     def fail_progress(self, sql, parameters=()):
@@ -531,7 +531,7 @@ def test_approved_recovery_deletion_pages_resume_and_ack_gap_does_not_recreate_r
 
 @pytest.mark.asyncio
 async def test_faulted_delete_keeps_exact_local_hide_for_later_fresh_approval(tmp_path):
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.ledger import ChatOriginal
     runtime, domain, binding, _ = deletion_recovery_task(tmp_path, 0)
     runtime.save_outage_original(domain.character_uid, '1' * 32, ChatOriginal('user', 'raw outage'))
     runtime.writer.path.write_text('{broken')
@@ -547,7 +547,7 @@ async def test_faulted_delete_keeps_exact_local_hide_for_later_fresh_approval(tm
 
 @pytest.mark.asyncio
 async def test_faulted_clear_hides_all_known_local_ids_without_authorizing_cloud(tmp_path):
-    from services.chat_sync_ledger import ChatOriginal
+    from services.chat_sync.ledger import ChatOriginal
     runtime, domain, binding, _ = deletion_recovery_task(tmp_path, 0)
     for identity in ('1' * 32, '2' * 32):
         runtime.save_outage_original(domain.character_uid, identity, ChatOriginal('user', 'raw outage'))
@@ -561,8 +561,8 @@ async def test_faulted_clear_hides_all_known_local_ids_without_authorizing_cloud
 
 @pytest.mark.asyncio
 async def test_same_process_witness_io_preserves_local_history_but_restart_hides_unproven_copy(tmp_path):
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_ledger import ChatOriginal, SourceLocator
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.ledger import ChatOriginal, SourceLocator
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     record = runtime.ledger.capture(domain, SourceLocator('raw', 'generation', '1'), ChatOriginal('user', 'retained locally'))
     assert (await runtime.history(domain.character_uid))[0]['messageId'] == record['messageId']
@@ -578,16 +578,16 @@ async def test_same_process_witness_io_preserves_local_history_but_restart_hides
 
 @pytest.mark.asyncio
 async def test_witness_temp_creation_failure_is_fixed_and_raw_save_continues(tmp_path, monkeypatch):
-    from services.chat_sync_source import save_original
+    from services.chat_sync.source import save_original
     from types import SimpleNamespace
-    from services import chat_sync_runtime
+    from services.chat_sync import runtime as chat_sync_runtime
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     real_open = __import__('os').open
     def cannot_create(path, *args, **kwargs):
         if str(path).startswith(str(runtime.writer.path)) and str(path).endswith('.tmp'):
             raise PermissionError('synthetic temp creation failure')
         return real_open(path, *args, **kwargs)
-    monkeypatch.setattr('services.chat_sync_writer.os.open', cannot_create)
+    monkeypatch.setattr('services.chat_sync.writer.os.open', cannot_create)
     async def get_runtime(_):
         return runtime
     async def characters():
@@ -600,7 +600,7 @@ async def test_witness_temp_creation_failure_is_fixed_and_raw_save_continues(tmp
 
 
 def test_staging_failure_retains_donor_deletion_until_candidate_commit(tmp_path, monkeypatch):
-    from services.chat_sync_writer import _WriterConnection
+    from services.chat_sync.writer import _WriterConnection
     runtime, domain, binding, _ = deletion_recovery_task(tmp_path, 0)
     original = runtime.ledger.queue_deletion(domain, ['1' * 32])
     runtime.writer.path.write_text('{broken')

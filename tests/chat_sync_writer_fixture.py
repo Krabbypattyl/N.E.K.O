@@ -12,12 +12,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolated_chat_sync_writer(monkeypatch, tmp_path):
-    from services.chat_sync_writer import ChatSyncWriter, registered_writer
-    from services.chat_sync_runtime import DesktopChatSyncRuntime, DesktopSyncState
-    from services.chat_sync_ledger import ChatSyncLedger
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_scheduler import ChatSyncScheduler
-    from services.character_profile_sync import ProfileStore
+    from services.chat_sync.writer import ChatSyncWriter, registered_writer
+    from services.chat_sync.runtime import DesktopChatSyncRuntime, DesktopSyncState
+    from services.chat_sync.ledger import ChatSyncLedger
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.scheduler import ChatSyncScheduler
+    from services.chat_sync.profile_sync import ProfileStore
 
     original_runtime = DesktopChatSyncRuntime.__init__
 

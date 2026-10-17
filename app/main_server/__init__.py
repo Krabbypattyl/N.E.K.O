@@ -1354,7 +1354,7 @@ async def release_storage_startup_barrier(
     _start_neko_servers_integration_workers()
     # The final storage root is known only after this barrier succeeds. Sync
     # startup is optional and detached; it never delays the normal chat boot.
-    from services.chat_sync_runtime import schedule_desktop_chat_sync_start
+    from services.chat_sync.runtime import schedule_desktop_chat_sync_start
     schedule_desktop_chat_sync_start(_config_manager)
     return {
         "ok": True,
@@ -1453,7 +1453,7 @@ async def on_startup():
         _start_neko_servers_integration_workers()
         # Reuse the post-storage gate; no sync database or worker starts in the
         # selection-required path above. Shutdown cancels the owned bootstrap.
-        from services.chat_sync_runtime import schedule_desktop_chat_sync_start
+        from services.chat_sync.runtime import schedule_desktop_chat_sync_start
         schedule_desktop_chat_sync_start(_config_manager)
 
 

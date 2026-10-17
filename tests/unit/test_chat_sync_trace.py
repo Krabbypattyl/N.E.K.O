@@ -10,10 +10,10 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 from tests.unit.test_chat_sync_runtime import DOMAIN, UID, setup_runtime
-from services.chat_sync_ledger import ChatOriginal, SourceLocator
-from services.chat_sync_protocol import encode_chat_original
-from services.chat_sync_source import ChatOriginalSource
-from services.chat_sync_trace import ChatSyncTrace, route_class
+from services.chat_sync.ledger import ChatOriginal, SourceLocator
+from services.chat_sync.protocol import encode_chat_original
+from services.chat_sync.source import ChatOriginalSource
+from services.chat_sync.trace import ChatSyncTrace, route_class
 
 
 def read_events(path):
@@ -21,7 +21,7 @@ def read_events(path):
 
 
 def enable_trace(monkeypatch, tmp_path):
-    from services import chat_sync_trace
+    from services.chat_sync import trace as chat_sync_trace
     path = tmp_path / "trace.jsonl"
     trace = ChatSyncTrace(path)
     monkeypatch.setattr(chat_sync_trace, "_trace", trace)

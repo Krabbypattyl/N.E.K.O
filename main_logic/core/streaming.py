@@ -28,7 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
-from services.chat_sync_source import is_chat_input_source, mark_turn_origin
+from services.chat_sync.source import is_chat_input_source, mark_turn_origin
 from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4

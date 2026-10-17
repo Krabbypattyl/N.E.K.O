@@ -9,15 +9,15 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.chat_sync_ledger import (
+from services.chat_sync.ledger import (
     ChatDomain,
     ChatOriginal,
     ChatSyncLedger,
     IdentityConflict,
     SourceLocator,
 )
-from services.chat_sync_protocol import decode_chat_original, encode_chat_original
-from services.chat_sync_prototype import PrototypeChatSyncClient
+from services.chat_sync.protocol import decode_chat_original, encode_chat_original
+from services.chat_sync.prototype import PrototypeChatSyncClient
 
 
 def test_recovery_client_checks_exact_coverage_and_fixed_deletion_fence(tmp_path):

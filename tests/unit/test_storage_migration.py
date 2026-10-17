@@ -4737,10 +4737,10 @@ def test_a_locked_file_backup_keeps_the_transaction_and_completes(tmp_path, monk
 @pytest.mark.parametrize('from_anchor', [False, True])
 async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(tmp_path, from_anchor):
     """Moving storage preserves queued originals/deletes without promoting the retained copy."""
-    from services.chat_sync_ledger import ChatDomain, ChatOriginal
-    from services.chat_sync_runtime import DesktopChatSyncRuntime
-    from services.chat_sync_source import ChatOriginalSource
-    from services.chat_sync_writer import WriterQuarantined
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.writer import WriterQuarantined
     from tests.unit.test_chat_sync_runtime import BINDING, OWNER, UID, capture
 
     config_manager = (_make_anchor_root_config_manager if from_anchor else _make_config_manager)(tmp_path)

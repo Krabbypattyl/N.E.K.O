@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from services import chat_sync_runtime
+from services.chat_sync import runtime as chat_sync_runtime
 
 
 def hooks(monkeypatch, *, blocked=False, fail_initialization=False):
@@ -97,7 +97,7 @@ import asyncio
 from pathlib import Path
 import sys
 from unittest.mock import patch
-from services import chat_sync_runtime as module
+from services.chat_sync import runtime as module
 
 outcome = sys.argv[1]
 drain_callback = sys.argv[2] == "True"

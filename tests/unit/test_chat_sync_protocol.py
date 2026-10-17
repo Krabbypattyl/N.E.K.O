@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from services.chat_sync_protocol import decode_chat_original, encode_chat_original
+from services.chat_sync.protocol import decode_chat_original, encode_chat_original
 
 
 FIXTURES = json.loads((Path(__file__).parents[1] / "fixtures/chat_sync_original_v1.json").read_text(encoding="utf-8"))

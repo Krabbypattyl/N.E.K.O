@@ -1289,7 +1289,7 @@ def _memory_chat_binding(binding) -> dict | None:
 
 
 async def _memory_chat_snapshot(cm, uid: str) -> dict:
-    from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+    from services.chat_sync.runtime import get_desktop_chat_sync_runtime
     runtime = await get_desktop_chat_sync_runtime(cm)
     binding = _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))
     originals = await runtime.history(uid)
@@ -1394,8 +1394,8 @@ async def save_recent_file(request: Request):
     runtime = None
     if sync_edit is not None:
         from main_routers.chat_sync_router import _local_access
-        from services.chat_sync_ledger import _message_ids
-        from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+        from services.chat_sync.ledger import _message_ids
+        from services.chat_sync.runtime import get_desktop_chat_sync_runtime
         await _local_access(request, Response())
         try:
             if (not isinstance(sync_edit, dict)
@@ -1451,8 +1451,8 @@ async def save_recent_file(request: Request):
 
     async def _register_chat_deletions():
         nonlocal deletion_receipt
-        from services.chat_sync_source import clear_local_replies
-        from services.character_profile_sync import DesktopProfileAdapter
+        from services.chat_sync.source import clear_local_replies
+        from services.chat_sync.profile_sync import DesktopProfileAdapter
         if (sync_edit['messageIds'] or sync_edit['localMessageIds']) and DesktopProfileAdapter(cm).busy(catgirl_name):
             raise HTTPException(409, 'chat_sync_reply_in_progress')
         # Recheck inside the locked save, after the recent-file CAS succeeded.

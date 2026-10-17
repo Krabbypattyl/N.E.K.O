@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
-from services.chat_sync_runtime import get_desktop_chat_sync_runtime
+from services.chat_sync.runtime import get_desktop_chat_sync_runtime
 from utils.config_manager import get_config_manager
 from utils.config_manager.reserved_schema import get_character_uid
 
@@ -348,7 +348,7 @@ async def clear_originals(character_uid: str, runtime: Runtime):
 
 async def close_runtime() -> None:
     """Release adapter clients without clearing local original or deletion queues."""
-    from services.chat_sync_runtime import close_desktop_chat_sync_runtimes
+    from services.chat_sync.runtime import close_desktop_chat_sync_runtimes
     await close_desktop_chat_sync_runtimes()
 
 

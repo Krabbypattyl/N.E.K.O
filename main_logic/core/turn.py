@@ -34,7 +34,7 @@ from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
 from main_logic.session_state import SessionEvent, TurnOwner
-from services.chat_sync_source import is_chat_input_source, mark_tool_turn, mark_turn_origin, save_original
+from services.chat_sync.source import is_chat_input_source, mark_tool_turn, mark_turn_origin, save_original
 from main_logic.agent_event_bus import (
     dispatch_user_utterance,
     publish_conversation_turn_observed_best_effort,

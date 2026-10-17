@@ -23,7 +23,7 @@ import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_directives
 from main_logic.session_state import SessionEvent, session_reply_in_progress
-from services.chat_sync_source import mark_turn_origin
+from services.chat_sync.source import mark_turn_origin
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
     _STARTUP_GREETING_EARLIER_SAMPLES,

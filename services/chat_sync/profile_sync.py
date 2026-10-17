@@ -11,10 +11,10 @@ import math
 from pathlib import Path
 import sqlite3
 
-from services.chat_sync_writer import store_connection
+from services.chat_sync.writer import store_connection
 from uuid import uuid4
 
-from services.character_profile_protocol import (
+from services.chat_sync.profile_protocol import (
     RESERVED_PROFILE_FIELD_KEYS, decode_character_profile, encode_character_profile,
 )
 from utils.config_manager.reserved_schema import get_character_uid
@@ -72,7 +72,7 @@ def export_profile(name: str, raw: dict) -> dict:
 
 async def read_character_directory(request, owner):
     """Read bounded owner-scoped pages without silently truncating cloud characters."""
-    from services.chat_sync_ledger import ChatDomain
+    from services.chat_sync.ledger import ChatDomain
 
     # Beta accounts have no role quota. Pagination bounds each response; any future
     # paid-plan quota is separate server policy, never an accidental page-size limit.
@@ -453,13 +453,13 @@ class DesktopProfileSync:
 
     async def local(self, uid):
         """Capture current saved settings before the UI asks about uploading them."""
-        from services.chat_sync_recovery import role_pending
+        from services.chat_sync.recovery import role_pending
         if await asyncio.to_thread(role_pending, self.runtime, uid):
             raise ValueError("chat_sync_writer_recovery_required")
         binding = await asyncio.to_thread(self.runtime.state.binding, uid)
         if not binding or self.adapter is None:
             raise ValueError("chat_sync_not_bound")
-        from services.chat_sync_ledger import ChatDomain
+        from services.chat_sync.ledger import ChatDomain
         domain = ChatDomain(binding["owner_id"], uid).key()
         profile = await self.adapter.read(uid)
         return await asyncio.to_thread(self.store.observe, domain, profile)
@@ -513,7 +513,7 @@ class DesktopProfileSync:
 
     async def preview(self, uid):
         """Read a cloud profile for explicit import; this never creates or binds a role."""
-        from services.chat_sync_ledger import ChatDomain
+        from services.chat_sync.ledger import ChatDomain
         token, fingerprint = await self.runtime._session()
         owner = await self.runtime._identity(token)
         ChatDomain(owner, uid)
@@ -535,7 +535,7 @@ class DesktopProfileSync:
             await asyncio.to_thread(self.runtime.writer.require_epoch, writer_epoch)
             if head["revision"] != revision or head["profileHash"] != profile_hash or head["profile"] is None:
                 raise ValueError("character_profile_changed")
-            from services.chat_sync_ledger import ChatDomain
+            from services.chat_sync.ledger import ChatDomain
             domain = ChatDomain(head["ownerId"], uid).key()
             token, fingerprint = await self.runtime._session()
             if await self.runtime._identity(token) != head["ownerId"]:

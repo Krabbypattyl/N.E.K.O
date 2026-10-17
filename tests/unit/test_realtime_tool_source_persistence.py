@@ -23,13 +23,13 @@ async def test_provider_terminal_cannot_save_tool_preface_before_deferred_dispat
     from main_logic.core.turn import TurnMixin
     from main_logic.omni_realtime_client import _gemini_support
     from main_logic.omni_realtime_client import OmniRealtimeClient
-    import services.chat_sync_source as source_module
+    import services.chat_sync.source as source_module
 
     runtime = make_runtime(tmp_path)
     config = SimpleNamespace(aload_characters=AsyncMock(return_value={
         "猫娘": {"Lan": {"_reserved": {"character_uid": UID}}},
     }))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", Mock())
     monkeypatch.setattr("httpx.AsyncClient.send", AsyncMock(side_effect=AssertionError("unexpected_http")))
     monkeypatch.setattr(_gemini_support, "types", types)
@@ -209,13 +209,13 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
     from main_logic import cross_server
     from main_logic.core.turn import TurnMixin
     from main_logic.omni_realtime_client import _gemini_support
-    import services.chat_sync_source as source_module
+    import services.chat_sync.source as source_module
 
     runtime = make_runtime(tmp_path)
     config = SimpleNamespace(aload_characters=AsyncMock(return_value={
         "猫娘": {"Lan": {"_reserved": {"character_uid": UID}}},
     }))
-    monkeypatch.setattr("services.chat_sync_runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
     monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", Mock())
     monkeypatch.setattr("httpx.AsyncClient.send", AsyncMock(side_effect=AssertionError("unexpected_http")))
     monkeypatch.setattr(_gemini_support, "types", types)

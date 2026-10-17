@@ -13,7 +13,7 @@ import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
-from services.chat_sync_ledger import (
+from services.chat_sync.ledger import (
     ChatDomain,
     ChatOriginal,
     MAX_SYNC_ORIGINAL_BYTES,
@@ -21,7 +21,7 @@ from services.chat_sync_ledger import (
     OriginalNeedsFragmentation,
     SourceLocator,
 )
-from services.chat_sync_protocol import decode_chat_original, encode_chat_original
+from services.chat_sync.protocol import decode_chat_original, encode_chat_original
 
 
 DOMAIN = ChatDomain("00000000-0000-4000-8000-000000000001", "a" * 32)
@@ -177,7 +177,7 @@ def test_failed_insert_rolls_back_snapshot_without_consuming_pending(tmp_path):
 
 def crash_after_batch_insert(path, witness):
     """Exit a spawned process after the batch insert but before SQLite commit."""
-    from services.chat_sync_writer import ChatSyncWriter, _WriterConnection
+    from services.chat_sync.writer import ChatSyncWriter, _WriterConnection
     writer = ChatSyncWriter(path.parent, witness, database_names=(path.name,))
     with writer.initialize():
         ledger = ChatSyncLedger(path)
@@ -193,7 +193,7 @@ def crash_after_batch_insert(path, witness):
 
 def test_process_exit_before_batch_commit_preserves_raw_pending_but_requires_recovery(tmp_path):
     """SQLite retains evidence while the ambiguous external reservation blocks reuse."""
-    from services.chat_sync_writer import WriterQuarantined, registered_writer
+    from services.chat_sync.writer import WriterQuarantined, registered_writer
     ledger = ChatSyncLedger(tmp_path / "sync.db")
     capture(ledger, 1)
     pending = ledger.pending(DOMAIN)

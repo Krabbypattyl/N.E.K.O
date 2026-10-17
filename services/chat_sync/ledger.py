@@ -15,11 +15,11 @@ import json
 from pathlib import Path
 import sqlite3
 
-from services.chat_sync_writer import store_connection
+from services.chat_sync.writer import store_connection
 import time
 from uuid import uuid4
 
-from services.chat_sync_protocol import (
+from services.chat_sync.protocol import (
     MAX_ORIGIN_SEQ,
     decode_chat_original,
     encode_chat_original,

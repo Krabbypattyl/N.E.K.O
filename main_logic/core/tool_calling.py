@@ -26,7 +26,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
-from services.chat_sync_source import mark_tool_turn
+from services.chat_sync.source import mark_tool_turn
 from config.prompts.prompts_sys import _loc
 from config.turn_context_settings import (
     RECALL_MEMORY_TOOL_BUDGET_MS,

@@ -20,7 +20,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from services.chat_sync_writer import store_connection
+from services.chat_sync.writer import store_connection
 import ssl
 import threading
 from urllib.parse import urlsplit
@@ -28,12 +28,12 @@ from uuid import uuid4
 
 import httpx
 
-from services.chat_sync_ledger import MAX_SYNC_ORIGINAL_BYTES, ChatDomain, ChatOriginal, ChatSyncLedger, SourceLocator
-from services.chat_sync_protocol import decode_chat_original, validate_sync_domain
-from services.chat_sync_prototype import PrototypeChatSyncClient
-from services.chat_sync_scheduler import ChatSyncScheduler, body_eligible_at, now_ms
-from services.chat_sync_trace import get_trace, route_class
-from services.character_profile_sync import DesktopProfileAdapter, DesktopProfileSync
+from services.chat_sync.ledger import MAX_SYNC_ORIGINAL_BYTES, ChatDomain, ChatOriginal, ChatSyncLedger, SourceLocator
+from services.chat_sync.protocol import decode_chat_original, validate_sync_domain
+from services.chat_sync.prototype import PrototypeChatSyncClient
+from services.chat_sync.scheduler import ChatSyncScheduler, body_eligible_at, now_ms
+from services.chat_sync.trace import get_trace, route_class
+from services.chat_sync.profile_sync import DesktopProfileAdapter, DesktopProfileSync
 
 
 SessionProvider = Callable[[], Awaitable[dict]]
@@ -349,8 +349,8 @@ class DesktopChatSyncRuntime:
         notification_connect=None, history_changed=None, current_character_uid_provider=None,
     ):
         """Allow synthetic HTTP transports in tests; production verifies HTTPS."""
-        from services.chat_sync_writer import ChatSyncWriter
-        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync.writer import ChatSyncWriter
+        from services.chat_sync.source import ChatOriginalSource
         self._clock = clock
         self.trace = get_trace()
         self.writer = ChatSyncWriter(directory, witness_path)
@@ -416,19 +416,19 @@ class DesktopChatSyncRuntime:
 
     def prepare_writer_recovery(self):
         """An explicit recovery action revokes all copied tasks before fresh binding."""
-        from services.chat_sync_recovery import stage_authority
+        from services.chat_sync.recovery import stage_authority
         with self._commit_lock:
             self.writer.recover(lambda: stage_authority(self))
 
     def save_outage_original(self, uid, record_id, original):
         """Keep accepted local chat available when optional writer authority fails."""
-        from services.chat_sync_recovery import save_outage
+        from services.chat_sync.recovery import save_outage
         return save_outage(self.state.path.parent, uid, record_id, original)
 
     async def recover_writer_role(self, character_uid, local_name, *, service_url=None):
         """Verify current cloud fences before reusing any copied history candidate."""
-        from services.chat_sync_writer import WriterQuarantined
-        from services.chat_sync_recovery import (import_outage, pending_candidates, apply_cloud_deletions,
+        from services.chat_sync.writer import WriterQuarantined
+        from services.chat_sync.recovery import (import_outage, pending_candidates, apply_cloud_deletions,
                                                   apply_checked_candidates, finish_role)
         try:
             await asyncio.to_thread(self.writer.check)
@@ -464,7 +464,7 @@ class DesktopChatSyncRuntime:
 
     async def approve_recovery_deletions(self, character_uid, task_id):
         """Register renewed exact deletion consent through the existing marker lane."""
-        from services.chat_sync_recovery import approve_deletions
+        from services.chat_sync.recovery import approve_deletions
         binding = await asyncio.to_thread(self.state.binding, character_uid)
         authenticated = await self._session()
         _, _, commit = await self._bound_transport(character_uid, authenticated=authenticated, expected_binding=binding)
@@ -917,8 +917,8 @@ class DesktopChatSyncRuntime:
 
     async def status(self) -> dict:
         """Describe local opt-in separately from authentication and cloud progress."""
-        from services.chat_sync_writer import WriterQuarantined
-        from services.chat_sync_recovery import role_pending
+        from services.chat_sync.writer import WriterQuarantined
+        from services.chat_sync.recovery import role_pending
         try:
             await asyncio.to_thread(self.writer.check)
         except WriterQuarantined:
@@ -964,7 +964,7 @@ class DesktopChatSyncRuntime:
 
     async def _history_status(self, character_uid):
         """Read consent/progress only when a dedicated source database exists."""
-        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync.source import ChatOriginalSource
         path = self.state.path.parent / "sources.sqlite3"
         if not await asyncio.to_thread(path.exists):
             return None
@@ -976,7 +976,7 @@ class DesktopChatSyncRuntime:
 
     def _cancel_history_preview(self, uid, task_id, epoch):
         """Only the creator's fixed unapproved task may be cancelled under the same writer authority."""
-        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync.source import ChatOriginalSource
         with self._commit_lock, self.writer.locked():
             self.writer.require_epoch(epoch)
             source = ChatOriginalSource(self.state.path.parent / "sources.sqlite3")
@@ -985,12 +985,12 @@ class DesktopChatSyncRuntime:
     async def preview_history(self, character_uid, local_name, *, after_origin_seq=0, through_origin_seq=None,
                               supersede_preview=True):
         """Pin authenticated cloud identity and a fixed trusted local member set."""
-        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync.source import ChatOriginalSource
         async with self._lock:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
             authenticated = await self._session()
             _, request, commit = await self._bound_transport(character_uid, authenticated=authenticated, expected_binding=binding)
-            from services.character_profile_sync import read_character_directory
+            from services.chat_sync.profile_sync import read_character_directory
             roles = await read_character_directory(request, binding["owner_id"])
             names = {role["characterSyncId"]: role["displayName"] for role in roles["characters"]}
             if character_uid not in names:
@@ -1029,7 +1029,7 @@ class DesktopChatSyncRuntime:
 
     async def approve_history(self, character_uid, task_id, *, expected_request_id=None):
         """Accept one reviewed task ID; the client supplies no names, counts or owner."""
-        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync.source import ChatOriginalSource
         if not isinstance(task_id, str) or not _HEX_ID.fullmatch(task_id):
             raise ValueError("chat_sync_history_changed")
         async with self._lock:
@@ -1061,7 +1061,7 @@ class DesktopChatSyncRuntime:
 
     async def _advance_history(self, character_uid, *, presence=None):
         """Register one bounded local page before ordinary queue eligibility is read."""
-        from services.chat_sync_source import ChatOriginalSource
+        from services.chat_sync.source import ChatOriginalSource
         path = self.state.path.parent / "sources.sqlite3"
         if not await asyncio.to_thread(path.exists):
             return 0
@@ -1129,7 +1129,7 @@ class DesktopChatSyncRuntime:
 
     def _queue_sync_choice(self, uid, name, profile, binding, epoch, *, include_history, replace):
         """Pin one saved definition/range under the caller's writer lock before dependent work."""
-        from services.character_profile_protocol import encode_character_profile
+        from services.chat_sync.profile_protocol import encode_character_profile
         request = {"requestId": uuid4().hex, "epoch": list(epoch), "displayName": name,
                    "canonical": encode_character_profile(profile).decode("utf-8")}
         if replace and binding:
@@ -1191,7 +1191,7 @@ class DesktopChatSyncRuntime:
                     # Keep the original chat cutoff while explicitly approving the newer saved definition.
                     pending.update(requestId=uuid4().hex, displayName=name)
                     pending.pop("error", None)
-                    from services.character_profile_protocol import encode_character_profile
+                    from services.chat_sync.profile_protocol import encode_character_profile
                     pending["canonical"] = encode_character_profile(candidate["local"]).decode("utf-8")
                     self.state.queue_new_role(uid, pending, replace=True)
         await asyncio.to_thread(commit)
@@ -1240,7 +1240,7 @@ class DesktopChatSyncRuntime:
 
     async def _consume_sync_choice(self, uid, request, presence, *, manual):
         """Reuse binding, fixed profile approval and trusted-history tasks under writer fences."""
-        from services.character_profile_protocol import encode_character_profile
+        from services.chat_sync.profile_protocol import encode_character_profile
         preview = None
         async def active():
             if self._closing:
@@ -1442,7 +1442,7 @@ class DesktopChatSyncRuntime:
 
     def _recover_download_deletions(self, binding, page):
         """Fence a late page with real markers even beyond the source recovery page."""
-        from services.chat_sync_source import ChatOriginalSource, register_source_deletions
+        from services.chat_sync.source import ChatOriginalSource, register_source_deletions
         path = self.state.path.parent / "sources.sqlite3"
         if not path.exists() or not isinstance(page, dict) or not isinstance(page.get("originals"), list):
             return
@@ -1539,7 +1539,7 @@ class DesktopChatSyncRuntime:
             if automatic_only:
                 await self._require_automatic_character(character_uid)
             if channel == "deletion":
-                from services.chat_sync_recovery import approved_deletion_tasks
+                from services.chat_sync.recovery import approved_deletion_tasks
                 for task_id in await asyncio.to_thread(approved_deletion_tasks, self, character_uid):
                     await self.approve_recovery_deletions(character_uid, task_id)
             if channel == "body":
@@ -1608,7 +1608,7 @@ class DesktopChatSyncRuntime:
     async def _recover_originals(self) -> None:
         """Recover raw WAL gaps and repeat tombstone cleanup after interrupted deletes."""
         await asyncio.to_thread(self.writer.check)
-        from services.chat_sync_source import recover_sources
+        from services.chat_sync.source import recover_sources
         await recover_sources(self)
         for binding in await asyncio.to_thread(self.state.bindings):
             await asyncio.to_thread(
@@ -1619,7 +1619,7 @@ class DesktopChatSyncRuntime:
         """Pin one verified account, consent generation and bearer for an operation."""
         binding = await asyncio.to_thread(self.state.binding, character_uid)
         if not recovery:
-            from services.chat_sync_recovery import role_pending
+            from services.chat_sync.recovery import role_pending
             if await asyncio.to_thread(role_pending, self, character_uid):
                 raise ValueError("chat_sync_writer_recovery_required")
         if self._closing:
@@ -1720,12 +1720,12 @@ class DesktopChatSyncRuntime:
         """Restore producer-proven local replies without entering any sync lane."""
         # A separate response reflects today's tool-sync scope, not a permanent
         # ban. Restoration alone never approves publishing this local history.
-        from services.chat_sync_source import local_replies
+        from services.chat_sync.source import local_replies
         return await local_replies(self, character_uid)
 
     async def history(self, character_uid: str) -> list[dict]:
         """Read stored originals without feeding cache, models or reactions."""
-        from services.chat_sync_writer import WriterQuarantined
+        from services.chat_sync.writer import WriterQuarantined
         try:
             await self._recover_originals()
             binding = await asyncio.to_thread(self.state.binding, character_uid)
@@ -1779,8 +1779,8 @@ class DesktopChatSyncRuntime:
 
     async def delete(self, character_uid: str, message_ids: list[str], *, expected_binding=...) -> dict:
         """Durably hide exact IDs and queue deletion even while network is unavailable."""
-        from services.chat_sync_writer import WriterQuarantined
-        from services.chat_sync_recovery import save_outage_deletions
+        from services.chat_sync.writer import WriterQuarantined
+        from services.chat_sync.recovery import save_outage_deletions
         try:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
             await self._recover_originals()
@@ -1805,8 +1805,8 @@ class DesktopChatSyncRuntime:
 
     def _delete_sources(self, character_uid, binding, message_ids, *, expected_binding=...):
         """Serialize local deletion with source-page transfer and preserve crash fences."""
-        from services.chat_sync_source import ChatOriginalSource
-        from services.chat_sync_ledger import _message_ids
+        from services.chat_sync.source import ChatOriginalSource
+        from services.chat_sync.ledger import _message_ids
         _message_ids(message_ids)
         with self._commit_lock:
             if expected_binding is not ...:
@@ -1834,9 +1834,9 @@ class DesktopChatSyncRuntime:
 
     async def clear(self, character_uid: str) -> dict:
         """Clear known sync originals and separately erase this role's local replies."""
-        from services.chat_sync_source import clear_local_replies, flush_terminated_originals, known_source_ids, local_reply_ids
-        from services.chat_sync_writer import WriterQuarantined
-        from services.chat_sync_recovery import quarantined_local_ids
+        from services.chat_sync.source import clear_local_replies, flush_terminated_originals, known_source_ids, local_reply_ids
+        from services.chat_sync.writer import WriterQuarantined
+        from services.chat_sync.recovery import quarantined_local_ids
         # A reply that just finished may still wait out its late-text grace;
         # save it first so the fixed snapshot below includes it.
         await flush_terminated_originals(character_uid)

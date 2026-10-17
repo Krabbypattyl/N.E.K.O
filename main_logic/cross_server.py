@@ -47,7 +47,7 @@ from utils.language_utils import is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
-from services.chat_sync_source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
+from services.chat_sync.source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")

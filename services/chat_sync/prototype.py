@@ -13,8 +13,8 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 
-from services.chat_sync_ledger import ChatDomain, ChatSyncLedger
-from services.chat_sync_protocol import MAX_ORIGIN_SEQ
+from services.chat_sync.ledger import ChatDomain, ChatSyncLedger
+from services.chat_sync.protocol import MAX_ORIGIN_SEQ
 
 
 PrototypeRequest = Callable[[str, str, bytes | None], Awaitable[dict]]
