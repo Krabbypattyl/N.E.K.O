@@ -456,10 +456,21 @@ class DesktopChatSyncRuntime:
                 if not page['hasMore']:
                     break
             candidates = await asyncio.to_thread(pending_candidates, self, domain)
-            for offset in range(0, len(candidates), 200):
-                selected = candidates[offset:offset + 200]
-                result = await client.check_recovery([{'messageId': row['record_id'], 'sha256': hashlib.sha256(row['payload']).hexdigest()} for row in selected])
+            offset, batch_limit = 0, 200
+            while offset < len(candidates):
+                selected = candidates[offset:offset + batch_limit]
+                try:
+                    result = await client.check_recovery([{'messageId': row['record_id'], 'sha256': hashlib.sha256(row['payload']).hexdigest()} for row in selected])
+                except ChatSyncServiceError as error:
+                    if error.status_code != 413 or len(selected) == 1:
+                        raise
+                    # The server bounds stored-body verification, not just this
+                    # digest envelope. Shrink the same unchecked prefix; retain
+                    # the learned limit and the bound transport's normal fences.
+                    batch_limit = max(1, len(selected) // 2)
+                    continue
                 await commit(apply_checked_candidates, self, domain, selected, result['results'])
+                offset += len(selected)
             deletions = await commit(finish_role, self, domain, binding, authenticated[1])
         history = await self.preview_history(character_uid, local_name)
         return {'history': history, 'deletions': deletions}

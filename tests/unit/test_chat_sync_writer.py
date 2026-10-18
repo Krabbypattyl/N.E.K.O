@@ -378,6 +378,171 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_history_and_d
     await runtime.close()
 
 
+async def recovery_budget_runtime(tmp_path, on_check, *, count=7):
+    """Exercise recovery with real SQLite witnesses and a synthetic authenticated HTTP service."""
+    from contextlib import nullcontext
+    import httpx
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource, recover_sources
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
+    owner, uid = '12345678-1234-4234-8234-123456789abc', 'a' * 32
+    session = {'logged_in': True, 'snapshot': {'access_token': 'synthetic', 'base_url': 'https://community.project-neko.cn'}}
+    checks, clock = [], [1_000_000]
+
+    async def resolve():
+        return session
+
+    async def service(request):
+        # Advance only this test clock; production admission/backpressure stays active.
+        clock[0] += 10_000
+        path = request.url.path
+        body = json.loads(request.content) if request.content else None
+        if path == '/v1/chat-sync/identity':
+            return httpx.Response(200, json={'ownerId': owner})
+        if path.endswith('/bindings'):
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid,
+                                           'deviceId': body['deviceId'], 'bindingId': 'b' * 32})
+        if path.endswith('/recovery/deletions'):
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'through': count,
+                                           'cursor': count, 'hasMore': False, 'deletedMessageIds': []})
+        if path.endswith('/recovery/check'):
+            checks.append(body['records'])
+            reply = await on_check(body['records'], runtime, session, len(checks))
+            if isinstance(reply, httpx.Response):
+                return reply
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'cursor': count,
+                'results': [{'messageId': row['messageId'], 'state': 'received'} for row in body['records']], **(reply or {})})
+        if path == '/prototype/chat-sync/characters':
+            return httpx.Response(200, json={'characters': [{'characterSyncId': uid, 'displayName': 'Cloud Neko'}]})
+        if path.endswith('/' + uid):
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, **body})
+        raise AssertionError('Recovery must not send originals or copied deletion tasks')
+
+    runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', resolve, witness_path=tmp_path / 'device' / 'writer.json',
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(service)), session_commit_guard=lambda _: nullcontext(),
+        clock=lambda: clock[0], uniform=lambda *_: 0)
+    await runtime.configure('https://sync.test')
+    await runtime.enable(uid, 'Local Neko')
+    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+    identities = [f'{seq:032x}' for seq in range(1, count + 1)]
+    for identity in identities:
+        source.commit(owner, uid, identity, ChatOriginal('user', 'synthetic recovery ' + identity))
+    await recover_sources(runtime)
+    runtime.writer.path.write_text('{broken')
+    return runtime, ChatDomain(owner, uid), identities, checks
+
+
+@pytest.mark.asyncio
+async def test_recovery_body_budget_splits_exact_prefix_and_retains_the_smaller_limit(tmp_path):
+    """Every accepted sub-batch is exact; a 413 never advances recovery or resets the learned size."""
+    import httpx
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(records, _runtime, _session, _index):
+        return httpx.Response(413) if len(records) > 3 else None
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check)
+    try:
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert [[row['messageId'] for row in request] for request in checks] == [identities, identities[:3], identities[3:6], identities[6:]]
+        assert {json.loads(raw)['messageId'] for raw in runtime.ledger.visible_originals(domain)} == set(identities)
+        assert pending_candidates(runtime, domain) == [] and not role_pending(runtime, domain.character_uid)
+        assert result['history']['count'] == 0 and result['deletions']['count'] == 0
+        assert runtime.ledger.stats(domain)['pendingOriginals'] == 0 and runtime.ledger.cursor(domain) == 0
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_body_budget_stops_at_a_rejected_singleton_without_finishing(tmp_path):
+    """A single-record rejection is terminal; unchecked records cannot become delivery evidence."""
+    import httpx
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(_records, _runtime, _session, _index):
+        return httpx.Response(413)
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check, count=3)
+    try:
+        with pytest.raises(ChatSyncServiceError) as error:
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert error.value.status_code == 413 and [len(request) for request in checks] == [3, 1]
+        assert {row['record_id'] for row in pending_candidates(runtime, domain)} == set(identities)
+        assert role_pending(runtime, domain.character_uid) and runtime.ledger.visible_originals(domain) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', [401, 403, 409, 422, 429, 'network', 'incomplete', 'reordered', 'owner', 'session', 'binding'])
+async def test_recovery_body_budget_retains_exact_partial_progress_when_a_later_sub_batch_fails(tmp_path, fault):
+    """Splitting must not turn auth, integrity, lifecycle or connection faults into acknowledgements."""
+    import httpx
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(records, runtime, session, index):
+        if index == 1:
+            return httpx.Response(413)
+        if index == 2:
+            return None
+        if isinstance(fault, int):
+            return httpx.Response(fault, headers={'Retry-After': '600'} if fault == 429 else {})
+        if fault == 'network':
+            raise httpx.ConnectError('synthetic connection interruption')
+        if fault == 'session':
+            session['snapshot']['access_token'] = 'synthetic-changed'
+        elif fault == 'binding':
+            runtime.state.pause('a' * 32)
+        elif fault == 'owner':
+            return {'ownerId': '12345678-1234-4234-8234-123456789abd'}
+        elif fault in ('incomplete', 'reordered'):
+            selected = records[:1] if fault == 'incomplete' else list(reversed(records))
+            return {'results': [{'messageId': row['messageId'], 'state': 'received'} for row in selected]}
+        return None
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check)
+    try:
+        with pytest.raises(ValueError) as error:
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        if isinstance(fault, int):
+            assert isinstance(error.value, ChatSyncServiceError) and error.value.status_code == fault
+        assert [len(request) for request in checks] == [7, 3, 3]
+        assert {json.loads(raw)['messageId'] for raw in runtime.ledger.visible_originals(domain)} == set(identities[:3])
+        assert {row['record_id'] for row in pending_candidates(runtime, domain)} == set(identities[3:])
+        assert role_pending(runtime, domain.character_uid)
+        if fault == 429:
+            assert not runtime.scheduler.origin_ready()
+            with pytest.raises(ValueError, match='chat_sync_retry_later'):
+                await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+            assert len(checks) == 3
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [400, 401, 403, 409, 422, 429, 500])
+async def test_recovery_body_budget_does_not_split_other_http_errors(tmp_path, status):
+    """Only a multi-record 413 authorizes another smaller request."""
+    import httpx
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(_records, _runtime, _session, _index):
+        return httpx.Response(status)
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check, count=3)
+    try:
+        with pytest.raises(ChatSyncServiceError) as error:
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert error.value.status_code == status and [len(request) for request in checks] == [3]
+        assert {row['record_id'] for row in pending_candidates(runtime, domain)} == set(identities)
+        assert role_pending(runtime, domain.character_uid) and runtime.ledger.visible_originals(domain) == []
+    finally:
+        await runtime.close()
+
+
 def _process_save(directory, witness, identity, crash):
     import os
     writer = ChatSyncWriter(Path(directory), Path(witness))
