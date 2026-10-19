@@ -40,7 +40,7 @@ logger = get_module_logger(__name__, "Main")
 _sweep_task: Optional[asyncio.Task] = None
 _recovery_task: Optional[asyncio.Task] = None
 _RECOVERY_STOP_WAIT_S = 0.2
-_STOP_ALL_SLACK_S = 0.5  # stop_all 自己按 VISIT_SHUTDOWN_BUDGET_S 截断各步；外层只兜它卡死，留出收尾余量
+_STOP_ALL_SLACK_S = 0.5  # stop_all bounds each step with VISIT_SHUTDOWN_BUDGET_S; the outer timeout only catches hangs, leaving cleanup margin.
 
 SHUTDOWN_STEP_BUDGET_S = VISIT_SHUTDOWN_BUDGET_S + 2 * _RECOVERY_STOP_WAIT_S + _STOP_ALL_SLACK_S + 0.3
 """Deadline of the whole visit shutdown step in ``on_shutdown`` (``stop_all`` plus the two bounded waits)."""
@@ -51,13 +51,13 @@ async def _family_names() -> tuple[str, ...]:
 
     try:
         return tuple((await load_character_context()).family_names)
-    except Exception as exc:  # noqa: BLE001 - 读不出就不替换家人称呼（摘要只是少一道保护名单）
+    except Exception as exc:  # noqa: BLE001 - If reading fails, retain family names (the summary merely loses one protection list).
         logger.warning("visit recovery: family names unreadable: %s", type(exc).__name__)
         return ()
 
 
 def _character_config_lock() -> Any:
-    # 晚绑定：测试会把这把模块级锁换成新的
+    # Late binding: tests replace this module-level lock.
     from utils import character_memory
 
     return character_memory.character_config_mutation_lock
@@ -69,7 +69,7 @@ async def run_startup_recovery() -> Any:
     from main_logic.visit.forget_runner import default_void_pending
     from main_logic.visit.recovery import visit_spool_recovery
     from main_routers.visit_router import character_hooks, runtime, transcript_upload
-    from main_routers.visit_router.debrief import render_chips
+    from main_routers.visit_router.debrief import render_chips, resume_diary_commit
     from main_routers.visit_router.llm import one_shot_llm
 
     config_dir = runtime.runtime_deps().config_dir()
@@ -84,9 +84,11 @@ async def run_startup_recovery() -> Any:
         submit_report=transcript_upload.submit_queued_report,
         retry_later=transcript_upload.schedule_visit_retry,
         void_pending=default_void_pending(config_dir),
-        # 清除重放期间挡住改名 / 删除的守卫（与清除端点同一个）
+        # For sessions in the two-step diary write, schedule backoff retries using persisted next_at.
+        resume_diary_commit=resume_diary_commit,
+        # Guard against renaming/deletion during clear replay, shared with the clear endpoint.
         lifecycle_guard=runtime.hold_character_lifecycle,
-        # 删除退役补完：删掉串门人设；每一项在角色配置变更锁内按配置判定（与删除事务互斥）
+        # Complete retired deletions by removing visit personas; assess each item under the character-config mutation lock, mutually exclusive with deletion transactions.
         retire_persona=character_hooks.retire_persona,
         config_lock=_character_config_lock,
     )
@@ -100,7 +102,7 @@ async def _recover_in_background() -> None:
         await run_startup_recovery()
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 - 补录失败只留文件给下次启动
+    except Exception as exc:  # noqa: BLE001 - Failed backfill leaves files for the next startup.
         logger.error("visit recovery failed: %r", exc)
 
 
@@ -115,6 +117,11 @@ def start_visit_background_tasks() -> None:
         _recovery_task = asyncio.create_task(_recover_in_background(), name="visit-recovery")
 
 
+def startup_recovery_running() -> bool:
+    """Whether the startup recovery task is still running (it reconciles pending renames under their guards)."""
+    return _recovery_task is not None and not _recovery_task.done()
+
+
 def _cancel(task: Optional[asyncio.Task]) -> None:
     if task is not None and not task.done():
         task.cancel()
@@ -127,22 +134,26 @@ async def stop_visit_background_tasks() -> None:
 
     sweep, recovery = _sweep_task, _recovery_task
     _sweep_task = _recovery_task = None
-    _cancel(sweep)  # 计时不再与关机收口并发
-    # 补录先停（没做完的下次启动再来）：它还在跑的话，可能在 stop_all 取后台任务快照之后才派生
-    # digest / 摘要写入，那些就漏过了关机的取消
+    _cancel(sweep)  # Timing no longer runs concurrently with shutdown finalization.
+    # Stop backfill first and resume unfinished work next startup; otherwise it can spawn digest/summary writes
+    # after stop_all snapshots background tasks, escaping shutdown cancellation.
     _cancel(recovery)
     if recovery is not None and not recovery.done():
         await asyncio.wait([recovery], timeout=_RECOVERY_STOP_WAIT_S)
     try:
-        # 外层与 stop_all 同一个预算的话，一场 shutdown() 用满预算就会先超时、截掉 stop_all 后半段
-        # （取消 digest / 摘要等后台写入）：只兜它卡死，留出余量
+        # Sharing stop_all's budget externally would time out when one shutdown() uses it all, truncating stop_all's remaining
+        # digest/summary background-write cancellation; catch only hangs and leave margin.
         await asyncio.wait_for(runtime.stop_all("shutdown"), VISIT_SHUTDOWN_BUDGET_S + _STOP_ALL_SLACK_S)
-    except Exception as exc:  # noqa: BLE001 - 超时 / 出错只记日志：没收口的留给下次启动补录
+    except Exception as exc:  # noqa: BLE001 - Only log timeouts/errors; leave unfinalized work for next startup's backfill.
         logger.warning("visit shutdown: stop_all did not finish: %r", exc)
-    # 转录补传 / 举报重试是独立任务，stop_all 不管它们：关机时取消，没传完的文件留给下次启动
+    # Transcript reuploads/report retries are independent tasks outside stop_all; cancel at shutdown, retaining incomplete files for next startup.
     from main_routers.visit_router import transcript_upload
 
     workers = transcript_upload.cancel_retry_workers()
+    # Also cancel diary backoff retries; unfinished state remains in state.json for next startup to reschedule by next_at.
+    from main_routers.visit_router import debrief
+
+    workers = list(workers or []) + debrief.cancel_commit_timers()
     if workers:
         await asyncio.wait(workers, timeout=_RECOVERY_STOP_WAIT_S)
 
@@ -157,7 +168,10 @@ def cancel_visit_background_tasks() -> None:
     _cancel(_sweep_task)
     _cancel(_recovery_task)
     _sweep_task = _recovery_task = None
-    # 补录排下的转录补传 / 举报重试与它派生的 digest / 摘要写入都是独立任务：回滚后不能留着上传、
-    # 改 spool，与下次初始化重叠
+    # Backfill's transcript reuploads/report retries and its spawned digest/summary writes are independent tasks; do not let them keep uploading
+    # or modifying spool after rollback and overlap the next initialization.
     transcript_upload.cancel_retry_workers()
+    from main_routers.visit_router import debrief
+
+    debrief.cancel_commit_timers()
     runtime.cancel_background_writes()

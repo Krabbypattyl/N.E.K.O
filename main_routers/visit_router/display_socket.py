@@ -24,8 +24,10 @@ ordinary chat never loads the visit package:
   endpoints. A bound connection is marked on the connection object itself
   (:data:`utils.visit_route_state.VISIT_SOCKET_BOUND_ATTR`, never a global)
   and gets the frames it missed: ``invite_ready`` / ``visit_invite`` of a
-  live visit and the debrief chips of every visit of this character whose
-  ``state.json.debrief_chip_pending`` is set.
+  live visit and, for every visit of this character whose
+  ``state.json.debrief_chip_pending`` is set, the debrief block its current
+  choice owes (chips, preview, preview while committing, failure block)
+  followed by its state frame (``debrief.owed_block``).
 * ``visit_debrief_chip_ack`` (:func:`handle_chip_ack`): remembered per
   connection only; it never clears ``debrief_chip_pending``.
 * the visit downlink (``visit_*`` frames, debrief chips) goes to bound
@@ -42,6 +44,7 @@ only source of a grace period (PR-07).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
 from typing import Any, Optional
@@ -57,8 +60,6 @@ logger = get_module_logger(__name__, "Main")
 
 _SEND_TIMEOUT_S = 2.0
 _UNAUTHORIZED = "VISIT_E_UNAUTHORIZED"
-# 这几种状态投递的是「记成日记 / 不记」两个芯片；预览块、写入中、写入失败块随 PR-14 的两步写入
-_CHIP_CHOICES = (None, "ask_later", "generating:diary")
 
 _replays: set[asyncio.Task] = set()
 """Bind replays in flight (kept referenced until done)."""
@@ -117,7 +118,7 @@ async def _send(websocket: Any, payload: dict) -> bool:
         await asyncio.wait_for(websocket.send_text(json.dumps(payload, ensure_ascii=False)), _SEND_TIMEOUT_S)
         record_sent(websocket, payload)
         return True
-    except Exception as exc:  # noqa: BLE001 - 页面不在 / 卡住：下次 bind 再重放
+    except Exception as exc:  # noqa: BLE001 - page is absent or stuck: replay on the next bind
         logger.debug("visit display: %s not written: %s", payload.get("type"), type(exc).__name__)
         return False
 
@@ -127,10 +128,18 @@ async def _send_status(websocket: Any, code: str, details: Optional[dict] = None
     return await _send(websocket, {"type": "status", "message": message})
 
 
-async def refuse(websocket: Any, request_id: Any = None) -> None:
-    """``status{VISIT_E_UNAUTHORIZED}`` on this connection (with the request id when given)."""
-    details = {"request_id": request_id} if isinstance(request_id, str) and request_id else {}
+async def refuse(websocket: Any, request_id: Any = None, *, reason: Optional[str] = None) -> None:
+    """``status{VISIT_E_UNAUTHORIZED}`` on this connection (with the request id / reason when given)."""
+    details: dict = {"request_id": request_id} if isinstance(request_id, str) and request_id else {}
+    if reason:
+        details["reason"] = reason
     await _send_status(websocket, _UNAUTHORIZED, details)
+
+
+async def refuse_orphan_line(websocket: Any, request_id: Any = None) -> None:
+    """``status{VISIT_INPUT_REFUSED_WRAPUP}`` for a visit-tagged line no visit took (route released at ``ending``)."""
+    details = {"request_id": request_id} if isinstance(request_id, str) and request_id else {}
+    await _send_status(websocket, "VISIT_INPUT_REFUSED_WRAPUP", details)
 
 
 async def refuse_unbound(websocket: Any, message: Any) -> bool:
@@ -145,11 +154,12 @@ async def refuse_unbound(websocket: Any, message: Any) -> bool:
 async def handle_bind(websocket: Any, lanlan_name: str, message: Any) -> bool:
     """``visit_bind``: authorize this connection and replay what it missed (in the background)."""
     if is_bound(websocket):
-        # 每条连接只 bind 一次：重复的 bind 不再扫描 / 重推（重连是新连接，照常重放）
+        # Bind once per connection: duplicate binds do not rescan or repush (a reconnect is a new connection and replays as usual)
         return True
     if not bind_allowed(websocket, message):
         logger.warning("visit display: %s (bind refused)", _UNAUTHORIZED)
-        await refuse(websocket)
+        # reason lets the page distinguish a rejected bind from rejected frames on an unbound connection (screen frames, playback progress): only the former warrants refreshing the token and retrying
+        await refuse(websocket, reason="bind_refused")
         return False
     setattr(websocket, VISIT_SOCKET_BOUND_ATTR, True)
     _delivered(websocket)
@@ -157,10 +167,10 @@ async def handle_bind(websocket: Any, lanlan_name: str, message: Any) -> bool:
 
     rt = runtime.get_runtime(str(lanlan_name or ""))
     if rt is not None:
-        # 与打标记同步、排进串门自己的有序显示队列：之前排着的帧先发、之后的阶段帧后发，
-        # 旧快照不会落在新阶段之后
+        # Queue in sync with the marker in the peer session's ordered display queue: earlier queued frames go first and later stage frames follow,
+        # so an old snapshot cannot appear after a new stage
         rt.replay_for_bind()
-    # 芯片重放要读磁盘（state.json）：放后台，不占住这条连接的收消息循环
+    # Chip replay must read from disk (state.json): run it in the background so it does not hold up this connection's receive loop
     task = asyncio.ensure_future(replay_chips(websocket, str(lanlan_name or "")))
     _replays.add(task)
     task.add_done_callback(_replays.discard)
@@ -171,7 +181,7 @@ async def replay_chips(websocket: Any, lanlan_name: str) -> None:
     """Debrief chips a freshly bound connection gets again (live invite frames go through the runtime)."""
     try:
         await _replay_chips(websocket, lanlan_name)
-    except Exception as exc:  # noqa: BLE001 - 读不出就等下次 bind / 启动补录
+    except Exception as exc:  # noqa: BLE001 - if unreadable, wait for the next bind or startup reconciliation
         logger.warning("visit display: chip replay failed: %r", exc)
 
 
@@ -183,24 +193,24 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
 
     from main_routers.visit_router.accounts import own_visit_uid
 
-    # 按社区账号分区：只重放当前登录账号的场次（共用电脑上换了账号 / 已登出时不出别人的芯片）
+    # Partition by community account: replay only sessions for the currently signed-in account (do not show someone else's chips when a shared computer changes accounts or signs out)
     own_uid = await own_visit_uid()
     config_dir = runtime.runtime_deps().config_dir()
     pending: list[dict] = []
     names: dict[str, Optional[str]] = {}
     for visit_id in await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)):
-        # 还登记着的场次（退出流程中）也重放：芯片标记已落盘、而收尾时页面恰好重连没 bind，
-        # 之后再没有别的重放时机；与收尾那次重复时前端按 request_id 去重
+        # Replay sessions that are still registered (shutdown in progress) too: the chip marker is persisted, and the page may reconnect during shutdown without binding,
+        # leaving no later replay opportunity; if this duplicates shutdown delivery, the frontend deduplicates by request_id
         try:
             state = await VisitSpool(config_dir, visit_id).read_state()
-        except Exception as exc:  # noqa: BLE001 - 一场坏了不挡其余场次
+        except Exception as exc:  # noqa: BLE001 - one broken session must not block the rest
             logger.debug("visit display: state of %s unreadable: %s", visit_id[:6], type(exc).__name__)
             continue
         if state is None or not state.get("debrief_chip_pending") or state.get("own_uid") != own_uid:
             continue
         uid = state["own_char_uid"]
         if uid not in names:
-            # 按 uid 认当前名字：改名后芯片跟着新名字走；角色已删就不投递
+            # Resolve the current name by uid: chips follow a rename; do not deliver if the character was deleted
             names[uid] = await local_chars.resolve_char_name(uid)
         if names[uid] == lanlan_name:
             pending.append(state)
@@ -209,30 +219,91 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
 
 async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
     from main_routers.visit_router.accounts import own_visit_uid
-    from main_routers.visit_router.debrief import chip_blocks, chips_request_id
     from main_routers.visit_router.local_context import prompt_lang
 
     delivered = _delivered(websocket)
     lang = prompt_lang()
-    for state in await _pending_debriefs(lanlan_name):
-        visit_id = state["visit_id"]
-        if await own_visit_uid() != state["own_uid"]:
-            # 扫描期间登出 / 换了账号：不再把上一个账号的芯片发给这一页
+    for scanned in await _pending_debriefs(lanlan_name):
+        if await own_visit_uid() != scanned["own_uid"]:
+            # If the user signs out or changes accounts during the scan, do not send the previous account's chips to this page
             return
-        if state["debrief_choice"] not in _CHIP_CHOICES:
-            # 预览块 / 写入中 / 写入失败块的重放属于 PR-14（/debrief/choice 与两步写入）
-            continue
-        request_id = chips_request_id(visit_id)
-        if request_id in delivered:
-            continue
-        if state["finalized"] == "crash":
+        if not await _replay_one(websocket, lanlan_name, scanned["visit_id"], scanned["own_uid"], delivered, lang):
+            return
+
+
+async def _replay_one(websocket: Any, lanlan_name: str, visit_id: str, owner: str, delivered: set,
+                      lang: Optional[str]) -> bool:
+    """Replay one visit's owed block under its debrief lock; False stops the replay of this connection."""
+    from main_logic.visit.spool import VisitSpool
+    from main_routers.visit_router import debrief, runtime
+    from main_routers.visit_router.accounts import own_visit_uid
+
+    # Use the same lock as /debrief/choice and reread under the lock: if another page just chose "do not save", completed a write, or abandoned it after the scan,
+    # do not push a stale preview body and its invalid buttons from the old snapshot to this page
+    async with debrief._visit_lock(visit_id):
+        try:
+            state = await VisitSpool(runtime.runtime_deps().config_dir(), visit_id).read_state()
+        except Exception as exc:  # noqa: BLE001 - one unreadable session must not block the rest
+            logger.debug("visit display: state of %s unreadable: %s", visit_id[:6], type(exc).__name__)
+            return True
+        if state is None or not state.get("debrief_chip_pending") or state.get("own_uid") != owner:
+            return True
+        from main_logic.visit import local_chars
+
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                # Hold this cat's lifecycle and account identity from name/account checks through delivery: a rename in between (old name now belongs to another cat) or an account switch cannot slip through
+                if not await debrief._pin_push(stack, state):
+                    return True
+                if await local_chars.resolve_char_name(state["own_char_uid"]) != lanlan_name:
+                    # If this cat is renamed while waiting for the lock (the old name may now belong to another cat), this connection is no longer its page; its new-name bind will replay it
+                    return True
+                if await own_visit_uid() != owner:
+                    # If the user signs out or switches accounts while waiting for the lock (another page is generating / submitting), this page must not receive the previous account's block (final account check)
+                    return False
+                # Reread after verifying identity: "forget this person" does not use this lock and may run during one of the awaits above, so it could invalidate the preview just cleared
+                fresh = await debrief.reread_for_delivery(state)
+                if fresh is None or not fresh.get("debrief_chip_pending"):
+                    return True
+                return await _send_owed(websocket, lanlan_name, fresh, delivered, lang, own_visit_uid)
+        except TimeoutError:
+            # If delivery for this session exceeds the timeout, truncate this session and replay it on the next bind; continue with the next one
+            # (If an account switch is in progress, the next _pin_push returns False at negligible cost.)
+            logger.info("visit display: replay of %s took longer than the account hold limit; cut off", visit_id[:6])
+            return True
+
+
+async def _send_owed(websocket: Any, lanlan_name: str, state: dict, delivered: set, lang: Optional[str],
+                     own_visit_uid: Any) -> bool:
+    """Send the block ``state`` owes (unless delivered on this connection) and its state frame."""
+    from main_routers.visit_router.debrief import CHIP_CHOICES, owed_block
+
+    visit_id = state["visit_id"]
+    # Deliver according to current state: chip / preview block / write-in-progress preview block / write-failure block (all content from state.json, zero LLM calls)
+    owed = owed_block(state, lang)
+    if owed is None:
+        return True
+    request_id, blocks, frame = owed
+    if request_id not in delivered:
+        # "Unexpected interruption" is sent only with a chip (including generating:diary, which also delivers a chip), matching startup reconciliation
+        if state["finalized"] == "crash" and state["debrief_choice"] in CHIP_CHOICES:
             if not await _send_status(websocket, "VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id}):
-                # 提示没送出（连接卡住 / 断开）：芯片不单独发，后面的也不再试；下次 visit_bind 连同提示一起重放
-                return
+                # If the notice cannot be sent (connection stalled / disconnected), do not send the chip alone and do not try later ones; replay everything with the notice on the next visit_bind
+                return False
             if await own_visit_uid() != state["own_uid"]:
-                return  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
-        await _send(websocket, chat_blocks_frame(chip_blocks(visit_id, lang), request_id=request_id,
-                                                 source_name=lanlan_name))
+                return False  # If the user signs out or switches accounts during the await that sends the notice, do not send the chip
+        if not await _send(websocket, chat_blocks_frame(blocks, request_id=request_id, source_name=lanlan_name)):
+            return False
+    if frame is not None:
+        # State frames are not deduplicated by request_id: use them to correct buttons for an identical block already on the page (which the frontend skipped as a duplicate during reconnect)
+        await _send(websocket, frame)
+    from main_routers.visit_router.debrief import settled_after_delivery
+
+    # Post-send check: if "forget this person" invalidated this session during delivery, send a chosen frame so the page ultimately disables it
+    correction = await settled_after_delivery(state, request_id)
+    if correction is not None:
+        await _send(websocket, correction)
+    return True
 
 
 def chat_blocks_frame(blocks: list, *, request_id: str, source_name: str) -> dict:
@@ -249,7 +320,7 @@ async def handle_chip_ack(websocket: Any, lanlan_name: str, message: Any) -> Non
     """``visit_debrief_chip_ack``: remember it on this connection when it names the owed block."""
     from main_logic.visit.spool import VisitSpool
     from main_routers.visit_router import runtime
-    from main_routers.visit_router.debrief import chips_request_id
+    from main_routers.visit_router.debrief import owed_request_id
     from utils.visit_wire import VISIT_ID_RE
 
     if not is_bound(websocket) or not isinstance(message, dict):
@@ -260,14 +331,13 @@ async def handle_chip_ack(websocket: Any, lanlan_name: str, message: Any) -> Non
         return
     try:
         state = await VisitSpool(runtime.runtime_deps().config_dir(), visit_id).read_state()
-    except Exception:  # noqa: BLE001 - 读不出：不记，下次 bind 照常重放
+    except Exception:  # noqa: BLE001 - if unreadable, do not record it; replay on the next bind
         return
     if state is None or not state.get("debrief_chip_pending"):
         return
-    # 只认当前状态应投递的那一块：旧芯片迟到的 ack 不能把还没送达的下一块标成已送达；
-    # 也只认这条连接确实发过的块：先到的 ack 不能让还没重放到这条连接的芯片被跳过
-    if (state["debrief_choice"] in _CHIP_CHOICES and request_id == chips_request_id(visit_id)
-            and request_id in _sent(websocket)):
+    # Accept only the block that should be delivered in the current state: a late ack for an old chip must not mark the next undelivered block as delivered;
+    # also accept only blocks actually sent on this connection: an early ack must not skip a chip that has not yet been replayed to this connection
+    if request_id == owed_request_id(state) and request_id in _sent(websocket):
         _delivered(websocket).add(request_id)
 
 
