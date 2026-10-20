@@ -485,6 +485,7 @@ async def test_recovery_returns_confirmable_deletions_when_archive_is_unavailabl
 @pytest.mark.parametrize('boundary', ['session', 'binding', 'writer'])
 async def test_partial_recovery_cannot_return_stale_authority_after_archive_failure(tmp_path, boundary):
     from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
     runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
     async def history(uid):
         if boundary == 'session':
@@ -500,6 +501,71 @@ async def test_partial_recovery_cannot_return_stale_authority_after_archive_fail
                     'writer': 'chat_sync_writer_recovery_required'}[boundary]
         with pytest.raises(ValueError, match=expected):
             await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert role_pending(runtime, domain.character_uid)
+        assert runtime.ledger.pending_deletions(domain) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage,failure', [('prepare', ValueError), ('prepare', OSError),
+                                         ('prepare', sqlite3.OperationalError), ('metadata', ValueError)])
+async def test_failed_recovery_history_preview_keeps_role_recoverable_and_exact_deletion_retry(tmp_path, monkeypatch, stage, failure):
+    from unittest.mock import AsyncMock, Mock
+    from services.chat_sync.recovery import role_pending
+    from services.chat_sync.source import ChatOriginalSource
+    runtime, domain, identities, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    attribute = 'prepare_history' if stage == 'prepare' else 'metadata'
+    original = getattr(ChatOriginalSource, attribute)
+    fault = Mock(side_effect=failure('chat_sync_history_changed'))
+    monkeypatch.setattr(ChatOriginalSource, attribute, staticmethod(fault) if stage == 'metadata' else fault)
+    try:
+        await runtime.delete(domain.character_uid, identities)
+        expected = WriterQuarantined if failure is OSError else failure
+        message = 'chat_sync_writer_recovery_required' if failure is OSError else 'chat_sync_history_changed'
+        with pytest.raises(expected, match=message):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
+            assert conn.execute('SELECT status FROM source_recovery_roles WHERE uid=?', (domain.character_uid,)).fetchone()[0] == 'pending'
+            assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
+            assert conn.execute('SELECT message_id FROM source_recovery_delete_ids').fetchall() == [(identities[0],)]
+        monkeypatch.setattr(ChatOriginalSource, attribute, staticmethod(original) if stage == 'metadata' else original)
+        binding, = (await runtime.status())['bindings']
+        assert binding['writerRecoveryRequired']
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert result['deletions']['count'] == 1 and not role_pending(runtime, domain.character_uid)
+        assert runtime.ledger.pending_deletions(domain) == []
+        await runtime.approve_recovery_deletions(domain.character_uid, result['deletions']['taskId'])
+        assert runtime.ledger.pending_deletions(domain)[0].message_ids == tuple(identities)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_session_change_after_history_preview_keeps_recovery_entry_available(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    from services.chat_sync.source import ChatOriginalSource
+    runtime, domain, identities, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    original, presence = ChatOriginalSource.prepare_history, runtime.session_presence_provider
+    def prepare(*args, **kwargs):
+        task = original(*args, **kwargs)
+        runtime.session_presence_provider = AsyncMock(return_value='changed-session')
+        return task
+    monkeypatch.setattr(ChatOriginalSource, 'prepare_history', prepare)
+    try:
+        await runtime.delete(domain.character_uid, identities)
+        with pytest.raises(ValueError, match='chat_sync_session_changed'):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert role_pending(runtime, domain.character_uid)
+        with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
+            assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM source_history_tasks WHERE status='approved'").fetchone()[0] == 0
+        runtime.session_presence_provider = presence
+        monkeypatch.setattr(ChatOriginalSource, 'prepare_history', original)
+        assert (await runtime.status())['bindings'][0]['writerRecoveryRequired']
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert result['deletions']['count'] == 1
         assert runtime.ledger.pending_deletions(domain) == []
     finally:
         await runtime.close()

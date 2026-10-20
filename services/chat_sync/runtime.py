@@ -465,6 +465,7 @@ class DesktopChatSyncRuntime:
         from services.chat_sync.recovery import (import_outage, pending_candidates, apply_cloud_deletions,
                                                   apply_checked_candidates, finish_role)
         from services.chat_sync.profile_sync import read_character_directory
+        from services.chat_sync.source import ChatOriginalSource
         try:
             await asyncio.to_thread(self.writer.check)
             await asyncio.to_thread(self._service_settings)
@@ -509,17 +510,22 @@ class DesktopChatSyncRuntime:
             cloud_name = next((role['displayName'] for role in roles['characters'] if role['characterSyncId'] == character_uid), None)
             if cloud_name is None:
                 raise ValueError('chat_sync_character_not_found')
+            recovered = {'history': None}
+            if await self._refresh_chat_history(character_uid):
+                settings = await asyncio.to_thread(self._service_settings)
+                source = await asyncio.to_thread(ChatOriginalSource, self.state.path.parent / 'sources.sqlite3')
+                task = await commit(source.prepare_history, binding, settings['service_url'], authenticated[1], local_name, cloud_name,
+                                    device_id=settings['device_id'])
+                recovered['history'] = source.metadata(task)
+            else:
+                # An unavailable archive cannot grant history, but verified deletions remain reviewable.
+                recovered['historyError'] = 'chat_sync_unavailable'
+            await self._guard(binding, authenticated[1])
+            # The recovery transport prepares previews while the role gate is still pending.
+            # Release it only after every fallible preview/authority check has completed.
             deletions = await commit(finish_role, self, domain, binding, authenticated[1])
             deletions.update(localName=local_name, cloudName=cloud_name)
-        recovered = {'deletions': deletions}
-        try:
-            recovered['history'] = await self.preview_history(character_uid, local_name)
-        except ValueError as error:
-            if str(error) != 'chat_sync_unavailable':
-                raise
-            # History remains unapproved; its optional preview cannot hide a verified deletion task.
-            recovered.update(history=None, historyError='chat_sync_unavailable')
-        await self._guard(binding, authenticated[1])
+            recovered['deletions'] = deletions
         return recovered
 
     async def approve_recovery_deletions(self, character_uid, task_id):
