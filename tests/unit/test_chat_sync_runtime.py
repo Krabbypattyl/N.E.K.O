@@ -83,7 +83,7 @@ class SyntheticService:
         })
 
 
-def setup_runtime(tmp_path, service=None):
+def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
     """Inject only synthetic session state and an in-memory HTTP transport."""
     service = service or SyntheticService()
     session = {"logged_in": True, "snapshot": {
@@ -123,6 +123,7 @@ def setup_runtime(tmp_path, service=None):
         session_commit_guard=commit_guard,
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
+        fixed_service_url=fixed_service_url,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -1782,6 +1783,94 @@ def test_default_is_disabled_and_state_survives_restart(tmp_path):
     device = state.settings()["device_id"]
     assert len(device) == 32
     assert DesktopSyncState(state.path).settings()["device_id"] == device
+
+
+@pytest.mark.asyncio
+async def test_production_factory_reports_builtin_service_for_legacy_setup(tmp_path, monkeypatch):
+    """The actual desktop factory cannot revive a persisted local test endpoint."""
+    import services.chat_sync.runtime as module
+
+    config = SimpleNamespace(app_docs_dir=tmp_path / "selected", local_state_dir=tmp_path / "anchor")
+    monkeypatch.setattr(module, "_runtimes", {})
+    monkeypatch.setattr(module, "_runtime_lock", asyncio.Lock())
+    runtime = await module.get_desktop_chat_sync_runtime(config)
+    try:
+        runtime.state.configure("https://localhost:8443")
+        status = await runtime.status()
+        assert status["serviceUrl"] == "https://sync.nekotech.cn"
+        assert status["writerRecoveryRequired"] is True
+        assert runtime.state.settings()["service_url"] == "https://localhost:8443"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_service_blocks_legacy_origin_without_retargeting_saved_tasks(tmp_path):
+    """A saved test origin requires recovery before any old permission reaches the built-in service."""
+    from services.chat_sync.writer import WriterQuarantined
+
+    runtime, service, _ = setup_runtime(tmp_path, fixed_service_url="https://sync.nekotech.cn")
+    try:
+        runtime.state.configure("https://localhost:8443")
+        prepared = runtime.state.prepare_binding(DOMAIN)
+        binding = runtime.state.activate(prepared, BINDING)
+        runtime.ledger.queue_deletion(DOMAIN, ["d" * 32])
+        pending = runtime.ledger.pending_deletions(DOMAIN)
+
+        status = await runtime.status()
+        assert status["serviceUrl"] == "https://sync.nekotech.cn"
+        assert status["writerRecoveryRequired"] is True
+        assert status["bindings"][0]["enabled"] == 0
+        with pytest.raises(WriterQuarantined):
+            await runtime._identity("synthetic-a")
+        assert service.requests == []
+        assert runtime.state.settings()["service_url"] == "https://localhost:8443"
+        assert runtime.state.binding(UID) == binding
+        assert runtime.ledger.pending_deletions(DOMAIN) == pending
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_service_changes_legacy_origin_only_inside_explicit_recovery(tmp_path):
+    """Existing recovery stages old deletes and revokes old bindings before using the built-in origin."""
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = setup_runtime(tmp_path, fixed_service_url="https://sync.nekotech.cn")
+    try:
+        runtime.state.configure("https://localhost:8443")
+        prepared = runtime.state.prepare_binding(DOMAIN)
+        runtime.state.activate(prepared, BINDING)
+        runtime.ledger.queue_deletion(DOMAIN, ["d" * 32])
+        runtime.enable = AsyncMock(side_effect=ValueError("synthetic_stop_after_recovery"))
+
+        with pytest.raises(ValueError, match="synthetic_stop_after_recovery"):
+            await runtime.recover_writer_role(UID, "Neko", service_url="https://sync.nekotech.cn")
+        runtime.writer.check()
+        assert runtime.state.settings()["service_url"] == "https://sync.nekotech.cn"
+        binding = runtime.state.binding(UID)
+        assert binding["enabled"] == 0 and binding["binding_id"] is None
+        assert runtime.ledger.pending_deletions(DOMAIN) == []
+        with sqlite3.connect(runtime.state.path.parent / "sources.sqlite3") as conn:
+            assert conn.execute("SELECT message_id FROM source_recovery_delete_ids").fetchall() == [("d" * 32,)]
+        runtime.enable.assert_awaited_once_with(UID, "Neko")
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_service_requires_no_setup_and_rejects_custom_configuration(tmp_path):
+    """Production origin policy applies to actual HTTP even without a saved configuration."""
+    runtime, service, _ = setup_runtime(tmp_path, fixed_service_url="https://sync.nekotech.cn")
+    try:
+        assert await runtime._identity("synthetic-a") == OWNER
+        assert str(service.requests[0].url) == "https://sync.nekotech.cn/v1/chat-sync/identity"
+        with pytest.raises(ValueError, match="invalid_chat_sync_service_url"):
+            await runtime.configure("https://localhost:8443")
+        assert runtime.state.settings()["service_url"] == "https://sync.nekotech.cn"
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize("url", [
@@ -3678,6 +3767,95 @@ async def test_explicit_pause_revokes_retained_on_without_a_setup_error(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_history", [False, True])
+async def test_memory_browser_archive_is_the_shared_history_source(tmp_path, include_history):
+    """Pre-enable chats survive review and sync once only with history consent."""
+    from memory.chat_history import read_chat_history
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_chat_history import archive
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    path = tmp_path / "time_indexed.db"
+    archive(path, [{"type": "human", "data": {"content": "same"}}] * 2 + [
+        {"type": "ai", "data": {"content": "tool", "metadata": {"chat_original_source": {
+            "recordId": "3" * 32, "originalTime": "1234567890123", "origin": "tool"}}}}])
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_local_reply(UID, "4" * 32, ChatOriginal("assistant", "earlier tool record", original_time="1234567890122"), "tool")
+    async def history(uid):
+        return read_chat_history(path, uid)
+    runtime.chat_history_provider = history
+    try:
+        local = await runtime.history(UID)
+        ids = {row["messageId"] for row in local}
+        assert len(local) == len(ids) == 4
+        assert len(await runtime.local_replies(UID)) == 0
+        assert service.requests == [] and runtime.state.bindings() == []
+        (tmp_path / "recent.json").write_text('[]')
+        assert await runtime.history(UID) == local
+        await runtime.save_character_sync_choice(UID, "Synthetic", True, include_history=include_history)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        result = await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert result["uploaded"] == (4 if include_history else 0)
+        assert {json.loads(raw)["messageId"] for raw in service.records} == (ids if include_history else set())
+        assert len(await runtime.history(UID)) == 4
+        assert (await runtime.preview_history(UID, "Synthetic"))["count"] == (0 if include_history else 4)
+        await runtime.clear(UID)
+        assert await runtime.history(UID) == []
+        assert await runtime.local_replies(UID) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["chat", "proactive", "tool", "agent"])
+async def test_history_refresh_during_reply_tail_cannot_steal_live_upload(tmp_path, monkeypatch, origin):
+    """Archive caching precedes the delayed original seal in a real completed turn."""
+    from unittest.mock import AsyncMock
+    from memory.chat_history import read_chat_history
+    import services.chat_sync.source as source_module
+    from tests.unit.test_chat_history import archive
+
+    runtime, service, _ = setup_runtime(tmp_path)
+    path = tmp_path / "time_indexed.db"
+    proof = {"recordId": "5" * 32, "originalTime": "1234567890123", "origin": origin}
+    archive(path, [{"type": "ai", "data": {"content": "reply", "metadata": {"chat_original_source": proof}}}])
+    async def history(uid):
+        return read_chat_history(path, uid)
+    runtime.chat_history_provider = history
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr(source_module, "character_uid_for", AsyncMock(return_value=UID))
+    original_save, tool_save = source_module.save_original, source_module.save_local_reply
+    async def save(*args, **kwargs):
+        return await original_save(*args, config_manager=SimpleNamespace(), **kwargs)
+    async def save_tool(*args, **kwargs):
+        return await tool_save(*args, config_manager=SimpleNamespace(), **kwargs)
+    monkeypatch.setattr(source_module, "save_original", save)
+    monkeypatch.setattr(source_module, "save_local_reply", save_tool)
+    buffer = source_module.AssistantOriginalBuffer(tail_grace=3600)
+    try:
+        await runtime.enable(UID, "Synthetic")
+        buffer.append({"chat_original_source": proof, "text": "reply"})
+        await buffer.finish("Synthetic", proof["recordId"])
+        await runtime.history(UID)
+        source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+        assert proof["recordId"] not in source.stored_ids(UID)
+        # A late tail must retain the full producer bytes, not the earlier archive projection.
+        buffer.append({"chat_original_source": proof, "text": " late tail"})
+        await buffer.flush_terminated(character_uid=UID)
+        result = await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert result["uploaded"] == 1
+        row, = map(json.loads, service.records)
+        assert row["messageId"] == proof["recordId"] and row["text"] == "reply late tail"
+        assert len(await runtime.history(UID)) == 1
+        assert (await runtime.sync(UID, byte_budget=10000, max_pull_pages=1))["uploaded"] == 0
+    finally:
+        buffer.discard()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_active_bound_card_history_is_not_reported_as_awaiting_enable(tmp_path):
     """Deferred history processing for a non-current role does not falsify enabled UI state."""
     from services.chat_sync.profile_sync import DesktopProfileAdapter
@@ -3751,6 +3929,69 @@ async def test_failed_combined_history_cancels_only_its_own_unapproved_preview(t
         assert len(other) == 1
         assert other[0][1] == ('approved' if after_approval else 'cancelled')
         assert source.task(UID, manual['taskId'])['status'] == 'preview'
+        assert runtime.state.new_role_errors() == {UID: 'chat_sync_session_changed'}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_retry(tmp_path, manual):
+    """The real owner check must diagnose retained consent and leave all old work intact."""
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        await runtime.enable(UID, 'Synthetic')
+        capture(runtime)
+        pending = runtime.ledger.pending(DOMAIN)
+        await runtime.pause(UID)
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        runtime.state.defer_new_role(UID, runtime.test_clock[0] + 30_000)
+        saved, binding = runtime.state.new_role(UID), runtime.state.binding(UID)
+        service.owner = OTHER_OWNER
+        service.requests.clear()
+        operation = runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider(), manual=manual)
+        if manual:
+            with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
+                await operation
+        else:
+            await operation
+        retained = runtime.state.new_role(UID)
+        assert retained['lastError'] == 'chat_sync_account_mismatch'
+        assert retained['next_at'] == saved['next_at'] and 'error' not in retained
+        assert (await runtime.status())['syncSetupErrors'] == {UID: 'chat_sync_account_mismatch'}
+        assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
+        assert [request.url.path for request in service.requests] == ['/v1/chat-sync/identity']
+        with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
+            await runtime.recover_writer_role(UID, 'Synthetic')
+        assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
+        service.owner = OWNER
+        await runtime._run_new_role_sync(UID, retained, await runtime.session_presence_provider())
+        assert runtime.state.new_role(UID) is None and runtime.state.new_role_errors() == {}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_setup_diagnostics_cannot_expose_unknown_errors_or_overwrite_a_newer_choice(tmp_path, monkeypatch):
+    """Retained diagnostics contain fixed codes and belong to one saved request."""
+    from unittest.mock import AsyncMock
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, _, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        saved = runtime.state.new_role(UID)
+        monkeypatch.setattr(runtime, 'enable', AsyncMock(side_effect=ValueError('private token in an unknown error')))
+        await runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider())
+        assert runtime.state.new_role_errors() == {}
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        runtime.state.record_new_role_error(UID, saved['requestId'], 'chat_sync_account_mismatch')
         assert runtime.state.new_role_errors() == {}
     finally:
         await runtime.close()

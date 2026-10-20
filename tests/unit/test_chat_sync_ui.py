@@ -50,26 +50,54 @@ def run_script(assertions: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
-HISTORY_CONSENT_SETUP = r"""
-    const uid='c'.repeat(32), task='f'.repeat(32), requests=[];
-    let binding={enabled:true,ownerId:'owner',bindingId:'binding',generation:1,pendingOriginals:0,pendingDeletions:0};
-    let snapshot={taskId:task,characterSyncId:uid,localName:'Neko',cloudName:'Cloud Neko',
-        count:3,unverifiedCount:null,status:'preview',registeredCount:0,cancelledCount:0};
-    global.fetch=async(path,options)=>({ok:true,async json(){
-        requests.push({path,method:options.method,body:options.body});
-        if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
-        if(path.endsWith('/history/preview'))return snapshot;
-        if(path.endsWith('/history/approve'))return {...snapshot,status:'approved'};
-        if(path.endsWith('/history'))return {originals:[]};
-        throw new Error('Unexpected request '+path);
-    }});
-    documentEvents.DOMContentLoaded();
-    await headerButton.events.click();
-    const modal=body.children[0], action=name=>modal.querySelector('[data-sync-action="'+name+'"]'),
-        choice=name=>modal.querySelector('[data-history-action="'+name+'"]');
-    const content=()=>modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-    assert.equal(requests.filter(item=>item.path.includes('/history/preview')).length,0);
-"""
+@pytest.mark.parametrize('code,key', [
+    ('chat_sync_account_mismatch', 'errorAccountMismatch'),
+    ('chat_sync_writer_recovery_required', 'errorWriterRecovery'),
+    ('chat_sync_unavailable', 'errorNetwork'),
+    ('chat_sync_retry_later', 'errorRetryLater'),
+    ('chat_sync_session_changed', 'errorSessionChanged'),
+    ('private token from an unknown error', 'errorUnknown'),
+])
+def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
+    """The actual recovery listener uses localized reasons without leaking arbitrary details."""
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text())['chatSync']
+    run_script(r"""(async()=>{
+        const labels=LABELS,code=CODE,key=KEY;
+        window.t=(key,values={})=>labels[key.replace('chatSync.','')]
+            .replace(/{{(.*?)}}/g,(_,name)=>values[name]);
+        global.fetch=async(path)=>({ok:path.endsWith('/status'),json:async()=>path.endsWith('/status')
+            ?{writerRecoveryRequired:true,characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32)}]}
+            :{detail:code}});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],recover=modal.querySelector('[data-sync-action="recover"]');
+        await recover.events.click();
+        const shown=modal.querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes(labels[key]));
+        if(key==='errorUnknown')assert(!shown.includes(code));
+        else assert(shown.includes(code));
+        assert.notEqual(shown,labels.failed);
+        assert.equal(recover.disabled,false);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('LABELS', json.dumps(labels)).replace('CODE', json.dumps(code)).replace('KEY', json.dumps(key)))
+
+
+@pytest.mark.parametrize('source', ['setup', 'binding'])
+def test_opening_sync_settings_shows_the_retained_failure_without_retrying(source):
+    """A local status read keeps setup and channel errors visible across dialog openings."""
+    run_script(r"""(async()=>{
+        const requests=[];
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:'c'.repeat(32),
+            syncSetupError:SOURCE==='setup'?'chat_sync_account_mismatch':null,
+            binding:{writerRecoveryRequired:true,lastSyncError:SOURCE==='binding'?'chat_sync_account_mismatch':null}
+        }]})};};
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('errorAccountMismatch')&&shown.includes('chat_sync_account_mismatch'));
+        assert.deepEqual(requests,['/api/chat-sync/status']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('SOURCE', json.dumps(source)))
 
 
 @pytest.mark.parametrize("broken_observer", [False, True])
@@ -304,113 +332,29 @@ def test_pc_pet_ipc_bridge_delivers_committed_hint_to_full_chat_passive_refresh(
     """.replace("PC_ROOT", json.dumps(str(pc))).replace("HELPERS", helpers).replace("CALLBACK", callback))
 
 
-def test_history_consent_displays_fixed_names_and_count_then_cancels_without_approval():
-    """Previewing never uploads, and cancel discards the reviewed task."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        await action('history').events.click();
-        assert.ok(content().includes('chatSync.historyLocalRole:Neko'));
-        assert.ok(content().includes('chatSync.historyCloudRole:Cloud Neko'));
-        assert.ok(content().includes('chatSync.historyCount:3'));
-        assert.ok(content().includes('chatSync.historyUnverifiedUnknown'));
-        await choice('cancel').events.click();
-        assert.equal(choice('approve'),undefined);
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')).length,0);
-        assert.equal(requests.filter(item=>item.path.endsWith('/sync')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_history_consent_approves_only_the_reviewed_task_as_background_work():
-    """Approval cannot rescan a new batch or claim that all chats were delivered."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        await action('history').events.click();
-        snapshot={...snapshot,taskId:'e'.repeat(32),count:20};
-        await choice('approve').events.click();
-        const approvals=requests.filter(item=>item.path.endsWith('/history/approve'));
-        assert.equal(approvals.length,1);
-        assert.deepEqual(JSON.parse(approvals[0].body),{taskId:task});
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/preview')).length,1);
-        assert.equal(requests.filter(item=>item.path.endsWith('/sync')).length,0);
-        assert.ok(content().includes('chatSync.historyQueued'));
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("paused", [False, True])
-@pytest.mark.parametrize("name", ["Neko", "Other"])
-def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused, name):
-    """Opening does not grant anything; the labeled action approves all eligible chat once."""
+def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
+    """Old local test setup must not make a user's recovery request fail API validation."""
     run_script(r"""(async()=>{
-        const uid='c'.repeat(32), requests=[];
-        let binding=PAUSED?{enabled:false,ownerId:'owner',bindingId:'binding',generation:2}:null;
+        const uid='c'.repeat(32),requests=[];let needsRecovery=true;
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
-            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:REQUESTED_NAME,characterSyncId:uid,binding}]};
-            if(path.endsWith('/sync-choice'))return {pending:true};
-            if(path.endsWith('/sync-choice/run')){binding={enabled:true};return {completed:true,pending:false};}
-            if(path.endsWith('/history'))return {originals:[]};
-            throw new Error('Unexpected request '+path);
-        }});
-        documentEvents.DOMContentLoaded();await window.nekoChatSync.openSettings(REQUESTED_NAME);
-        const modal=body.children[0];
-        assert.equal(modal.querySelectorAll('*').some(n=>n.id==='chat-sync-include-history'),false);
-        assert.equal(requests.filter(x=>x.path.endsWith('/sync-choice')).length,0);
-        await modal.querySelector('[data-sync-action="enable"]').events.click();
-        const choices=requests.filter(x=>x.path.endsWith('/sync-choice'));
-        assert.equal(choices.length,1);
-        assert.deepEqual(JSON.parse(choices[0].body),{enabled:true,includeHistory:true});
-        const runs=requests.filter(x=>x.path.endsWith('/sync-choice/run'));
-        assert.equal(runs.length,1);
-        assert.ok(requests.indexOf(choices[0])<requests.indexOf(runs[0]));
-        assert.equal(requests.filter(x=>x.path.endsWith('/history/approve')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("PAUSED", json.dumps(paused)).replace("REQUESTED_NAME", json.dumps(name)))
-
-
-@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable'])
-def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error):
-    """Persisted consent survives a failed manual pass without hiding a login error."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];
-        global.fetch=async(path,options)=>{
-            requests.push(path);
-            return {ok:!path.endsWith('/sync-choice/run'),async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{
-                    displayName:'Other',characterSyncId:uid,binding:null,syncPending:true}]};
-                if(path.endsWith('/sync-choice'))return {pending:true};
-                if(path.endsWith('/sync-choice/run'))return {detail:ERROR};
-                throw new Error('Unexpected request '+path);
-            }};
-        };
-        await window.nekoChatSync.openSettings('Other');
-        const modal=body.children[0];
-        await modal.querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
-        const content=modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':'chatSync.initialHistoryFailed'));
-        assert.equal(requests.filter(path=>path.endsWith('/pause')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('ERROR',json.dumps(error)))
-
-
-def test_initial_default_origin_does_not_cancel_the_first_enable_click():
-    """An absent setting and the built-in origin are the same service, not a context switch."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];let reads=0;
-        global.fetch=async(path)=>({ok:true,async json(){
-            requests.push(path);
-            if(path.endsWith('/status'))return {serviceUrl:++reads===1?null:'https://sync.nekotech.cn',
+            if(path.endsWith('/status'))return {serviceUrl:'https://localhost:8443',
+                writerRecoveryRequired:needsRecovery,
                 characters:[{displayName:'Neko',characterSyncId:uid,binding:null}]};
-            if(path.endsWith('/sync-choice'))return {pending:true};
-            if(path.endsWith('/sync-choice/run'))return {completed:true,pending:false};
+            if(path.endsWith('/recovery/preview')){
+                needsRecovery=false;
+                return {history:{taskId:'f'.repeat(32),characterSyncId:uid,localName:'Neko',
+                    cloudName:'Cloud Neko',count:0,unverifiedCount:null,status:'preview'},deletions:{count:0}};
+            }
             if(path.endsWith('/history'))return {originals:[]};
             throw new Error('Unexpected request '+path);
         }});
         await window.nekoChatSync.openSettings();
-        await body.children[0].querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
+        await body.children[0].querySelector('[data-sync-action="recover"]').events.click();
+        assert.deepEqual(requests.filter(item=>item.path.endsWith('/recovery/preview')).map(item=>JSON.parse(item.body)),
+            [{serviceUrl:'https://sync.nekotech.cn'}]);
+        assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')
+            || item.path.endsWith('/recovery/deletions/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
 
@@ -431,99 +375,6 @@ def test_empty_history_consumes_its_cursor_and_only_reloads_after_it_changes():
         assert.equal(requests.filter(path=>path.endsWith('/history')).length,1);
         cursor=2;await tick();
         assert.equal(requests.filter(path=>path.endsWith('/history')).length,2);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("change", ["role", "closed", "binding", "service"])
-def test_combined_enable_rejects_context_changed_before_consent(change):
-    """A stale UI response cannot authorize another role, grant or origin."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32), requests=[];let binding=null,service='https://sync.test',reads=0;
-        global.fetch=async(path,options)=>({ok:true,async json(){
-            requests.push(path);
-            if(path.endsWith('/status')){
-                if(++reads===2){
-                    if(CHANGE==='role')window.lanlan_config.lanlan_name='Other';
-                    if(CHANGE==='closed')modal.children.find(n=>n.textContent==='chatSync.close').events.click();
-                    if(CHANGE==='binding')binding={enabled:true,ownerId:'owner',bindingId:'other',generation:2};
-                    if(CHANGE==='service')service='https://other.test';
-                }
-                return {serviceUrl:service,characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
-            }
-            if(path.endsWith('/history'))return {originals:[]};
-            throw new Error('Unexpected mutation '+path);
-        }});
-        documentEvents.DOMContentLoaded();await headerButton.events.click();
-        const modal=body.children[0];
-        await modal.querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(p=>p.endsWith('/sync-choice')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("CHANGE", json.dumps(change)))
-
-
-@pytest.mark.parametrize("change", ["role", "generation", "paused", "service", "closed"])
-def test_history_consent_rejects_a_changed_context_before_approval(change):
-    """The fixed task cannot follow a role, binding, service or dialog change."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        await action('history').events.click();
-        const approve=choice('approve'), change=CHANGE;
-        if(change==='role')window.lanlan_config.lanlan_name='Other';
-        if(change==='generation')binding={...binding,generation:2};
-        if(change==='paused')binding={...binding,enabled:false};
-        if(change==='service')binding={...binding,bindingId:'different'};
-        if(change==='closed'){
-            modal.children.find(node=>node.textContent==='chatSync.close').events.click();
-        }
-        await approve.events.click();
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("CHANGE", json.dumps(change)))
-
-
-def test_history_consent_empty_snapshot_explains_unverified_local_records():
-    """Unknown legacy counts never appear as zero verified or complete backup."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        snapshot={...snapshot,count:0};
-        await action('history').events.click();
-        assert.ok(content().includes('chatSync.historyEmpty'));
-        assert.ok(content().includes('chatSync.historyUnverifiedUnknown'));
-        assert.equal(choice('approve'),undefined);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("latest_status", ["approved", "preview"])
-def test_history_consent_status_keeps_unregistered_members_visible(latest_status):
-    """A newer preview cannot hide the remainder of an already approved snapshot."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        binding={...binding,pendingOriginals:200,historyBackfill:{...snapshot,
-            status:LATEST_STATUS,count:503,registeredCount:200,cancelledCount:2,awaitingRegistration:301}};
-        await headerButton.events.click();
-        assert.ok(content().includes('chatSync.historyAwaitingRegistration:301'));
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("LATEST_STATUS", json.dumps(latest_status)))
-
-
-def test_history_consent_blocks_duplicate_requests_and_late_closed_dialog_preview():
-    """A slow preview disables submissions and cannot recreate dismissed consent."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        const previous=global.fetch;
-        let release,entered;
-        const waiting=new Promise(resolve=>entered=resolve), delayed=new Promise(resolve=>release=resolve);
-        global.fetch=async(path,options)=>{
-            if(path.endsWith('/history/preview')){entered();await delayed;}
-            return previous(path,options);
-        };
-        const preparing=action('history').events.click();
-        await waiting;
-        assert.equal(action('history').disabled,true);
-        await action('history').events.click();
-        modal.children.find(node=>node.textContent==='chatSync.close').events.click();
-        release();
-        await preparing;
-        assert.equal(choice('approve'),undefined);
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/preview')).length,1);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
 
@@ -992,190 +843,6 @@ def test_latest_same_character_history_wins_when_responses_arrive_out_of_order()
     """)
 
 
-def test_clear_receipt_removes_live_original_not_seen_in_previous_history():
-    """Clear's exact backend boundary also removes newly saved optimistic aliases."""
-    run_script(r"""
-        (async()=>{
-            let messages=[{id:'new-live',role:'user',status:'sent'}];
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            window.nekoChatSync.markUserRequest('request','new-live');
-            window.nekoChatSync.markAcceptedUser({request_id:'request',message_id:id});
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',
-                    characterSyncId:'c'.repeat(32),binding:{enabled:true,pendingOriginals:0,pendingDeletions:0}}]};
-                if(path.endsWith('/clear'))return {messageIds:[id],pending:true};
-                return {originals:[]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-            assert.deepEqual(messages,[]);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("restored", [False, True])
-@pytest.mark.parametrize("bound", [False, True])
-def test_clear_local_reply_receipt_hides_exact_alias_despite_history_failure(restored, bound):
-    """Local IDs are hidden separately, including delayed bubbles after clearing."""
-    run_script(r"""(async()=>{
-        let messages=[{id:RESTORED?'local-reply-'+other:'live-local',role:'assistant',turnId:'local-turn',status:'sent'}],failed=false;
-        window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;}};
-        window.nekoChatSync.markAssistantOriginal(other,'local-turn');
-        global.fetch=async(path)=>({ok:true,async json(){
-            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',
-                characterSyncId:original.characterSyncId,binding:BOUND?{enabled:true,pendingOriginals:0,pendingDeletions:0}:null}]};
-            if(path.endsWith('/clear')){failed=true;return {messageIds:[],localMessageIds:[other],pending:false};}
-            if(failed)throw new Error('history unavailable');
-            return {originals:[],localReplies:RESTORED?[{messageId:other,characterSyncId:original.characterSyncId,
-                role:'assistant',text:'local reply',originalTime:original.originalTime}]:[]};
-        }});
-        documentEvents.DOMContentLoaded();
-        await headerButton.events.click();
-        const clear=body.children[0].querySelector('[data-sync-action="clear"]');
-        assert.equal(clear.disabled,false);
-        await clear.events.click();
-        assert.deepEqual(messages,[]);
-        messages=[{id:'delayed-local-tail',role:'assistant',turnId:'local-turn',status:'sent'}];
-        global.fetch=async()=>({ok:true,json:async()=>({originals:[],localReplies:[]})});
-        await window.nekoChatSync.loadHistory({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,
-            binding:BOUND?{cursor:0}:null}]});
-        assert.deepEqual(messages,[]);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("RESTORED", json.dumps(restored)).replace("BOUND", json.dumps(bound)))
-
-
-@pytest.mark.parametrize("bound", [False, True])
-def test_stale_local_history_cannot_revive_clear_after_status_failure(bound):
-    """The successful clear receipt fences already-running local history reads."""
-    run_script(r"""
-    (async()=>{
-        const uid=original.characterSyncId;
-        const role={displayName:'Neko',characterSyncId:uid,
-            binding:BOUND?{enabled:true,pendingOriginals:0,pendingDeletions:0,cursor:0}:null};
-        const local={messageId:other,characterSyncId:uid,role:'assistant',
-            text:'synthetic local reply',originalTime:original.originalTime};
-        let messages=[{id:'local-reply-'+other,role:'assistant',status:'sent'}];
-        let cleared=false,release,enter;
-        const waiting=new Promise(resolve=>enter=resolve),blocked=new Promise(resolve=>release=resolve);
-        window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;}};
-        global.fetch=async(path)=>({ok:true,json:async()=>{
-            if(path.endsWith('/status')){
-                if(cleared)throw new Error('synthetic post-clear status unavailable');
-                return {serviceUrl:'https://sync.test',characters:[role]};
-            }
-            if(path.endsWith('/clear')){
-                cleared=true;
-                return {messageIds:[],localMessageIds:[other],pending:false};
-            }
-            if(path.endsWith('/history')){
-                enter();
-                await blocked;
-                return {originals:[],localReplies:[local]};
-            }
-            throw new Error('unexpected request');
-        }});
-        documentEvents.DOMContentLoaded();
-        await headerButton.events.click();
-        const pending=window.nekoChatSync.loadHistory({characters:[role]});
-        await waiting;
-        await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-        assert.deepEqual(messages,[],'clear receipt must first hide the local reply');
-        release();
-        await pending;
-        assert.deepEqual(messages,[],'stale in-flight history must not restore a cleared local reply');
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BOUND", json.dumps(bound)))
-
-
-def test_clear_click_cannot_retarget_a_new_role_during_status_refresh():
-    """The clicked role is fixed before I/O rather than following a global active UID."""
-    run_script(r"""
-        (async()=>{
-            let statusRequests=0;
-            window.reactChatWindowHost={getState(){return {messages:[]};}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                assert.ok(path.endsWith('/status'),'A changed role must not reach clear');
-                if(++statusRequests===2)window.lanlan_config.lanlan_name='Other';
-                return {serviceUrl:'https://sync.test',characters:[
-                    {displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}},
-                    {displayName:'Other',characterSyncId:'e'.repeat(32),binding:{enabled:true}}]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_clear_receipt_keeps_its_original_role_after_inflight_role_change():
-    """A late clear receipt cannot write deleted display identities into another role."""
-    run_script(r"""
-        (async()=>{
-            let messages=[{id:'other-live',role:'user',status:'sent'}];
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            window.nekoChatSync.markLiveOriginal(id,'other-live');
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[
-                    {displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}},
-                    {displayName:'Other',characterSyncId:'e'.repeat(32),binding:{enabled:true}}]};
-                if(path.endsWith('/clear')){
-                    assert.ok(path.includes('c'.repeat(32)));
-                    window.lanlan_config.lanlan_name='Other';
-                    await window.nekoChatSync.loadHistory();
-                    return {messageIds:[id],pending:true};
-                }
-                return {originals:[]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-            assert.deepEqual(messages.map(message=>message.id),['other-live']);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_failed_sync_still_restores_pages_already_committed_locally():
-    """A later cloud failure cannot leave earlier committed download pages invisible."""
-    run_script(r"""
-        (async()=>{
-            let messages=[];
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            global.fetch=async(path)=>({ok:!path.endsWith('/sync'),async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',
-                    characterSyncId:'c'.repeat(32),binding:{enabled:true,pendingOriginals:0,pendingDeletions:0}}]};
-                if(path.endsWith('/sync'))return {detail:'chat_sync_unavailable'};
-                return {originals:[original]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="sync"]').events.click();
-            assert.deepEqual(messages.map(message=>message.id),['sync-original-'+id]);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("busy", ["sending", "streaming", "active-turn"])
-def test_clear_is_blocked_by_existing_unfinished_chat_states(busy):
-    """An in-progress reply cannot fall outside the user's reviewed clear boundary."""
-    run_script(r"""
-        (async()=>{
-            const busy=BUSY;
-            window._nekoAssistantTurnId=busy==='active-turn'?'turn-one':null;
-            window.reactChatWindowHost={getState(){return {messages:[{id:'live',status:busy}]};}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                assert.ok(path.endsWith('/status'),'Clear must not reach its API while busy');
-                return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}}]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            const button=body.children[0].querySelector('[data-sync-action="clear"]');
-            assert.equal(button.disabled,true);
-            await button.events.click();
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BUSY", json.dumps(busy)))
-
-
 @pytest.mark.parametrize("locale", ["en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"])
 def test_sync_locale_namespace_is_complete(locale):
     """Every supported locale supplies the same feature labels and message placeholders."""
@@ -1266,6 +933,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                     page.add_style_tag(content=react_source)
                 else:
                     page.add_style_tag(path=str(built))
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
             for css in re.findall(r"<style>(.*?)</style>", template, re.DOTALL):
                 page.add_style_tag(content=css)
             page.evaluate("""() => {
@@ -1299,11 +967,9 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                 "nodes => nodes.every(node => getComputedStyle(node).pointerEvents === 'auto')"
             )
             if kind == "chat":
-                modal.locator("summary").click()
-                assert modal.locator('input[type="url"]').count() == 0
-                assert modal.locator('[data-sync-action="save"]').count() == 0
-                modal.locator('[data-sync-action="sync"]').click()
-                page.wait_for_function("window.fetchCalls.some(path => path.endsWith('/sync'))")
+                assert modal.locator('[data-sync-action]').count() == 1
+                assert modal.locator('[data-sync-action="recover"]').is_disabled()
+                assert modal.locator('input, summary').count() == 0
                 modal.get_by_role("button", name="chatSync.close", exact=True).click()
             else:
                 modal.locator('[data-profile-choice="close"]').click()
@@ -1312,66 +978,86 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             browser.close()
 
 
-def test_history_consent_real_browser_shows_safe_names_and_submits_only_reviewed_task():
-    """The served dialog renders actual labels and explicit consent without cloud I/O."""
+@pytest.mark.parametrize("change", ["closed", "role", "uid"])
+def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
+    """An old recovery result cannot prompt deletion for a newly opened character."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32),requests=[];let release,changed=false;
+        window.confirm=()=>{throw new Error('Stale recovery requested deletion consent');};
+        global.fetch=async(path,options)=>({ok:true,async json(){
+            requests.push({path,body:options.body});
+            if(path.endsWith('/status'))return {writerRecoveryRequired:true,characters:[{
+                displayName:changed&&CHANGE==='role'?'Other':'Neko',
+                characterSyncId:changed&&CHANGE==='uid'?'d'.repeat(32):uid,binding:null}]};
+            if(path.endsWith('/recovery/preview'))return await new Promise(resolve=>{release=resolve;});
+            throw new Error('Unexpected request '+path);
+        }});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],recover=modal.querySelector('[data-sync-action="recover"]');
+        const pending=recover.events.click();
+        await new Promise(resolve=>setImmediate(resolve));
+        await recover.events.click();
+        assert.equal(requests.filter(item=>item.path.endsWith('/recovery/preview')).length,1);
+        changed=true;
+        if(CHANGE==='closed')modal.close();
+        else if(CHANGE==='role')await window.nekoChatSync.openSettings('Other');
+        release({history:{localName:'Neko',cloudName:'Cloud Neko'},deletions:{count:1,taskId:'e'.repeat(32)}});
+        await pending;
+        assert.equal(requests.filter(item=>item.path.endsWith('/recovery/deletions/approve')
+            ||item.path.endsWith('/history/approve')).length,0);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('CHANGE', json.dumps(change)))
+
+
+@pytest.mark.parametrize("theme,language,width,needs_recovery", [
+    ("light", "zh-CN", 375, True), ("dark", "zh-CN", 1280, True), ("dark", "ru", 375, False),
+])
+def test_recovery_panel_tooltip_is_accessible_and_fits_the_viewport(theme, language, width, needs_recovery):
+    """Mouse and keyboard help remain usable even while the recovery button is disabled."""
     from playwright.sync_api import sync_playwright
 
-    labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
+    labels = json.loads((ROOT / "static/locales" / (language + ".json")).read_text(encoding="utf-8"))["chatSync"]
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
+            page = browser.new_page(viewport={"width": width, "height": 700})
             page.route("**/*", lambda route: route.abort())
-            page.set_content('<button id="chatSyncButton">Sync</button>')
-            page.evaluate("""labels => {
-                window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
-                    .replace(/{{(.*?)}}/g, (_, name) => values[name]);
-                window.setInterval = () => 1;
-                window.lanlan_config = {lanlan_name: 'Synthetic'};
-                window.requests = [];
-                window.fetch = async (path, options) => {
-                    window.requests.push({path, body: options.body});
-                    return {ok: true, json: async () => {
-                        if (path.endsWith('/status')) return {serviceUrl: 'https://sync.test', characters: [{displayName: 'Synthetic',
-                            characterSyncId: 'c'.repeat(32), binding: {enabled: true, ownerId: 'owner', bindingId: 'binding',
-                                generation: 1, pendingOriginals: 0, pendingDeletions: 0}}]};
-                        if (path.endsWith('/history/preview')) return {taskId: 'f'.repeat(32), characterSyncId: 'c'.repeat(32),
-                            localName: 'Synthetic', cloudName: 'Cloud <b>Neko</b>', count: 3, unverifiedCount: null, status: 'preview'};
-                        if (path.endsWith('/history/approve')) return {status: 'approved'};
-                        throw new Error('Unexpected request: ' + path);
-                    }};
-                };
-            }""", labels)
+            page.set_content('<html data-theme="' + theme + '"><body></body></html>')
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
+            page.evaluate("""({labels,needsRecovery})=>{
+                window.t=key=>labels[key.replace('chatSync.','')];
+                window.setInterval=()=>1;window.lanlan_config={lanlan_name:'Synthetic'};
+                window.fetch=async()=>({ok:true,json:async()=>({writerRecoveryRequired:needsRecovery,
+                    characters:[{displayName:'Synthetic',characterSyncId:'c'.repeat(32),binding:null}]})});
+            }""", {"labels": labels, "needsRecovery": needs_recovery})
             page.add_script_tag(path=str(SCRIPT))
-            page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
-            page.locator("#chatSyncButton").click()
-            modal = page.locator("#chat-sync-dialog")
-            modal.locator("summary").click()
-            modal.get_by_role("button", name=labels["previewHistory"], exact=True).click()
-            preview = modal.get_by_role("group", name=labels["historyPreview"], exact=True)
-            preview.get_by_text("Local character: Synthetic", exact=True).wait_for()
-            preview.get_by_text("Cloud character: Cloud <b>Neko</b>", exact=True).wait_for()
-            preview.get_by_text("Verified messages in this preview: 3", exact=True).wait_for()
-            assert preview.locator("b").count() == 0
-            preview.get_by_text(labels["historyUnverifiedUnknown"], exact=True).wait_for()
-            preview.get_by_role("button", name=labels["historyCancel"], exact=True).click()
-            assert preview.get_by_role("button").count() == 0
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/history/approve'))") is False
-            modal.get_by_role("button", name=labels["previewHistory"], exact=True).click()
-            preview.get_by_role("button", name=labels["historyApprove"], exact=True).click()
-            page.wait_for_function("window.requests.some(item => item.path.endsWith('/history/approve'))")
-            modal.get_by_role("status").filter(has_text=labels["historyQueued"]).wait_for()
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/history/approve')).map(item => JSON.parse(item.body))") == [
-                {"taskId": "f" * 32}
-            ]
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/sync'))") is False
+            page.evaluate("async()=>await window.nekoChatSync.openSettings()")
+            modal = page.locator('#chat-sync-dialog')
+            assert modal.locator('[data-sync-action]').evaluate_all("nodes=>nodes.map(node=>node.dataset.syncAction)") == ['recover']
+            assert modal.locator('[data-sync-action="recover"]').is_enabled() == needs_recovery
+            assert modal.locator('details, [data-history-action]').count() == 0
+            help_button = modal.get_by_role('button', name=labels['recoverWriterHelp'], exact=True)
+            tooltip = modal.get_by_role('tooltip', include_hidden=True)
+            assert not tooltip.is_visible()
+            help_button.hover()
+            assert tooltip.is_visible()
+            page.mouse.move(0, 0)
+            help_button.focus()
+            assert tooltip.is_visible()
+            assert help_button.get_attribute('aria-describedby') == tooltip.get_attribute('id')
+            bounds = tooltip.bounding_box()
+            assert bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= width
+            assert bounds['y'] >= 0 and bounds['y'] + bounds['height'] <= 700
+            assert modal.bounding_box()['width'] <= width - 32
+            modal.get_by_role('button', name=labels['close'], exact=True).click()
+            assert page.locator('dialog[open]').count() == 0
         finally:
             browser.close()
 
 
 @pytest.mark.parametrize("approve_deletions", [False, True])
-def test_writer_recovery_real_browser_requires_separate_exact_task_consents(approve_deletions):
-    """Real served controls require cloud checks before either renewed permission."""
+def test_writer_recovery_keeps_separate_deletion_consent_without_history_controls(approve_deletions):
+    """The compact recovery panel cannot publish history or copied deletes by opening it."""
     from playwright.sync_api import sync_playwright
 
     labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
@@ -1390,20 +1076,16 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
                 window.fetch = async (path, options) => {
                     window.requests.push({path, body: options.body});
                     return {ok: true, json: async () => {
-                        if (path.endsWith('/status')) return {serviceUrl: 'https://sync.test',
+                        if (path.endsWith('/status')) return {serviceUrl: 'https://localhost:8443',
                             writerRecoveryRequired: window.needsRecovery, characters: [{displayName: 'Synthetic',
                             characterSyncId: 'c'.repeat(32), binding: {enabled: !window.needsRecovery,
-                                ownerId: 'owner', bindingId: 'binding', generation: 1,
-                                pendingOriginals: 0, pendingDeletions: 0}}]};
+                                ownerId: 'owner', bindingId: 'binding', generation: 1}}]};
                         if (path.endsWith('/recovery/preview')) {
                             window.needsRecovery = false;
-                            return {history: {taskId: 'f'.repeat(32), characterSyncId: 'c'.repeat(32),
-                                localName: 'Synthetic', cloudName: 'Cloud Neko', count: 3,
-                                unverifiedCount: null, status: 'preview'},
+                            return {history: {localName: 'Synthetic', cloudName: 'Cloud Neko', count: 3},
                                 deletions: {taskId: 'e'.repeat(32), count: 2}};
                         }
                         if (path.endsWith('/recovery/deletions/approve')) return {status: 'registered'};
-                        if (path.endsWith('/history/approve')) return {status: 'approved'};
                         if (path.endsWith('/history')) return {originals: []};
                         throw new Error('Unexpected request: ' + path);
                     }};
@@ -1413,8 +1095,10 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
             page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
             page.locator("#chatSyncButton").click()
             modal = page.locator("#chat-sync-dialog")
-            assert modal.locator('[data-sync-action="enable"]').is_disabled()
-            assert modal.locator('[data-sync-action="history"]').is_disabled()
+            assert modal.locator('[data-sync-action]').count() == 1
+            assert modal.locator('[data-sync-action="recover"]').is_enabled()
+            assert modal.locator('[data-history-action], details').count() == 0
+            assert page.evaluate("window.requests.every(item => item.body === undefined)")
             messages = []
 
             def consent(dialog):
@@ -1423,15 +1107,11 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
 
             page.on("dialog", consent)
             modal.get_by_role("button", name=labels["recoverWriter"], exact=True).click()
-            preview = modal.get_by_role("group", name=labels["historyPreview"], exact=True)
-            preview.get_by_text("Verified messages in this preview: 3", exact=True).wait_for()
+            modal.get_by_role("status").filter(has_text=labels["recoveryChecked"]).wait_for()
             assert messages and "2" in messages[0] and "Synthetic" in messages[0] and "Cloud Neko" in messages[0]
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.test"}]
+            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.nekotech.cn"}]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/history/approve'))") is False
-            preview.get_by_role("button", name=labels["historyApprove"], exact=True).click()
-            page.wait_for_function("window.requests.some(item => item.path.endsWith('/history/approve'))")
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/history/approve')).map(item => JSON.parse(item.body))") == [{"taskId": "f" * 32}]
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/sync') || item.path.endsWith('/enable'))") is False
+            assert page.evaluate("window.requests.some(item => ['/history/approve','/sync-choice','/enable','/sync'].some(suffix => item.path.endsWith(suffix)))") is False
+            assert modal.locator('[data-sync-action="recover"]').is_disabled()
         finally:
             browser.close()

@@ -154,6 +154,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/fish-cookie.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/toy-mouse.png",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
+    _PROJECT_ROOT / "static/css/chat_sync.css",
     *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",

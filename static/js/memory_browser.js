@@ -4971,7 +4971,7 @@
         const speakerLabel = String(speaker || 'AI').trim().replace(/[：:]\s*$/, '');
         const label = translate(
             'memory.deleteEntryAria',
-            '删除 {{speaker}} 的第 {{position}} 条记忆',
+            '删除 {{speaker}} 的第 {{position}} 条记录',
             { speaker: speakerLabel, position: position }
         );
         const button = document.createElement('button');
@@ -5001,7 +5001,7 @@
         let lastSection = null;
         chatData.forEach((msg, i) => {
             const section = msg.chat_sync_kind || 'memory';
-            if (chatSyncSnapshot && section !== lastSection) {
+            if (chatSyncSnapshot && !chatSyncSnapshot.unifiedHistory && section !== lastSection) {
                 const heading = document.createElement('div');
                 heading.className = 'memory-chat-section-label';
                 heading.title = translate('memory.chatDeletionHint', '');
@@ -5188,16 +5188,6 @@
         // future tool sync must explicitly define its own identity/consent rules.
         if (msg.chat_sync_kind === 'original') deletedOriginalIds.add(msg.messageId);
         if (msg.chat_sync_kind === 'local') deletedLocalReplyIds.add(msg.messageId);
-    }
-    // 新增：AI输入框内容变更时，自动拼接时间戳
-    function updateAIContent(idx, value) {
-        const msg = chatData[idx];
-        const m = msg.text.match(/^(\[[^\]]+\])/);
-        if (m) {
-            chatData[idx].text = m[1] + value;
-        } else {
-            chatData[idx].text = value;
-        }
     }
     // 备忘录正文里 LLM 按 SUMMARY_STALE_HINT 约定，用 `---` 单独占行的分隔符
     // 把"较久前"尾段从主体切开。这里识别"`---` 单独成行（前后都换行了）"——
@@ -5638,7 +5628,7 @@
                     }
                     return null;
                 };
-                chatData = arr.map((item, index) => {
+                chatData = chatSyncSnapshot && chatSyncSnapshot.unifiedHistory ? [] : arr.map((item, index) => {
                     const chatItem = toChatItem(item);
                     if (!chatItem) return null;
                     // source_index 指向本次快照里的原始条目，服务端据此原样保留剧场胶囊。
@@ -5646,8 +5636,8 @@
                     chatItem.theater = isTheaterMemoryItem(item);
                     return chatItem;
                 }).filter(Boolean);
-                // Keep raw chats outside the editable recent-memory payload.
-                // Identical projection text is not evidence of shared identity.
+                // Complete chat history and synchronization share fixed record IDs.
+                // The recent-memory projection is only used by the legacy editor.
                 if (chatSyncSnapshot) {
                     ['originals', 'localReplies'].forEach(function (field) {
                         const records = (chatSyncSnapshot[field] || []).slice();
@@ -5655,9 +5645,14 @@
                         records.forEach(function (record) {
                             chatData.push({ role: record.role === 'assistant' ? 'ai' : 'human',
                                 text: record.text, messageId: record.messageId,
+                                originalTime: record.originalTime, originSeq: record.originSeq,
                                 chat_sync_kind: field === 'originals' ? 'original' : 'local' });
                         });
                     });
+                    if (chatSyncSnapshot.unifiedHistory) {
+                        chatData.sort((a, b) => Number(a.originalTime || 0) - Number(b.originalTime || 0)
+                            || Number(a.originSeq || 0) - Number(b.originSeq || 0));
+                    }
                 }
                 renderChatEdit();
             } else {
@@ -5752,11 +5747,20 @@
             messageIds: Array.from(deletedOriginalIds),
             localMessageIds: Array.from(deletedLocalReplyIds)
         } : null;
+        if (chatSyncSnapshot && chatSyncSnapshot.unifiedHistory && !syncEdit) return true;
         // Permanent cross-device deletion must remain explicit even before i18n has loaded.
-        if (syncEdit && syncEdit.messageIds.length && !window.confirm(translate('memory.chatDeleteConfirm',
-            'Permanently delete {{count}} original chats from all synced devices?', {
-            count: syncEdit.messageIds.length
-        }))) return false;
+        if (syncEdit && syncEdit.messageIds.length) {
+            if (typeof window.showConfirm !== 'function') return false;
+            const confirmed = await window.showConfirm(translate('memory.chatDeleteConfirm',
+                'Permanently delete {{count}} original chats from all synced devices?', {
+                count: syncEdit.messageIds.length
+            }), translate('common.delete', 'Delete'), {
+                danger: true,
+                okText: translate('common.delete', 'Delete'),
+                cancelText: translate('common.cancel', 'Cancel')
+            });
+            if (!confirmed || !stillMatchesSavedRevision()) return false;
+        }
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -5780,7 +5784,8 @@
                     chat: saveChat,
                     fingerprint: saveFingerprint,
                     identity_token: saveIdentityToken,
-                    ...(syncEdit ? { chat_sync: syncEdit } : {})
+                    ...(syncEdit ? { chat_sync: syncEdit } : {}),
+                    ...(chatSyncSnapshot && chatSyncSnapshot.unifiedHistory ? { chat_history_only: true } : {})
                 })
             });
             const data = await resp.json();

@@ -19,19 +19,39 @@
     var settingsCharacterName = null;
     var statusNode = null;
     var DEFAULT_SERVICE_URL = 'https://sync.nekotech.cn';
-    var configuredServiceUrl = null;
-    var activeBindingKey = null;
-    var activeBinding = null;
     var operationRunning = false;
     var writerRecoveryRequired = false;
-    var historyPreview = null;
-    var historyPreviewNode = null;
-    var historyConsentGeneration = 0;
     var foregroundWakeRunning = false;
 
     function text(key, values) {
         // All visible labels use the same eight-locale namespace.
         return window.t ? window.t('chatSync.' + key, values || {}) : key;
+    }
+
+    function describeError(error) {
+        // Only fixed adapter codes reach diagnostics; arbitrary errors may contain credentials.
+        var messages = {
+            chat_sync_account_mismatch: 'errorAccountMismatch',
+            chat_sync_writer_recovery_required: 'errorWriterRecovery',
+            chat_sync_login_required: 'loginRequired',
+            chat_sync_session_changed: 'errorSessionChanged',
+            chat_sync_session_unavailable: 'errorSessionUnavailable',
+            chat_sync_unavailable: 'errorNetwork',
+            chat_sync_pull_timeout: 'errorNetwork',
+            chat_sync_retry_later: 'errorRetryLater',
+            chat_sync_service_rejected: 'errorServiceRejected',
+            chat_sync_binding_changed: 'errorBindingChanged',
+            chat_sync_not_enabled: 'profileNeedsBinding',
+            chat_sync_character_not_found: 'errorBindingChanged',
+            character_profile_changed: 'errorProfileChanged',
+            character_profile_name_conflict: 'cloudNameConflict',
+            character_profile_unsupported_value: 'profileUnsupported',
+            character_profile_conflict: 'profileConflict',
+            profile_revision_conflict: 'profileConflict'
+        };
+        var code = typeof error === 'string' ? error : error && error.message;
+        if (!Object.prototype.hasOwnProperty.call(messages, code)) return text('errorUnknown');
+        return text('errorDetail', { message: text(messages[code]), code: code });
     }
 
     function characterName() {
@@ -287,268 +307,119 @@
         }
     }
 
-    function clearHistoryPreview() {
-        // Dismissed consent never survives a role switch or a later local response.
-        historyConsentGeneration++;
-        historyPreview = null;
-        if (historyPreviewNode) historyPreviewNode.replaceChildren();
-    }
-
     function updateControls() {
-        dialog.querySelectorAll('[data-sync-action]').forEach(function (button) { button.disabled = operationRunning; });
-        dialog.querySelectorAll('[data-history-action]').forEach(function (button) { button.disabled = operationRunning; });
-        ['sync', 'pause', 'history'].forEach(function (action) {
-            dialog.querySelector('[data-sync-action="' + action + '"]').disabled = operationRunning || !activeBinding || !activeBinding.enabled;
-        });
-        dialog.querySelector('[data-sync-action="clear"]').disabled = operationRunning || !activeUid || unfinishedChat();
-        dialog.querySelector('[data-sync-action="enable"]').disabled = operationRunning || writerRecoveryRequired || !activeUid;
-        dialog.querySelector('[data-sync-action="recover"]').disabled = operationRunning || !writerRecoveryRequired || !activeUid;
-        dialog.querySelector('[data-sync-action="enable"]').hidden = !!(activeBinding && activeBinding.enabled) || writerRecoveryRequired;
-        dialog.querySelector('[data-sync-action="sync"]').hidden = !activeBinding || !activeBinding.enabled || writerRecoveryRequired;
-        dialog.querySelector('[data-sync-action="pause"]').hidden = !activeBinding || !activeBinding.enabled || writerRecoveryRequired;
-        dialog.querySelector('[data-sync-action="recover"]').hidden = !writerRecoveryRequired;
-        if (writerRecoveryRequired) {
-            ['sync', 'pause', 'history', 'profile', 'cloud'].forEach(function (action) {
-                dialog.querySelector('[data-sync-action="' + action + '"]').disabled = true;
-            });
-        }
-    }
-
-    function showHistoryPreview(snapshot, name, bindingKey) {
-        historyPreview = { snapshot: snapshot, name: name, bindingKey: bindingKey, generation: historyConsentGeneration };
-        historyPreviewNode.replaceChildren();
-        [['historyPreview'], ['historyLocalRole', { name: snapshot.localName }],
-            ['historyCloudRole', { name: snapshot.cloudName }], ['historyCount', { count: snapshot.count }],
-            [snapshot.unverifiedCount === null ? 'historyUnverifiedUnknown' : 'historyUnverifiedCount', { count: snapshot.unverifiedCount }],
-            ['historyHint']].forEach(function (item) {
-            var line = document.createElement('p');
-            line.textContent = text(item[0], item[1]);
-            historyPreviewNode.appendChild(line);
-        });
-        if (!snapshot.count) {
-            var empty = document.createElement('p');
-            empty.textContent = text('historyEmpty');
-            historyPreviewNode.appendChild(empty);
-        }
-        (snapshot.count ? [['approve', 'historyApprove'], ['cancel', 'historyCancel']] : [['cancel', 'historyCancel']]).forEach(function (item) {
-            var button = document.createElement('button');
-            button.type = 'button';
-            button.dataset.historyAction = item[0];
-            button.textContent = text(item[1]);
-            button.addEventListener('click', function () {
-                if (item[0] === 'cancel') clearHistoryPreview();
-                else return operateHistory('approve');
-            });
-            historyPreviewNode.appendChild(button);
-        });
-    }
-
-    async function operateHistory(action) {
-        if (operationRunning || !dialog.open) return;
-        var name = characterName(), uid = activeUid, reviewed = historyPreview;
-        if (action === 'approve' && (!reviewed || reviewed.name !== name)) {
-            clearHistoryPreview();
-            statusNode.textContent = text('historyChanged');
-            return;
-        }
-        operationRunning = true;
-        updateControls();
-        try {
-            if (!await refreshStatus() || characterName() !== name || activeUid !== uid || !activeBinding || !activeBinding.enabled
-                    || !dialog.open || (reviewed && (reviewed.bindingKey !== activeBindingKey
-                        || reviewed.generation !== historyConsentGeneration))) throw new Error('chat_sync_history_changed');
-            statusNode.textContent = text('working');
-            if (action === 'approve') {
-                // Approve this exact local task; background scheduling owns registration and uploads.
-                await api('/characters/' + uid + '/history/approve', 'POST', { taskId: reviewed.snapshot.taskId });
-                if (!dialog.open || name !== characterName() || reviewed.generation !== historyConsentGeneration) return;
-                clearHistoryPreview();
-                await refreshStatus();
-                if (dialog.open && name === characterName()) statusNode.textContent += ' ' + text('historyQueued');
-            } else {
-                clearHistoryPreview();
-                var generation = historyConsentGeneration, bindingKey = activeBindingKey;
-                var snapshot = await api('/characters/' + uid + '/history/preview', 'POST');
-                if (!dialog.open || generation !== historyConsentGeneration || name !== characterName()
-                        || uid !== activeUid || bindingKey !== activeBindingKey) return;
-                if (snapshot.characterSyncId !== uid || snapshot.localName !== name) throw new Error('chat_sync_history_changed');
-                showHistoryPreview(snapshot, name, bindingKey);
-                statusNode.textContent = '';
-            }
-        } catch (error) {
-            clearHistoryPreview();
-            if (dialog.open && name === characterName()) statusNode.textContent = text(error.message === 'chat_sync_login_required'
-                ? 'loginRequired' : ['chat_sync_history_changed', 'chat_sync_session_changed', 'chat_sync_binding_changed'].includes(error.message)
-                    ? 'historyChanged' : 'failed');
-        } finally {
-            operationRunning = false;
-            updateControls();
-        }
+        var recover = dialog.querySelector('[data-sync-action="recover"]');
+        recover.disabled = operationRunning || !writerRecoveryRequired || !activeUid;
+        recover.setAttribute('aria-busy', String(operationRunning));
     }
 
     async function refreshStatus() {
-        // Show remaining local work instead of announcing complete two-device delivery.
         var name = characterName();
         var state = await api('/status');
         if (characterName() !== name) return false;
         var role = state.characters.find(function (item) { return item.displayName === name; });
         activeUid = role ? role.characterSyncId : null;
-        configuredServiceUrl = state.serviceUrl;
         var binding = role && role.binding;
-        activeBinding = binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
-        activeBindingKey = binding ? JSON.stringify([activeUid, state.serviceUrl, binding.ownerId, binding.bindingId, binding.generation, binding.enabled]) : null;
-        if (historyPreview && (historyPreview.name !== name || historyPreview.bindingKey !== activeBindingKey)) clearHistoryPreview();
-        statusNode.textContent = !binding ? text('enableHint', { name: name })
-            : text(binding.enabled ? 'enabled' : 'paused') + ' ' + text('pending', {
-                originals: binding.pendingOriginals, deletions: binding.pendingDeletions
-            }) + (binding.localOnlyOriginals ? ' ' + text('oversizedLocalOnly', { count: binding.localOnlyOriginals }) : '');
-        if (writerRecoveryRequired) statusNode.textContent = text('writerRecoveryRequired');
-        else if (role && role.syncSetupError) statusNode.textContent = text('setupNeedsSave', {name: name});
-        else if (role && role.syncPending) statusNode.textContent = text('newSyncPending');
-        // Automatic failures use existing localized progress labels; remote
-        // bodies and internal retry metadata never become visible text.
-        if (binding && binding.lastSyncError) statusNode.textContent += ' ' + text(
-            binding.lastSyncError === 'chat_sync_login_required' ? 'loginRequired' : 'failed');
-        var backfill = binding && binding.historyBackfill;
-        if (backfill && backfill.awaitingRegistration > 0) {
-            // Aggregate approved tasks independently: a newer preview must not hide earlier pending members.
-            statusNode.textContent += ' ' + text('historyAwaitingRegistration', { count: backfill.awaitingRegistration });
-        }
+        var error = role && (role.syncSetupError || (binding && binding.lastSyncError));
+        statusNode.textContent = error ? describeError(error)
+            : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');
         updateControls();
         return true;
     }
 
-    async function operate(action) {
-        // UI operations change only this feature's state; normal chat remains independent.
-        if (action === 'history') return operateHistory('preview');
-        if (operationRunning) return;
+    async function recoverSync() {
+        if (operationRunning || !dialog.open || !writerRecoveryRequired || !activeUid) return;
+        var requestedName = characterName(), requestedUid = activeUid;
         operationRunning = true;
         updateControls();
-        var requestedName = characterName();
-        var requestedUid = activeUid;
-        var requestedBindingKey = activeBindingKey;
-        var requestedServiceUrl = configuredServiceUrl;
-        var enabledHere = false;
         try {
-            if (!await refreshStatus() || characterName() !== requestedName
-                    || (requestedUid && activeUid !== requestedUid)) return;
-            requestedUid = activeUid;
-            // Missing configuration already means the built-in project service.
-            if (action === 'enable' && (requestedBindingKey !== activeBindingKey
-                    || (requestedServiceUrl || DEFAULT_SERVICE_URL) !== (configuredServiceUrl || DEFAULT_SERVICE_URL))) return;
+            if (!await refreshStatus() || !dialog.open || characterName() !== requestedName
+                    || activeUid !== requestedUid || !writerRecoveryRequired) return;
             statusNode.textContent = text('working');
-            if (['enable', 'pause', 'clear'].includes(action)) clearHistoryPreview();
-            var consentGeneration = historyConsentGeneration;
-            if (action === 'cloud' && window.nekoCharacterProfileSync) {
-                // Cloud import is independent of whichever local role is active.
-                await window.nekoCharacterProfileSync.cloudImport();
-                return;
-            } else if (requestedUid) {
-                var path = '/characters/' + requestedUid;
-                if (action === 'recover') {
-                    clearHistoryPreview();
-                    var recovered = await api(path + '/recovery/preview', 'POST', { serviceUrl: (configuredServiceUrl || DEFAULT_SERVICE_URL) });
-                    if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
-                    await refreshStatus();
-                    // Deletion consent is separate from the existing reviewed
-                    // history task, and cancellation keeps these exact IDs hidden.
-                    if (recovered.deletions.count && window.confirm(text('recoveryDeleteConfirm', {
-                            count: recovered.deletions.count, localName: recovered.history.localName,
-                            cloudName: recovered.history.cloudName
-                        }))) {
-                        await api(path + '/recovery/deletions/approve', 'POST', { taskId: recovered.deletions.taskId });
-                    }
-                    if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
-                    showHistoryPreview(recovered.history, requestedName, activeBindingKey);
-                    statusNode.textContent = text('recoveryChecked');
-                    await loadHistory();
-                    return;
-                }
-                if (action === 'enable') {
-                    if (!configuredServiceUrl) await api('/configuration', 'PUT', { serviceUrl: (configuredServiceUrl || DEFAULT_SERVICE_URL) });
-                    if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid
-                            || consentGeneration !== historyConsentGeneration) return;
-                    // One labeled enable/resume action durably approves the saved persona and trusted history.
-                    // The backend owns retries; opening this dialog never enlarges an older grant.
-                    await api(path + '/sync-choice', 'POST', {enabled: true, includeHistory: true});
-                    enabledHere = true;
-                    // This explicit action may target an edited, inactive role. Run its saved intent
-                    // once without changing the selected chat; offline card saves still only queue.
-                    await api(path + '/sync-choice/run', 'POST');
-                }
-                if (action === 'pause') await api(path + '/pause', 'POST');
-                if (action === 'clear') {
-                    if (unfinishedChat()) { statusNode.textContent = text('unfinishedChat'); return; }
-                    if (!window.confirm(text('clearConfirm'))) return;
-                    rememberDeletion(requestedUid, await api(path + '/clear', 'POST'));
-                }
-                if (action === 'sync') {
-                    // Internal manual-pass budget only; not a production/compressed cap.
-                    var receipt = await api(path + '/sync', 'POST', { byteBudget: 256 * 1024, maxPullPages: 10 });
-                    await refreshStatus();
-                    statusNode.textContent += ' ' + text(receipt.hasMore ? 'more' : 'passFinished');
-                    return;
-                }
-                if (action === 'profile' && window.nekoCharacterProfileSync) {
-                    // A dismissed conflict remains reviewable without another edit.
-                    var candidate = await api(path + '/profile/local', 'POST', {});
-                    if (candidate.head) await window.nekoCharacterProfileSync.review(requestedUid, candidate);
-                    else await window.nekoCharacterProfileSync.afterSave(requestedName, true);
-                    return;
-                }
-            }
+            var path = '/characters/' + requestedUid;
+            var recovered = await api(path + '/recovery/preview', 'POST', { serviceUrl: DEFAULT_SERVICE_URL });
+            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             await refreshStatus();
+            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
+            // Recovery never grants a copied deletion or a historical upload.
+            // The existing card switch owns combined profile/history consent.
+            if (recovered.deletions.count && window.confirm(text('recoveryDeleteConfirm', {
+                    count: recovered.deletions.count, localName: recovered.history.localName,
+                    cloudName: recovered.history.cloudName
+                }))) {
+                await api(path + '/recovery/deletions/approve', 'POST', { taskId: recovered.deletions.taskId });
+            }
+            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
+            statusNode.textContent = text('recoveryChecked');
             await loadHistory();
         } catch (error) {
-            statusNode.textContent = text(error.message === 'chat_sync_login_required' ? 'loginRequired'
-                : enabledHere ? 'initialHistoryFailed' : 'failed');
-        } finally {
-            if (action === 'sync') {
-                // Earlier pages can commit even when a later network page fails.
-                try { await loadHistory(); } catch (_) { /* Keep the visible sync error. */ }
+            if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
+                statusNode.textContent = describeError(error);
             }
+        } finally {
             operationRunning = false;
             updateControls();
         }
     }
 
     function buildDialog() {
-        // Build DOM nodes without interpolating profile names or service URLs as HTML.
         dialog = document.createElement('dialog');
         dialog.id = 'chat-sync-dialog';
         dialog.setAttribute('aria-labelledby', 'chat-sync-title');
+        var header = document.createElement('div');
+        header.className = 'chat-sync-dialog-header';
+        var icon = document.createElement('img');
+        icon.src = '/static/icons/set_on.png';
+        icon.alt = '';
+        header.appendChild(icon);
         var title = document.createElement('h2');
         title.id = 'chat-sync-title';
         title.textContent = text('title');
-        dialog.appendChild(title);
-        var advanced = document.createElement('details');
-        var summary = document.createElement('summary');
-        summary.textContent = text('moreOptions');
-        advanced.appendChild(summary);
-        statusNode = document.createElement('p');
-        statusNode.setAttribute('role', 'status');
-        dialog.appendChild(statusNode);
-        [['recover', 'recoverWriter'], ['enable', 'enable'], ['pause', 'pause'], ['sync', 'syncNow'], ['history', 'previewHistory'], ['profile', 'profileReview'], ['cloud', 'cloudImport'], ['clear', 'clearKnown']].forEach(function (item) {
-            var button = document.createElement('button');
-            button.type = 'button';
-            button.dataset.syncAction = item[0];
-            button.textContent = text(item[1]);
-            button.addEventListener('click', function () { return operate(item[0]); });
-            (['enable', 'pause', 'sync', 'recover'].includes(item[0]) ? dialog : advanced).appendChild(button);
-        });
-        dialog.appendChild(advanced);
-        historyPreviewNode = document.createElement('div');
-        historyPreviewNode.setAttribute('role', 'group');
-        historyPreviewNode.setAttribute('aria-label', text('historyPreview'));
-        dialog.appendChild(historyPreviewNode);
+        header.appendChild(title);
         var close = document.createElement('button');
         close.type = 'button';
-        close.textContent = text('close');
-        close.addEventListener('click', function () { clearHistoryPreview(); dialog.close(); });
-        dialog.addEventListener('cancel', clearHistoryPreview);
-        dialog.addEventListener('close', function () { clearHistoryPreview(); settingsCharacterName = null; });
-        dialog.appendChild(close);
+        close.className = 'chat-sync-close';
+        close.setAttribute('aria-label', text('close'));
+        var closeIcon = document.createElement('img');
+        closeIcon.src = '/static/icons/close_button.png';
+        closeIcon.alt = '';
+        close.appendChild(closeIcon);
+        close.addEventListener('click', function () { dialog.close(); });
+        header.appendChild(close);
+        dialog.appendChild(header);
+        var row = document.createElement('div');
+        row.className = 'chat-sync-recovery-row';
+        var recover = document.createElement('button');
+        recover.type = 'button';
+        recover.className = 'chat-sync-recover';
+        recover.dataset.syncAction = 'recover';
+        recover.textContent = text('recoverWriter');
+        recover.disabled = true;
+        recover.setAttribute('aria-describedby', 'chat-sync-recovery-tooltip');
+        recover.addEventListener('click', recoverSync);
+        row.appendChild(recover);
+        var help = document.createElement('span');
+        help.className = 'chat-sync-help';
+        var helpButton = document.createElement('button');
+        helpButton.type = 'button';
+        helpButton.className = 'chat-sync-help-button';
+        helpButton.textContent = '?';
+        helpButton.setAttribute('aria-label', text('recoverWriterHelp'));
+        helpButton.setAttribute('aria-describedby', 'chat-sync-recovery-tooltip');
+        help.appendChild(helpButton);
+        var tooltip = document.createElement('span');
+        tooltip.id = 'chat-sync-recovery-tooltip';
+        tooltip.setAttribute('role', 'tooltip');
+        tooltip.textContent = text('recoverWriterTooltip');
+        help.appendChild(tooltip);
+        row.appendChild(help);
+        dialog.appendChild(row);
+        statusNode = document.createElement('p');
+        statusNode.className = 'chat-sync-status';
+        statusNode.setAttribute('role', 'status');
+        dialog.appendChild(statusNode);
+        dialog.addEventListener('close', function () { settingsCharacterName = null; });
         document.body.appendChild(dialog);
     }
 
@@ -557,8 +428,11 @@
             settingsCharacterName = name || null;
             if (!dialog) buildDialog();
             dialog.showModal();
-            try { await refreshStatus(); } catch (_) { statusNode.textContent = text('failed'); }
+            statusNode.textContent = text('working');
+            dialog.querySelector('[data-sync-action="recover"]').disabled = true;
+            try { await refreshStatus(); } catch (error) { statusNode.textContent = describeError(error); }
         },
+        describeError: describeError,
         // Pure identity merge is exposed for direct browser-independent regression tests.
         mergeHistory: mergeHistory,
         loadHistory: loadHistory,
@@ -610,7 +484,6 @@
 
     window.addEventListener('voice-input-socket-open', function () {
         // Initial connect and role switches restore local originals without cloud I/O.
-        clearHistoryPreview();
         loadHistory().catch(function () { /* Optional sync never blocks local chat. */ });
     });
 

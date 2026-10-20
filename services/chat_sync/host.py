@@ -19,6 +19,7 @@ get_session_manager         shared_state
 get_init_one_catgirl        shared_state
 conversation_busy           shared_state (``session_state.conversation_busy``)
 rename_character            characters_router.crud (``_rename_catgirl_serialized``)
+delete_character            characters_router.crud (``_delete_synced_character``)
 ==========================  =====================================================
 
 An accessor whose capability is missing raises :class:`CapabilityNotInstalled`,
@@ -46,6 +47,7 @@ _get_session_manager: Callable[[], Any] | None = None
 _get_init_one_catgirl: Callable[[], Callable[..., Awaitable[Any]]] | None = None
 _conversation_busy: Callable[[Any], bool] | None = None
 _rename_character: Callable[..., Awaitable[Any]] | None = None
+_delete_character: Callable[..., Awaitable[Any]] | None = None
 
 
 def _callable(value, name: str):
@@ -91,6 +93,12 @@ def install_rename_transaction(*, rename_character) -> None:
     _rename_character = _callable(rename_character, "rename_character")
 
 
+def install_delete_transaction(*, delete_character) -> None:
+    """Installed by the character owner; remote deletes reuse its full cleanup."""
+    global _delete_character
+    _delete_character = _callable(delete_character, "delete_character")
+
+
 def saved_session_snapshot() -> dict | None:
     """Read the normalized saved desktop session; None when nobody is logged in."""
     return _installed(_saved_session_snapshot, "saved_session_snapshot")()
@@ -124,3 +132,8 @@ def conversation_busy(manager: Any) -> bool:
 def rename_character(old_name: str, new_name: str, *, sync_commit=None) -> Awaitable[Any]:
     """Start the owner's serialized rename; the caller holds the config mutation lock."""
     return _installed(_rename_character, "rename_character")(old_name, new_name, sync_commit=sync_commit)
+
+
+def delete_character(uid: str, before_delete) -> Awaitable[bool]:
+    """Resolve the immutable identity and guard immediately before local cleanup."""
+    return _installed(_delete_character, "delete_character")(uid, before_delete)

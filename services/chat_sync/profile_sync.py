@@ -333,6 +333,10 @@ class DesktopProfileAdapter:
         # reporting "not busy".
         return _host.conversation_busy(manager)
 
+    async def delete(self, uid, before_delete):
+        """Use the host's complete role/history/memory deletion transaction."""
+        return await _host.delete_character(uid, before_delete)
+
     async def apply(self, uid, status, commit, *, confirm_rename=False, before_apply=None):
         """Preserve identity/avatar/preferences and bypass greeting/recent-clear paths."""
         from utils.character_memory import character_config_mutation_lock
@@ -585,17 +589,28 @@ class DesktopProfileSync:
             return {"characterSyncId": uid, "displayName": name, "existing": existing, "enabled": True,
                     "profileHash": local["local_hash"]}
 
-    async def step(self, uid, *, presence=None, manual=False, choose_remote=False, local_hash=None, revision=None, confirm_rename=False):
+    async def step(self, uid, *, presence=None, manual=False, choose_remote=False, local_hash=None, revision=None, confirm_rename=False,
+                   initial_upload_only=False):
         """Poll at the existing two-minute cadence and retry approved requests exactly."""
         if self.adapter is None:
             return None
         async with self.lock:
-            if not manual:
+            if not manual and not initial_upload_only:
                 await self.runtime._require_automatic_character(uid)
-            state = await self.local(uid)
             binding = await asyncio.to_thread(self.runtime.state.binding, uid)
             if not binding or not binding["enabled"] or not binding["binding_id"]:
                 raise ValueError("chat_sync_not_enabled")
+            if initial_upload_only:
+                # Initial publication completes already approved bytes after a role switch.
+                # Recheck under the profile lock; this never observes/approves a newer draft.
+                from services.chat_sync.ledger import ChatDomain
+                state = await asyncio.to_thread(self.store.status, ChatDomain(binding["owner_id"], uid).key())
+                operation = await asyncio.to_thread(self.store.next_operation, state["domain"]) if state else None
+                if (not state or state["base_revision"] != 0 or state["head_revision"] != 0
+                        or not operation or operation["base_revision"] != 0):
+                    return state
+            else:
+                state = await self.local(uid)
             authenticated = await self.runtime._session() if presence is None else None
             presence = presence or authenticated[1]
             scheduler = self.runtime.scheduler
@@ -610,7 +625,7 @@ class DesktopProfileSync:
                 if authenticated[1] != presence:
                     raise ValueError("chat_sync_session_changed")
                 _, request, commit = await self.runtime._bound_transport(uid, authenticated=authenticated, expected_binding=binding,
-                    automatic_only=not manual)
+                    automatic_only=not manual and not initial_upload_only)
                 path = f"/prototype/chat-sync/characters/{uid}/profile"
                 operation = await asyncio.to_thread(self.store.next_operation, state["domain"])
                 if operation is not None and not choose_remote:
@@ -621,6 +636,10 @@ class DesktopProfileSync:
                         if not getattr(exc, "profile_conflict", False):
                             raise
                         await commit(self.store.conflict, operation["operation_id"])
+                if initial_upload_only:
+                    # Keep downloads, conflict application and later profile edits current-role only.
+                    await asyncio.to_thread(scheduler.success, state["domain"], "profile")
+                    return await asyncio.to_thread(self.store.status, state["domain"])
                 state = await asyncio.to_thread(self.store.status, state["domain"])
                 head = await request("GET", path + "?metadataOnly=true", None)
                 if "profile" in head:

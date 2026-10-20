@@ -1303,7 +1303,31 @@ async def _memory_chat_snapshot(cm, uid: str) -> dict:
     if binding != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid)):
         raise HTTPException(409, 'chat_sync_binding_changed')
     return {'characterSyncId': uid, 'binding': binding,
-            'originals': originals, 'localReplies': local_replies}
+            'originals': originals, 'localReplies': local_replies,
+            'unifiedHistory': getattr(runtime, 'chat_history_provider', None) is not None}
+
+
+async def _delete_browser_chats(runtime, cm, uid, name, edit):
+    """Apply reviewed immutable IDs without writing the recent-memory projection."""
+    from services.chat_sync.source import clear_local_replies
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    if (edit['messageIds'] or edit['localMessageIds']) and DesktopProfileAdapter(cm).busy(name):
+        raise HTTPException(409, 'chat_sync_reply_in_progress')
+    if (uid != await _memory_chat_uid(cm, name)
+            or edit['binding'] != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))):
+        raise HTTPException(409, 'chat_sync_binding_changed')
+    ids = edit['messageIds']
+    try:
+        receipt = (await runtime.delete(uid, ids, expected_binding=edit['binding']) if ids else
+                   {'messageIds': [], 'deletionIds': [], 'pending': False})
+    except ValueError as exc:
+        if str(exc) == 'chat_sync_binding_changed':
+            raise HTTPException(409, 'chat_sync_binding_changed') from None
+        raise
+    receipt['localMessageIds'] = await clear_local_replies(runtime, uid, edit['localMessageIds'])
+    if ids:
+        runtime.start_deletion_flush(uid)
+    return receipt
 
 
 @router.get('/recent_file')
@@ -1397,6 +1421,8 @@ async def save_recent_file(request: Request):
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
     sync_edit = data.get('chat_sync')
+    if data.get('chat_history_only') is True and sync_edit is None:
+        raise HTTPException(400, 'chat_sync_invalid_editor_save')
     runtime = None
     if sync_edit is not None:
         from main_routers.chat_sync_router import _local_access
@@ -1415,6 +1441,10 @@ async def save_recent_file(request: Request):
         if not uid or uid != sync_edit['characterSyncId']:
             raise HTTPException(409, 'chat_sync_binding_changed')
         runtime = await get_desktop_chat_sync_runtime(cm)
+        if data.get('chat_history_only') is True:
+            receipt = await _delete_browser_chats(runtime, cm, uid, catgirl_name, sync_edit)
+            return {'success': True, 'chat_deletion': receipt, 'need_refresh': False,
+                    'fingerprint': snapshot_fingerprint, 'identity_token': snapshot_identity_token}
 
     # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
     # runtime nested paths, or CAS comparisons lose their target.
@@ -1457,26 +1487,7 @@ async def save_recent_file(request: Request):
 
     async def _register_chat_deletions():
         nonlocal deletion_receipt
-        from services.chat_sync.source import clear_local_replies
-        from services.chat_sync.profile_sync import DesktopProfileAdapter
-        if (sync_edit['messageIds'] or sync_edit['localMessageIds']) and DesktopProfileAdapter(cm).busy(catgirl_name):
-            raise HTTPException(409, 'chat_sync_reply_in_progress')
-        # Recheck inside the locked save, after the recent-file CAS succeeded.
-        if (uid != await _memory_chat_uid(cm, catgirl_name)
-                or sync_edit['binding'] != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))):
-            raise HTTPException(409, 'chat_sync_binding_changed')
-        ids = sync_edit['messageIds']
-        try:
-            deletion_receipt = (await runtime.delete(uid, ids, expected_binding=sync_edit['binding']) if ids else
-                                {'messageIds': [], 'deletionIds': [], 'pending': False})
-        except ValueError as exc:
-            if str(exc) == 'chat_sync_binding_changed':
-                raise HTTPException(409, 'chat_sync_binding_changed') from None
-            raise
-        deletion_receipt['localMessageIds'] = []
-        deletion_receipt['localMessageIds'] = await clear_local_replies(runtime, uid, sync_edit['localMessageIds'])
-        if ids:
-            runtime.start_deletion_flush(uid)
+        deletion_receipt = await _delete_browser_chats(runtime, cm, uid, catgirl_name, sync_edit)
 
     def _before_write():
         # The event loop remains free while the recent-file worker owns its lock.

@@ -102,6 +102,34 @@ def test_save_commits_exact_ids_and_keeps_tool_deletion_local(editor):
     assert json.loads(path.read_text(encoding="utf-8")) == []
 
 
+def test_unified_chat_save_never_rewrites_reviewed_recent_memory(editor):
+    client, path, runtime, clear = editor
+    runtime.chat_history_provider = object()
+    loaded = snapshot(client)
+    assert loaded['chat_sync']['unifiedHistory'] is True
+    payload = {**save_payload(loaded), 'chat_history_only': True}
+    path.write_text('[{"type":"system","data":{"content":"new review"}}]')
+    before = path.read_bytes()
+    response = client.post('/api/memory/recent_file/save', json=payload)
+    assert response.status_code == 200 and response.json()['success'] is True
+    assert path.read_bytes() == before
+    runtime.delete.assert_awaited_once_with(UID, [MID], expected_binding=loaded['chat_sync']['binding'])
+    clear.assert_awaited_once_with(runtime, UID, [LOCAL])
+
+
+def test_unified_chat_save_without_explicit_ids_cannot_clear_memory(editor):
+    client, path, runtime, clear = editor
+    loaded = snapshot(client)
+    payload = save_payload(loaded)
+    payload.pop('chat_sync')
+    payload['chat_history_only'] = True
+    before = path.read_bytes()
+    assert client.post('/api/memory/recent_file/save', json=payload).status_code == 400
+    assert path.read_bytes() == before
+    runtime.delete.assert_not_called()
+    clear.assert_not_called()
+
+
 @pytest.mark.parametrize("change", ["content", "binding"])
 def test_stale_save_never_queues_deletions(editor, change):
     client, path, runtime, clear = editor
@@ -318,15 +346,20 @@ def test_unfinished_reply_blocks_canonical_deletion_without_writing_memory(edito
 
 
 @pytest.mark.parametrize('missing_translation', [False, True])
-def test_sync_delete_confirmation_remains_explicit_without_a_loaded_translation(missing_translation):
+@pytest.mark.parametrize('decision', ['cancel', 'confirm', 'stale', 'unavailable'])
+def test_sync_delete_confirmation_remains_explicit_without_a_loaded_translation(missing_translation, decision):
     """A missing i18n loader/key cannot turn permanent multi-device deletion into an empty prompt."""
     source_path = Path(__file__).parents[2] / 'static/js/memory_browser.js'
     script = r"""
         const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
         const source=fs.readFileSync(process.argv[1],'utf8');
-        let prompt;
-        global.window={confirm(text){prompt=text;return false;}};
+        let prompt, options, title, settle, sent;
+        global.window={showConfirm: (text, heading, config)=>{
+            prompt=text;title=heading;options=config;
+            return new Promise(resolve=>{settle=resolve;});
+        }};
         if(MISSING_KEY)window.t=key=>key;
+        if(DECISION==='unavailable')delete window.showConfirm;
         global.currentMemoryFile='recent_Synthetic.json';
         global.currentMemoryFingerprint='synthetic-fingerprint';
         global.currentMemoryIdentityToken='synthetic-token';
@@ -334,16 +367,34 @@ def test_sync_delete_confirmation_remains_explicit_without_a_loaded_translation(
         global.chatData=[];global.chatSyncSnapshot={characterSyncId:'a'.repeat(32),binding:{}};
         global.deletedOriginalIds=new Set(['b'.repeat(32),'c'.repeat(32)]);
         global.deletedLocalReplyIds=new Set();
-        global.fetch=()=>{throw new Error('Cancelled deletion must not send anything');};
+        global.showSaveStatus=()=>{};
+        global.fetch=async (url,init)=>{
+            assert.equal(DECISION,'confirm','Only a confirmed current selection may send');
+            sent=JSON.parse(init.body);
+            return {json:async()=>({success:true})};
+        };
+        global.setMemoryDirty=()=>{};
         vm.runInThisContext(source.slice(source.indexOf('    function interpolateText('),
             source.indexOf('    function setElementText(')));
         vm.runInThisContext(source.slice(source.indexOf('    async function saveCurrentMemoryOnce('),
             source.indexOf('    function announceChatDeletion(')));
         (async()=>{
-            assert.equal(await saveCurrentMemoryOnce(),false);
-            assert.equal(prompt,'Permanently delete 2 original chats from all synced devices?');
+            const saving=saveCurrentMemoryOnce();
+            assert.equal(sent,undefined,'Must wait for the custom dialog');
+            if(DECISION!=='unavailable'){
+                assert.equal(prompt,'Permanently delete 2 original chats from all synced devices?');
+                assert.equal(title,'Delete');
+                assert.equal(options.danger,true);
+                assert.equal(options.okText,'Delete');
+                assert.equal(options.cancelText,'Cancel');
+                if(DECISION==='stale')memoryEditRevision++;
+                settle(DECISION!=='cancel');
+            }
+            assert.equal(await saving,DECISION==='confirm');
+            if(DECISION==='confirm')assert.deepEqual(sent.chat_sync.messageIds,['b'.repeat(32),'c'.repeat(32)]);
+            else assert.equal(sent,undefined);
         })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('MISSING_KEY', json.dumps(missing_translation))
+    """.replace('MISSING_KEY', json.dumps(missing_translation)).replace('DECISION', json.dumps(decision))
     from tests.node_harness import run_node_script
     result = run_node_script('node', script.replace('process.argv[1]', json.dumps(str(source_path))),
                              capture_output=True, timeout=10)
