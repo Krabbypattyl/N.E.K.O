@@ -492,11 +492,18 @@ async def test_remote_deletion_waits_for_busy_role_and_rechecks_authority_inside
 
 
 @pytest.mark.asyncio
-async def test_remote_deletion_failure_restores_current_role_and_discards_only_its_new_default(monkeypatch):
+@pytest.mark.parametrize("failure", ["result", "error", "cancel", "cleanup"])
+async def test_remote_deletion_failure_restores_current_role_and_discards_only_its_new_default(monkeypatch, failure):
     crud = importlib.import_module("main_routers.characters_router.crud")
     config = Config()
     original = copy.deepcopy(config.data)
-    config.asave_characters = AsyncMock(side_effect=config.save_characters)
+    restoring, release = asyncio.Event(), asyncio.Event()
+    async def save(data):
+        if failure == "cancel" and data.get("当前猫娘") == "Synthetic":
+            restoring.set()
+            await release.wait()
+        config.save_characters(data)
+    config.asave_characters = AsyncMock(side_effect=save)
     config.get_default_characters = lambda: {"猫娘": {"Default": {"_reserved": {}}}}
     monkeypatch.setattr(crud, "get_config_manager", lambda: config)
     monkeypatch.setattr(crud, "get_session_manager", dict)
@@ -504,10 +511,23 @@ async def test_remote_deletion_failure_restores_current_role_and_discards_only_i
     monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _name: False)
     monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
     monkeypatch.setattr(crud, "get_init_one_catgirl", lambda: AsyncMock())
-    remove = AsyncMock()
+    remove = AsyncMock(side_effect=RuntimeError("secondary cleanup failure") if failure == "cleanup" else None)
     monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: remove)
     monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
-    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", AsyncMock(return_value={"success": False}))
-    assert await host.delete_character(UID, AsyncMock()) is False
+    error = asyncio.CancelledError() if failure == "cancel" else RuntimeError("original deletion failure")
+    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", AsyncMock(
+        return_value={"success": False}, side_effect=None if failure == "result" else error))
+    task = asyncio.create_task(host.delete_character(UID, AsyncMock()))
+    if failure == "cancel":
+        await asyncio.wait_for(restoring.wait(), timeout=2)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+        release.set()
+    if failure == "result":
+        assert await task is False
+    else:
+        with pytest.raises(type(error), match=None if failure == "cancel" else "original deletion failure"):
+            await task
     assert config.data == original
     remove.assert_awaited_once_with("Default")

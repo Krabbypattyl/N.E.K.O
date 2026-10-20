@@ -1444,7 +1444,7 @@ async def save_recent_file(request: Request):
         if data.get('chat_history_only') is True:
             receipt = await _delete_browser_chats(runtime, cm, uid, catgirl_name, sync_edit)
             return {'success': True, 'chat_deletion': receipt, 'need_refresh': False,
-                    'fingerprint': snapshot_fingerprint, 'identity_token': snapshot_identity_token}
+                    'fingerprint': snapshot_fingerprint, 'identity_token': snapshot_identity_token, 'characterSyncId': uid}
 
     # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
     # runtime nested paths, or CAS comparisons lose their target.

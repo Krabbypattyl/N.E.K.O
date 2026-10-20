@@ -53,6 +53,29 @@ def source_for(runtime):
     return ChatOriginalSource(Path(runtime.state.path).parent / "sources.sqlite3")
 
 
+def test_archive_batch_uses_one_transaction_and_rolls_back_conflicting_records(tmp_path, monkeypatch):
+    source = source_for(make_runtime(tmp_path, bound=False))
+    connect, statements = source._connect, []
+    def counted_connection():
+        connection = connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+    monkeypatch.setattr(source, "_connect", counted_connection)
+    trace = Mock()
+    monkeypatch.setattr(source_module, "get_trace", lambda: trace)
+    records = [(f"{index:032x}", RAW, None) for index in range(1, 41)]
+    records.append(("f" * 32, ChatOriginal("assistant", "tool text"), "tool"))
+    source.commit_history(UID, records)
+    assert statements.count("BEGIN IMMEDIATE") == statements.count("COMMIT") == 1
+    assert len(source.stored_ids(UID)) == 41
+    assert trace.emit.call_count == 41
+    before = source.stored_ids(UID)
+    with pytest.raises(ValueError, match="identity_conflict"):
+        source.commit_history(UID, [("e" * 32, RAW, None), ("f" * 32, RAW, None)])
+    assert source.stored_ids(UID) == before
+    assert trace.emit.call_count == 41
+
+
 def test_purge_erases_recovery_and_outage_copies_but_keeps_identities(tmp_path):
     """A permanent local delete leaves no readable body in recovery or outage storage."""
     from services.chat_sync.recovery import save_outage

@@ -311,7 +311,7 @@ def test_card_save_explains_required_recovery_and_poll_explains_the_setup_failur
             syncSetupError:'chat_sync_account_mismatch'}]});
         await window.nekoCharacterProfileSync.poll();
         await window.nekoCharacterProfileSync.poll();
-        assert.deepEqual(messages[1],{text:'reason:chat_sync_account_mismatch',kind:'warning'});
+        assert.deepEqual(messages[1],{text:'chatSync.setupNeedsSave\nreason:chat_sync_account_mismatch',kind:'warning'});
         assert.equal(messages.length,2);
     })().catch(e=>{console.error(e);process.exitCode=1;});
     """)
@@ -325,6 +325,24 @@ def test_card_save_before_choice_load_preserves_previous_consent_without_warning
         assert.deepEqual(calls,[]);assert.deepEqual(messages,[]);assert.deepEqual(alerts,[]);
     })().catch(e=>{console.error(e);process.exitCode=1;});
     """)
+
+
+@pytest.mark.parametrize('code', ['chat_sync_account_mismatch', 'unrecognized_setup_error'])
+def test_setup_warning_identifies_the_role_and_unknown_errors_explain_resaving(code):
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.t=(key,values={})=>key+(values.name?':'+values.name:'');
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:code=>code==='chat_sync_account_mismatch'?'account mismatch':'chatSync.errorUnknown'};
+        response=()=>({characters:[{displayName:'First',characterSyncId:uid,syncSetupError:CODE},
+            {displayName:'Second',characterSyncId:'b'.repeat(32),syncSetupError:CODE}]});
+        await window.nekoCharacterProfileSync.poll();
+        assert.equal(messages.length,2);
+        assert(messages[0].text.includes('setupNeedsSave:First'));
+        assert(messages[1].text.includes('setupNeedsSave:Second'));
+        assert(!messages.some(item=>item.text.includes('errorUnknown')));
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CODE', json.dumps(code)))
 
 
 @pytest.mark.parametrize('enabled', [True, False])

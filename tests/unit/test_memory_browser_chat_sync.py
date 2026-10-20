@@ -112,6 +112,7 @@ def test_unified_chat_save_never_rewrites_reviewed_recent_memory(editor):
     before = path.read_bytes()
     response = client.post('/api/memory/recent_file/save', json=payload)
     assert response.status_code == 200 and response.json()['success'] is True
+    assert response.json()['characterSyncId'] == UID
     assert path.read_bytes() == before
     runtime.delete.assert_awaited_once_with(UID, [MID], expected_binding=loaded['chat_sync']['binding'])
     clear.assert_awaited_once_with(runtime, UID, [LOCAL])

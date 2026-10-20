@@ -193,8 +193,10 @@
                     var setupKey = role.characterSyncId + ':setup:' + role.syncSetupError;
                     if (!reviewed.has(setupKey)) {
                         reviewed.add(setupKey);
-                        window.showMessage(window.nekoChatSync ? window.nekoChatSync.describeError(role.syncSetupError)
-                            : text('setupNeedsSave', {name: role.displayName}), 'warning');
+                        var setupMessage = text('setupNeedsSave', {name: role.displayName});
+                        var detail = window.nekoChatSync && window.nekoChatSync.describeError(role.syncSetupError);
+                        if (detail && detail !== text('errorUnknown')) setupMessage += '\n' + detail;
+                        window.showMessage(setupMessage, 'warning');
                     }
                 }
                 var profile = role.binding && role.binding.profile;

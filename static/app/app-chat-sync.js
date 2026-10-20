@@ -137,7 +137,8 @@
         var restored = originals.slice().sort(function (a, b) {
             var at = /^\d+$/.test(a.originalTime || '') ? Number(a.originalTime) : 0;
             var bt = /^\d+$/.test(b.originalTime || '') ? Number(b.originalTime) : 0;
-            return at - bt || a.originStreamId.localeCompare(b.originStreamId) || a.originSeq - b.originSeq;
+            return at - bt || (a.originStreamId || '').localeCompare(b.originStreamId || '')
+                || (a.originSeq || 0) - (b.originSeq || 0);
         }).flatMap(function (record) { return restore(record, false); });
         restored = restored.concat(localReplies.flatMap(function (record) { return restore(record, true); }));
         var retained = current.filter(function (message) {
@@ -324,6 +325,16 @@
         var error = role && (role.syncSetupError || (binding && binding.lastSyncError));
         statusNode.textContent = error ? describeError(error)
             : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');
+        if (binding) {
+            if (binding.pendingOriginals || binding.pendingDeletions) {
+                statusNode.textContent += '\n' + text('pending', {
+                    originals: binding.pendingOriginals || 0, deletions: binding.pendingDeletions || 0
+                });
+            }
+            if (binding.localOnlyOriginals) statusNode.textContent += '\n' + text('oversizedLocalOnly', {count: binding.localOnlyOriginals});
+            var awaiting = binding.historyBackfill && binding.historyBackfill.awaitingRegistration;
+            if (awaiting) statusNode.textContent += '\n' + text('historyAwaitingRegistration', {count: awaiting});
+        }
         updateControls();
         return true;
     }

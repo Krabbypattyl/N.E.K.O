@@ -15,6 +15,7 @@ from email.utils import parsedate_to_datetime
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -260,7 +261,10 @@ class DesktopSyncState:
         with closing(self._connect()) as conn, conn:
             row = conn.execute("SELECT request FROM sync_new_roles WHERE character_uid=?", (uid,)).fetchone()
             if row and (request := json.loads(row[0]))["requestId"] == request_id:
-                request["lastError"] = code
+                if code is None:
+                    request.pop("lastError", None)
+                else:
+                    request["lastError"] = code
                 conn.execute("UPDATE sync_new_roles SET request=? WHERE character_uid=?", (json.dumps(request), uid))
 
     @staticmethod
@@ -803,25 +807,30 @@ class DesktopChatSyncRuntime:
         if self.profiles.adapter is None:
             return
         for binding in await asyncio.to_thread(self.state.bindings):
+            uid = binding["character_uid"]
+            domain = ChatDomain(binding["owner_id"], uid).key()
+            presence = await self.session_presence_provider()
             try:
                 epoch = await asyncio.to_thread(self.writer.epoch)
+                if not await asyncio.to_thread(self.scheduler.claim, domain, "retirement", binding["generation"], presence):
+                    continue
                 token, fingerprint = await self._session()
                 if await self._identity(token) != binding["owner_id"]:
+                    await asyncio.to_thread(self.scheduler.success, domain, "retirement")
                     continue
                 await self._same_session(fingerprint)
-                uid = binding["character_uid"]
                 try:
                     await self._request("GET", f"/prototype/chat-sync/characters/{uid}/profile?metadataOnly=true", token)
+                    await asyncio.to_thread(self.scheduler.success, domain, "retirement")
                     continue
                 except ChatSyncServiceError as error:
                     if not error.character_deleted:
-                        continue
+                        raise
                 await self._same_session(fingerprint)
-                await asyncio.to_thread(self.writer.require_epoch, epoch)
-                if await asyncio.to_thread(self.state.binding, uid) != binding:
+                paused = await asyncio.to_thread(self._pause_retired_character, binding, fingerprint, epoch)
+                if paused is None:
+                    await asyncio.to_thread(self.scheduler.success, domain, "retirement")
                     continue
-                await self.pause(uid)
-                paused = await asyncio.to_thread(self.state.binding, uid)
 
                 async def active():
                     await self._same_session(fingerprint)
@@ -832,9 +841,24 @@ class DesktopChatSyncRuntime:
                 if await self.profiles.adapter.delete(uid, active):
                     await active()
                     await asyncio.to_thread(self._purge_retired_character, paused, fingerprint, epoch)
-            except (ValueError, OSError, sqlite3.Error):
+                await asyncio.to_thread(self.scheduler.success, domain, "retirement")
+            except (ValueError, OSError, sqlite3.Error) as error:
                 # The remote fence survives failures; an interrupted local purge retries.
+                try:
+                    await asyncio.to_thread(self.scheduler.failure, domain, "retirement", binding["generation"], presence, error)
+                except (ValueError, OSError, sqlite3.Error):
+                    pass
                 continue
+
+    def _pause_retired_character(self, binding, fingerprint, epoch):
+        """Pause only the association whose remote retirement was verified."""
+        uid = binding["character_uid"]
+        with self.session_commit_guard(fingerprint), self._commit_lock, self.writer.locked():
+            self.writer.require_epoch(epoch)
+            if self._closing or self.state.binding(uid) != binding:
+                return None
+            self.state.pause(uid)
+            return self.state.binding(uid)
 
     def _purge_retired_character(self, binding, fingerprint, epoch):
         """Erase this role's sync copies before forgetting its retryable association."""
@@ -1444,7 +1468,14 @@ class DesktopChatSyncRuntime:
                 # The saved card already approved these exact initial bytes. Finish only
                 # this publication; leave its existing history task for the selected role.
                 await active()
-                await self.profiles.step(uid, presence=presence, initial_upload_only=True)
+                published = await self.profiles.step(uid, presence=presence, initial_upload_only=True)
+                if published and published["head_revision"] > 0 and not published["pending"]:
+                    await active()
+                    def clear_retry_error():
+                        with self._commit_lock, self.writer.locked():
+                            self.writer.require_epoch(tuple(request["epoch"]))
+                            self.state.record_new_role_error(uid, request["requestId"], None)
+                    await asyncio.to_thread(clear_retry_error)
                 return
             # Saved while first login was unavailable: these are this new role's already approved chats.
             current = await asyncio.to_thread(self.state.binding, uid)
@@ -1490,7 +1521,11 @@ class DesktopChatSyncRuntime:
                     with self.writer.locked():
                         self.writer.require_epoch(tuple(request["epoch"]))
                         self.state.record_new_role_error(uid, request["requestId"], code)
-                await asyncio.to_thread(remember)
+                try:
+                    await asyncio.to_thread(remember)
+                except (ValueError, OSError, sqlite3.Error):
+                    # A diagnostic must not replace the original failure or bypass writer recovery.
+                    pass
             if manual:
                 raise
         except (AutomaticRoleInactive, OSError, sqlite3.Error):
@@ -1897,7 +1932,11 @@ class DesktopChatSyncRuntime:
             return
         from services.chat_sync.source import ChatOriginalSource, pending_original_ids
         epoch = await asyncio.to_thread(self.writer.epoch)
-        records = await self.chat_history_provider(uid)
+        try:
+            records = await self.chat_history_provider(uid)
+        except (ValueError, OSError, sqlite3.Error) as error:
+            logging.getLogger(__name__).warning("Chat history archive unavailable (%s)", type(error).__name__)
+            return
         pending = pending_original_ids()
         def commit():
             with self._commit_lock, self.writer.locked():
@@ -1906,6 +1945,7 @@ class DesktopChatSyncRuntime:
                 known = source.stored_ids(uid)
                 binding = self.state.binding(uid)
                 hidden = set(self.ledger.deleted_message_ids(ChatDomain(binding["owner_id"], uid))) if binding else set()
+                batch = []
                 for record in records:
                     identity = record["messageId"]
                     # Memory caching can finish before the producer's late-text grace.
@@ -1914,10 +1954,10 @@ class DesktopChatSyncRuntime:
                         continue
                     raw = ChatOriginal(record["role"], record["text"], record["originalTime"], record["timezone"],
                                        record["conversationId"], record["replyToMessageId"])
-                    if record["origin"] in ("agent", "tool"):
-                        source.commit_local_reply(uid, identity, raw, record["origin"])
-                    else:
-                        source.commit_unbound(uid, identity, raw)
+                    origin = record["origin"] if record["origin"] in ("agent", "tool") else None
+                    batch.append((identity, raw, origin))
+                if batch:
+                    source.commit_history(uid, batch)
                 source.include_local_replies(uid, hidden=hidden)
         await asyncio.to_thread(commit)
 

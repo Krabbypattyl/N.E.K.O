@@ -3,6 +3,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from memory.chat_history import read_chat_history
 
 
@@ -25,8 +27,8 @@ def test_complete_archive_keeps_identical_records_and_never_reads_reviewed_memor
         {"type": "human", "data": {"content": "camera scaffold", "metadata": {"sources": ["avatar-drop"]}}},
         {"type": "ai", "data": {"content": "theater", "metadata": {"source": "theater_numeric_v2"}}}])
     records = read_chat_history(path, UID)
-    assert [row["text"] for row in records] == ["same", "same", "original", "camera scaffold"]
-    assert len({row["messageId"] for row in records}) == 4
+    assert [row["text"] for row in records] == ["same", "same", "original"]
+    assert len({row["messageId"] for row in records}) == 3
     (tmp_path / "recent.json").write_text('[{"type":"system","data":{"content":"reviewed"}}]')
     assert read_chat_history(path, UID) == records
     assert {row["messageId"] for row in read_chat_history(path, "b" * 32)}.isdisjoint(row["messageId"] for row in records)
@@ -59,3 +61,34 @@ def test_actual_memory_projection_preserves_ids_outside_model_messages(tmp_path)
     records = read_chat_history(path, UID)
     assert [row['messageId'] for row in records] == [user['recordId'], reply['recordId']]
     assert [row['text'] for row in records] == ['user', 'reply']
+
+
+@pytest.mark.parametrize('broken', ['not json', 'null', '[]', '{"type":"ai","data":[]}',
+    '{"type":"ai","data":{"metadata":[1]}}', '{"type":"ai","data":{"metadata":{"chat_original_source":[1]}}}'])
+def test_bad_archive_rows_do_not_hide_valid_neighbors(tmp_path, broken):
+    path = tmp_path / 'time_indexed.db'
+    archive(path, [{'type': 'human', 'data': {'content': 'before'}}, {}, {'type': 'ai', 'data': {'content': 'after'}}])
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE time_indexed_original SET message=? WHERE id=2', (broken,))
+    assert [row['text'] for row in read_chat_history(path, UID)] == ['before', 'after']
+
+
+def test_invalid_archive_time_stays_unknown_and_conflicting_identity_is_excluded(tmp_path):
+    path = tmp_path / 'time_indexed.db'
+    def row(text):
+        return {'type': 'ai', 'data': {'content': text, 'metadata': {'chat_original_source': {'recordId': '1' * 32}}}}
+    archive(path, [row('first'), {'type': 'human', 'data': {'content': 'retained'}}, row('changed'), row('first')])
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE time_indexed_original SET timestamp='invalid' WHERE id=2")
+    records = read_chat_history(path, UID)
+    assert len(records) == 1 and records[0]['text'] == 'retained'
+    assert records[0]['originalTime'] is None and records[0]['timezone'] is None
+
+
+def test_synthetic_drop_prompts_are_excluded_without_losing_voice_chat_or_tools(tmp_path):
+    path = tmp_path / 'time_indexed.db'
+    archive(path, [{'type': 'human', 'data': {'content': 'auto', 'metadata': {'sources': ['avatar-drop']}}},
+        {'type': 'human', 'data': {'content': 'voice', 'metadata': {'sources': ['voice']}}},
+        {'type': 'ai', 'data': {'content': 'tool', 'metadata': {'chat_original_source': {
+            'recordId': '2' * 32, 'origin': 'tool'}}}}])
+    assert [record['text'] for record in read_chat_history(path, UID)] == ['voice', 'tool']

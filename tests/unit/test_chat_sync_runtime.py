@@ -3809,6 +3809,27 @@ async def test_memory_browser_archive_is_the_shared_history_source(tmp_path, inc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ValueError, OSError, sqlite3.DatabaseError])
+async def test_unavailable_archive_keeps_existing_history_and_sync_choice_usable(tmp_path, failure):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_unbound(UID, "f" * 32, ChatOriginal("user", "existing local chat"))
+    runtime.chat_history_provider = AsyncMock(side_effect=failure("private archive detail"))
+    try:
+        assert [row["text"] for row in await runtime.history(UID)] == ["existing local chat"]
+        await runtime.save_character_sync_choice(UID, "Synthetic", True, include_history=True)
+        assert runtime.state.new_role(UID) is not None
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("origin", ["chat", "proactive", "tool", "agent"])
 async def test_history_refresh_during_reply_tail_cannot_steal_live_upload(tmp_path, monkeypatch, origin):
     """Archive caching precedes the delayed original seal in a real completed turn."""

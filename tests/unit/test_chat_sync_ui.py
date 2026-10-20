@@ -60,7 +60,7 @@ def run_script(assertions: str) -> None:
 ])
 def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
     """The actual recovery listener uses localized reasons without leaking arbitrary details."""
-    labels = json.loads((ROOT / 'static/locales/en.json').read_text())['chatSync']
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
     run_script(r"""(async()=>{
         const labels=LABELS,code=CODE,key=KEY;
         window.t=(key,values={})=>labels[key.replace('chatSync.','')]
@@ -98,6 +98,31 @@ def test_opening_sync_settings_shows_the_retained_failure_without_retrying(sourc
         assert.deepEqual(requests,['/api/chat-sync/status']);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('SOURCE', json.dumps(source)))
+
+
+def test_sync_settings_reports_pending_and_local_only_work():
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async()=>({ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{pendingOriginals:3,
+                pendingDeletions:2,localOnlyOriginals:1,historyBackfill:{awaitingRegistration:4}}
+        }]})});
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('chatSync.pending')&&shown.includes('"originals":3')&&shown.includes('"deletions":2'));
+        assert(shown.includes('chatSync.oversizedLocalOnly')&&shown.includes('"count":1'));
+        assert(shown.includes('chatSync.historyAwaitingRegistration')&&shown.includes('"count":4'));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+def test_legacy_history_with_unknown_order_can_merge():
+    run_script(r"""
+        const records=[{...original,originalTime:null,originStreamId:null,originSeq:null},
+            {...original,messageId:other,originalTime:null,originStreamId:null,originSeq:null}];
+        const merged=window.nekoChatSync.mergeHistory([],records,new Set(),new Map(),'Neko');
+        assert.equal(merged.length,2);
+    """)
 
 
 @pytest.mark.parametrize("broken_observer", [False, True])

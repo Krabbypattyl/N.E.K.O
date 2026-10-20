@@ -2122,15 +2122,20 @@ async def _delete_synced_character(uid: str, before_delete):
         finally:
             end_character_mutation(name)
             if switched and not success:
-                latest = await cm.aload_characters()
-                if name in latest.get('猫娘', {}):
-                    latest['当前猫娘'] = previous_current
-                    if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
-                        del latest['猫娘'][fallback]
-                    await cm.asave_characters(latest)
-                    if created_fallback:
-                        await get_remove_one_catgirl()(fallback)
-                    await get_switch_current_catgirl_fast()()
+                async def restore_previous_character():
+                    latest = await cm.aload_characters()
+                    if name in latest.get('猫娘', {}):
+                        latest['当前猫娘'] = previous_current
+                        if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
+                            del latest['猫娘'][fallback]
+                        await cm.asave_characters(latest)
+                        if created_fallback:
+                            await get_remove_one_catgirl()(fallback)
+                        await get_switch_current_catgirl_fast()()
+                try:
+                    await _await_cleanup_to_completion(restore_previous_character())
+                except (Exception, asyncio.CancelledError):
+                    logger.exception("Failed to restore current character after sync deletion")
         if success and switched:
             frame = json.dumps({'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback})
             await asyncio.gather(*(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),

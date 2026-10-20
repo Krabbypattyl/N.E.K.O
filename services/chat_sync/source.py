@@ -336,29 +336,55 @@ class ChatOriginalSource:
 
     def commit_unbound(self, uid, record_id, original: ChatOriginal):
         """Keep producer-proven raw bytes without assigning an account or upload task."""
+        self.commit_history(uid, [(record_id, original, None)])
+
+    def commit_history(self, uid, records):
+        """Import archive records in one durable transaction, preserving producer fences."""
         from utils.config_manager.reserved_schema import is_valid_character_uid
-        if not is_valid_character_uid(uid) or not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
+        if not is_valid_character_uid(uid):
             raise ValueError("invalid_chat_source_identity")
-        payload = json.dumps(asdict(original), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        committed = []
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             self._require_current_uid(connection, uid)
-            if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
-                raise ValueError("chat_source_identity_conflict")
-            old = connection.execute("SELECT uid,original_hash FROM source_unbound WHERE record_id=?", (record_id,)).fetchone()
-            bound = connection.execute("SELECT uid,original_hash FROM source_originals WHERE record_id=?", (record_id,)).fetchone()
-            if old or bound:
-                if tuple(old or bound) != (uid, digest):
-                    raise ValueError("chat_source_identity_conflict")
-                return
-            stream, seq = self._allocate_origin(connection, uid)
-            connection.execute("INSERT INTO source_unbound "
-                               "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq,verified_owner) "
-                               "VALUES (?,?,?,?,?,?,0,?,?,?)",
-                               (record_id, uid, "private-chat-original-v1", payload, digest, time.time_ns() // 1_000_000, stream, seq,
-                                (connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone() or [None])[0]))
-        get_trace().emit("source_committed", character_uid=uid, message_id=record_id, local_message_id=record_id)
+            for record_id, original, origin in records:
+                if (not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id)
+                        or origin is not None and (origin not in ("agent", "tool") or original.role != "assistant")):
+                    raise ValueError("invalid_chat_source_identity")
+                payload = json.dumps(asdict(original), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                if origin is not None:
+                    old = connection.execute("SELECT uid,origin,original_hash FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone()
+                    if old:
+                        if tuple(old) != (uid, origin, digest):
+                            raise ValueError("chat_source_identity_conflict")
+                        continue
+                    for table in ("source_originals", "source_unbound"):
+                        if connection.execute(f"SELECT 1 FROM {table} WHERE record_id=?", (record_id,)).fetchone():
+                            raise ValueError("chat_source_identity_conflict")
+                    connection.execute("INSERT INTO source_local_replies (record_id,uid,origin,original,original_hash) VALUES (?,?,?,?,?)",
+                                       (record_id, uid, origin, payload, digest))
+                else:
+                    if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
+                        raise ValueError("chat_source_identity_conflict")
+                    old = connection.execute("SELECT uid,original_hash FROM source_unbound WHERE record_id=?", (record_id,)).fetchone()
+                    bound = connection.execute("SELECT uid,original_hash FROM source_originals WHERE record_id=?", (record_id,)).fetchone()
+                    if old or bound:
+                        if tuple(old or bound) != (uid, digest):
+                            raise ValueError("chat_source_identity_conflict")
+                        continue
+                    stream, seq = self._allocate_origin(connection, uid)
+                    connection.execute("INSERT INTO source_unbound "
+                                       "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq,verified_owner) "
+                                       "VALUES (?,?,?,?,?,?,0,?,?,?)",
+                                       (record_id, uid, "private-chat-original-v1", payload, digest, time.time_ns() // 1_000_000, stream, seq,
+                                        (connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone() or [None])[0]))
+                committed.append((record_id, origin))
+        for record_id, origin in committed:
+            if origin is None:
+                get_trace().emit("source_committed", character_uid=uid, message_id=record_id, local_message_id=record_id)
+            else:
+                get_trace().emit("local_reply_committed", character_uid=uid, message_id=record_id, source_origin=origin)
 
     def commit(self, owner, uid, record_id, original: ChatOriginal):
         """Atomically save immutable raw bytes and the recoverable pending marker."""
@@ -396,26 +422,9 @@ class ChatOriginalSource:
 
     def commit_local_reply(self, uid, record_id, original: ChatOriginal, origin):
         """Retain tool provenance before enrolling its text in the shared chat source."""
-        if (not isinstance(uid, str) or not re.fullmatch(r"[0-9a-f]{32}", uid)
-                or not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id)
-                or origin not in ("agent", "tool") or original.role != "assistant"):
+        if origin not in ("agent", "tool") or original.role != "assistant":
             raise ValueError("invalid_chat_source_identity")
-        payload = json.dumps(asdict(original), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        with closing(self._connect()) as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._require_current_uid(connection, uid)
-            old = connection.execute("SELECT uid,origin,original_hash FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone()
-            if old:
-                if tuple(old) != (uid, origin, digest):
-                    raise ValueError("chat_source_identity_conflict")
-                return
-            for table in ("source_originals", "source_unbound"):
-                if connection.execute(f"SELECT 1 FROM {table} WHERE record_id=?", (record_id,)).fetchone():
-                    raise ValueError("chat_source_identity_conflict")
-            connection.execute("INSERT INTO source_local_replies (record_id,uid,origin,original,original_hash) VALUES (?,?,?,?,?)",
-                               (record_id, uid, origin, payload, digest))
-        get_trace().emit("local_reply_committed", character_uid=uid, message_id=record_id, source_origin=origin)
+        self.commit_history(uid, [(record_id, original, origin)])
 
     def clear_local_replies(self, uid, message_ids=None):
         """Erase local-only bodies and keep fixed identities against late retries."""
