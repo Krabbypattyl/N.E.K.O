@@ -464,6 +464,7 @@ class DesktopChatSyncRuntime:
         from services.chat_sync.writer import WriterQuarantined
         from services.chat_sync.recovery import (import_outage, pending_candidates, apply_cloud_deletions,
                                                   apply_checked_candidates, finish_role)
+        from services.chat_sync.profile_sync import read_character_directory
         try:
             await asyncio.to_thread(self.writer.check)
             await asyncio.to_thread(self._service_settings)
@@ -504,9 +505,22 @@ class DesktopChatSyncRuntime:
                     continue
                 await commit(apply_checked_candidates, self, domain, selected, result['results'])
                 offset += len(selected)
+            roles = await read_character_directory(request, binding['owner_id'])
+            cloud_name = next((role['displayName'] for role in roles['characters'] if role['characterSyncId'] == character_uid), None)
+            if cloud_name is None:
+                raise ValueError('chat_sync_character_not_found')
             deletions = await commit(finish_role, self, domain, binding, authenticated[1])
-        history = await self.preview_history(character_uid, local_name)
-        return {'history': history, 'deletions': deletions}
+            deletions.update(localName=local_name, cloudName=cloud_name)
+        recovered = {'deletions': deletions}
+        try:
+            recovered['history'] = await self.preview_history(character_uid, local_name)
+        except ValueError as error:
+            if str(error) != 'chat_sync_unavailable':
+                raise
+            # History remains unapproved; its optional preview cannot hide a verified deletion task.
+            recovered.update(history=None, historyError='chat_sync_unavailable')
+        await self._guard(binding, authenticated[1])
+        return recovered
 
     async def approve_recovery_deletions(self, character_uid, task_id):
         """Register renewed exact deletion consent through the existing marker lane."""

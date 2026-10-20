@@ -320,19 +320,23 @@ def test_history_consent_pins_task_without_accepting_ui_owner_or_snapshot(local_
     assert client.post(f"/api/chat-sync/characters/{'f' * 32}/history/preview").status_code == 404
 
 
-def test_writer_recovery_routes_keep_history_and_deletion_consent_separate(local_client):
+@pytest.mark.parametrize('history_available', [False, True])
+def test_writer_recovery_routes_keep_history_and_deletion_consent_separate(local_client, history_available):
     """Cloud checks only preview; exact reviewed task IDs authorize deletions later."""
     from unittest.mock import AsyncMock
     client, runtime = local_client
     runtime.recover_writer_role = AsyncMock(return_value={
-        "history": {"taskId": "f" * 32, "count": 2},
-        "deletions": {"taskId": "e" * 32, "count": 1},
+        "history": {"taskId": "f" * 32, "count": 2} if history_available else None,
+        "historyError": None if history_available else 'chat_sync_unavailable',
+        "deletions": {"taskId": "e" * 32, "count": 1, "localName": 'Neko', "cloudName": 'Cloud Neko'},
     })
     runtime.approve_recovery_deletions = AsyncMock(return_value={"status": "registered"})
     runtime.approve_history = AsyncMock()
     path = f"/api/chat-sync/characters/{UID}/recovery"
     result = client.post(path + "/preview", json={"serviceUrl": "https://sync.nekotech.cn"})
     assert result.status_code == 200 and result.headers["Cache-Control"] == "no-store"
+    assert result.json()['deletions']['taskId'] == 'e' * 32
+    assert (result.json()['history'] is not None) is history_available
     runtime.recover_writer_role.assert_awaited_once_with(UID, "Neko", service_url="https://sync.nekotech.cn")
     runtime.approve_recovery_deletions.assert_not_awaited()
     runtime.approve_history.assert_not_awaited()

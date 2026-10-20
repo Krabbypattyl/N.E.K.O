@@ -355,14 +355,16 @@
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             // Recovery never grants a copied deletion or a historical upload.
             // The existing card switch owns combined profile/history consent.
+            var deletionTarget = recovered.deletions.localName ? recovered.deletions : recovered.history;
             if (recovered.deletions.count && window.confirm(text('recoveryDeleteConfirm', {
-                    count: recovered.deletions.count, localName: recovered.history.localName,
-                    cloudName: recovered.history.cloudName
+                    count: recovered.deletions.count, localName: deletionTarget.localName,
+                    cloudName: deletionTarget.cloudName
                 }))) {
                 await api(path + '/recovery/deletions/approve', 'POST', { taskId: recovered.deletions.taskId });
             }
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
+            if (recovered.historyError) statusNode.textContent += '\n' + text('initialHistoryFailed');
             await loadHistory();
         } catch (error) {
             if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
