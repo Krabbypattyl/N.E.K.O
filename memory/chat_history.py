@@ -66,7 +66,7 @@ def read_chat_history(path: Path, uid: str) -> list[dict]:
             if role == "user" and (metadata.get("source") == "avatar-drop"
                     or isinstance(sources, list) and "avatar-drop" in sources):
                 continue
-            origin = proof.get("origin", "legacy")
+            origin = proof.get("origin", "legacy") if role == "assistant" else "legacy"
             body = data.get("content", "")
             if isinstance(body, list):
                 body = "".join(part["text"] for part in body if isinstance(part, dict)
@@ -79,6 +79,8 @@ def read_chat_history(path: Path, uid: str) -> list[dict]:
             if not isinstance(identity, str) or not _ID.fullmatch(identity):
                 identity = uuid5(NAMESPACE_URL, f"neko-chat-history:{uid}:{session_id}:{row_id}").hex
             original_time = proof.get("originalTime")
+            if not isinstance(original_time, str) or not original_time:
+                original_time = None
             if original_time is None and saved_at:
                 try:
                     original_time = str(int(datetime.fromisoformat(saved_at).timestamp() * 1000))

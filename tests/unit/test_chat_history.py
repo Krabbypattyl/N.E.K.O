@@ -92,3 +92,20 @@ def test_synthetic_drop_prompts_are_excluded_without_losing_voice_chat_or_tools(
         {'type': 'ai', 'data': {'content': 'tool', 'metadata': {'chat_original_source': {
             'recordId': '2' * 32, 'origin': 'tool'}}}}])
     assert [record['text'] for record in read_chat_history(path, UID)] == ['voice', 'tool']
+
+
+@pytest.mark.parametrize('original_time', [1234567890123, '', False, {}, [], None])
+@pytest.mark.parametrize('saved_at', ['2026-10-20 12:43:15.123456', 'invalid'])
+def test_invalid_proof_time_uses_archive_time_or_remains_unknown(tmp_path, original_time, saved_at):
+    path = tmp_path / 'time_indexed.db'
+    archive(path, [{'type': 'human', 'data': {'content': 'kept', 'metadata': {
+        'chat_original_source': {'recordId': '1' * 32, 'originalTime': original_time, 'origin': 'tool'}}}}])
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE time_indexed_original SET timestamp=?', (saved_at,))
+    row, = read_chat_history(path, UID)
+    assert row['origin'] not in ('tool', 'agent')
+    if saved_at == 'invalid':
+        assert row['originalTime'] is None and row['timezone'] is None
+    else:
+        assert isinstance(row['originalTime'], str) and row['originalTime'].isdigit()
+        assert row['timezone'] == 'UTC'

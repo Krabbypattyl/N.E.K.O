@@ -1141,7 +1141,8 @@ class DesktopChatSyncRuntime:
                               supersede_preview=True):
         """Pin authenticated cloud identity and a fixed trusted local member set."""
         from services.chat_sync.source import ChatOriginalSource
-        await self._refresh_chat_history(character_uid)
+        if not await self._refresh_chat_history(character_uid):
+            raise ValueError("chat_sync_unavailable")
         async with self._lock:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
             authenticated = await self._session()
@@ -1306,8 +1307,11 @@ class DesktopChatSyncRuntime:
 
     async def request_new_role_sync(self, character_uid, display_name, *, include_history=True, replace=False):
         """Persist card consent locally; login and network never block saving a card."""
-        await self._refresh_chat_history(character_uid)
+        refreshed = await self._refresh_chat_history(character_uid)
         binding = await asyncio.to_thread(self.state.binding, character_uid)
+        if not refreshed and (not include_history or binding and binding["binding_id"]):
+            # A fixed range cannot use a partial archive, including an exclusion cutoff.
+            raise ValueError("chat_sync_unavailable")
         if self.profiles.adapter is None:
             raise ValueError("character_profile_unavailable")
         epoch = await asyncio.to_thread(self.writer.epoch)
@@ -1327,9 +1331,11 @@ class DesktopChatSyncRuntime:
     async def save_character_sync_choice(self, uid, name, enabled, *, include_history=True):
         """A card save is explicit consent; no login or cloud request blocks local saving."""
         if enabled:
-            await self._refresh_chat_history(uid)
+            refreshed = await self._refresh_chat_history(uid)
         epoch = await asyncio.to_thread(self.writer.epoch)
         binding = await asyncio.to_thread(self.state.binding, uid)
+        if enabled and include_history and binding and binding["binding_id"] and not refreshed:
+            raise ValueError("chat_sync_unavailable")
         if enabled and (not binding or not binding["binding_id"] or not binding["enabled"]):
             return await self.request_new_role_sync(uid, name, include_history=include_history, replace=True)
         candidate = await self.profiles.local(uid) if enabled and binding and binding["binding_id"] else None
@@ -1927,16 +1933,19 @@ class DesktopChatSyncRuntime:
         return await local_replies(self, character_uid)
 
     async def _refresh_chat_history(self, uid):
-        """Use the Memory Browser archive for history; reading never approves upload."""
+        """Refresh optional display history and report whether a grant can pin its range."""
         if self.chat_history_provider is None:
-            return
+            return True
         from services.chat_sync.source import ChatOriginalSource, pending_original_ids
+        from services.chat_sync.writer import WriterQuarantined
         epoch = await asyncio.to_thread(self.writer.epoch)
         try:
             records = await self.chat_history_provider(uid)
+        except WriterQuarantined:
+            raise
         except (ValueError, OSError, sqlite3.Error) as error:
             logging.getLogger(__name__).warning("Chat history archive unavailable (%s)", type(error).__name__)
-            return
+            return False
         pending = pending_original_ids()
         def commit():
             with self._commit_lock, self.writer.locked():
@@ -1946,20 +1955,35 @@ class DesktopChatSyncRuntime:
                 binding = self.state.binding(uid)
                 hidden = set(self.ledger.deleted_message_ids(ChatDomain(binding["owner_id"], uid))) if binding else set()
                 batch = []
+                invalid = 0
                 for record in records:
                     identity = record["messageId"]
                     # Memory caching can finish before the producer's late-text grace.
                     # Its active original owns these bytes and the existing live upload grant.
                     if identity in known or identity in hidden or identity in pending:
                         continue
-                    raw = ChatOriginal(record["role"], record["text"], record["originalTime"], record["timezone"],
-                                       record["conversationId"], record["replyToMessageId"])
-                    origin = record["origin"] if record["origin"] in ("agent", "tool") else None
+                    try:
+                        raw = ChatOriginal(record["role"], record["text"], record["originalTime"], record["timezone"],
+                                           record["conversationId"], record["replyToMessageId"])
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    origin = record["origin"] if record["role"] == "assistant" and record["origin"] in ("agent", "tool") else None
                     batch.append((identity, raw, origin))
+                if invalid:
+                    logging.getLogger(__name__).warning("Chat history archive ignored invalid originals=%d", invalid)
+                refreshed = True
                 if batch:
-                    source.commit_history(uid, batch)
+                    try:
+                        source.commit_history(uid, batch)
+                    except WriterQuarantined:
+                        raise
+                    except ValueError as error:
+                        logging.getLogger(__name__).warning("Chat history archive import unavailable (%s)", type(error).__name__)
+                        refreshed = False
                 source.include_local_replies(uid, hidden=hidden)
-        await asyncio.to_thread(commit)
+                return refreshed
+        return await asyncio.to_thread(commit)
 
     async def history(self, character_uid: str) -> list[dict]:
         """Read stored originals without feeding cache, models or reactions."""

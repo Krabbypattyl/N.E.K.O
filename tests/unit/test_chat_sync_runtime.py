@@ -3830,6 +3830,183 @@ async def test_unavailable_archive_keeps_existing_history_and_sync_choice_usable
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["save", "request"])
+async def test_bound_history_choice_requires_a_complete_archive_before_freezing_range(tmp_path, entry):
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_unbound(UID, "1" * 32, ChatOriginal("user", "already indexed"))
+    available = False
+    async def history(uid):
+        if not available:
+            raise sqlite3.OperationalError("private locked archive")
+        return [{"messageId": "2" * 32, "role": "assistant", "text": "restored older chat", "origin": "legacy",
+                 "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}]
+    try:
+        await runtime.enable(UID, "Synthetic")
+        await runtime.save_character_sync_choice(UID, "Synthetic", True)
+        previous = runtime.state.new_role(UID)
+        runtime.chat_history_provider = history
+        assert [row["text"] for row in await runtime.history(UID)] == ["already indexed"]
+        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+            if entry == "save":
+                await runtime.save_character_sync_choice(UID, "Synthetic", True)
+            else:
+                await runtime.request_new_role_sync(UID, "Synthetic", replace=True)
+        assert runtime.state.new_role(UID) == previous
+        available = True
+        await runtime.save_character_sync_choice(UID, "Synthetic", True)
+        assert runtime.state.new_role(UID)["throughSeq"] > previous["throughSeq"]
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert {json.loads(raw)["text"] for raw in service.records} == {"already indexed", "restored older chat"}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_unbound_history_grant_retries_unavailable_archive_without_finishing_early(tmp_path):
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    available = False
+    async def history(uid):
+        if not available:
+            raise OSError("private archive failure")
+        return [{"messageId": "2" * 32, "role": "user", "text": "older archive chat", "origin": "legacy",
+                 "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}]
+    runtime.chat_history_provider = history
+    try:
+        await runtime.request_new_role_sync(UID, "Synthetic")
+        saved = runtime.state.new_role(UID)
+        presence = await runtime.session_presence_provider()
+        await runtime._run_new_role_sync(UID, saved, presence)
+        pending = runtime.state.new_role(UID)
+        assert pending and pending["requestId"] == saved["requestId"]
+        assert pending["lastError"] == "chat_sync_unavailable"
+        assert not service.records
+        available = True
+        await runtime._run_new_role_sync(UID, pending, presence)
+        await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert runtime.state.new_role(UID) is None
+        assert [json.loads(raw)["text"] for raw in service.records] == ["older archive chat"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_bad_archive_original_is_isolated_and_user_tool_provenance_cannot_block_neighbors(tmp_path):
+    from unittest.mock import AsyncMock
+    runtime, _, _ = setup_runtime(tmp_path)
+    base = {"role": "user", "text": "kept user", "origin": "tool", "originalTime": None,
+            "timezone": None, "conversationId": None, "replyToMessageId": None}
+    runtime.chat_history_provider = AsyncMock(return_value=[
+        {**base, "messageId": "1" * 32},
+        {**base, "messageId": "2" * 32, "originalTime": 123},
+        {**base, "messageId": "3" * 32, "role": "assistant", "origin": "tool", "text": "kept tool"}])
+    try:
+        assert {row["text"] for row in await runtime.history(UID)} == {"kept user", "kept tool"}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_excluding_old_history_cannot_use_an_unavailable_archive_cutoff(tmp_path):
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    available = False
+    async def history(uid):
+        if not available:
+            raise OSError("private archive failure")
+        return [{"messageId": "2" * 32, "role": "user", "text": "excluded older chat", "origin": "legacy",
+                 "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}]
+    runtime.chat_history_provider = history
+    try:
+        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+            await runtime.request_new_role_sync(UID, "Synthetic", include_history=False)
+        assert runtime.state.new_role(UID) is None and runtime.state.choices() == {}
+        available = True
+        await runtime.request_new_role_sync(UID, "Synthetic", include_history=False)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert service.records == []
+        assert [row["text"] for row in await runtime.history(UID)] == ["excluded older chat"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_bound_choice_without_history_can_save_while_archive_is_unavailable(tmp_path, enabled):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+    runtime, _, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        await runtime.enable(UID, "Synthetic")
+        runtime.chat_history_provider = AsyncMock(side_effect=OSError())
+        await runtime.save_character_sync_choice(UID, "Synthetic", enabled, include_history=False)
+        assert runtime.state.choices()[UID] is enabled
+        assert runtime.state.new_role(UID) is None
+        if not enabled:
+            runtime.chat_history_provider.assert_not_awaited()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["provider", "batch"])
+async def test_archive_tolerance_does_not_swallow_writer_quarantine(tmp_path, monkeypatch, stage):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.writer import WriterQuarantined
+    runtime, _, _ = setup_runtime(tmp_path)
+    runtime.chat_history_provider = AsyncMock(return_value=[{
+        "messageId": "2" * 32, "role": "user", "text": "archive text", "origin": "legacy",
+        "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}])
+    if stage == "provider":
+        runtime.chat_history_provider.side_effect = WriterQuarantined()
+    else:
+        def quarantined(*_args):
+            raise WriterQuarantined()
+        monkeypatch.setattr(ChatOriginalSource, "commit_history", quarantined)
+    try:
+        with pytest.raises(WriterQuarantined):
+            await runtime._refresh_chat_history(UID)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_conflicting_archive_batch_keeps_existing_roles_and_reports_incomplete_refresh(tmp_path, caplog):
+    from unittest.mock import AsyncMock
+    runtime, _, _ = setup_runtime(tmp_path)
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_unbound(UID, "1" * 32, ChatOriginal("user", "existing target chat"))
+    source.commit_unbound(OTHER_UID, "2" * 32, ChatOriginal("user", "other role private chat"))
+    base = {"role": "user", "origin": "legacy", "originalTime": None, "timezone": None,
+            "conversationId": None, "replyToMessageId": None}
+    runtime.chat_history_provider = AsyncMock(return_value=[
+        {**base, "messageId": "3" * 32, "text": "rolled back archive chat"},
+        {**base, "messageId": "2" * 32, "text": "private conflicting archive chat"}])
+    try:
+        assert await runtime._refresh_chat_history(UID) is False
+        assert [row["text"] for row in await runtime.history(UID)] == ["existing target chat"]
+        assert source.stored_ids(UID) == {"1" * 32}
+        assert [row["text"] for row in source.local_history(OTHER_UID)] == ["other role private chat"]
+        assert "archive" in caplog.text.lower() and "private" not in caplog.text
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("origin", ["chat", "proactive", "tool", "agent"])
 async def test_history_refresh_during_reply_tail_cannot_steal_live_upload(tmp_path, monkeypatch, origin):
     """Archive caching precedes the delayed original seal in a real completed turn."""
