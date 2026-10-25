@@ -364,6 +364,7 @@ _memory_runtime_init_lock = asyncio.Lock()
 _memory_runtime_init_completed = False
 _memory_storage_blocked_after_init = False
 _memory_background_tasks_started = False
+_recent_sync_wake_task: asyncio.Task | None = None
 
 
 def _share_subject_forget_state(old_component, new_component) -> None:
@@ -538,6 +539,8 @@ async def reload_memory_components(
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
+            from .long_term_sync import register_replay
+            register_replay(new_reconciler, new_persona, new_facts)
             # P2 step 2: rebind the existing fact_dedup_resolver to the
             # NEW FactStore in place rather than constructing a new
             # resolver. Going via rebind_fact_store preserves the
@@ -950,7 +953,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
     global embedding_warmup_worker, fact_dedup_resolver
-    global _memory_runtime_init_completed, _memory_background_tasks_started
+    global _memory_runtime_init_completed, _memory_background_tasks_started, _recent_sync_wake_task
 
     if _memory_runtime_init_completed:
         return False
@@ -1001,6 +1004,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         outbox = Outbox()
         reconciler = Reconciler(event_log)
         _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
+        from .long_term_sync import register_replay
+        register_replay(reconciler, persona_manager, fact_store)
 
         try:
             from utils.token_tracker import TokenTracker, install_hooks
@@ -1130,6 +1135,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
         if not _memory_background_tasks_started:
+            from services.chat_sync.recent_wake import forward_recent_memory_changes
+            _recent_sync_wake_task = _spawn_background_task(forward_recent_memory_changes())
             _spawn_background_task(evidence_loops._periodic_rebuttal_loop())
             _spawn_background_task(evidence_loops._periodic_auto_promote_loop())
             _spawn_background_task(evidence_loops._periodic_idle_maintenance_loop())
@@ -1260,6 +1267,11 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
+    from .long_term_sync import close as close_long_term_sync
+    await close_long_term_sync()
+    if _recent_sync_wake_task is not None:
+        _recent_sync_wake_task.cancel()
+        await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
     try:
         from utils.token_tracker import TokenTracker
         TokenTracker.get_instance().save()

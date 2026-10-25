@@ -83,7 +83,7 @@ class SyntheticService:
         })
 
 
-def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
+def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memory_adapter=None, long_term_memory_adapter=None):
     """Inject only synthetic session state and an in-memory HTTP transport."""
     service = service or SyntheticService()
     session = {"logged_in": True, "snapshot": {
@@ -117,6 +117,9 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
         """Select one disposable role without loading production configuration."""
         return UID
 
+    async def recent_character_name(uid):
+        return 'Neko' if uid == UID else None
+
     runtime = DesktopChatSyncRuntime(
         tmp_path / "chat_sync", resolve,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(service.request)),
@@ -124,6 +127,8 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
         fixed_service_url=fixed_service_url,
+        recent_memory_adapter=recent_memory_adapter, recent_character_name=recent_character_name,
+        long_term_memory_adapter=long_term_memory_adapter,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -463,9 +468,11 @@ async def test_production_history_notifier_routes_only_exact_local_character_uid
         websocket=SimpleNamespace(send_json=send_json))})
     runtime = await module.get_desktop_chat_sync_runtime(config)
     try:
+        assert runtime.chat_history_provider is None
+        assert runtime.recent_memory is not None
         await runtime.history_changed(UID)
         await runtime.history_changed(OTHER_UID)
-        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID}]
+        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID, "memoryEditedName": "Synthetic"}]
         assert await runtime.current_character_uid_provider() == UID
         character_data["当前猫娘"] = "Other"
         assert await runtime.current_character_uid_provider() == OTHER_UID

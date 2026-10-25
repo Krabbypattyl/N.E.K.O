@@ -1,0 +1,289 @@
+"""Learned-memory replacement must retain raw chat and unrelated memory partitions."""
+
+import asyncio
+from contextlib import closing
+from copy import deepcopy
+import json
+import threading
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from memory.long_term_sync import DesktopLongTermAdapter, FILES, export_document, import_document, read_views
+from memory.event_log import EventLog, Reconciler
+from services.chat_sync.long_term import LongTermMemorySync
+from services.chat_sync.long_term_protocol import document, mutation
+from services.chat_sync.writer import store_connection
+from utils.file_utils import atomic_write_json
+from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
+from tests.unit.test_chat_sync_runtime import setup_runtime, OWNER, UID
+
+
+def learned(completed=2000, text='learned preference'):
+    return {'schemaVersion': 1, 'completedAt': completed, 'entries': [
+        {'kind': 'persona', 'subject': 'master', 'id': 'p1', 'text': text,
+         'metadata': {'createdAt': 1000, 'updatedAt': completed, 'sourceSyncId': 'mobile:p1', 'reinforcement': 3}},
+        {'kind': 'fact', 'subject': 'relationship', 'id': 'f1', 'text': 'shared experience',
+         'metadata': {'createdAt': 1000, 'importance': 8, 'sourceMessageIds': ['local-source-1']}},
+        {'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'text': 'confirmed impression',
+         'metadata': {'createdAt': 1000, 'sourceFactIds': ['f1']}},
+    ]}
+
+
+def test_portable_replacement_preserves_static_cards_group_memory_and_evidence():
+    existing = {'persona': {'master': {'facts': [
+        {'id': 'old', 'text': 'old learned state'}, {'id': 'card', 'text': 'static', 'source': 'character_card'}]},
+        'someone-else': {'facts': ['unchanged']}},
+        'facts': [{'id': 'group', 'entity': 'master', 'scope': 'group:one', 'text': 'group state'}],
+        'archive': [], 'reflections': []}
+    native = import_document(learned(), existing)
+    assert native['persona']['someone-else'] == existing['persona']['someone-else']
+    assert native['persona']['master']['facts'][0]['id'] == 'card'
+    assert native['facts'][0] == existing['facts'][0]
+    assert native['facts'][1]['signal_processed'] is True
+    portable = export_document(native, 3000)
+    assert len(portable['entries']) == 3
+    assert portable['entries'][1]['metadata']['reinforcement'] == 3
+    assert portable['entries'][1]['metadata']['sourceSyncId'] == 'mobile:p1'
+    assert 'group state' not in json.dumps(portable) and 'static' not in json.dumps(portable)
+
+
+@pytest.mark.parametrize('invalid', [[], {}, {'rawMessages': []}, {'embeddings': []}])
+def test_protocol_rejects_arbitrary_native_or_archive_payloads(invalid):
+    with pytest.raises(ValueError):
+        document(invalid)
+
+
+@pytest.fixture
+async def owner(tmp_path, monkeypatch):
+    from app.memory_server import long_term_sync as native
+    config = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / 'memory', local_state_dir=tmp_path / 'local')
+    characters = {'猫娘': {'Neko': {'_reserved': {'character_uid': UID}}}}
+    config.load_characters = lambda: deepcopy(characters)
+    async def load():
+        return deepcopy(characters)
+    config.aload_characters = load
+    runtime, service, _ = setup_runtime(tmp_path, long_term_memory_adapter=DesktopLongTermAdapter(config))
+    await runtime.configure('https://sync.test')
+    await runtime.enable(UID, 'Neko')
+    locks = {}
+    def alock(name):
+        return locks.setdefault(name, asyncio.Lock())
+    file_lock = threading.RLock()
+    facts = SimpleNamespace(_get_persist_alock=lambda _: alock('facts'), _get_lock=lambda _: file_lock, _facts={'Neko': []})
+    personas = SimpleNamespace(_get_alock=lambda _: alock('persona'), _personas={'Neko': {}})
+    reflections = SimpleNamespace(_get_alock=lambda _: alock('reflection'))
+    log = EventLog()
+    log._config_manager = config
+    replay = Reconciler(log)
+    for key, value in {'_config_manager': config, 'fact_store': facts, 'persona_manager': personas,
+                       'reflection_engine': reflections, '_get_settle_lock': lambda _: alock('settle'),
+                       '_reload_lock': asyncio.Lock(), 'event_log': log, 'reconciler': replay}.items():
+        monkeypatch.setattr(native.runtime, key, value)
+    monkeypatch.setattr(native, '_authority', lambda: runtime.writer)
+    monkeypatch.setattr(native, 'assert_cloudsave_writable', lambda *args, **kwargs: None)
+    native.register_replay(replay)
+    directory = config.memory_dir / 'Neko'
+    directory.mkdir(parents=True)
+    for key, filename in FILES.items():
+        atomic_write_json(directory / filename, {} if key == 'persona' else [])
+    raw = directory / 'time_indexed.db'
+    raw.write_bytes(b'synthetic raw archive remains byte-identical')
+    binding = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
+    try:
+        yield SimpleNamespace(native=native, runtime=runtime, config=config, binding=binding,
+                              adapter=runtime.long_term_memory.adapter, directory=directory, raw=raw, replay=replay)
+    finally:
+        await native.close()
+        await runtime.close()
+
+
+def stage(owner, completed=2000, revision=1):
+    remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': revision,
+              'completedAt': completed, 'document': learned(completed)}
+    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), local['operationId'] if local else None)
+
+
+@pytest.mark.asyncio
+async def test_native_owner_captures_only_after_completion_and_applies_without_archive_changes(owner):
+    raw = owner.raw.read_bytes()
+    stage(owner)
+    assert await owner.native.consume(UID)
+    state = read_views(owner.directory)
+    assert state['persona']['master']['facts'][0]['text'] == 'learned preference'
+    assert owner.raw.read_bytes() == raw
+    assert not owner.adapter.incoming_path(UID).exists()
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+    assert owner.native._capture('Neko', False) is False
+    assert owner.native._capture('Neko', True) is True
+    current = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert current['document']['completedAt'] > 2000
+    assert owner.native._capture('Neko', False) is False
+    assert owner.raw.read_bytes() == raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stored_service', [None, ''])
+async def test_native_owner_uses_default_service_for_capture_and_download(owner, monkeypatch, stored_service):
+    from services.chat_sync import runtime as sync_runtime
+
+    monkeypatch.setattr(sync_runtime, '_BUILTIN_SERVICE_URL', owner.binding['service_url'])
+    with closing(store_connection(owner.runtime.state.path)) as connection, connection:
+        connection.execute('UPDATE sync_settings SET service_url=?', (stored_service,))
+    assert owner.runtime.state.settings()['service_url'] == owner.binding['service_url']
+    assert owner.native._capture('Neko', True)
+    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert local is not None
+    stage(owner, completed=local['document']['completedAt'] + 1)
+    assert await owner.native.consume(UID)
+    assert read_views(owner.directory)['persona']['master']['facts'][0]['text'] == 'learned preference'
+    assert owner.raw.read_bytes() == b'synthetic raw archive remains byte-identical'
+
+
+@pytest.mark.asyncio
+async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exact_snapshot(owner, monkeypatch):
+    stage(owner)
+    before = {path.name: path.read_bytes() for path in owner.directory.iterdir()}
+    original = owner.native.atomic_write_json
+    failed = False
+    def fail_once(path, *args, **kwargs):
+        nonlocal failed
+        if path.name == 'facts.json' and not failed:
+            failed = True
+            raise OSError('synthetic disk failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', fail_once)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    for name, raw in before.items():
+        assert (owner.directory / name).read_bytes() == raw
+    assert owner.adapter.incoming_path(UID).exists()
+    await owner.replay.areconcile('Neko')
+    assert read_views(owner.directory)['facts'][0]['text'] == 'shared experience'
+    assert await owner.native.consume(UID)
+    assert owner.raw.read_bytes() == before['time_indexed.db']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['newer-local', 'paused-binding', 'changed-epoch'])
+async def test_pending_remote_never_overwrites_a_newer_completion_or_revoked_grant(owner, change):
+    stage(owner)
+    before = (owner.directory / 'persona.json').read_bytes()
+    if change == 'newer-local':
+        assert owner.native._capture('Neko', True)
+    elif change == 'paused-binding':
+        owner.runtime.state.pause(UID)
+    else:
+        payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+        payload['epoch'] = ['0' * 32, '0' * 32]
+        atomic_write_json(owner.adapter.incoming_path(UID), payload)
+    assert not await owner.native.consume(UID)
+    assert (owner.directory / 'persona.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_frozen_operation_retries_identical_bytes_after_receipt_loss(owner):
+    assert owner.native._capture('Neko', True)
+    sync = owner.runtime.long_term_memory
+    requests = []
+    attempts = 0
+    async def request(method, path, body):
+        nonlocal attempts
+        if method == 'PUT':
+            requests.append(body)
+            attempts += 1
+            value = mutation(json.loads(body))
+            if attempts == 1:
+                raise OSError('lost receipt')
+            return {'ownerId': OWNER, 'characterSyncId': UID, 'operationId': value['operationId'], 'revision': 1, 'accepted': True}
+        return {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 0, 'completedAt': None}
+    async def commit(fn, *args):
+        return fn(*args)
+    from services.chat_sync.ledger import ChatDomain
+    domain = ChatDomain(OWNER, UID)
+    args = (domain, owner.binding, owner.runtime.writer.epoch(), request, commit)
+    with pytest.raises(OSError):
+        await sync.sync(*args, can_apply=lambda: True)
+    await sync.sync(*args, can_apply=lambda: True)
+    assert requests[0] == requests[1]
+    assert b'time_indexed' not in requests[0]
+    assert isinstance(sync, LongTermMemorySync)
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_idle(owner, monkeypatch):
+    assert owner.native._capture('Neko', True)
+    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    requests = []
+    async def request(value):
+        if value.url.path.endswith('/long-term-memory'):
+            requests.append(value)
+            assert value.headers['X-Neko-Chat-Binding'] == owner.binding['binding_id']
+            if value.method == 'PUT':
+                body = json.loads(value.content)
+                assert body == {'operationId': local['operationId'], 'document': local['document']}
+                return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': UID,
+                    'operationId': body['operationId'], 'accepted': True, 'revision': 1})
+            return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1,
+                'completedAt': local['document']['completedAt'],
+                **({} if value.url.query else {'document': local['document']})})
+        assert value.url.path == '/v1/chat-sync/identity'
+        return httpx.Response(200, json={'ownerId': OWNER})
+    await owner.runtime.http.aclose()
+    owner.runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(request))
+    async def flush(uid):
+        return await owner.native.consume(uid)
+    monkeypatch.setattr(owner.adapter, 'flush', flush)
+    await owner.runtime._channel_pass(UID, 'long_term', manual=True)
+    assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
+    await owner.runtime._channel_pass(UID, 'long_term', manual=True)
+    assert [request.method for request in requests] == ['PUT', 'GET', 'GET', 'GET']
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+
+
+@pytest.mark.asyncio
+async def test_pending_capture_finishes_before_incoming_replacement(owner):
+    stage(owner)
+    marker = asyncio.create_task(asyncio.sleep(10))
+    owner.native._capture_tasks['Neko'] = marker
+    try:
+        assert not await owner.native.consume(UID)
+        assert owner.adapter.incoming_path(UID).exists()
+    finally:
+        owner.native._capture_tasks.pop('Neko', None)
+        marker.cancel()
+        await asyncio.gather(marker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_character_release_fence_blocks_incoming_native_writes(owner, monkeypatch):
+    monkeypatch.setattr(owner.native.runtime, '_is_character_publication_admitted', lambda _: False)
+    stage(owner)
+    before = (owner.directory / 'persona.json').read_bytes()
+    with pytest.raises(ValueError, match='character_release_in_progress'):
+        await owner.native.consume(UID)
+    assert (owner.directory / 'persona.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('peer,headers,status', [
+    ('127.0.0.1', [], 200), ('::1', [], 200), ('192.0.2.1', [], 403),
+    ('127.0.0.1', [(b'x-forwarded-for', b'192.0.2.1')], 403),
+])
+async def test_owner_wake_endpoint_accepts_only_direct_local_requests(owner, peer, headers, status, monkeypatch):
+    from fastapi import HTTPException, Request
+    from app.memory_server.routes import apply_synced_long_term_memory
+    from unittest.mock import AsyncMock
+    consume = AsyncMock(return_value=True)
+    monkeypatch.setattr(owner.native, 'consume', consume)
+    request = Request({'type': 'http', 'method': 'POST', 'path': '/', 'headers': headers, 'client': (peer, 1234)})
+    if status == 200:
+        assert await apply_synced_long_term_memory(UID, request) == {'applied': True}
+        consume.assert_awaited_once_with(UID)
+    else:
+        with pytest.raises(HTTPException) as error:
+            await apply_synced_long_term_memory(UID, request)
+        assert error.value.status_code == status
+        consume.assert_not_called()

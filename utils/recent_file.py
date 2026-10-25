@@ -72,6 +72,7 @@ __all__ = [
     "restore_recent_deletions",
     "restore_recent_registry_state",
     "set_recent_pending_unlocked",
+    "subscribe_recent_changes",
     "snapshot_recent_redirects",
     "snapshot_recent_deletions",
     "mark_recent_deleted",
@@ -122,7 +123,19 @@ _REDIRECTS: dict[str, str] = {}
 _DELETED: set[str] = set()
 _GENERATIONS: dict[str, int] = {}
 _CONTENT_VERSIONS: dict[str, int] = {}
+_CHANGE_LISTENERS: set = set()
 _NEXT_GENERATION = 1
+
+
+def subscribe_recent_changes(callback):
+    """Subscribe a nonblocking hint after successful writes; return its cleanup."""
+    with _LOCKS_GUARD:
+        _CHANGE_LISTENERS.add(callback)
+
+    def unsubscribe():
+        with _LOCKS_GUARD:
+            _CHANGE_LISTENERS.discard(callback)
+    return unsubscribe
 
 
 def _lock_key(path: Any) -> str:
@@ -478,6 +491,13 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
+        listeners = tuple(_CHANGE_LISTENERS)
+    for callback in listeners:
+        try:
+            callback(key)
+        except Exception:
+            # Optional hints must never turn a committed local save into a failure.
+            pass
 
 
 def recent_sidecar_path(path: Any, filename: str) -> str:
