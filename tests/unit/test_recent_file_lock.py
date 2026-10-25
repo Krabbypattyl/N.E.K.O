@@ -74,6 +74,67 @@ with recent_file_access(path) as locked:
             process.communicate()
 
 
+@pytest.mark.skipif(not hasattr(os, 'getuid'), reason='POSIX ownership and permissions')
+def test_recent_lock_directory_is_private_and_separated_by_user(tmp_path, monkeypatch):
+    import stat
+    monkeypatch.setattr(recent_file.tempfile, 'gettempdir', lambda: str(tmp_path))
+    lock = recent_file.recent_file_lock(tmp_path / 'Role/recent.json')
+    directory = Path(lock._file.lock_file).parent
+    assert directory.name == f'neko-recent-locks-{os.getuid()}'
+    with lock:
+        info = directory.lstat()
+        assert stat.S_IMODE(info.st_mode) == 0o700
+        assert info.st_uid == os.getuid()
+    uid = os.getuid()
+    monkeypatch.setattr(recent_file.os, 'getuid', lambda: uid + 1)
+    other = recent_file.recent_file_lock(tmp_path / 'Other/recent.json')
+    assert Path(other._file.lock_file).parent != directory
+
+
+@pytest.mark.skipif(not hasattr(os, 'getuid'), reason='POSIX ownership and permissions')
+@pytest.mark.parametrize('unsafe', ['symlink', 'permissions', 'owner'])
+def test_recent_lock_rejects_untrusted_directory_without_holding_thread_lock(tmp_path, monkeypatch, unsafe):
+    from types import SimpleNamespace
+    monkeypatch.setattr(recent_file.tempfile, 'gettempdir', lambda: str(tmp_path))
+    lock = recent_file.recent_file_lock(tmp_path / 'Role/recent.json')
+    directory = Path(lock._file.lock_file).parent
+    target = tmp_path / 'unrelated'
+    target.mkdir()
+    marker = target / 'data'
+    marker.write_bytes(b'unrelated user data')
+    if unsafe == 'symlink':
+        directory.symlink_to(target, target_is_directory=True)
+    else:
+        directory.mkdir(mode=0o700)
+        if unsafe == 'permissions':
+            directory.chmod(0o777)
+        else:
+            original = recent_file.os.lstat
+            def foreign_owner(path, *args, **kwargs):
+                info = original(path, *args, **kwargs)
+                if os.fspath(path) == str(directory):
+                    return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid() + 1)
+                return info
+            monkeypatch.setattr(recent_file.os, 'lstat', foreign_owner)
+    with pytest.raises(PermissionError, match='unsafe recent lock directory'):
+        with lock:
+            pytest.fail('unsafe directory was used')
+    assert not lock.locked()
+    assert not lock._file.is_locked
+    assert marker.read_bytes() == b'unrelated user data'
+    assert list(target.iterdir()) == [marker]
+
+
+def test_recent_lock_supports_platform_without_getuid(tmp_path, monkeypatch):
+    monkeypatch.setattr(recent_file.tempfile, 'gettempdir', lambda: str(tmp_path))
+    monkeypatch.delattr(recent_file.os, 'getuid', raising=False)
+    lock = recent_file.recent_file_lock(tmp_path / 'Role/recent.json')
+    assert Path(lock._file.lock_file).parent.name == 'neko-recent-locks-user'
+    with lock:
+        assert lock.locked()
+    assert not lock.locked()
+
+
 # ─────────────── fixtures / helpers ───────────────
 
 

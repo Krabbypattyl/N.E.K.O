@@ -185,7 +185,11 @@ def _write_snapshot_locked(name, payload):
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
         with runtime.fact_store._get_lock(name):
-            views = import_document(remote['document'], read_views(directory))
+            existing = read_views(directory)
+            views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [])
+            # Retained local edits have not been published. Keep them outside the
+            # receipt baseline so a later completed organization still captures them.
+            native_entries = export_document(import_document(remote['document'], existing), remote['completedAt'])['entries']
             before = {directory / filename: (directory / filename).read_text(encoding='utf-8')
                       if (directory / filename).is_file() else None for filename in FILES.values()}
             receipt_path = adapter.local_path(binding)
@@ -196,7 +200,7 @@ def _write_snapshot_locked(name, payload):
                 atomic_write_json(adapter.local_path(binding), {
                     'ownerId': binding['owner_id'], 'characterSyncId': uid, 'serviceUrl': binding['service_url'],
                     'epoch': list(epoch), 'operationId': operation, 'document': remote['document'],
-                    'nativeEntries': export_document(views, remote['completedAt'])['entries'],
+                    'nativeEntries': native_entries,
                 }, ensure_ascii=False)
                 _replace_fact_index(name, views)
             except BaseException as error:
@@ -261,6 +265,14 @@ async def consume(uid):
                 head(payload['head'], payload['binding']['owner_id'], uid)
             except ValueError:
                 return False
+            writer = _authority()
+            if writer is not None:
+                with writer.locked():
+                    local = adapter.read_local(payload['binding'], tuple(payload['epoch']))
+                    if local and local['document']['completedAt'] > payload['head']['completedAt']:
+                        if path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
+                            path.unlink()
+                        return False
             applied = [False]
             def save(_name, frozen):
                 applied[0] = _write_snapshot(_name, frozen)

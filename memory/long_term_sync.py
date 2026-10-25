@@ -38,6 +38,10 @@ def private(entry):
     return not isinstance(entry, dict) or not (entry.get('scope') or entry.get('subject_kind'))
 
 
+def _entry_id(subject, native):
+    return native.get('id') or 'legacy_' + hashlib.sha256(f'{subject}:{native.get("text")}'.encode()).hexdigest()[:24]
+
+
 def read_views(directory):
     result = {}
     for key, filename in FILES.items():
@@ -62,7 +66,7 @@ def export_document(views, completed_at):
         text = native.get('text')
         if not isinstance(text, str) or not text.strip():
             return
-        key = native.get('id') or 'legacy_' + hashlib.sha256(f'{subject}:{text}'.encode()).hexdigest()[:24]
+        key = _entry_id(subject, native)
         metadata = {'sourceSyncId': native.get('source_sync_id') or f'desktop:{key}'[:200],
                     'createdAt': timestamp(native.get('created_at')), 'updatedAt': timestamp(native.get('updated_at') or native.get('created_at'))}
         for original, portable in EVIDENCE_FIELDS.items():
@@ -110,25 +114,42 @@ def export_document(views, completed_at):
     return document({'schemaVersion': 1, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)]})
 
 
-def import_document(incoming, existing):
+def import_document(incoming, existing, *, baseline=None):
     incoming = document(incoming)
     result = deepcopy(existing)
+    local_persona = {(subject, _entry_id(subject, row)): row for subject in SUBJECTS
+                     for row in existing['persona'].get(subject, {}).get('facts', [])
+                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
+    pending = set()
+    if baseline is not None:
+        previous = {(row['kind'], row['subject'], row['id']): row for row in baseline}
+        current = {(row['kind'], row['subject'], row['id']): row
+                   for row in export_document(existing, incoming['completedAt'])['entries']}
+        pending = {key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)}
+
+    def retained(kind, subject, value):
+        native = value if isinstance(value, dict) else {'text': str(value)}
+        return (kind, subject, _entry_id(subject, native)) in pending
+
     # Keep static character-card entries and scoped/group partitions on this device.
     for subject in SUBJECTS:
         section = result['persona'].setdefault(subject, {})
-        section['facts'] = [row for row in section.get('facts', []) if isinstance(row, dict)
-                            and (not private(row) or row.get('source') == 'character_card')]
+        section['facts'] = [row for row in section.get('facts', []) if retained('persona', subject, row)
+                            or (isinstance(row, dict) and (not private(row) or row.get('source') == 'character_card'))]
     for field in ('facts', 'archive'):
         result[field] = [row for row in result[field] if isinstance(row, dict)
-                         and (not private(row) or row.get('entity') not in SUBJECTS)]
+                         and (not private(row) or row.get('entity') not in SUBJECTS
+                              or retained('fact', row.get('entity'), row))]
     incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
     result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
-        and (not private(row) or row.get('entity') not in SUBJECTS
+        and (not private(row) or row.get('entity') not in SUBJECTS or retained('reflection', row.get('entity'), row)
              or (row.get('status') not in ('confirmed', 'promoted')
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
+        if (kind, subject, row['id']) in pending:
+            continue
         if meta.get('voidedAt') or meta.get('status') in ('denied', 'retracted', 'superseded'):
             continue
         native = {'id': row['id'], 'text': row['text'], 'source_sync_id': meta.get('sourceSyncId') or f'snapshot:{row["id"]}'[:200]}
@@ -146,6 +167,17 @@ def import_document(incoming, existing):
             sources = meta.get('sourceReflectionIds') or []
             native.update(source='reflection' if sources else 'manual', source_id=sources[0] if sources else native['source_sync_id'],
                           merged_from_ids=list(sources[1:]), protected=False)
+            previous = local_persona.get((subject, row['id']), {})
+            # The protocol omits receiver-only state and external-import ledgers.
+            # Keep these locally; reflection links still come from the snapshot.
+            for field in ('suppress', 'suppressed_at', 'recent_mentions', 'sub_zero_days', 'sub_zero_last_increment_date'):
+                if field in previous:
+                    native[field] = deepcopy(previous[field])
+            if previous.get('source') and previous['source'] != 'reflection':
+                native['merged_from_ids'] = list(sources)
+                for field in ('source', 'source_id', 'external_import'):
+                    if field in previous:
+                        native[field] = deepcopy(previous[field])
             result['persona'][subject]['facts'].append(native)
         elif kind == 'fact':
             native.update(entity=subject, source='ai_disclosure' if subject == 'neko' else 'user_observation',

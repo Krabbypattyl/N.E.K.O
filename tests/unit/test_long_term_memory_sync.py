@@ -50,6 +50,59 @@ def test_portable_replacement_preserves_static_cards_group_memory_and_evidence()
     assert 'group state' not in json.dumps(portable) and 'static' not in json.dumps(portable)
 
 
+@pytest.mark.parametrize('source', ['external_import', pytest.param('manual', id='hand-entered'), 'settings'])
+def test_replacement_retains_receiver_persona_origin_and_local_state(source):
+    local = {'id': 'p1', 'text': 'old local wording', 'source': source, 'source_id': 'receiver-origin',
+             'suppress': True, 'suppressed_at': datetime.now().isoformat(), 'recent_mentions': ['receiver-mention'],
+             'sub_zero_days': 3, 'sub_zero_last_increment_date': datetime.now().date().isoformat()}
+    if source == 'external_import':
+        local['external_import'] = {'folded_fingerprints': ['receiver-fingerprint'], 'format': 'openclaw'}
+    scoped = {**deepcopy(local), 'scope': 'group:one', 'source_id': 'group-origin'}
+    existing = {'persona': {'master': {'facts': [scoped, local]}}, 'facts': [], 'archive': [], 'reflections': []}
+    original = deepcopy(existing)
+    result = import_document(learned(text='new remote wording'), existing)
+    restored = result['persona']['master']['facts'][1]
+    assert result['persona']['master']['facts'][0] == scoped
+    for key in local.keys() - {'id', 'text'}:
+        assert restored[key] == local[key]
+    assert restored['text'] == 'new remote wording'
+    assert restored['reinforcement'] == 3
+    assert existing == original
+
+
+def test_local_persona_origin_does_not_drop_incoming_reflection_links():
+    local = {'id': 'p1', 'text': 'local wording', 'source': 'external_import', 'source_id': 'receiver-origin'}
+    existing = {'persona': {'master': {'facts': [local]}}, 'facts': [], 'archive': [], 'reflections': []}
+    incoming = learned()
+    incoming['entries'][0]['metadata']['sourceReflectionIds'] = ['remote-primary', 'remote-merged']
+    result = import_document(incoming, existing)
+    restored = result['persona']['master']['facts'][0]
+    assert restored['source'] == 'external_import'
+    assert restored['source_id'] == 'receiver-origin'
+    portable = next(row for row in export_document(result, 3000)['entries'] if row['kind'] == 'persona')
+    assert portable['metadata']['sourceReflectionIds'] == ['remote-primary', 'remote-merged']
+
+
+@pytest.mark.asyncio
+async def test_snapshot_roundtrip_keeps_local_external_import_idempotency():
+    from tests.unit.test_persona_external_import import _FusionHarness, _candidates
+    harness = _FusionHarness({'master': {'facts': []}}, stub_fused=[{'text': 'Fused impression.', 'importance': 8}])
+    candidates = _candidates('raw external observation')
+    await harness.afuse_external_facts('Neko', 'master', candidates, 'openclaw')
+    existing = {'persona': harness.persona, 'facts': [], 'archive': [], 'reflections': []}
+    snapshot = export_document(existing, int(datetime.now().timestamp() * 1000))
+    restored = import_document(snapshot, existing)
+    harness.persona = restored['persona']
+    assert await harness.afuse_external_facts('Neko', 'master', candidates, 'openclaw') == {
+        'added': 0, 'skipped': 1, 'fused': False}
+    assert harness.llm_call_count == 1
+    # The portable schema carries content, not the sender's import ledger.
+    empty = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    foreign = import_document(snapshot, empty)['persona']['master']['facts'][0]
+    assert foreign['source'] == 'manual'
+    assert 'external_import' not in foreign
+
+
 @pytest.mark.parametrize('invalid', [[], {}, {'rawMessages': []}, {'embeddings': []}])
 def test_protocol_rejects_arbitrary_native_or_archive_payloads(invalid):
     with pytest.raises(ValueError):
@@ -184,6 +237,102 @@ async def test_pending_remote_never_overwrites_a_newer_completion_or_revoked_gra
         atomic_write_json(owner.adapter.incoming_path(UID), payload)
     assert not await owner.native.consume(UID)
     assert (owner.directory / 'persona.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_obsolete_inbox_is_removed_without_appending_replacement_events(owner):
+    await stage(owner)
+    assert owner.native._capture('Neko', True)
+    before = {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+    events = owner.directory / 'events.ndjson'
+    original_events = events.read_bytes() if events.exists() else b''
+    for _ in range(3):
+        assert not await owner.native.consume(UID)
+    assert not owner.adapter.incoming_path(UID).exists()
+    assert (events.read_bytes() if events.exists() else b'') == original_events
+    assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('published', [False, True])
+async def test_remote_replacement_preserves_unpublished_native_entries_until_capture(owner, published):
+    if published:
+        assert owner.native._capture('Neko', True)
+    fact = {'id': 'unpublished', 'entity': 'master', 'text': 'new local observation', 'source': 'user_fact'}
+    persona = {'id': 'local-persona', 'text': 'local manual preference', 'source': 'manual', 'suppress': True}
+    reflection = {'id': 'local-reflection', 'entity': 'master', 'text': 'new confirmed impression',
+                  'status': 'confirmed', 'confirmed_at': datetime.now().isoformat()}
+    atomic_write_json(owner.directory / 'facts.json', [fact])
+    atomic_write_json(owner.directory / 'persona.json', {'master': {'facts': [persona]}})
+    atomic_write_json(owner.directory / 'reflections.json', [reflection])
+    baseline = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    completed = (baseline['document']['completedAt'] if baseline else 2000) + 1
+    for revision in (1, 2):
+        await stage(owner, completed=completed + revision, revision=revision)
+        assert await owner.native.consume(UID)
+        views = read_views(owner.directory)
+        assert fact in views['facts']
+        assert persona in views['persona']['master']['facts']
+        assert reflection in views['reflections']
+        local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+        assert 'unpublished' not in {row['id'] for row in local['nativeEntries']}
+    assert owner.native._capture('Neko', False)
+    captured = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert 'unpublished' in {row['id'] for row in captured['document']['entries']}
+    assert not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
+async def test_remote_replacement_preserves_local_edits_and_deletions_against_published_baseline(owner):
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    current = read_views(owner.directory)
+    current['persona']['master']['facts'][0]['text'] = 'locally edited preference'
+    current['facts'] = []
+    for key, filename in FILES.items():
+        atomic_write_json(owner.directory / filename, current[key])
+    await stage(owner, completed=3000, revision=2)
+    assert await owner.native.consume(UID)
+    result = read_views(owner.directory)
+    assert result['persona']['master']['facts'] == current['persona']['master']['facts']
+    assert result['facts'] == []
+    assert owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
+async def test_remote_still_replaces_unchanged_published_entries(owner):
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    await stage(owner, completed=3000, revision=2)
+    path = owner.adapter.incoming_path(UID)
+    payload = json.loads(path.read_text())
+    payload['head']['document']['entries'] = [row for row in payload['head']['document']['entries'] if row['kind'] != 'fact']
+    payload['head']['document']['entries'][0]['text'] = 'new remote preference'
+    atomic_write_json(path, payload)
+    assert await owner.native.consume(UID)
+    views = read_views(owner.directory)
+    assert views['facts'] == []
+    assert views['persona']['master']['facts'][0]['text'] == 'new remote preference'
+    assert not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_replays_without_losing_unpublished_entries(owner, monkeypatch):
+    fact = {'id': 'local-only', 'entity': 'master', 'text': 'unpublished local fact'}
+    atomic_write_json(owner.directory / 'facts.json', [fact])
+    await stage(owner)
+    original = owner.native._replace_fact_index
+    def fail(name, views):
+        raise OSError('synthetic index commit failure')
+    monkeypatch.setattr(owner.native, '_replace_fact_index', fail)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    assert read_views(owner.directory)['facts'] == [fact]
+    monkeypatch.setattr(owner.native, '_replace_fact_index', original)
+    await owner.replay.areconcile('Neko')
+    assert fact in read_views(owner.directory)['facts']
+    assert await owner.native.consume(UID)
+    assert owner.native._capture('Neko', False)
 
 
 @pytest.mark.asyncio

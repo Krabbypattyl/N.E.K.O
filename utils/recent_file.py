@@ -34,6 +34,7 @@ import hashlib
 import math
 import os
 import re
+import stat
 import threading
 import tempfile
 import time
@@ -126,12 +127,18 @@ class _RecentFileLock:
         # Lock files must survive character moves/deletion without recreating
         # deleted directories or colliding when two character folders merge.
         key = hashlib.sha256(os.path.realpath(path).encode('utf-8')).hexdigest()
-        self._file = FileLock(os.path.join(tempfile.gettempdir(), 'neko-recent-locks', key + '.lock'), thread_local=False)
+        user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
+        self._file = FileLock(os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock'), thread_local=False)
 
     def acquire(self):
         self._thread.acquire()
         try:
-            os.makedirs(os.path.dirname(self._file.lock_file), exist_ok=True)
+            directory = os.path.dirname(self._file.lock_file)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            info = os.lstat(directory)
+            if (not stat.S_ISDIR(info.st_mode) or (hasattr(os, 'getuid')
+                    and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
+                raise PermissionError(f'unsafe recent lock directory: {directory}')
             self._file.acquire()
         except BaseException:
             self._thread.release()
