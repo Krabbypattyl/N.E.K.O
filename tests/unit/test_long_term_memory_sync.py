@@ -5,6 +5,7 @@ from contextlib import closing
 from copy import deepcopy
 import json
 import threading
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -64,7 +65,7 @@ async def owner(tmp_path, monkeypatch):
     async def load():
         return deepcopy(characters)
     config.aload_characters = load
-    runtime, service, _ = setup_runtime(tmp_path, long_term_memory_adapter=DesktopLongTermAdapter(config))
+    runtime, service, session = setup_runtime(tmp_path, long_term_memory_adapter=DesktopLongTermAdapter(config))
     await runtime.configure('https://sync.test')
     await runtime.enable(UID, 'Neko')
     locks = {}
@@ -82,6 +83,7 @@ async def owner(tmp_path, monkeypatch):
                        '_reload_lock': asyncio.Lock(), 'event_log': log, 'reconciler': replay}.items():
         monkeypatch.setattr(native.runtime, key, value)
     monkeypatch.setattr(native, '_authority', lambda: runtime.writer)
+    monkeypatch.setattr(native, '_session_guard', runtime.session_commit_guard, raising=False)
     monkeypatch.setattr(native, 'assert_cloudsave_writable', lambda *args, **kwargs: None)
     native.register_replay(replay)
     directory = config.memory_dir / 'Neko'
@@ -93,23 +95,24 @@ async def owner(tmp_path, monkeypatch):
     binding = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
     try:
         yield SimpleNamespace(native=native, runtime=runtime, config=config, binding=binding,
-                              adapter=runtime.long_term_memory.adapter, directory=directory, raw=raw, replay=replay)
+                              adapter=runtime.long_term_memory.adapter, directory=directory, raw=raw, replay=replay, session=session)
     finally:
         await native.close()
         await runtime.close()
 
 
-def stage(owner, completed=2000, revision=1):
+async def stage(owner, completed=2000, revision=1):
     remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': revision,
               'completedAt': completed, 'document': learned(completed)}
     local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
-    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), local['operationId'] if local else None)
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), local['operationId'] if local else None,
+                                      session_fingerprint=(await owner.runtime._session())[1])
 
 
 @pytest.mark.asyncio
 async def test_native_owner_captures_only_after_completion_and_applies_without_archive_changes(owner):
     raw = owner.raw.read_bytes()
-    stage(owner)
+    await stage(owner)
     assert await owner.native.consume(UID)
     state = read_views(owner.directory)
     assert state['persona']['master']['facts'][0]['text'] == 'learned preference'
@@ -136,7 +139,7 @@ async def test_native_owner_uses_default_service_for_capture_and_download(owner,
     assert owner.native._capture('Neko', True)
     local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
     assert local is not None
-    stage(owner, completed=local['document']['completedAt'] + 1)
+    await stage(owner, completed=local['document']['completedAt'] + 1)
     assert await owner.native.consume(UID)
     assert read_views(owner.directory)['persona']['master']['facts'][0]['text'] == 'learned preference'
     assert owner.raw.read_bytes() == b'synthetic raw archive remains byte-identical'
@@ -144,7 +147,7 @@ async def test_native_owner_uses_default_service_for_capture_and_download(owner,
 
 @pytest.mark.asyncio
 async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exact_snapshot(owner, monkeypatch):
-    stage(owner)
+    await stage(owner)
     before = {path.name: path.read_bytes() for path in owner.directory.iterdir()}
     original = owner.native.atomic_write_json
     failed = False
@@ -169,7 +172,7 @@ async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exac
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['newer-local', 'paused-binding', 'changed-epoch'])
 async def test_pending_remote_never_overwrites_a_newer_completion_or_revoked_grant(owner, change):
-    stage(owner)
+    await stage(owner)
     before = (owner.directory / 'persona.json').read_bytes()
     if change == 'newer-local':
         assert owner.native._capture('Neko', True)
@@ -205,8 +208,8 @@ async def test_frozen_operation_retries_identical_bytes_after_receipt_loss(owner
     domain = ChatDomain(OWNER, UID)
     args = (domain, owner.binding, owner.runtime.writer.epoch(), request, commit)
     with pytest.raises(OSError):
-        await sync.sync(*args, can_apply=lambda: True)
-    await sync.sync(*args, can_apply=lambda: True)
+        await sync.sync(*args, can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1])
+    await sync.sync(*args, can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1])
     assert requests[0] == requests[1]
     assert b'time_indexed' not in requests[0]
     assert isinstance(sync, LongTermMemorySync)
@@ -237,15 +240,15 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
         return await owner.native.consume(uid)
     monkeypatch.setattr(owner.adapter, 'flush', flush)
     await owner.runtime._channel_pass(UID, 'long_term', manual=True)
-    assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
+    assert [request.method for request in requests] == ['PUT', 'GET']
     await owner.runtime._channel_pass(UID, 'long_term', manual=True)
-    assert [request.method for request in requests] == ['PUT', 'GET', 'GET', 'GET']
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+    assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == local['operationId']
 
 
 @pytest.mark.asyncio
 async def test_pending_capture_finishes_before_incoming_replacement(owner):
-    stage(owner)
+    await stage(owner)
     marker = asyncio.create_task(asyncio.sleep(10))
     owner.native._capture_tasks['Neko'] = marker
     try:
@@ -260,7 +263,7 @@ async def test_pending_capture_finishes_before_incoming_replacement(owner):
 @pytest.mark.asyncio
 async def test_character_release_fence_blocks_incoming_native_writes(owner, monkeypatch):
     monkeypatch.setattr(owner.native.runtime, '_is_character_publication_admitted', lambda _: False)
-    stage(owner)
+    await stage(owner)
     before = (owner.directory / 'persona.json').read_bytes()
     with pytest.raises(ValueError, match='character_release_in_progress'):
         await owner.native.consume(UID)
@@ -287,3 +290,262 @@ async def test_owner_wake_endpoint_accepts_only_direct_local_requests(owner, pee
             await apply_synced_long_term_memory(UID, request)
         assert error.value.status_code == status
         consume.assert_not_called()
+
+
+@pytest.mark.parametrize('status', ['pending', 'denied', 'superseded', 'retracted'])
+def test_replacement_retains_reflections_outside_export_scope(status):
+    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [
+        {'id': 'local-only', 'entity': 'master', 'text': 'local workflow', 'status': status},
+        {'id': 'old-confirmed', 'entity': 'master', 'text': 'old learned state', 'status': 'confirmed'}]}
+    result = import_document(learned(), existing)
+    assert result['reflections'][0] == existing['reflections'][0]
+    assert [row['id'] for row in result['reflections']] == ['local-only', 'r1']
+    existing['reflections'][0].update(id='r1', entity='neko')
+    assert len(import_document(learned(), existing)['reflections']) == 1
+
+
+def test_confirmation_clock_round_trips_and_legacy_snapshot_starts_a_fresh_window():
+    created = datetime.now() - timedelta(days=60)
+    confirmed = datetime.now() - timedelta(days=1)
+    views = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [
+        {'id': 'r1', 'entity': 'neko', 'text': 'recently confirmed', 'status': 'confirmed',
+         'created_at': created.isoformat(), 'confirmed_at': confirmed.isoformat()}]}
+    completed = int(datetime.now().timestamp() * 1000)
+    result = import_document(export_document(views, completed), views)['reflections'][0]
+    assert abs((datetime.fromisoformat(result['confirmed_at']) - confirmed).total_seconds()) < .002
+    legacy = import_document(learned(completed), views)['reflections'][0]
+    assert abs(datetime.fromisoformat(legacy['confirmed_at']).timestamp() * 1000 - completed) < .002
+
+
+@pytest.mark.parametrize('field', ['createdAt', 'eventAt', 'promotedAt', 'evidenceReviewedAt'])
+@pytest.mark.parametrize('value', [9_007_199_254_740_991, -9_007_199_254_740_991])
+def test_protocol_rejects_unrepresentable_calendar_timestamps(field, value):
+    incoming = learned()
+    incoming['entries'][0]['metadata'][field] = value
+    with pytest.raises(ValueError, match='invalid_long_term_memory'):
+        document(incoming)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['logout', 'switch-account', 'missing-session'])
+async def test_staged_snapshot_and_event_replay_recheck_login_session(owner, change):
+    await stage(owner)
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+    before = {key: (owner.directory / filename).read_bytes() for key, filename in FILES.items()}
+    if change == 'logout':
+        owner.session['logged_in'] = False
+    elif change == 'switch-account':
+        owner.session['snapshot']['access_token'] = 'synthetic-other-account'
+    else:
+        payload.pop('sessionFingerprint')
+        atomic_write_json(owner.adapter.incoming_path(UID), payload)
+    assert not await owner.native.consume(UID)
+    assert owner.native._write_snapshot('Neko', payload) is False
+    assert before == {key: (owner.directory / filename).read_bytes() for key, filename in FILES.items()}
+
+
+@pytest.mark.asyncio
+async def test_failed_capture_retries_and_retains_force_request(owner, monkeypatch):
+    original = owner.native._capture
+    attempted, completed = asyncio.Event(), asyncio.Event()
+    calls = []
+    loop = asyncio.get_running_loop()
+    def fail_once(name, force):
+        calls.append(force)
+        if len(calls) == 1:
+            loop.call_soon_threadsafe(attempted.set)
+            raise OSError('synthetic temporary staging failure')
+        result = original(name, force)
+        loop.call_soon_threadsafe(completed.set)
+        return result
+    monkeypatch.setattr(owner.native, '_capture', fail_once)
+    owner.native.queue_capture('Neko', force=True)
+    await asyncio.wait_for(attempted.wait(), 2)
+    owner.native.queue_capture('Neko')
+    await asyncio.wait_for(completed.wait(), 4)
+    assert calls == [True, True]
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch()) is not None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_replaces_only_fact_search_index_and_replay_repairs_failed_index(owner, monkeypatch):
+    from memory import timeindex
+    from unittest.mock import MagicMock
+    config = MagicMock(memory_dir=str(owner.config.memory_dir))
+    config.get_character_data.return_value = ('Master', 'Neko', {}, {}, {}, {}, {}, {}, {})
+    monkeypatch.setattr(timeindex, 'get_config_manager', lambda: config)
+    monkeypatch.setattr(timeindex, 'assert_cloudsave_writable', lambda *args, **kwargs: None)
+    owner.raw.unlink()  # Disposable fixture placeholder; build a real archive for this test.
+    index = timeindex.TimeIndexedMemory(recent_history_manager=None)
+    owner.native.runtime.fact_store._time_indexed = index
+    index.backfill_fact_index('Neko', [('old', 'obsolete private preference')])
+    from config import TIME_ORIGINAL_TABLE_NAME
+    from utils.llm_client import HumanMessage
+    index.store_conversation_strict('synthetic-session', [HumanMessage(content='raw history remains')], 'Neko')
+    from sqlalchemy import event, text
+    with index.engines['Neko'].connect() as connection:
+        raw_before = connection.execute(text(f'SELECT * FROM {TIME_ORIGINAL_TABLE_NAME}')).fetchall()
+    await stage(owner)
+    def fail_insert(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith(f'INSERT INTO {index.FACTS_FTS_TABLE}'):
+            raise OSError('synthetic index failure after DELETE')
+    event.listen(index.engines['Neko'], 'before_cursor_execute', fail_insert)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch()) is None
+    assert 'old' in dict(index.search_similar_facts('Neko', 'obsolete private preference'))
+    event.remove(index.engines['Neko'], 'before_cursor_execute', fail_insert)
+    await owner.replay.areconcile('Neko')
+    assert 'f1' in dict(index.search_similar_facts('Neko', 'shared experience'))
+    assert not index.search_similar_facts('Neko', 'obsolete private preference')
+    index.replace_fact_index('Neko', [('old', 'obsolete private preference')])
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+    assert owner.native._write_snapshot('Neko', payload)
+    assert 'f1' in dict(index.search_similar_facts('Neko', 'shared experience'))
+    assert not index.search_similar_facts('Neko', 'obsolete private preference')
+    with index.engines['Neko'].connect() as connection:
+        assert connection.execute(text(f'SELECT * FROM {TIME_ORIGINAL_TABLE_NAME}')).fetchall() == raw_before
+    for engine in index.engines.values():
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('accepted,newer', [(True, False), (True, True), (False, False)])
+async def test_upload_receipt_skips_own_head_but_pulls_a_rejected_or_newer_remote(owner, accepted, newer):
+    from services.chat_sync.ledger import ChatDomain
+    assert owner.native._capture('Neko', True)
+    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    calls = []
+    revision = 2 if newer else 1
+    remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': revision,
+              'completedAt': local['document']['completedAt'] + 1,
+              'document': learned(local['document']['completedAt'] + 1, 'remote learned state')}
+    async def request(method, path, body):
+        calls.append((method, path))
+        if method == 'PUT':
+            return {'ownerId': OWNER, 'characterSyncId': UID, 'operationId': local['operationId'],
+                    'revision': 1, 'accepted': accepted}
+        return {key: value for key, value in remote.items() if key != 'document'} if '?' in path else remote
+    async def commit(fn, *args):
+        return fn(*args)
+    domain = ChatDomain(OWNER, UID)
+    result = await owner.runtime.long_term_memory.sync(domain, owner.binding, owner.runtime.writer.epoch(),
+        request, commit, can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1])
+    assert result['changed'] is (newer or not accepted)
+    assert len(calls) == (3 if newer or not accepted else 2)
+    assert owner.runtime.long_term_memory.state(domain.key()) == {'acknowledged': local['operationId'], 'revision': revision}
+
+
+@pytest.mark.asyncio
+async def test_imported_recent_confirmation_does_not_trigger_weak_memory_promotion():
+    from memory.reflection import ReflectionEngine
+    from unittest.mock import AsyncMock
+    confirmed = datetime.now() - timedelta(days=1)
+    views = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [
+        {'id': 'r1', 'entity': 'neko', 'text': 'recently confirmed', 'status': 'confirmed',
+         'created_at': (confirmed - timedelta(days=60)).isoformat(), 'confirmed_at': confirmed.isoformat()}]}
+    restored = import_document(export_document(views, int(datetime.now().timestamp() * 1000)), views)['reflections']
+    engine = object.__new__(ReflectionEngine)
+    engine._alocks, engine._alocks_guard = {}, threading.Lock()
+    engine._aload_reflections_full = AsyncMock(return_value=restored)
+    engine._persona_manager = SimpleNamespace(aadd_fact=AsyncMock())
+    assert await engine.aauto_promote_time_driven('Neko') == 0
+    engine._persona_manager.aadd_fact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_timestamp_is_rejected_before_journaling_and_old_invalid_event_is_skipped(owner):
+    await stage(owner)
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+    payload['head']['document']['entries'][0]['metadata']['createdAt'] = 9_007_199_254_740_991
+    atomic_write_json(owner.adapter.incoming_path(UID), payload)
+    events_path = owner.directory / 'events.ndjson'
+    assert not events_path.exists()
+    assert not await owner.native.consume(UID)
+    assert not events_path.exists()
+    assert owner.native._write_snapshot('Neko', payload) is False
+    def fail_save(name, frozen):
+        raise OSError('synthetic historical apply failure')
+    with pytest.raises(OSError):
+        owner.native.runtime.event_log.record_and_save('Neko', owner.native._EVENT, payload,
+            sync_load_view=lambda _: deepcopy(payload), sync_mutate_view=lambda _: None, sync_save_view=fail_save)
+    assert await owner.replay.areconcile('Neko') == 0
+    event_id = json.loads(events_path.read_text().splitlines()[-1])['event_id']
+    assert owner.native.runtime.event_log.read_sentinel('Neko') == event_id
+    # A later valid completion can still be consumed.
+    await stage(owner, completed=3000, revision=2)
+    assert await owner.native.consume(UID)
+
+
+@pytest.mark.asyncio
+async def test_native_apply_holds_the_logout_writers_fence_until_commit(owner, monkeypatch):
+    from contextlib import contextmanager
+    from main_routers import card_drop_router  # noqa: F401
+    from services.chat_sync import host
+    from services.chat_sync.runtime import _saved_session_commit_guard
+    lock = threading.Lock()
+    @contextmanager
+    def fence():
+        with lock:
+            yield
+    monkeypatch.setattr(host, 'saved_session_writer_fence', fence)
+    monkeypatch.setattr(host, 'saved_session_snapshot',
+                        lambda: owner.session['snapshot'] if owner.session['logged_in'] else None)
+    monkeypatch.setattr(owner.native, '_session_guard', _saved_session_commit_guard)
+    await stage(owner)
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+    writing, release, logout_attempted, logged_out = (threading.Event() for _ in range(4))
+    original = owner.native.atomic_write_json
+    def paused_write(path, *args, **kwargs):
+        if path.name == 'persona.json':
+            writing.set()
+            assert release.wait(5)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', paused_write)
+    def logout():
+        logout_attempted.set()
+        with lock:
+            owner.session['logged_in'] = False
+            logged_out.set()
+    applying = asyncio.create_task(asyncio.to_thread(owner.native._write_snapshot, 'Neko', payload))
+    logout_task = None
+    try:
+        assert await asyncio.to_thread(writing.wait, 2)
+        logout_task = asyncio.create_task(asyncio.to_thread(logout))
+        assert await asyncio.to_thread(logout_attempted.wait, 2)
+        assert not logged_out.is_set()
+    finally:
+        release.set()
+        assert await applying
+        if logout_task is not None:
+            await logout_task
+    assert logged_out.is_set()
+    assert owner.native._write_snapshot('Neko', payload) is False
+
+
+@pytest.mark.asyncio
+async def test_new_session_redownloads_a_staged_revision_before_applying_it(owner):
+    from services.chat_sync.ledger import ChatDomain
+    await stage(owner)
+    sync = owner.runtime.long_term_memory
+    domain = ChatDomain(OWNER, UID)
+    sync.applied(domain.key(), 1)
+    owner.session['logged_in'] = False
+    assert not await owner.native.consume(UID)
+    assert owner.adapter.incoming_path(UID).exists()
+    owner.session['logged_in'] = True
+    owner.session['snapshot']['access_token'] = 'synthetic-new-session'
+    remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1,
+              'completedAt': 2000, 'document': learned()}
+    calls = []
+    async def request(method, path, body):
+        calls.append((method, path))
+        assert method == 'GET'
+        return {key: value for key, value in remote.items() if key != 'document'} if '?' in path else remote
+    async def commit(fn, *args):
+        return fn(*args)
+    assert (await sync.sync(domain, owner.binding, owner.runtime.writer.epoch(), request, commit,
+        can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1]))['changed']
+    assert len(calls) == 2
+    assert await owner.native.consume(UID)
+    assert read_views(owner.directory)['facts'][0]['text'] == 'shared experience'

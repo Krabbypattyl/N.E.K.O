@@ -15,6 +15,8 @@ import os
 import re
 import threading
 import time
+import subprocess
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,45 @@ from utils.llm_client import (
     messages_from_dict,
     messages_to_dict,
 )
+
+
+def test_recent_file_lock_excludes_a_separate_process(tmp_path):
+    """Main and legacy memory-server processes must share the same RMW fence."""
+    path = tmp_path / 'recent.json'
+    attempted, entered = tmp_path / 'attempted', tmp_path / 'entered'
+    path.write_text('[]')
+    script = '''
+import json, sys
+from pathlib import Path
+from utils.recent_file import recent_file_access, read_recent_text_unlocked, write_recent_payload_unlocked
+path, attempted, entered = map(Path, sys.argv[1:])
+attempted.write_text('ready')
+with recent_file_access(path) as locked:
+    entered.write_text('entered')
+    rows = json.loads(read_recent_text_unlocked(locked))
+    rows.append({'from': 'child'})
+    write_recent_payload_unlocked(locked, rows)
+'''
+    process = None
+    try:
+        with recent_file.recent_file_access(path) as locked:
+            process = subprocess.Popen([shutil.which('uv'), 'run', '--offline', '--no-sync', 'python', '-c',
+                                        script, str(path), str(attempted), str(entered)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            deadline = time.monotonic() + 10
+            while not attempted.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert attempted.exists()
+            time.sleep(.2)
+            assert not entered.exists(), 'another process entered the recent RMW critical section'
+            recent_file.write_recent_payload_unlocked(locked, [{'from': 'parent'}])
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, (stdout, stderr)
+        assert json.loads(path.read_text()) == [{'from': 'parent'}, {'from': 'child'}]
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate()
 
 
 # ─────────────── fixtures / helpers ───────────────

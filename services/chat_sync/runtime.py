@@ -2039,7 +2039,8 @@ class DesktopChatSyncRuntime:
             try:
                 _, request, commit = await self._bound_transport(uid, authenticated=authenticated,
                     expected_binding=binding, automatic_only=not manual)
-                result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply)
+                result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply,
+                                                          session_fingerprint=presence)
                 await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term')
                 if result['changed'] and can_apply():
                     applied = await self.long_term_memory.adapter.flush(uid)

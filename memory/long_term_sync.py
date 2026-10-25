@@ -6,8 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from services.chat_sync.long_term_protocol import document
-from services.chat_sync.recent_protocol import canonical
+from utils.long_term_memory_protocol import document
+from utils.recent_memory_protocol import canonical
 
 
 SUBJECTS = ('master', 'neko', 'relationship')
@@ -26,7 +26,12 @@ def timestamp(value):
 
 
 def iso(value):
-    return datetime.fromtimestamp(value / 1000).isoformat() if value else None
+    if not value:
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def private(entry):
@@ -83,6 +88,8 @@ def export_document(views, completed_at):
                 return
             metadata['sourceFactIds'] = list(native.get('source_fact_ids') or [])
             metadata['evidenceReview'] = 'supported'
+            if native.get('confirmed_at'):
+                metadata['evidenceReviewedAt'] = timestamp(native['confirmed_at'])
             if native.get('promoted_at'):
                 metadata['promotedAt'] = timestamp(native['promoted_at'])
         identity = (kind, subject, key)
@@ -111,9 +118,15 @@ def import_document(incoming, existing):
         section = result['persona'].setdefault(subject, {})
         section['facts'] = [row for row in section.get('facts', []) if isinstance(row, dict)
                             and (not private(row) or row.get('source') == 'character_card')]
-    for field in ('facts', 'archive', 'reflections'):
+    for field in ('facts', 'archive'):
         result[field] = [row for row in result[field] if isinstance(row, dict)
                          and (not private(row) or row.get('entity') not in SUBJECTS)]
+    incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
+    result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
+        and (not private(row) or row.get('entity') not in SUBJECTS
+             or (row.get('status') not in ('confirmed', 'promoted')
+                 and (not isinstance(row.get('id'), str)
+                      or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if meta.get('voidedAt') or meta.get('status') in ('denied', 'retracted', 'superseded'):
@@ -144,7 +157,7 @@ def import_document(incoming, existing):
         else:
             native.update(entity=subject, source_fact_ids=list(meta.get('sourceFactIds') or []),
                           status='promoted' if meta.get('promotedAt') else 'confirmed',
-                          confirmed_at=iso(meta.get('evidenceReviewedAt') or meta.get('createdAt')))
+                          confirmed_at=iso(meta.get('evidenceReviewedAt') or incoming['completedAt']))
             if meta.get('promotedAt'):
                 native['promoted_at'] = iso(meta['promotedAt'])
             result['reflections'].append(native)
@@ -188,16 +201,24 @@ class DesktopLongTermAdapter:
         return {'operationId': value['operationId'], 'document': value['document'],
                 'nativeEntries': value.get('nativeEntries', value['document']['entries'])}
 
-    def stage_remote(self, binding, remote, epoch, expected_operation):
+    def stage_remote(self, binding, remote, epoch, expected_operation, session_fingerprint):
         from utils.file_utils import atomic_write_json
         current = self.read_local(binding, epoch)
         if ((current['operationId'] if current else None) != expected_operation
                 or (current and current['document']['completedAt'] > remote['document']['completedAt'])):
             return False
         atomic_write_json(self.incoming_path(binding['character_uid']), {
-            'binding': binding, 'epoch': list(epoch), 'head': remote,
+            'binding': binding, 'epoch': list(epoch), 'head': remote, 'sessionFingerprint': session_fingerprint,
         }, ensure_ascii=False)
         return True
+
+    def needs_reauthentication(self, binding, epoch, session_fingerprint):
+        try:
+            pending = json.loads(self.incoming_path(binding['character_uid']).read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return False
+        return (pending.get('sessionFingerprint') != session_fingerprint or pending.get('binding') != binding
+                or pending.get('epoch') != list(epoch))
 
     async def flush(self, uid):
         from config import MEMORY_SERVER_PORT

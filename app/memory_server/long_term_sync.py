@@ -1,7 +1,7 @@
 """Memory-owner capture and replay of completed learned-memory snapshots."""
 
 import asyncio
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager, closing, contextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -25,6 +25,16 @@ from ._shared import logger, validate_lanlan_name
 _EVENT = 'memory.long_term_replaced'
 _capture_tasks = {}
 _capture_requests = {}
+
+
+@contextmanager
+def _session_guard(fingerprint):
+    # The legacy memory process also needs the credential owner's capabilities.
+    from main_routers import card_drop_router  # noqa: F401
+    from services.chat_sync.runtime import _saved_session_commit_guard
+
+    with _saved_session_commit_guard(fingerprint):
+        yield
 
 
 def _authority():
@@ -109,14 +119,18 @@ def queue_capture(name, *, force=False):
         return
 
     async def run():
+        delay = 0.2
         try:
             while name in _capture_requests:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(delay)
                 requested = _capture_requests.pop(name)
                 try:
                     async with _views_locked(name):
                         await _complete_file_commit(_capture, name, requested)
+                    delay = 0.2
                 except Exception:
+                    _capture_requests[name] = requested or _capture_requests.get(name, False)
+                    delay = min(delay * 2, 30)
                     logger.warning('[LongTermSync] local snapshot staging deferred')
         finally:
             _capture_tasks.pop(name, None)
@@ -124,6 +138,24 @@ def queue_capture(name, *, force=False):
 
 
 def _write_snapshot(name, payload):
+    fingerprint = payload.get('sessionFingerprint')
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return False
+    try:
+        head(payload['head'], payload['binding']['owner_id'], payload['binding']['character_uid'])
+    except ValueError:
+        # Invalid historical sync events must not block subsequent memory events.
+        return False
+    try:
+        with _session_guard(fingerprint):
+            return _write_snapshot_locked(name, payload)
+    except ValueError as error:
+        if str(error) in {'chat_sync_login_required', 'chat_sync_session_changed', 'chat_sync_session_unavailable'}:
+            return False
+        raise
+
+
+def _write_snapshot_locked(name, payload):
     writer = _authority()
     if writer is None:
         return False
@@ -145,6 +177,10 @@ def _write_snapshot(name, payload):
             return False
         operation = f'download:{remote["revision"]}'
         if local and local['operationId'] == operation and local['document'] == remote['document']:
+            # A crash can occur after the file receipt and before the derived
+            # index commits. Repair from current views without replacing them.
+            with runtime.fact_store._get_lock(name):
+                _replace_fact_index(name, read_views(Path(runtime._config_manager.memory_dir) / name))
             return True
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
@@ -152,6 +188,8 @@ def _write_snapshot(name, payload):
             views = import_document(remote['document'], read_views(directory))
             before = {directory / filename: (directory / filename).read_text(encoding='utf-8')
                       if (directory / filename).is_file() else None for filename in FILES.values()}
+            receipt_path = adapter.local_path(binding)
+            before[receipt_path] = receipt_path.read_text(encoding='utf-8') if receipt_path.is_file() else None
             try:
                 for key, filename in FILES.items():
                     atomic_write_json(directory / filename, views[key], ensure_ascii=False, indent=2)
@@ -160,6 +198,7 @@ def _write_snapshot(name, payload):
                     'epoch': list(epoch), 'operationId': operation, 'document': remote['document'],
                     'nativeEntries': export_document(views, remote['completedAt'])['entries'],
                 }, ensure_ascii=False)
+                _replace_fact_index(name, views)
             except BaseException as error:
                 # Restore exact prior files; the appended event/inbox retains the retry.
                 for path, original in before.items():
@@ -174,6 +213,15 @@ def _write_snapshot(name, payload):
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
         return True
+
+
+def _replace_fact_index(name, views):
+    index = getattr(runtime.fact_store, '_time_indexed', None)
+    if index is not None:
+        from memory.facts import _readable_fact_id
+        rows = [(fid, str(row.get('text') or '')) for row in views['facts'] + views['archive']
+                if isinstance(row, dict) and (fid := _readable_fact_id(row)) is not None]
+        index.replace_fact_index(name, rows)
 
 
 def register_replay(reconciler, persona_manager=None, fact_store=None):
@@ -209,6 +257,10 @@ async def consume(uid):
         await runtime.reconciler.areconcile(name)
         def commit():
             payload = json.loads(path.read_text(encoding='utf-8'))
+            try:
+                head(payload['head'], payload['binding']['owner_id'], uid)
+            except ValueError:
+                return False
             applied = [False]
             def save(_name, frozen):
                 applied[0] = _write_snapshot(_name, frozen)
@@ -218,7 +270,7 @@ async def consume(uid):
             writer = _authority()
             if writer is not None:
                 with writer.locked():
-                    if path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
+                    if applied[0] and path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
                         path.unlink()
             return applied[0]
         return await _complete_file_commit(commit)
