@@ -501,6 +501,7 @@ async def reload_memory_components(
     """
     global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
     requested_resume_names = set(resume_derived_task_names or ())
+    capture_characters = None
     requested_resume_generations = dict(resume_derived_task_generations or {})
     requested_claim_releases = {
         name: set(tokens)
@@ -590,6 +591,7 @@ async def reload_memory_components(
             try:
                 characters = await asyncio.to_thread(_config_manager.load_characters)
                 active_names = set((characters.get("猫娘") or {}).keys())
+                capture_characters = characters
                 await review.reconcile_character_derived_task_admission(
                     active_names,
                     resume_names=requested_resume_names,
@@ -635,6 +637,12 @@ async def reload_memory_components(
                         resume_exc,
                         exc_info=True,
                     )
+            if capture_characters is not None:
+                try:
+                    from .long_term_sync import resume_captures
+                    resume_captures(capture_characters)
+                except Exception as capture_exc:
+                    logger.warning("[LongTermSync] publication resume deferred: %s", capture_exc)
 
 
 @app.post("/release_character/{lanlan_name}")

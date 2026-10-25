@@ -1,11 +1,13 @@
 """Learned-memory replacement must retain raw chat and unrelated memory partitions."""
 
 import asyncio
+from collections import OrderedDict
 from contextlib import closing
 from copy import deepcopy
 import json
+import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -36,6 +38,9 @@ def learned(completed=2000, text='learned preference'):
 def test_epoch_day_roundtrip_avoids_windows_naive_timestamp_limit(monkeypatch, milliseconds):
     from memory import long_term_sync
     value = long_term_sync.iso(milliseconds)
+    local = datetime.fromtimestamp(milliseconds / 1000, timezone.utc).astimezone().tzinfo
+    monkeypatch.setitem(sys.modules, 'win32timezone', SimpleNamespace(TimeZoneInfo=SimpleNamespace(local=lambda: local)))
+    monkeypatch.setattr(sys, 'platform', 'win32')
     class WindowsDatetime(datetime):
         def timestamp(self):
             if self.tzinfo is None and self.date() == datetime(1970, 1, 1).date():
@@ -43,6 +48,37 @@ def test_epoch_day_roundtrip_avoids_windows_naive_timestamp_limit(monkeypatch, m
             return super().timestamp()
     monkeypatch.setattr(long_term_sync, 'datetime', WindowsDatetime)
     assert long_term_sync.timestamp(value) == milliseconds
+
+
+@pytest.mark.parametrize('offset,expected', [(0, -875), (8, -28_800_875), (-5, 17_999_125)])
+def test_windows_pre_epoch_local_date_does_not_use_mktime(monkeypatch, offset, expected):
+    from memory import long_term_sync
+    import time
+    class WindowsDatetime(datetime):
+        def timestamp(self):
+            if self.tzinfo is None:
+                raise OSError(22, 'Windows local timestamp is outside the CRT range')
+            return super().timestamp()
+    local = timezone(timedelta(hours=offset))
+    monkeypatch.setitem(sys.modules, 'win32timezone', SimpleNamespace(TimeZoneInfo=SimpleNamespace(local=lambda: local)))
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(long_term_sync, 'datetime', WindowsDatetime)
+    def unavailable(_):
+        raise OSError(22, 'Windows mktime rejects pre-epoch dates')
+    monkeypatch.setattr(time, 'mktime', unavailable)
+    assert long_term_sync.timestamp('1969-12-31T23:59:59.125') == expected
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Native Windows timezone and CRT regression')
+def test_native_windows_exports_pre_epoch_local_naive_date():
+    from win32timezone import TimeZoneInfo
+    parsed = datetime(1969, 12, 31, 23, 59, 59, 125000)
+    expected = -875 - int(TimeZoneInfo.local().utcoffset(parsed).total_seconds() * 1000)
+    views = {'persona': {'master': {'facts': [{'id': 'old', 'text': 'historical preference',
+              'created_at': parsed.isoformat()}]}}, 'facts': [], 'archive': [], 'reflections': []}
+    exported = export_document(views, 2000)['entries'][0]
+    assert exported['metadata']['createdAt'] == expected
+    assert exported['metadata']['updatedAt'] == expected
 
 
 def test_portable_replacement_preserves_static_cards_group_memory_and_evidence():
@@ -125,6 +161,11 @@ def test_protocol_rejects_arbitrary_native_or_archive_payloads(invalid):
 @pytest.fixture
 async def owner(tmp_path, monkeypatch):
     from app.memory_server import long_term_sync as native
+    from app.memory_server import review
+    for name, value in [('_review_spawn_locks', {}), ('_derived_task_admission_claims', {}),
+                        ('_released_derived_task_claim_tokens', OrderedDict()),
+                        ('_retired_derived_task_names', set()), ('_publication_held_derived_task_names', set())]:
+        monkeypatch.setattr(review, name, value)
     config = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / 'memory', local_state_dir=tmp_path / 'local')
     characters = {'猫娘': {'Neko': {'_reserved': {'character_uid': UID}}}}
     config.load_characters = lambda: deepcopy(characters)
@@ -161,7 +202,8 @@ async def owner(tmp_path, monkeypatch):
     binding = {**runtime.state.binding(UID), 'service_url': 'https://sync.test'}
     try:
         yield SimpleNamespace(native=native, runtime=runtime, config=config, binding=binding,
-                              adapter=runtime.long_term_memory.adapter, directory=directory, raw=raw, replay=replay, session=session)
+                              adapter=runtime.long_term_memory.adapter, directory=directory, raw=raw, replay=replay, session=session,
+                              characters=characters)
     finally:
         await native.close()
         await runtime.close()
@@ -436,6 +478,86 @@ async def test_character_release_drains_capture_and_removes_pending_request(owne
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('outcome,retrying,force', [
+    ('renamed', False, True), ('rollback', False, True), ('renamed-with-reused-name', False, True),
+    ('renamed', True, True), ('rollback', True, True), ('renamed-with-reused-name', True, True),
+    ('renamed', False, False), ('deleted', False, True), ('deleted', True, True),
+    ('renamed-with-requeue', False, True),
+])
+async def test_capture_intent_survives_rename_or_rollback_reload(owner, monkeypatch, outcome, retrying, force):
+    from app.memory_server import post_turn, review
+    rt = owner.native.runtime
+    # Keep production reload coordination, using only disposable owner managers.
+    for name in ('recent_history_manager', 'settings_manager', 'time_manager', 'cursor_store', 'outbox', 'fact_dedup_resolver'):
+        monkeypatch.setattr(rt, name, None)
+    monkeypatch.setattr(rt, 'CompressedRecentHistoryManager', lambda: SimpleNamespace())
+    monkeypatch.setattr(rt, 'ImportantSettingsManager', lambda: SimpleNamespace())
+    monkeypatch.setattr(rt, 'TimeIndexedMemory', lambda *args, **kwargs: SimpleNamespace())
+    for constructor, instance in [('FactStore', rt.fact_store), ('PersonaManager', rt.persona_manager),
+                                  ('ReflectionEngine', rt.reflection_engine)]:
+        monkeypatch.setattr(rt, constructor, lambda *args, _instance=instance, **kwargs: _instance)
+    monkeypatch.setattr(rt, 'CursorStore', lambda: SimpleNamespace())
+    monkeypatch.setattr(rt, 'Outbox', lambda: SimpleNamespace())
+    monkeypatch.setattr(rt, '_register_evidence_handlers', lambda *args: None)
+    loop = asyncio.get_running_loop()
+    attempted, published = asyncio.Event(), asyncio.Event()
+    calls = []
+    original = owner.native._capture
+    def capture(name, force, *args):
+        calls.append((name, force))
+        if retrying and len(calls) == 1:
+            loop.call_soon_threadsafe(attempted.set)
+            raise OSError('temporary snapshot staging failure')
+        result = original(name, force, *args)
+        if result:
+            loop.call_soon_threadsafe(published.set)
+        return result
+    monkeypatch.setattr(owner.native, '_capture', capture)
+    current_name = 'Neko' if outcome in ('rollback', 'deleted') else 'Renamed'
+    try:
+        if not force:
+            atomic_write_json(owner.directory / 'facts.json', [{'id': 'new', 'entity': 'master', 'text': 'fresh observation'}])
+        owner.native.queue_capture('Neko', force=force)
+        if retrying:
+            await asyncio.wait_for(attempted.wait(), 2)
+        await review.cancel_character_derived_tasks('Neko', hold_until_publication=True, claim_token='capture-rename')
+        assert await post_turn.cancel_character_post_turn_tasks('Neko') == 1
+        if current_name != 'Neko':
+            owner.characters['猫娘'][current_name] = owner.characters['猫娘'].pop('Neko')
+            owner.directory.rename(owner.config.memory_dir / current_name)
+        if outcome == 'renamed-with-reused-name':
+            owner.characters['猫娘']['Neko'] = {'_reserved': {'character_uid': 'b' * 32}}
+        if outcome == 'renamed-with-requeue':
+            owner.native.queue_capture(current_name)
+        if outcome == 'deleted':
+            owner.characters['猫娘'].pop('Neko')
+        if outcome == 'rollback':
+            def fail_reload():
+                raise OSError('reload failed before rollback recovery')
+            with monkeypatch.context() as temporary:
+                temporary.setattr(rt, 'CompressedRecentHistoryManager', fail_reload)
+                assert not await rt.reload_memory_components()
+            assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch()) is None
+        assert await rt.reload_memory_components(
+            resume_derived_task_names={current_name} if current_name != 'Neko' else set(),
+            release_derived_task_claims={'Neko': {'capture-rename'}} if outcome == 'rollback' else {},
+        )
+        if outcome == 'deleted':
+            await asyncio.sleep(.3)
+            assert not published.is_set()
+            assert UID not in owner.native._capture_intents
+            assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch()) is None
+            return
+        await asyncio.wait_for(published.wait(), 2)
+        assert calls[-1] == (current_name, force)
+        assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch()) is not None
+    finally:
+        await review.release_character_derived_task_admission_claim('Neko', 'capture-rename')
+        await review.resume_character_derived_task_admission('Neko')
+        await review.resume_character_derived_task_admission('Renamed')
+
+
+@pytest.mark.asyncio
 async def test_character_release_fence_blocks_incoming_native_writes(owner, monkeypatch):
     monkeypatch.setattr(owner.native.runtime, '_is_character_publication_admitted', lambda _: False)
     await stage(owner)
@@ -525,12 +647,12 @@ async def test_failed_capture_retries_and_retains_force_request(owner, monkeypat
     attempted, completed = asyncio.Event(), asyncio.Event()
     calls = []
     loop = asyncio.get_running_loop()
-    def fail_once(name, force):
+    def fail_once(name, force, expected_uid=None):
         calls.append(force)
         if len(calls) == 1:
             loop.call_soon_threadsafe(attempted.set)
             raise OSError('synthetic temporary staging failure')
-        result = original(name, force)
+        result = original(name, force, expected_uid)
         loop.call_soon_threadsafe(completed.set)
         return result
     monkeypatch.setattr(owner.native, '_capture', fail_once)

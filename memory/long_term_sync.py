@@ -5,7 +5,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
-import time
+import sys
 
 from utils.long_term_memory_protocol import document
 from utils.recent_memory_protocol import canonical
@@ -26,9 +26,13 @@ def timestamp(value):
         try:
             seconds = parsed.timestamp()
         except OSError:
-            # Windows rejects the naive timestamp fold probe before the epoch;
-            # mktime converts the actual local date without that extra probe.
-            seconds = time.mktime(parsed.timetuple()) + parsed.microsecond / 1_000_000
+            if sys.platform != 'win32' or parsed.tzinfo is not None:
+                raise
+            from win32timezone import TimeZoneInfo
+
+            # Use the OS local timezone and datetime arithmetic, bypassing
+            # Windows CRT limits without interpreting local dates as UTC.
+            seconds = parsed.replace(tzinfo=TimeZoneInfo.local()).timestamp()
         return int(seconds * 1000)
     return 0
 

@@ -26,6 +26,7 @@ from .post_turn import _track_character_post_turn_task
 _EVENT = 'memory.long_term_replaced'
 _capture_tasks = {}
 _capture_requests = {}
+_capture_intents = {}
 
 
 @contextmanager
@@ -81,9 +82,11 @@ async def _views_locked(name):
         runtime._end_character_request(name, admission)
 
 
-def _capture(name, force):
+def _capture(name, force, expected_uid=None):
     writer = _authority()
     uid = _uid(name)
+    if expected_uid is not None and uid != expected_uid:
+        return None
     if writer is None or uid is None:
         return False
     with writer.locked():
@@ -101,7 +104,7 @@ def _capture(name, force):
             return False
         # The name-to-UID mapping and current grant are still protected at publication.
         if _uid(name) != uid or _binding(uid) != binding:
-            return False
+            return None if expected_uid is not None else False
         try:
             atomic_write_json(adapter.local_path(binding), {
                 'ownerId': binding['owner_id'], 'characterSyncId': uid, 'serviceUrl': binding['service_url'],
@@ -115,7 +118,11 @@ def _capture(name, force):
 
 def queue_capture(name, *, force=False):
     """Queue after owner locks are released; never await network from organization."""
-    _capture_requests[name] = force or _capture_requests.get(name, False)
+    uid = _uid(name)
+    if uid is None:
+        return
+    _capture_intents[uid] = force or _capture_intents.get(uid, False)
+    _capture_requests[name] = _capture_intents[uid] or _capture_requests.get(name, False)
     if name in _capture_tasks:
         return
 
@@ -126,7 +133,9 @@ def queue_capture(name, *, force=False):
             requested = _capture_requests.pop(name)
             try:
                 async with _views_locked(name):
-                    await _complete_file_commit(_capture, name, requested)
+                    captured = await _complete_file_commit(_capture, name, requested, uid)
+                if captured is not None and name not in _capture_requests:
+                    _capture_intents.pop(uid, None)
                 delay = 0.2
             except Exception:
                 _capture_requests[name] = requested or _capture_requests.get(name, False)
@@ -143,6 +152,19 @@ def queue_capture(name, *, force=False):
     task = _track_character_post_turn_task(name, runtime._spawn_background_task(run()))
     _capture_tasks[name] = task
     task.add_done_callback(finished)
+
+
+def resume_captures(characters):
+    """Requeue canceled publication by UID after rename or rollback reload."""
+    names = {uid: name for name, profile in (characters.get('猫娘') or {}).items()
+             if isinstance(profile, dict) and (uid := get_character_uid(profile))}
+    for uid, force in list(_capture_intents.items()):
+        if uid not in names:
+            _capture_intents.pop(uid, None)
+            continue
+        name = validate_lanlan_name(names[uid])
+        if name not in _capture_tasks and runtime._is_character_publication_admitted(name):
+            queue_capture(name, force=force)
 
 
 def _write_snapshot(name, payload):
@@ -314,3 +336,4 @@ async def close():
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     _capture_requests.clear()
+    _capture_intents.clear()
