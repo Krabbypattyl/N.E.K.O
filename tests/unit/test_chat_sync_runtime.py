@@ -2998,6 +2998,27 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
     asyncio.run(scenario())
 
 
+@pytest.mark.asyncio
+async def test_default_memory_adapter_imports_stay_off_the_event_loop(tmp_path, monkeypatch):
+    import builtins
+    from services.chat_sync import runtime as module
+    original = builtins.__import__
+    main_thread = threading.get_ident()
+    imported = set()
+    def checked_import(name, *args, **kwargs):
+        if name in {'memory.recent_sync', 'memory.long_term_sync'}:
+            assert threading.get_ident() != main_thread, 'memory import blocked the event loop'
+            imported.add(name)
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', checked_import)
+    manager = SimpleNamespace(app_docs_dir=tmp_path / 'isolated', local_state_dir=tmp_path / 'installation')
+    try:
+        await module.get_desktop_chat_sync_runtime(manager)
+        assert imported == {'memory.recent_sync', 'memory.long_term_sync'}
+    finally:
+        await module.close_desktop_chat_sync_runtimes()
+
+
 def test_real_loop_exit_leaves_late_default_construction_without_http_or_worker(tmp_path):
     """Exercise genuine asyncio.run teardown without pytest's nested-loop patch."""
     script = r'''
@@ -3008,7 +3029,17 @@ import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
+from tests.real_root_isolation import install
+from utils.config_manager import ConfigManager
+
+install(ConfigManager)
+from utils import logger_config
+logger_config.RobustLoggerConfig._get_documents_directory = lambda self: Path(sys.argv[1]) / 'logs'
 from services.chat_sync import runtime as module
+# Warm imports before timing constructor cancellation; import placement is
+# independently checked by the event-loop regression above.
+from memory.recent_sync import RecentMemoryAdapter
+from memory.long_term_sync import DesktopLongTermAdapter
 
 entered, release = threading.Event(), threading.Event()
 created = []
@@ -3056,8 +3087,8 @@ assert created[0].http is None and created[0]._scheduler_task is None
 assert not created[0]._background and module._runtimes == {}
 assert connections and all(connection.was_closed for connection in connections)
 '''
-    result = subprocess.run([sys.executable, "-c", script, str(tmp_path / "isolated")],
-                            capture_output=True, text=True, timeout=10)
+    result = subprocess.run([sys.executable, "-X", "utf8", "-c", script, str(tmp_path / "isolated")],
+                            capture_output=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
 
 

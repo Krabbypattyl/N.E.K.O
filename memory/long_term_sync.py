@@ -5,6 +5,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import time
 
 from utils.long_term_memory_protocol import document
 from utils.recent_memory_protocol import canonical
@@ -21,7 +22,14 @@ def timestamp(value):
     if type(value) in (int, float):
         return int(value)
     if isinstance(value, str) and value:
-        return int(datetime.fromisoformat(value).timestamp() * 1000)
+        parsed = datetime.fromisoformat(value)
+        try:
+            seconds = parsed.timestamp()
+        except OSError:
+            # Windows rejects the naive timestamp fold probe before the epoch;
+            # mktime converts the actual local date without that extra probe.
+            seconds = time.mktime(parsed.timetuple()) + parsed.microsecond / 1_000_000
+        return int(seconds * 1000)
     return 0
 
 

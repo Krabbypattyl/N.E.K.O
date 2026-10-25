@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -24,7 +25,7 @@ def test_only_successful_recent_writes_notify_and_listener_faults_do_not_fail_sa
     remove_broken = recent_file.subscribe_recent_changes(broken_listener)
     try:
         recent_file.write_recent_payload(path, [])
-        assert seen == [str(path)]
+        assert [Path(value) for value in seen] == [path]
         recent_file.read_recent_text(path)
         assert len(seen) == 1
         def fail_write(*args, **kwargs):

@@ -20,6 +20,7 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 
 from . import runtime
 from ._shared import logger, validate_lanlan_name
+from .post_turn import _track_character_post_turn_task
 
 
 _EVENT = 'memory.long_term_replaced'
@@ -120,21 +121,28 @@ def queue_capture(name, *, force=False):
 
     async def run():
         delay = 0.2
-        try:
-            while name in _capture_requests:
-                await asyncio.sleep(delay)
-                requested = _capture_requests.pop(name)
-                try:
-                    async with _views_locked(name):
-                        await _complete_file_commit(_capture, name, requested)
-                    delay = 0.2
-                except Exception:
-                    _capture_requests[name] = requested or _capture_requests.get(name, False)
-                    delay = min(delay * 2, 30)
-                    logger.warning('[LongTermSync] local snapshot staging deferred')
-        finally:
+        while name in _capture_requests:
+            await asyncio.sleep(delay)
+            requested = _capture_requests.pop(name)
+            try:
+                async with _views_locked(name):
+                    await _complete_file_commit(_capture, name, requested)
+                delay = 0.2
+            except Exception:
+                _capture_requests[name] = requested or _capture_requests.get(name, False)
+                delay = min(delay * 2, 30)
+                logger.warning('[LongTermSync] local snapshot staging deferred')
+
+    def finished(task):
+        if _capture_tasks.get(name) is task:
             _capture_tasks.pop(name, None)
-    _capture_tasks[name] = runtime._spawn_background_task(run())
+            if task.cancelled():
+                _capture_requests.pop(name, None)
+            elif name in _capture_requests:
+                queue_capture(name)
+    task = _track_character_post_turn_task(name, runtime._spawn_background_task(run()))
+    _capture_tasks[name] = task
+    task.add_done_callback(finished)
 
 
 def _write_snapshot(name, payload):

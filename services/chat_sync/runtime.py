@@ -2450,18 +2450,21 @@ async def get_desktop_chat_sync_runtime(config_manager=None) -> DesktopChatSyncR
                 return None
 
             epoch = _runtime_epoch
-            from memory.recent_sync import RecentMemoryAdapter
-            from memory.long_term_sync import DesktopLongTermAdapter
+            def construct():
+                from memory.recent_sync import RecentMemoryAdapter
+                from memory.long_term_sync import DesktopLongTermAdapter
+
+                return DesktopChatSyncRuntime(directory, session_provider,
+                    witness_path=Path(config_manager.local_state_dir) / "chat_sync_writer.json",
+                    fixed_service_url=_BUILTIN_SERVICE_URL,
+                    history_changed=history_changed, current_character_uid_provider=current_character_uid,
+                    recent_memory_adapter=RecentMemoryAdapter(config_manager),
+                    long_term_memory_adapter=DesktopLongTermAdapter(config_manager),
+                    recent_character_name=recent_character_name)
             # Constructor SQLite handles close synchronously and default HTTP is
             # lazy. A cancelled thread result owns no pool, task or open database
             # handle, so shutdown need not wait for optional local construction.
-            runtime = await asyncio.to_thread(DesktopChatSyncRuntime, directory, session_provider,
-                                              witness_path=Path(config_manager.local_state_dir) / "chat_sync_writer.json",
-                                              fixed_service_url=_BUILTIN_SERVICE_URL,
-                                              history_changed=history_changed, current_character_uid_provider=current_character_uid,
-                                              recent_memory_adapter=RecentMemoryAdapter(config_manager),
-                                              long_term_memory_adapter=DesktopLongTermAdapter(config_manager),
-                                              recent_character_name=recent_character_name)
+            runtime = await asyncio.to_thread(construct)
             if epoch != _runtime_epoch:
                 await runtime.close()
                 raise ValueError("chat_sync_closing")

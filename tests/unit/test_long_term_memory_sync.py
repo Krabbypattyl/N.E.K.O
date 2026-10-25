@@ -32,6 +32,19 @@ def learned(completed=2000, text='learned preference'):
     ]}
 
 
+@pytest.mark.parametrize('milliseconds', [1000, 1234])
+def test_epoch_day_roundtrip_avoids_windows_naive_timestamp_limit(monkeypatch, milliseconds):
+    from memory import long_term_sync
+    value = long_term_sync.iso(milliseconds)
+    class WindowsDatetime(datetime):
+        def timestamp(self):
+            if self.tzinfo is None and self.date() == datetime(1970, 1, 1).date():
+                raise OSError(22, 'Windows fold probe precedes the epoch')
+            return super().timestamp()
+    monkeypatch.setattr(long_term_sync, 'datetime', WindowsDatetime)
+    assert long_term_sync.timestamp(value) == milliseconds
+
+
 def test_portable_replacement_preserves_static_cards_group_memory_and_evidence():
     existing = {'persona': {'master': {'facts': [
         {'id': 'old', 'text': 'old learned state'}, {'id': 'card', 'text': 'static', 'source': 'character_card'}]},
@@ -407,6 +420,19 @@ async def test_pending_capture_finishes_before_incoming_replacement(owner):
         owner.native._capture_tasks.pop('Neko', None)
         marker.cancel()
         await asyncio.gather(marker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('before_first_step', [True, False])
+async def test_character_release_drains_capture_and_removes_pending_request(owner, before_first_step):
+    from app.memory_server.post_turn import cancel_character_post_turn_tasks
+    owner.native.queue_capture('Neko', force=True)
+    if not before_first_step:
+        await asyncio.sleep(0)
+    assert await cancel_character_post_turn_tasks('Neko') == 1
+    assert 'Neko' not in owner.native._capture_tasks
+    assert 'Neko' not in owner.native._capture_requests
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch()) is None
 
 
 @pytest.mark.asyncio
