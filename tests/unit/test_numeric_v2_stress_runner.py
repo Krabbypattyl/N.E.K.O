@@ -59,6 +59,36 @@ def _preflight_registry():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["load", "opening"])
+@pytest.mark.parametrize("required", [False, True])
+async def test_stress_preflight_isolates_failed_packages(tmp_path, monkeypatch, failure, required):
+    engines = {key: _preflight_engine(story_id=key) for key in ("story_bad", "story_good")}
+    attempted = []
+    def load(story_id):
+        attempted.append(story_id)
+        if story_id == "story_bad" and failure == "load":
+            raise ValueError("PRIVATE_FAILURE_SENTINEL")
+        return engines[story_id]
+    build = run_numeric_v2_stress.numeric_v2_actor._opening_messages
+    def opening(engine, *args, **kwargs):
+        if engine.story["meta"]["story_id"] == "story_bad":
+            raise ValueError("PRIVATE_FAILURE_SENTINEL")
+        return build(engine, *args, **kwargs)
+    monkeypatch.setattr(run_numeric_v2_stress.numeric_v2_actor, "_opening_messages", opening)
+    args = run_numeric_v2_stress._build_parser().parse_args(["--all"] + (["--require-persona"] if required else []))
+    result = await run_numeric_v2_stress._stress_preflight(
+        config_manager=_preflight_config(tmp_path, card={"性格": "谨慎温和"}), args=args,
+        packages=[{**_PREFLIGHT_PACKAGE, "story_id": key} for key in engines],
+        registry=SimpleNamespace(load_engine=load))
+    assert attempted == ["story_bad", "story_good"]
+    assert result["status"] == ("blocked" if required else "ready")
+    assert result["error_code"] == ("numeric_v2_stress_opening_persona_unavailable" if required else None)
+    assert result["packages"][0]["opening_persona"] == {"effective_status": "unavailable", "error_type": "ValueError"}
+    assert result["packages"][1]["opening_persona"]["effective_status"] == "available"
+    assert "PRIVATE_FAILURE_SENTINEL" not in json.dumps(result)
+
+
 @pytest.mark.parametrize("card,contract", [
     ({"行为特征": "先检查再决定"}, {"persona_scope": "style_only"}),
     ({"自称": "人家"}, {"self_reference_mode": "system_neutral"}),

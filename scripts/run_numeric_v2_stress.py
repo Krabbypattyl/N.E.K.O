@@ -1658,18 +1658,25 @@ async def _stress_preflight(
     required = bool(args.require_persona)
     package_reports = []
     for package in packages:
-        engine = registry.load_engine(str(package["story_id"]))
-        known = bool(engine.story["initial_state"]["player_address_known"])
-        address = numeric_v2_actor._project_player_address(
-            numeric_v2_actor._load_player_address(config_manager), known=known,
-        )
-        # Reuse Actor's actual opening builder, including the start-node contract,
-        # name/address projection and input budget. Do not duplicate persona rules.
-        messages = numeric_v2_actor._opening_messages(
-            engine, raw_profile, actor._current_catgirl_name(), address, known,
-            max_tokens=NUMERIC_V2_ACTOR_BUDGET_PROFILES[args.profile]["input_max_tokens"],
-        )
-        opening = json.loads(messages[1].content)["acting_context"]["core_persona"]
+        try:
+            engine = registry.load_engine(str(package["story_id"]))
+            known = bool(engine.story["initial_state"]["player_address_known"])
+            address = numeric_v2_actor._project_player_address(
+                numeric_v2_actor._load_player_address(config_manager), known=known,
+            )
+            # Reuse Actor's actual opening builder, including the start-node contract,
+            # name/address projection and input budget. Do not duplicate persona rules.
+            messages = numeric_v2_actor._opening_messages(
+                engine, raw_profile, actor._current_catgirl_name(), address, known,
+                max_tokens=NUMERIC_V2_ACTOR_BUDGET_PROFILES[args.profile]["input_max_tokens"],
+            )
+            opening = json.loads(messages[1].content)["acting_context"]["core_persona"]
+        except Exception as exc:
+            package_reports.append({
+                "story_id": package.get("story_id"),
+                "opening_persona": {"effective_status": "unavailable", "error_type": type(exc).__name__},
+            })
+            continue
         meta = engine.story["meta"]
         package_reports.append({
             **{key: meta.get(key) for key in ("story_id", "title", "revision", "contract_version")},
@@ -1684,7 +1691,10 @@ async def _stress_preflight(
         package["opening_persona"]["effective_status"] == "empty"
         for package in package_reports
     )
-    blocked = required and empty_opening
+    unavailable_opening = any(
+        package["opening_persona"]["effective_status"] == "unavailable" for package in package_reports
+    )
+    blocked = required and (empty_opening or unavailable_opening)
     slots: dict[str, Any] = {}
     getter = (
         getattr(config_manager, "aget_model_api_config", None)
@@ -1712,7 +1722,8 @@ async def _stress_preflight(
     return {
         "status": "blocked" if blocked else "ready",
         "error_code": (
-            ("numeric_v2_stress_effective_persona_empty" if not effective.strip()
+            ("numeric_v2_stress_opening_persona_unavailable" if unavailable_opening
+             else "numeric_v2_stress_effective_persona_empty" if not effective.strip()
              else "numeric_v2_stress_opening_persona_empty")
             if blocked else None
         ),

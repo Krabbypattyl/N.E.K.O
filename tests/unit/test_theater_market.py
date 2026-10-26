@@ -75,6 +75,17 @@ def test_import_rejects_hash_revision_and_identity_changes_before_writing(setup,
     assert not target.exists()
 
 
+@pytest.mark.parametrize("raw", [b"{", b"\xff", b"[" * 1100 + b"]" * 1100], ids=["syntax", "encoding", "nesting"])
+def test_invalid_market_json_returns_stable_error_without_writing(setup, raw):
+    client, root, value, _, descriptor = setup
+    descriptor.update(file_sha256=hashlib.sha256(raw).hexdigest(), byte_size=len(raw))
+    response = import_package(client, raw, descriptor)
+    assert response.status_code == 422
+    assert response.json()["reason"] == "numeric_story_package_invalid_json"
+    assert value["phase"] == "browsing"
+    assert not (root / 'theater/numeric_v2/packages/market_new_story.json').exists()
+
+
 def test_local_new_start_replaces_skipped_ended_run_but_preserves_active_run(setup):
     client, _, value, raw, descriptor = setup
     scope = {'story_id': 'market_new_story', 'character_id': value['character_id']}

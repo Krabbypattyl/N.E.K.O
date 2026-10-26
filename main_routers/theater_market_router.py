@@ -142,7 +142,11 @@ async def import_market_story(request_id: str, request: Request, share_id: int, 
                 return {"ok": True, **_public(value)}
             config = theater.get_config_manager()
             registry = await theater._registry(config)
-            compiled = await asyncio.to_thread(registry.compile_for_import, json.loads(raw))
+            try:
+                package = json.loads(raw)
+            except (ValueError, RecursionError):
+                return theater._error("numeric_story_package_invalid_json", 422)
+            compiled = await asyncio.to_thread(registry.compile_for_import, package)
             async with character_config_mutation_lock, numeric_v2_story_session_guard(theater._numeric_root(config), compiled.story_id):
                 _launch(request_id)
                 theater._assert_story_recovered(registry, compiled.story_id)
