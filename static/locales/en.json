@@ -3627,7 +3627,8 @@
     "storyActionsAria": "Story actions",
     "marketEnter": "Enter",
     "marketPreparing": "Connecting to the script market…",
-    "marketConnectError": "Cannot connect to the script market. Keep NEKO open and try again."
+    "marketConnectError": "Cannot connect to the script market. Keep NEKO open and try again.",
+    "marketLocalOnly": "Open the script market on the computer running NEKO. LAN and remote addresses are not supported for importing scripts."
   },
     "voiceIdentity": {
         "errorStopMainMicrophone": "The main-session microphone is still in use. Turn it off in the main session, then retry this operation.",

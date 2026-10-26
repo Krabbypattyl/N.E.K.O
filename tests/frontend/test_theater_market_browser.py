@@ -1,7 +1,31 @@
 """Market entry, host handoff and window completion stay outside the engine."""
 
 import pytest
+import json
+from pathlib import Path
 from playwright.sync_api import expect
+
+
+@pytest.mark.frontend
+def test_lan_market_entry_explains_local_only_import_without_pairing(page):
+    repo = Path(__file__).resolve().parents[2]
+    message = json.loads((repo / 'static/locales/zh-CN.json').read_text(encoding='utf-8'))['theater']['marketLocalOnly']
+    def serve(route):
+        if route.request.url.endswith('/theater_market.js'):
+            return route.fulfill(path=repo / 'static/js/theater_market.js', content_type='application/javascript')
+        route.fulfill(content_type='text/html', body=f'''
+            <meta charset="utf-8">
+            <div id="theater-selector-status"></div>
+            <script>window.__requests = 0;
+            window.nekoTheaterTransport = {{requestJson: () => {{window.__requests++; throw Error('unexpected pairing');}}}};
+            window.t = () => {json.dumps(message, ensure_ascii=False)};</script>
+            <script src="/theater_market.js"></script>
+        ''')
+    page.route('http://192.168.1.100:48911/**', serve)
+    page.goto('http://192.168.1.100:48911/theater?market=browse')
+    page.evaluate('window.nekoTheaterMarket.redirectSelector()')
+    expect(page.locator('#theater-selector-status')).to_have_text(message)
+    assert page.evaluate('window.__requests') == 0
 
 
 @pytest.mark.frontend

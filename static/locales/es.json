@@ -3627,7 +3627,8 @@
     "storyActionsAria": "Acciones de la historia",
     "marketEnter": "Entrar",
     "marketPreparing": "Conectando al mercado de guiones…",
-    "marketConnectError": "No se pudo conectar. Mantén NEKO abierto e inténtalo de nuevo."
+    "marketConnectError": "No se pudo conectar. Mantén NEKO abierto e inténtalo de nuevo.",
+    "marketLocalOnly": "Abre el mercado de guiones en el equipo donde se ejecuta NEKO. No se admite importar guiones desde direcciones LAN o remotas."
   },
     "voiceIdentity": {
         "errorStopMainMicrophone": "El micrófono de la sesión principal sigue en uso. Desactívalo en la sesión principal y vuelve a intentar esta operación.",

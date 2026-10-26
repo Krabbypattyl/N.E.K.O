@@ -3627,7 +3627,8 @@
     "storyActionsAria": "シナリオ操作",
     "marketEnter": "入る",
     "marketPreparing": "脚本マーケットに接続中…",
-    "marketConnectError": "接続できません。NEKO を開いたまま再試行してください。"
+    "marketConnectError": "接続できません。NEKO を開いたまま再試行してください。",
+    "marketLocalOnly": "NEKO が動作しているパソコンで脚本マーケットを開いてください。LAN・リモートアドレスからの脚本インポートには対応していません。"
   },
     "voiceIdentity": {
         "errorStopMainMicrophone": "メインセッションのマイクが使用中です。メインセッションでマイクをオフにしてから、この操作を再試行してください。",

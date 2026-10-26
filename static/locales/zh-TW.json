@@ -3627,7 +3627,8 @@
     "storyActionsAria": "劇本操作",
     "marketEnter": "進入",
     "marketPreparing": "正在連接劇本市場…",
-    "marketConnectError": "無法連接劇本市場，請保持 NEKO 開啟並重試。"
+    "marketConnectError": "無法連接劇本市場，請保持 NEKO 開啟並重試。",
+    "marketLocalOnly": "請在執行 NEKO 的電腦上開啟劇本市場；暫不支援透過區域網路或遠端位址匯入劇本。"
   },
     "voiceIdentity": {
         "errorStopMainMicrophone": "主工作階段的麥克風仍在使用，請先關閉主工作階段的麥克風，再重試此操作。",

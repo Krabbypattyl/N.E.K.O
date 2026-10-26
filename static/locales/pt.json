@@ -3627,7 +3627,8 @@
     "storyActionsAria": "Ações da história",
     "marketEnter": "Entrar",
     "marketPreparing": "Conectando ao mercado de roteiros…",
-    "marketConnectError": "Não foi possível conectar. Mantenha o NEKO aberto e tente novamente."
+    "marketConnectError": "Não foi possível conectar. Mantenha o NEKO aberto e tente novamente.",
+    "marketLocalOnly": "Abra o mercado de roteiros no computador que executa o NEKO. A importação por endereços de rede local ou remotos não é compatível."
   },
     "voiceIdentity": {
         "errorStopMainMicrophone": "O microfone da sessão principal ainda está em uso. Desative-o na sessão principal e tente esta operação novamente.",

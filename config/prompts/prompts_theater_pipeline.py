@@ -21,6 +21,7 @@ _FRAME_PROMPT = """你是互动剧本策划。本轮只确定故事框架，不�
 本合同只有一条主线和一个结局；作者允许多种选择时，后幕和结局只固定各合法选择共同保证的结果，不提前选定其中一项处置方式。具体做法可不同，不能在目标中允许多种结果，却在固定出口、道具状态或结局锁成一种。
 主线最后一幕仍有需要互动的事件，结局只收束结果，不能复制最后一幕凑幕数。
 关系弧的 opening_relationship 与 relationship 完全一致。道具 states 是规划，不证明玩家已取得、交付或操作完成。
+如有 native_validation_issues，只修 current_candidate 中对应框架字段，保留章节与结局。catgirl_binding.role_overlay 由首幕关系边界与 story_protagonist.motivation 拼接；超限时缩短动机，不重写已完成的幕。
 只按 output_contract 返回 JSON object。不要返回角色状态线、每幕目标、开场或桥段；后续逐幕生成。"""
 
 

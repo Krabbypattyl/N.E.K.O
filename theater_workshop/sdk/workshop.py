@@ -269,12 +269,15 @@ class TheaterWorkshop:
             if checkpoint is not None and checkpoint.get("flow") == "staged.v1":
                 issues = list(error.details.get("issues") or [])
                 repairs = set()
+                frame_failed = False
                 for issue in issues:
                     path = str(issue.get("path") or "")
                     index = path[6:].split("]", 1)[0] if path.startswith("nodes[") else ""
                     if index.isdigit() and int(index) <= len(checkpoint["candidate"]["mainline_chapters"]):
                         repairs.add(int(index))
-                checkpoint.update(stage="repair" if repairs else "complete", repairs=sorted(repairs),
+                    else:
+                        frame_failed = True
+                checkpoint.update(stage="frame" if frame_failed or not repairs else "repair", repairs=sorted(repairs),
                     native_issues=issues, issues=issues, phase_candidate=None)
             self._store.fail_generation(project_id, base_revision=base_revision,
                 error={"code": error.code, "details": error.details},

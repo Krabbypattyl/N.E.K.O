@@ -1149,7 +1149,8 @@ def _can_combine_ordinary_turn(runtime: NumericV2Runtime, current: NumericV2Stor
             or not options.get("evaluator") or options.get("review") or options.get("review_contract")
             or turn.input_source not in {"freeform", "suggestion"}
             or current.session.status != "active" or current.session.transition_offered
-            or runtime.engine.completion_contract_satisfied(current.session) is True
+            # Legacy scenes have no completion gate; retain Evaluator's public-route initiation judgment.
+            or runtime.engine.completion_contract_satisfied(current.session) is not False
             or pending_transition_record(current.session, ledger_events=current.ledger_events,
                                          include_withdrawn=True) is not None):
         return False

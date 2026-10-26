@@ -3627,7 +3627,8 @@
     "storyActionsAria": "剧本操作",
     "marketEnter": "进入",
     "marketPreparing": "正在连接剧本市场…",
-    "marketConnectError": "无法连接剧本市场，请保持 NEKO 开启并重试。"
+    "marketConnectError": "无法连接剧本市场，请保持 NEKO 开启并重试。",
+    "marketLocalOnly": "请在运行 NEKO 的电脑上打开剧本市场；暂不支持通过局域网或远程地址导入剧本。"
   },
     "voiceIdentity": {
         "errorStopMainMicrophone": "主会话麦克风仍在使用，请先关闭主会话麦克风，再重试此操作。",

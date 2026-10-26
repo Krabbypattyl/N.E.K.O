@@ -20,6 +20,7 @@ def setup(tmp_path, monkeypatch):
     market._launches.clear()
     clear_all_theater_activity()
     client = _client(tmp_path, monkeypatch)
+    client.base_url = "http://127.0.0.1:48911"
     client.app.include_router(market.router)
     binding = market.theater._current_catgirl_binding(market.theater.get_config_manager())
     value = {"request_id": "test_request", "character_id": binding["character_id"],
@@ -142,6 +143,7 @@ def test_market_bootstrap_uses_real_pair_server_and_hash_router(setup, monkeypat
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
             assert url == "http://127.0.0.1:19011/market/pair-code"
+            assert kwargs["headers"]["Origin"] == "http://127.0.0.1:19011"
             return httpx.Response(200, json={"one_time_code": "single-use-code"}, request=httpx.Request("POST", url))
     monkeypatch.setattr(httpx, "AsyncClient", PairClient)
     result = client.post("/api/theater-market/launch", json={"random": True})
@@ -153,3 +155,14 @@ def test_market_bootstrap_uses_real_pair_server_and_hash_router(setup, monkeypat
     assert route == "/shares/9"
     assert parse_qs(query)["neko_code"] == ["single-use-code"]
     assert market._launches[result.json()["request_id"]]["selection"] == descriptor
+
+
+def test_lan_market_entry_is_rejected_before_pairing(setup, monkeypatch):
+    client, _, _, _, _ = setup
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("LAN requests must not issue a pairing code")
+    monkeypatch.setattr(market, "market_story", forbidden)
+    client.base_url = "http://192.168.1.100:48911"
+    response = client.post("/api/theater-market/launch", json={"random": True})
+    assert response.status_code == 400
+    assert response.json()["reason"] == "theater_market_local_required"

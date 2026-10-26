@@ -83,6 +83,50 @@ def test_combined_output_requires_explicit_state_and_keeps_normal_parser_strict(
 
 
 @pytest.mark.asyncio
+async def test_scene_without_completion_contract_keeps_player_initiation_judgment(tmp_path, monkeypatch):
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+    from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+    case = initiation_case(message='现在带我去阅览室。')
+    engine = case['engine']
+    # Both exits lead to ordinary scenes, so only the missing completion gate distinguishes this case.
+    engine.nodes['ending_stay'].update(type='scene', terminal=False)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='legacy-go', catgirl_binding=_binding(),
+        opening_performance=case['session'].opening_performance)
+    turn = TurnRequestV2('go', 0, case['message'])
+    monkeypatch.setattr(options, 'MODEL_REVIEWS_ENABLED', False)
+    modules = options.default_options()
+    modules.update(review=False, review_contract=False)
+    calls = []
+    async def load_options():
+        return modules
+    async def evaluate(*args, **kwargs):
+        calls.append('evaluator')
+        return workflow.NumericV2EvaluationResult((), False, transition_intent='initiate')
+    async def generate(self, **kwargs):
+        calls.append('actor')
+        assert kwargs.get('combined_evaluation') is not True
+        candidate = _candidate()
+        candidate.update(source_performance='好，我带路。', bridge_scene_narration='两人沿左侧走廊来到阅览室。',
+                         target_scene_narration='门边挂着一张借阅须知。', target_performance='先看看目录吧。')
+        return engine.finalize_transition_performance(kwargs['outcome'], candidate, target_opening='阅览室入口。')
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', load_options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+
+    assert runtime.prepare_turn(current, turn, (), transition_intent='initiate').session.current_node_id == 'ending_leave'
+    assert workflow._can_combine_ordinary_turn(runtime, current, turn, modules) is False
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=turn, ensure_current_binding=lambda _: _binding())
+    assert calls == ['evaluator', 'actor']
+    assert result.stored.session.current_node_id == 'ending_leave'
+    assert result.stored.ledger_events[-1]['transition_intent'] == 'initiate'
+    assert await runtime.restore_session('legacy-go') == result.stored
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['opening', 'turn'])
 async def test_default_actor_keeps_empty_suggestions_without_an_extra_call(tmp_path, monkeypatch, phase):
     engine = NumericV2Engine.from_mapping(story_for('医疗站'))

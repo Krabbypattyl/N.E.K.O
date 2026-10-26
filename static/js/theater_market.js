@@ -22,6 +22,13 @@
         if (!query.has('market')) return;
         var status = document.getElementById('theater-selector-status');
         try {
+            if (['127.0.0.1', 'localhost', '[::1]'].indexOf(window.location.hostname) < 0) {
+                if (status) {
+                    status.setAttribute('data-i18n', 'theater.marketLocalOnly');
+                    status.textContent = label('marketLocalOnly');
+                }
+                return;
+            }
             if (status) {
                 status.setAttribute('data-i18n', 'theater.marketPreparing');
                 status.textContent = label('marketPreparing');

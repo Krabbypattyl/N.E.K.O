@@ -111,6 +111,45 @@ def test_native_generation_failure_preserves_story_and_repairs_only_rejected_sce
     assert recovered["generation_checkpoint"] is None
 
 
+@pytest.mark.parametrize("legacy_checkpoint", [False, True])
+def test_native_frame_failure_resumes_frame_without_rewriting_completed_scenes(opened, monkeypatch, legacy_checkpoint):
+    from theater_workshop.sdk import PackageError
+
+    host, _ = opened
+    sdk = host.sdk
+    project = setup_project(sdk)
+    outline = named_outline()
+    outline["story_protagonist"]["motivation"] = "她希望先核对旧信的来源。" * 55
+    calls = []
+
+    def model(messages, **options):
+        context = json.loads(messages[1]["content"])
+        calls.append(options["operation"])
+        if len(calls) == 1 and context.get("native_validation_issues"):
+            assert context["native_validation_issues"][0]["path"] == "catgirl_binding.role_overlay"
+            assert context["current_candidate"]["story_protagonist"]["motivation"] == "她希望先核对旧信的来源。" * 55
+        return ModelReply(staged_reply(messages, options["operation"], outline), "fixture-model", {})
+
+    monkeypatch.setattr(sdk._generator, "_model_call", model)
+    with pytest.raises(PackageError, match="numeric_v2_compile_failed"):
+        sdk.generate(project["project_id"], base_revision=project["revision"])
+    checkpoint = sdk._store.generation_checkpoint(project["project_id"])
+    if legacy_checkpoint:
+        checkpoint["stage"] = "complete"
+        sdk._store.record_generation_checkpoint(project["project_id"], base_revision=project["revision"], checkpoint=checkpoint)
+    completed = deepcopy(checkpoint["candidate"])
+    expected = sdk._generator._generation_result(title=project["title"], normalized_idea=project["setup"]["brief"],
+        normalized_setup=project["setup"], candidate=completed, cast_names=checkpoint["cast_names"])
+    calls.clear()
+    outline["story_protagonist"]["motivation"] = "核对旧信的来源。"
+    recovered = sdk.generate(project["project_id"], base_revision=project["revision"])["project"]
+
+    assert calls == ["numeric_v2_story_frame"]
+    assert recovered["story"]["nodes"] == expected["story"]["nodes"]
+    InProcessPackageGateway().compile(recovered["story"])
+    assert recovered["generation_checkpoint"] is None
+
+
 def test_generation_error_survives_a_concurrent_revision_change(opened, monkeypatch):
     host, _config = opened
     project = setup_project(host.sdk)

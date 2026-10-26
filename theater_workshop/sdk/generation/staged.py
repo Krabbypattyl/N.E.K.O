@@ -63,6 +63,19 @@ def _belongs(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith((prefix + ".", prefix + "["))
 
 
+def _frame_projection(candidate):
+    frame = {
+        **{key: deepcopy(candidate[key]) for key in _FRAME_CONTRACT if key not in ("mainline_chapters", "ending")},
+        "mainline_chapters": [
+            {key: chapter[key] for key in ("title", "narrative")}
+            for chapter in candidate["mainline_chapters"]
+        ],
+        "ending": {key: candidate["ending"][key] for key in ("type", "title", "summary")},
+    }
+    frame["relationship_arc"].pop("stages", None)
+    return frame
+
+
 def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None, save_checkpoint=None):
     """Keep completed scenes in the checkpoint; retries only replace the current phase."""
     brief = str(setup.get("brief") or "").strip()
@@ -79,6 +92,9 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
     }
     if state.get("flow") != FLOW:
         raise NumericV2GenerationError("generation_checkpoint_invalid")
+    if state["stage"] == "complete" and state.get("native_issues") and state.get("issues"):
+        # Resume checkpoints saved before global native failures had an executable repair phase.
+        state["stage"] = "frame"
     names = state.get("cast_names")
     if names is not None and (
         not isinstance(names, Mapping)
@@ -193,6 +209,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
 
     candidate = state["candidate"]
     if state["stage"] == "frame":
+        if state["completed_chapters"] and state.get("phase_candidate") is None:
+            state["phase_candidate"] = _frame_projection(candidate)
         def validate_frame(frame):
             prefixes = ["world", "story_protagonist", "player_role", "relationship", "tone",
                         "key_props", "relationship_arc.opening_relationship",
@@ -207,23 +225,24 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
                     for index in range(len(chapters))))]
         frame = phase(_FRAME_PROMPT, _FRAME_CONTRACT,
             {"core_idea": brief, "author_setup": dict(setup),
+             "native_validation_issues": state.get("native_issues", []),
              "length": {"preset": preset, "minimum": minimum, "maximum": maximum}},
             validate_frame, "numeric_v2_story_frame", 5000)
-        candidate = deepcopy(frame)
-        candidate["relationship_arc"]["stages"] = []
-        candidate["character_state_arc"] = {"stages": [], "ending_stage": {}}
-        state.update(candidate=candidate, stage="chapter", phase_candidate=None, issues=[])
+        if state["completed_chapters"]:
+            # Native errors outside nodes repair the frame, without replacing completed scenes or ending.
+            for key in _FRAME_CONTRACT.keys() - {"mainline_chapters", "ending", "relationship_arc"}:
+                candidate[key] = deepcopy(frame[key])
+            candidate["relationship_arc"].update({key: deepcopy(value)
+                for key, value in frame["relationship_arc"].items() if key != "stages"})
+            state.update(stage="repair" if state.get("repairs") else "complete", phase_candidate=None, issues=[])
+        else:
+            candidate = deepcopy(frame)
+            candidate["relationship_arc"]["stages"] = []
+            candidate["character_state_arc"] = {"stages": [], "ending_stage": {}}
+            state.update(candidate=candidate, stage="chapter", phase_candidate=None, issues=[])
         persist()
 
-    frame = {
-        **{key: deepcopy(candidate[key]) for key in _FRAME_CONTRACT if key not in ("mainline_chapters", "ending")},
-        "mainline_chapters": [
-            {key: chapter[key] for key in ("title", "narrative")}
-            for chapter in candidate["mainline_chapters"]
-        ],
-        "ending": {key: candidate["ending"][key] for key in ("type", "title", "summary")},
-    }
-    frame["relationship_arc"].pop("stages", None)
+    frame = _frame_projection(candidate)
     count = len(candidate["mainline_chapters"])
 
     def previous(index):
