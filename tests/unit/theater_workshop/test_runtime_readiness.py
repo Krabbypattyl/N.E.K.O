@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from services.theater.numeric_v2_options import default_options
+from services.theater.numeric_v2_options import aload_theater_module_options, default_options
 from theater_workshop.sdk import NumericV2RevisionConflictError, WorkshopError
 
 from .numeric_v2_fixture import numeric_v2_story
@@ -36,7 +36,7 @@ def _publishable(sdk, pieces=(), *, completion=None):
 def _assess(sdk, project, **overrides):
     return sdk.assess_runtime_readiness(
         project["project_id"], base_revision=project["revision"],
-        runtime_options={**default_options(), **overrides})
+        runtime_options={**default_options(), "review": False, **overrides})
 
 
 @pytest.mark.parametrize("required,completion", [(True, None), (False, "letter")])
@@ -56,7 +56,7 @@ def test_required_condition_is_blocked_without_review_but_still_exportable(opene
     assert issue["node_id"] == "start"
     assert issue["narration_id"] == "letter"
     assert issue["dependency_paths"]
-    assert report["runtime_options"] == default_options()
+    assert report["runtime_options"] == {**default_options(), "review": False}
     assert _assess(sdk, project, review=True)["status"] == "rehearsal_required"
     assert sdk.export(project["project_id"], base_revision=project["revision"]) == candidate
     assert (sdk.root / f"{project['project_id']}.json").read_bytes() == snapshot
@@ -138,7 +138,7 @@ def test_edit_during_diagnostics_rejects_old_report(opened, monkeypatch):
 def test_target_options_are_snapshotted_before_candidate_loading(opened, monkeypatch):
     sdk = opened[0].sdk
     project = _publishable(sdk, [_piece("letter", required=True)])
-    options = default_options()
+    options = {**default_options(), "review": False}
     expected = _assess(sdk, project)
     publish = sdk._publish_candidate
 
@@ -166,17 +166,21 @@ def test_standalone_sdk_requires_explicit_boolean_profile(opened, options):
 
 @pytest.mark.asyncio
 async def test_host_uses_canonical_defaults_and_explicit_overrides(opened, monkeypatch):
+    monkeypatch.setattr("services.theater.numeric_v2_options.MODEL_REVIEWS_ENABLED", False)
     host = opened[0]
     project = _publishable(host.sdk, [_piece("letter", required=True)])
     arguments = {"base_revision": project["revision"]}
     report = await host.call("assess_runtime_readiness", project["project_id"], **arguments)
-    assert report["runtime_options"] == default_options()
+    assert report["runtime_options"] == await aload_theater_module_options()
     assert report["status"] == "blocked"
     enabled = await host.call("assess_runtime_readiness", project["project_id"],
                               runtime_options={"review": True}, **arguments)
     assert enabled["status"] == "rehearsal_required"
-    monkeypatch.setattr("services.theater.numeric_v2_options.default_options",
-                        lambda: {**report["runtime_options"], "review": True})
+    async def audits_enabled():
+        return {**report["runtime_options"], "review": True}
+
+    monkeypatch.setattr("services.theater.numeric_v2_options.aload_theater_module_options",
+                        audits_enabled)
     assert (await host.call("assess_runtime_readiness", project["project_id"],
                             **arguments))["status"] == "rehearsal_required"
 
@@ -191,11 +195,11 @@ async def test_host_rejects_invalid_target_options(opened, options):
                         base_revision=project["revision"], runtime_options=options)
 
 
-def test_current_builtin_packages_have_no_required_unavailable_narration(opened):
+def test_story_fixtures_have_no_required_unavailable_narration(opened):
     import json
 
     sdk = opened[0].sdk
-    root = Path(__file__).resolve().parents[3] / "services/theater/default_numeric_v2_packages"
+    root = Path(__file__).resolve().parents[2] / "fixtures/theater_stories"
     paths = sorted(root.glob("*.json"))
     assert len(paths) == 3
     for path in paths:

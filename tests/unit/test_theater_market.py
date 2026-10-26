@@ -132,10 +132,10 @@ def test_expired_request_and_local_mutation_checks(setup, monkeypatch):
 
 def test_market_bootstrap_uses_real_pair_server_and_hash_router(setup, monkeypatch):
     client, _, _, _, descriptor = setup
-    from app.main_server._shared import runtime
-    from plugin import settings
-    monkeypatch.setattr(runtime, "resolve_user_plugin_base", lambda: "http://127.0.0.1:19011")
-    monkeypatch.setattr(settings, "MARKET_WEB_URL", "http://127.0.0.1:15173")
+    from config import network
+    from utils import market_config
+    monkeypatch.setattr(network, "resolve_user_plugin_base", lambda: "http://127.0.0.1:19011")
+    monkeypatch.setattr(market_config, "get_market_web_url", lambda: "http://127.0.0.1:15173")
     class PairClient:
         def __init__(self, **kwargs): pass
         async def __aenter__(self): return self

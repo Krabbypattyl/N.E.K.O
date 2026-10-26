@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 import pytest
 
 from main_routers import numeric_theater_router
-from services.theater import numeric_v2_registry
 from services.theater.numeric_v2_actor import NumericV2ActorError
 from services.theater.numeric_v2_archive import (
     NumericV2ArchiveError,
@@ -357,11 +356,7 @@ def _client(
     *,
     opening_text="你回来了。",
     player_address_known=True,
-    bundled_packages=False,
 ) -> TestClient:
-    if not bundled_packages:
-        # These HTTP fixtures exercise only their own package; real seeds have a separate integration test.
-        monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", tmp_path / "empty-bundled")
     packages = tmp_path / "theater" / "numeric_v2" / "packages"
     packages.mkdir(parents=True)
     (packages / "numeric_v2_contract.json").write_text(
@@ -416,17 +411,14 @@ def _client(
     return _NumericV2TestClient(app)
 
 
-def test_story_list_installs_real_builtins_beside_user_package(tmp_path, monkeypatch):
-    sources = list(numeric_v2_registry._DEFAULT_PACKAGE_ROOT.glob("*.json"))
-    builtin_ids = {json.loads(path.read_text(encoding="utf-8"))["meta"]["story_id"] for path in sources}
-    assert len(builtin_ids) == 3
-    with _client(tmp_path, monkeypatch, bundled_packages=True) as client:
+def test_story_list_preserves_only_explicitly_imported_package(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
         user_package = tmp_path / "theater/numeric_v2/packages/numeric_v2_contract.json"
         user_bytes = user_package.read_bytes()
         for _ in range(2):
             response = client.get("/api/theater-numeric/stories")
             assert response.status_code == 200
-            assert {story["story_id"] for story in response.json()["stories"]} == builtin_ids | {"numeric_v2_contract"}
+            assert {story["story_id"] for story in response.json()["stories"]} == {"numeric_v2_contract"}
             assert user_package.read_bytes() == user_bytes
 
 

@@ -73,14 +73,14 @@ async def create_launch(request: Request):
                 raise ValueError("theater_market_file_changed")
         elif payload.get("random") is True:
             selection = await market_story()
-        from plugin.settings import MARKET_WEB_URL
+        from utils.market_config import get_market_web_url
 
         # Pairing is issued by the running Plugin Server, never its re-imported module.
-        from app.main_server._shared import runtime
+        from config.network import resolve_user_plugin_base
         import httpx
         async with httpx.AsyncClient(timeout=8.0, proxy=None, trust_env=False) as client:
             pair = await client.post(
-                f"{runtime.resolve_user_plugin_base()}/market/pair-code",
+                f"{resolve_user_plugin_base()}/market/pair-code",
                 headers={"Origin": str(request.base_url).rstrip("/")},
             )
             pair.raise_for_status()
@@ -99,7 +99,7 @@ async def create_launch(request: Request):
         })
         # Market currently uses HashRouter; pairing lives in that route's query.
         separator = "&" if "?" in path else "?"
-        return {"ok": True, **_public(value), "url": MARKET_WEB_URL.rstrip("/") + "/#" + path + separator + fragment}
+        return {"ok": True, **_public(value), "url": get_market_web_url().rstrip("/") + "/#" + path + separator + fragment}
     except Exception as error:
         if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt)):
             raise

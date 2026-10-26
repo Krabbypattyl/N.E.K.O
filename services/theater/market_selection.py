@@ -4,11 +4,11 @@ import httpx
 
 
 async def market_story(share_id: int | None = None) -> dict:
-    from plugin.settings import MARKET_API_URL
+    from utils.market_config import get_market_api_url
 
     path = f"shares/{share_id}" if share_id is not None else "shares/theater/random"
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
-        response = await client.get(f"{MARKET_API_URL.rstrip('/')}/api/v1/{path}")
+        response = await client.get(f"{get_market_api_url().rstrip('/')}/api/v1/{path}")
         response.raise_for_status()
         story = response.json()
     if (not isinstance(story, dict) or story.get("kind") != "theater"

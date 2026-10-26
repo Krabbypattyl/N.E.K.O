@@ -1,6 +1,8 @@
 """Generate a fixed story frame, then commit one author scene at a time."""
 from __future__ import annotations
 
+from config.prompts.prompts_theater_pipeline import _FRAME_PROMPT, _STATE_PROMPT
+
 from copy import deepcopy
 import json
 from typing import Mapping
@@ -22,15 +24,6 @@ _FRAME_CONTRACT = {
     "ending": {**{key: _CONTRACT["ending"][key] for key in ("type", "title")},
                "summary": "各合法选择共同成立的收束，不用若/如果分别编写互斥结局，不固定可变处置或许可"},
 }
-_FRAME_PROMPT = """你是互动剧本策划。本轮只确定故事框架，不生成完整幕或可执行演出。
-尊重作者想法、世界边界和人物动机。主角是用户与自己的猫娘，使用 cast_names 的完整姓名及角色归属。
-身份分别以猫娘姓名和玩家姓名加中文逗号开头；无姓名时才用“女主，”“男主，”。
-章节数量严格满足 length；用因果、选择与代价连接各幕，保留玩家不同安排的空间，不预写玩家已经行动或同意。
-后幕依赖的人物位置、物品或许可，须在来源幕安排具体可演的交付；不能只写“取得线索”，却在后幕临时指定一个地址或前提。可选准备与真正必要结果分开。
-本合同只有一条主线和一个结局；作者允许多种选择时，后幕和结局只固定各合法选择共同保证的结果，不提前选定其中一项处置方式。具体做法可不同，不能在目标中允许多种结果，却在固定出口、道具状态或结局锁成一种。
-主线最后一幕仍有需要互动的事件，结局只收束结果，不能复制最后一幕凑幕数。
-关系弧的 opening_relationship 与 relationship 完全一致。道具 states 是规划，不证明玩家已取得、交付或操作完成。
-只按 output_contract 返回 JSON object。不要返回角色状态线、每幕目标、开场或桥段；后续逐幕生成。"""
 _SCENE_PROMPT = _AUTHORING_RUNTIME_RULES + """
 你是当前一幕的编剧。本轮只返回 output_contract 中的 chapter、relationship_stage、character_state_stage。
 story_frame 是已确定的策划；previous_scene 是前一幕作者稿，仍须区分受出口条件保证的结果与可能发生的互动。
@@ -64,15 +57,6 @@ catgirl_state、player_state分别以cast_names中猫娘和玩家的完整姓名
 scene_boundaries 只放以“不得”“禁止”或“不能”开头的负向边界，正向描述放在对应状态字段。
 output_contract中的字符串是字段说明，返回时须换成实际正文；entry_bridge写可直接展示的旁白，不返回编写规则。
 若有 issues，修正当前结局，已完成主线与框架保持。只返回 JSON object。"""
-_STATE_PROMPT = """只从opening_scene收笔时的事实摘录三方状态与当前处境，不续写或另设计画面。
-按cast_names辨明猫娘与玩家；三字段分别以猫娘全名、玩家全名和“环境”开头。
-除这两个指定姓名外，店主、师傅、老人等配角都不是玩家；按明确指代核对，不能为填满玩家状态把配角动作换成玩家姓名。玩家状态没有依据时只写其具体状态未明确，不补站坐、手势或持物。
-只保留原文已建立的位置、姿态、视线和物件状态；未写的手势、心理、期待、决定和持物都不补。
-最后动作覆盖更早动作；多人共同持物保留共同范围，放在身旁不等于拿在手中，递出待接不等于已交付。
-不把比喻、假设或问句的前提当作实际状态；未明确的细节省略。简短概括当前状态，不复述完整动作过程。
-合同要求catgirl_situation时，只摘录开场明确的猫娘顾虑、立场或未决问题；未交代就说明未明确，不借未来目标补写，不重复三方物理状态。
-temporal_context可选：anchor逐字摘录开场或entry_bridge明确建立的本幕当前时间短语；relation_to_previous只填unspecified、same_day、next_day或after_interval。前幕关系不明确填unspecified；桥段明确同日时用same_day，不细分同一时段与稍晚时段。时间未交代时省略整个字段，或返回anchor为空字符串且relation_to_previous为unspecified，表示未知。对白中的未来约定、假设或回忆不建立当前时间，普通换幕也不自动变为次日。entry_bridge只供时序核对，不用它覆盖开场收笔状态。
-只按output_contract返回JSON对象；若有issues，仅纠正本次摘录。"""
 
 
 def _belongs(path: str, prefix: str) -> bool:

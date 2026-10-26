@@ -207,16 +207,17 @@ class WorkshopHost:
         if operation not in self.OPERATIONS:
             raise WorkshopError("workshop_operation_invalid")
         if operation == "assess_runtime_readiness":
-            from services.theater.numeric_v2_options import default_options, option_keys
+            from services.theater.numeric_v2_options import aload_theater_module_options
 
+            defaults = await aload_theater_module_options()
             options = kwargs.get("runtime_options", {})
             if (not isinstance(options, Mapping)
-                    or any(key not in option_keys() or type(value) is not bool
+                    or any(key not in defaults or type(value) is not bool
                            for key, value in options.items())):
                 raise WorkshopError("runtime_options_invalid")
             # Target the product defaults unless the caller explicitly supplies
             # overrides; never read or change the player's current preferences.
-            kwargs["runtime_options"] = {**default_options(), **options}
+            kwargs["runtime_options"] = {**defaults, **options}
         return await _worker(getattr(self.sdk, operation), *args, **kwargs)
 
     async def install(self, project_id, *, base_revision, recover_receipt=False):
