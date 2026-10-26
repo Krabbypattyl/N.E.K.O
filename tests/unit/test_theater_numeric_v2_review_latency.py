@@ -286,14 +286,22 @@ async def test_narrative_review_repacking_shares_original_remaining_deadline(mon
     engine, session, _outcome, _candidate = _fixture(1)
     candidate = {'performance': '我听着，你先说。', 'suggested_inputs': [], 'narrative_events': []}
     calls = []
+    timeouts = []
+    real_timeout = asyncio.timeout
+
+    def shared_timeout(seconds):
+        timeouts.append(seconds)
+        return real_timeout(seconds)
+
+    monkeypatch.setattr(numeric_v2_workflow, 'asyncio', SimpleNamespace(timeout=shared_timeout))
 
     class Worker:
         async def validate_transition_offer(self, **kwargs):
             calls.append('narrative_events' in kwargs['actor_performance'])
-            await asyncio.sleep(0.04)
             if len(calls) == 1:
                 raise evaluator.NumericV2EvaluatorError('numeric_v2_transition_review_budget_exceeded')
-            return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
+            # Always reach the retry before yielding, then let the shared timer cancel it.
+            await asyncio.Event().wait()
 
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS', 1.0)
     cache = {}
@@ -304,6 +312,7 @@ async def test_narrative_review_repacking_shares_original_remaining_deadline(mon
             message='我还想再聊聊。', actor_performance=candidate, timeout_seconds=0.06)
 
     assert calls == [True, False]
+    assert timeouts == [0.06]
     assert diagnostics['narrative_review_budget_degrades'] == 1
     assert list(cache.values()) == [None]
     assert session.revision == 0 and session.performance_history == ()

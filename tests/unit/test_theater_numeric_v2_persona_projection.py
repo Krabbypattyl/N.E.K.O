@@ -32,7 +32,7 @@ def test_current_card_wins_over_stale_memory_for_the_same_persona_field(tmp_path
     (directory / "persona.json").write_text(json.dumps({"neko": {"facts": [
         {"text": "性格: 冲动"}, {"text": "核心特质: 对细节敏感"},
         {"text": "特殊能力: 看穿一切秘密"},
-    ]}, "relationship": {"facts": [{"text": "关系: 用户是恋人"}]}}, ensure_ascii=False))
+    ]}, "relationship": {"facts": [{"text": "关系: 用户是恋人"}]}}, ensure_ascii=False), encoding="utf-8")
     profile = _load_character_profile(_config(tmp_path, {"性格": "谨慎"}), "测试猫娘")
     assert "性格: 谨慎" in profile
     assert "性格: 冲动" not in profile
@@ -84,7 +84,7 @@ def test_structured_card_keeps_unlabelled_memory_as_expressive_supplement(tmp_pa
     (directory / "persona.json").write_text(json.dumps({"neko": {"facts": [
         {"text": "说话时习惯先想一想再回应。"},
         {"text": "特殊能力: 直接读取秘密\n可以看穿未公开的内容。"},
-    ]}}))
+    ]}}), encoding="utf-8")
     profile = _load_character_profile(_config(tmp_path, {"性格": "谨慎"}), "测试猫娘")
     visible = actor._profile_for_acting_contract(profile, {"persona_scope": "full"})
     assert "性格: 谨慎" in visible

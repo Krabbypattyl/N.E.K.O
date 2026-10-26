@@ -138,14 +138,25 @@ def test_native_frame_failure_resumes_frame_without_rewriting_completed_scenes(o
         checkpoint["stage"] = "complete"
         sdk._store.record_generation_checkpoint(project["project_id"], base_revision=project["revision"], checkpoint=checkpoint)
     completed = deepcopy(checkpoint["candidate"])
-    expected = sdk._generator._generation_result(title=project["title"], normalized_idea=project["setup"]["brief"],
-        normalized_setup=project["setup"], candidate=completed, cast_names=checkpoint["cast_names"])
     calls.clear()
     outline["story_protagonist"]["motivation"] = "核对旧信的来源。"
+    completed["story_protagonist"]["motivation"] = outline["story_protagonist"]["motivation"]
+    expected = sdk._generator._generation_result(title=project["title"], normalized_idea=project["setup"]["brief"],
+        normalized_setup=project["setup"], candidate=completed, cast_names=checkpoint["cast_names"])
+    # A repair reply may drift even while satisfying the structural frame contract.
+    outline["world"]["background"] = "你在海港与旧识见面。"
+    outline["story_protagonist"]["secret_or_wound"] = "她忘了自己的来历。"
+    outline["player_role"]["identity"] = NAMES["player_name"] + "，海港的商人。"
+    outline["tone"] = ["轻松"]
+    outline["key_props"] = []
     recovered = sdk.generate(project["project_id"], base_revision=project["revision"])["project"]
 
     assert calls == ["numeric_v2_story_frame"]
     assert recovered["story"]["nodes"] == expected["story"]["nodes"]
+    expected["story"]["meta"]["story_id"] = recovered["story"]["meta"]["story_id"]
+    assert recovered["story"] == expected["story"]
+    assert recovered["authoring"]["key_props"] == expected["key_props"]
+    assert recovered["setup"]["tone"] == expected["setup_updates"]["tone"]
     InProcessPackageGateway().compile(recovered["story"])
     assert recovered["generation_checkpoint"] is None
 

@@ -2,6 +2,8 @@
 
 import asyncio
 from copy import deepcopy
+from itertools import count
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,6 +99,9 @@ async def test_route_only_npc_result_needs_review_before_commit_restore_and_fork
 @pytest.mark.asyncio
 async def test_approved_npc_result_commits_before_new_exit_is_invited(tmp_path, monkeypatch):
     runtime, current, calls = await scenario._setup(tmp_path, monkeypatch)
+    # Keep timing assertions independent of Windows monotonic-clock resolution.
+    ticks = count(100.0, 0.001)
+    monkeypatch.setattr(wf, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     seen = []
     _install_review(monkeypatch, calls, seen=seen)
 

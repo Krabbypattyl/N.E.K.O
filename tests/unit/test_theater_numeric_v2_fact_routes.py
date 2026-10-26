@@ -113,9 +113,9 @@ async def test_late_actor_facts_do_not_retroactively_choose_route_on_replay(tmp_
     current = await runtime.commit_turn(outcome, _transition_performance("ending_leave"))
     assert (await runtime.restore_session("late")).session.current_node_id == "ending_leave"
     path = tmp_path / "numeric_v2/sessions/late.json"
-    saved = json.loads(path.read_text())
+    saved = json.loads(path.read_text(encoding="utf-8"))
     saved["ledger_events"][0].pop("routing_fact_operations")
-    path.write_text(json.dumps(saved))
+    path.write_text(json.dumps(saved), encoding="utf-8")
     with pytest.raises(NumericV2StoreError, match="numeric_ledger_replay_invalid"):
         await runtime.restore_session("late")
 

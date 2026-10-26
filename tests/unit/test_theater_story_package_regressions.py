@@ -22,7 +22,7 @@ def test_empty_registry_stays_empty_and_maintenance_preserves_imported_packages(
     ids = {_binding()["catgirl_name"]: _binding()["character_id"]}
     maintain_numeric_v2_storage_once(root, registry, character_ids_by_name=ids)
     assert registry.list_packages() == []
-    fixture = json.loads((_STORY_FIXTURES / "story_2fa2c3823a41.json").read_text())
+    fixture = json.loads((_STORY_FIXTURES / "story_2fa2c3823a41.json").read_text(encoding="utf-8"))
     registry.import_package(fixture)
     path = registry.package_path(fixture["meta"]["story_id"])
     before = path.read_bytes()

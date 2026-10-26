@@ -233,14 +233,14 @@ async def test_explicit_invitation_acceptance_cannot_drop_control_provenance_on_
     result = runtime.prepare_turn(current, TurnRequestV2("accept-control", current.session.revision, "", "accept_invitation"), (), transition_intent="accept")
     current = await runtime.commit_turn(result, _transition_performance(result.session.current_node_id))
     path = runtime.store._path(current.session.session_id)
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     if tamper in {"event", "both"}:
         payload["ledger_events"][-1].pop("input_source")
     if tamper in {"performance", "both"}:
         payload["session"]["performance_history"][-1].pop("input_source")
     if tamper == "receipt":
         payload["ledger_events"][-2].pop("program_invitation")
-    path.write_text(json.dumps(payload, ensure_ascii=False))
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(numeric_v2_store.NumericV2StoreError):
         await runtime.restore_session(current.session.session_id)
 

@@ -261,10 +261,10 @@ async def test_legacy_committed_projection_survives_restore_and_fork(tmp_path, m
     if not include_projection:
         # Pre-projection archives omit the field on both records. Recreate
         # that old serialized shape only in this test's isolated directory.
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
         payload["ledger_events"][-1].pop("player_action_projection")
         payload["session"]["performance_history"][-1].pop("player_action_projection")
-        path.write_text(json.dumps(payload, ensure_ascii=False))
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         committed = await runtime.restore_session(current.session.session_id)
     assert project_player_action_result(message)["player_left_current_scene"] is False
     before = path.read_bytes()

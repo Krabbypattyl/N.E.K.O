@@ -76,6 +76,22 @@ def _frame_projection(candidate):
     return frame
 
 
+def _merge_frame_repair(candidate, frame, native_issues):
+    # Native paths name compiled fields; only their author inputs may change.
+    sources = {
+        "intro.background": (("world", "background"),),
+        "intro.player_identity": (("player_role", "identity"),),
+        "intro.catgirl_identity": (("story_protagonist", "identity"), ("story_protagonist", "secret_or_wound")),
+        "catgirl_binding.role_overlay": (("story_protagonist", "motivation"),),
+    }
+    preserved = _frame_projection(candidate)
+    for issue in native_issues:
+        for group, key in sources.get(issue.get("path"), ()):
+            value = frame.get(group)
+            preserved[group][key] = deepcopy(value.get(key)) if isinstance(value, Mapping) else None
+    return preserved
+
+
 def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None, save_checkpoint=None):
     """Keep completed scenes in the checkpoint; retries only replace the current phase."""
     brief = str(setup.get("brief") or "").strip()
@@ -117,6 +133,9 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
     def phase(system, contract, context, validate, operation, max_tokens, locations=()):
         nonlocal attempts
         draft = state.get("phase_candidate")
+        repairing_frame = operation == "numeric_v2_story_frame" and state["completed_chapters"] > 0
+        if repairing_frame and isinstance(draft, Mapping):
+            draft = _merge_frame_repair(state["candidate"], draft, state.get("native_issues", []))
         issues = validate(draft) if isinstance(draft, Mapping) else []
         # Structural validation cannot reproduce all saved author/review diagnostics.
         if not issues:
@@ -150,6 +169,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             if not isinstance(parsed, Mapping) or parsed.get("parse_error"):
                 continue
             draft = deepcopy(dict(parsed))
+            if repairing_frame:
+                draft = _merge_frame_repair(state["candidate"], draft, state.get("native_issues", []))
             state["phase_candidate"] = draft
             issues = validate(draft)
             state["issues"] = issues
