@@ -116,7 +116,7 @@ def test_actor_output_instructions_leave_event_generation_out_but_keep_state_rea
     instruction = actor._output_schema_instruction(phase)
     assert "narrative_events" not in instruction
     assert "authorization_quote" not in instruction
-    system = actor._system_prompt(catgirl_name="小岚", player_address="你", phase=phase)
+    system = actor._system_prompt(catgirl_name="小岚", phase=phase)
     assert "narrative_events" not in system
     assert "narrative_state是已提交动态账本" in system
     assert "last_known只是最后已知状态" in system

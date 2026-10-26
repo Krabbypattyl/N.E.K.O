@@ -651,6 +651,17 @@ class NumericV2ProjectStore:
             return self._view(project)
 
 
+    def record_generation_checkpoint(self, project_id: str, *, base_revision: int,
+                                     checkpoint: Mapping[str, Any]) -> None:
+        """Persist completed author phases without changing the story or content revision."""
+
+        with self.transaction():
+            project = self._read_path(self._path(project_id))
+            if project["revision"] != base_revision:
+                raise NumericV2RevisionConflictError(self._view(project))
+            project["_generation_checkpoint"] = deepcopy(dict(checkpoint))
+            self._write(project)
+
     def generation_checkpoint(self, project_id: str) -> dict[str, Any] | None:
         """Expose internal continuation checkpoints only to the generation service, not public project DTOs."""
 

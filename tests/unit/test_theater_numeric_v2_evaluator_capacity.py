@@ -93,7 +93,10 @@ def test_optional_retrieval_trims_minimum_and_does_not_reappear(inputs,monkeypat
     monkeypatch.setattr(e,'project_narrative_state',lambda *a,**k:None)
     rows=[{'revision':i,'source':'performance','current_visit':False,'text':str(i)+'此前公开的证据。'*100} for i in range(1,4)]
     original=deepcopy(rows)
-    monkeypatch.setattr(e,'history_evidence',lambda *a,**k:deepcopy(rows))
+    def fixed_retrieval(*args, **kwargs):
+        # 本例只验证固定来源的最少裁剪；扩充阶段保留已经裁好的种子，不能绕过容量谓词。
+        return deepcopy(kwargs['retained'] if 'within_prompt' in kwargs else rows)
+    monkeypatch.setattr(e,'history_evidence',fixed_retrieval)
     messages,data,_=build();expected=deepcopy(data);expected['history_evidence']=rows[1:]
     limit(count_data(messages,expected))
     _,packed,diag=build()

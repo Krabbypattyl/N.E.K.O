@@ -57,7 +57,7 @@ def test_evaluator_keeps_full_closure_scope_and_route_reason(case):
 def test_actor_identity_instruction_does_not_use_framework_name(phase):
     """Use the script's performer identity without exposing implementation identifiers in the first identity instruction."""
     from services.theater.numeric_v2_actor import _system_prompt
-    prompt = _system_prompt(catgirl_name='测试猫娘', player_address='你', phase=phase)
+    prompt = _system_prompt(catgirl_name='测试猫娘', phase=phase)
     if phase == 'transition_compact':
         # A formal transition also generates NPC narration; catgirl identity remains determined by the dynamic character, not the implementation name.
         assert '猫娘写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt

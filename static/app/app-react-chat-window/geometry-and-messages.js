@@ -1607,6 +1607,8 @@
             onTheaterSuggestedInputSelect: typeof I.state.onTheaterSuggestedInputSelect === 'function'
                 ? I.handleTheaterSuggestedInputSelect : undefined,
             onTheaterEnd: I.handleTheaterEnd,
+            onTheaterSkipPlayback: typeof I.state.onTheaterSkipPlayback === 'function'
+                ? I.handleTheaterSkipPlayback : undefined,
             onChoiceSelect: I.handleChoiceSelect,
             visitBar: visitView ? visitView.bar : null,
             onVisitBarAction: I.handleVisitBarAction,

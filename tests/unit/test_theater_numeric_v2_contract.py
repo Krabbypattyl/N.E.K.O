@@ -1177,7 +1177,8 @@ def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
         registry.import_package(numeric_v2_story())
 
 
-def test_numeric_v2_registry_waits_for_future_bundled_story_before_marking(tmp_path):
+def test_numeric_v2_registry_waits_for_future_bundled_story_before_marking(tmp_path, monkeypatch):
+    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", tmp_path / "empty-bundled")
     package_root = tmp_path / "theater" / "numeric_v2" / "packages"
     registry = NumericV2PackageRegistry(package_root)
 

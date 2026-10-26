@@ -9,6 +9,24 @@ PUBLIC_TEXT_RULE = (
     "也不补造一个确定结果。已有 fixed_narrations 原文仍按本次编辑权限保留，发现问题报告具体字段，不擅自改写或删除原文。"
 )
 
+# Share knowledge scope between authoring and review without requiring a new
+# ledger or converting missing information into a plot condition.
+AUTHOR_KNOWLEDGE_RULE = (
+    "关键知识与来源：对会改变判断或行动的关键知识，在已有背景、narrative/summary、开场及 acting_contract 中区分"
+    "当前公开可观察事实、角色可知的来源、尚未公开的答案；若安排揭示，说明何时或经什么实际事件可揭示。"
+    "作者知道不等于角色或玩家已经知道，后续待演的调查、对话或目标结果不能自证当前已知。"
+    "已有世界规则和已给证据支持的有限推断可以保留；证据不足时明确推断范围与尚待确认之处，"
+    "有归属的不确定判断不必改成沉默，但不能补造前提再宣称已证实。"
+    "眼前外观不反证全部过去，状态未变化不证明事件未发生；未做检查不能当作检查结果，未描述也不等于不存在。"
+    "角色声称保留来源与认识范围，不自动升级为客观真相；玩家问句、建议或试探不证明其中前提已成立。"
+    "玩家经历、认识谁及已有知识不能为推进剧情而临时编造，须承接明确初始设定或已公开原文；"
+    "保留有认知依据的NPC本人答复，不因它提供当轮新信息就禁止。"
+    "未知可以保持开放，不把所有未知都编成固定答案，不要求逐项认知台账；"
+    "不改变因果、权限和既定事实的低风险即兴细节仍可保留。"
+    "检查和修订须指出原文的具体矛盾或知识越界，不因缺少重述或开放细节就补问题；"
+    "不新增目标、分支、换幕硬锁或输出字段，仍遵守本次修改权限。"
+)
+
 # Based on N.E.K.O services/theater/numeric_v2_runtime.py resolve_turn (routing, refusals, natural endings)
 # and numeric_v2_evaluator.py _build_messages (targets as material, same-turn closure, acting subject).
 # Share this contract across fact, evidence, literature, and revision entry points; update runtime changes once rather than making stages guess independently.
@@ -16,7 +34,31 @@ PUBLIC_TEXT_RULE = (
 # Waiting arrangements may authorize time passing, without accepting new next-act conclusions or actions for the player.
 GOAL_METADATA_RULE = """目标元数据边界：ordered_goals/goals 中的 evidence、anchors、delivery 和 state_effects 保留为作者规划、引用与评改资料。Evaluator 不逐项判定目标完成，Runtime 不执行目标 evidence 或 state_effects；这些字段不构成换幕门槛，也不证明玩家已经行动。semantic 不提供逐项目标的完成回执；exact 不锁存锚点，也不保证运行时逐字展示。dialogue_policy_after 只记录作者预期的后续发声状态，实际发声权限以节点 acting_contract.dialogue_policy 和 Session 为准，不能只靠目标 state_effects 安排禁言或恢复发声。节点发声策略覆盖同幕全部普通回合；同幕包含可发声与不发声阶段时使用 optional，并在已有 acting_contract.forbidden_behaviors 或 scene_boundaries 明确随已发生状态约束回应，不能每轮重新决定已完成的状态。optional 不证明已禁言或恢复，也不强制静默；需要程序硬切换发声权限时，在有实际状态变化的节点边界设置对应策略，不能仅写目标状态效果或为了凑篇幅拆节点。原样展示旁白须由作者显式声明 fixed_narrations，并核对原文与触发事件；不自动将 exact anchors 转成固定旁白。保留既有目标字段及作者证据，不因它们不驱动 Runtime 而删除旧稿资料或新增目标执行器。"""
 
-SCORING_RUNTIME_RULES = GOAL_METADATA_RULE + "\n\n" + """N.E.K.O 运行规则（用于解释作者规划，不是故事中的新增事实）：
+# 生成、检查和修订共用同一出口时点，不能把作者预期的全部目标当成运行时已完成记录。
+# 这里只约束已有字段的因果与时点，不增加逐项目标执行器、模型阶段或新的剧情硬锁。
+EXIT_EXECUTION_RULE = (
+    "出口执行时点：主线 exit_plan.trigger_fact_ids 和支线 transition.trigger_fact_ids 选中的 completion_facts "
+    "对应运行包 completion_contract；核对定义、目标值和本路线条件，在它们成立的最早可能状态检查出口。"
+    "这是作者稿的可执行性校验，不代表这些条件已在实际演出中发生。"
+    "只承接明确前情、这些条件保证的结果及其必然因果；goals、source_ids、summary 或 narrative 中的待演规划不自证完成。"
+    "必要交付若缺少完成约束，应按结构权限对齐最小必要结果，不能把所有目标、可选对白或风格要求加入完成锁。"
+    "若出口依据本幕取得的线索指向固定人物或地点，本幕叙事须写明由谁、经何种可演事件揭示哪个具体线索，不能只在下一幕写出答案；所选完成事实的description与目标值须对应同一对象，‘找到某个人名或地址’不保证这一点。只精确已有必要结果，不把待确认身份提前设成已知，也不为普通移动新增完成锁。"
+    "已被前情或条件保证的结果无需重复动作或逐字重述，不因省略重述而报错。"
+    "fallback_offer 与 accept_input 只请求尚待决定的下一步；本幕动作已做或未做两种状态都不强制重做。"
+    "fallback_offer、silent_choice 是玩家接受前可直接展示的出口，accept_input 表示玩家将接受的同一安排，"
+    "不能无条件宣称未受保证的操作已经完成，也不能要求重做已完成的核心互动。"
+    "桥段和目标开场发生在接受后，兑现已公开的同一去向、时段及开始的活动，不能靠转场补造来源交付或代做目标幕的新选择。"
+    "opening_scene、桥段与角色状态须保持一致；逐条核对来源叙事、完成条件、reason、fallback_offer、accept_input、"
+    "silent_choice、桥段、must_preserve 与目标开场和状态；"
+    "不沿用前一条路线已执行的安排，不把失效的发声或行动能力作为出口前提。"
+    "符合禁言合同且省略 fallback_offer 时，silent_choice.destination 与 arrangement 各为不超过30 tokens的非空单行文本，"
+    "独立说明具体去向和安排，不依赖旧口头邀请；只写已经在场的地点或已经完成的动作不能兑现不同的目标入口。"
+    "单个出口不能写‘去A或去B’却只通往C；普通经过、同地换幕及已有路径依据的中途停留仍可成立，"
+    "不能在换幕后临时编造新路径、外部阻碍或玩家改主意圆场。多出口须兑现公开的共同行动，目标幕的新选择仍留给玩家。"
+    "修订保留正确开场、已有选择与行动权边界，只改矛盾字段；权限不足则报告结构调整，不新增确认或任务掩盖问题。"
+)
+
+SCORING_RUNTIME_RULES = GOAL_METADATA_RULE + "\n\n" + AUTHOR_KNOWLEDGE_RULE + "\n\n" + EXIT_EXECUTION_RULE + "\n\n" + """N.E.K.O 运行规则（用于解释作者规划，不是故事中的新增事实）：
 
 角色姓名：作者稿使用生成时的猫娘名字和用户昵称，演绎时仍可适配当前角色与昵称。输入声明的 player_name/catgirl_name 明确角色归属；检查、评分及修订保持原稿姓名，不另取名、不交换主体。程序知道昵称不代表角色在剧情中已经获知；address_state 与 initial_state.player_address_known 继续约束称呼披露，不据真实姓名的存在要求开场相识或自我介绍已完成。
 
@@ -28,9 +70,7 @@ SCORING_RUNTIME_RULES = GOAL_METADATA_RULE + "\n\n" + """N.E.K.O 运行规则（
 
 2. 普通换幕可由玩家接受已经展示的具体提议，或主动要求执行已公开的同一出口安排发起，再按路线条件选路。主动请求不要求角色先发出邀请，但公开的去向、时段和行动必须与实际出口一致；接受本幕内的带路、局部行动或场内移动，不等于接受另一个目的地的换幕。明确在当前地点休息或等候到下一时段，可以作为时间经过的出口安排；不代表玩家同意下一幕新提出的话题结论或行动，也不必预先替下一话题作决定。暂缓或拒绝可留在原节点，继续对话，不要求新增分支、拒绝路线或自环；单线故事也可以允许玩家决定何时离幕。用户后来明确接受同一已公开邀请时可以直接继续，不必再邀请、再确认一次；普通聊天或犹豫不会自动恢复旧邀请。只有原文承诺不同去向或不同结果却无法提供时，才检查对应路线是否缺失。不要为已有的留幕能力提出结构修订。
 
-3. 节点的 outgoing_routes 是离开该节点后的出口合同，不是进入该节点的起始状态；其中 must_preserve 可以保留本幕互动完成的结果。不能因本幕开场尚未取物，就要求将本幕出口的“已取回”改成“尚未取得”。作者桥段描述应按其声明的前置事实承接：来源互动与回应已经成立时，可以直接保留结果，不必再次逐字叙述每个动作。must_deliver 要求承接结果，不意味着桥段将首次执行所引用的目标。引用、目标列表或桥段未重述，均不能单独证明抢演或缺少因果；正文明确提前完成下一幕仍待玩家实施的行为、重做同一核心互动或倒置状态，仍是错误。
-
-出口一致性检查：每条路线独立核对来源幕完成后的状态与目标幕起点，将来源邀请（exit_plan.proposal/player_decision 或 outgoing_routes.transition_contract.reason）、本路线的 fallback_offer、accept_input、桥段和目标实际开场放在一起核对去向、时段及开始的活动。fallback_offer、accept_input 须对应本路线尚待玩家选择的同一安排，不沿用前一条路线已经完成的去向，不把来源幕结束时已经停止或失效的能力作为邀约前提。若来源完成结果会使角色失去说话或行动能力，出口安排及交付方式必须在完成后仍可执行，不依赖完成后补台词。符合禁言合同并省略 fallback_offer 时，必须提供 silent_choice.destination 与 silent_choice.arrangement，各为不超过30 tokens的非空单行文本；Runtime 据此生成静默出口按钮，独立说明具体去向和安排，不能依赖此前已说过邀请，也不能要求角色使用已经失效的能力。目标开场的 player_state 只承接玩家已有选择、位置和持有状态，不预定玩家已完成或正在执行的新任务；新任务作为角色提议留待玩家选择。单个出口承诺“去A或去B”却实际只进入C，是可举证的错配；引用来源与目标的原文，修订权限不足时明确需要结构调整，不能靠删掉玩家选择掩盖问题。多分支按最新数值选路仍须兑现已公开的共同行动；不同后续体验可在目标幕再展开。不要将普通经过、同地换幕或有公开路径依据的中途停留一概报错，也不能自行编造捷径、停业、玩家改主意来解释不同去向。修订只改造成矛盾的字段，保留正确入口及已有选择，不追加确认、任务或逐项完成门槛。
+3. outgoing_routes 包含接受前的邀约和接受后的桥段，分别按出口执行时点检查，不能把整份合同当作所有目标已交付之后的记录。must_preserve 可以保留前提真正保证的来源结果；不能仅因本幕开场尚未取物，就要求将合法出幕时的“已取回”改成“尚未取得”。must_deliver 要求承接结果，不意味着桥段首次执行所引用的目标；明确提前完成目标幕仍待玩家实施的行为、重做核心互动或倒置状态仍是错误。
 
 4. 自然结局在来源核心互动与必要角色回应完成后收束；玩家本轮明确实施或授权、直接结果可确定且无新的实质选择时，可同轮交付回应并结束，不必额外确认。完成条件核对实际参与者及必要范围：一人示范不代替另一人的亲手操作，一轮结果不能在出口或结局扩大为全员完成。可以概括已开始的同质重复过程，不能跳过尚未发生的首次核心互动；不据此新增逐人逐步确认。进入结局后不再接收玩家输入。通用行动权约束不声明存在新的待办：类似“玩家负责的动作由玩家输入完成”只限制有此动作时的归属，不能据此发明结局还有动作。若结局正文明确要求玩家作新的选择或等待其回答，则仍是真实冲突，不可用通用约束或自然结束掩盖。
 

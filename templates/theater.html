@@ -13,9 +13,15 @@
     <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <!-- 共享传输协议必须先于选择页业务脚本加载。 -->
     <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/theater_market.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
+    {% if request.query_params.get('market') %}
+    <main class="theater-selector-shell">
+        <p id="theater-selector-status" role="status" data-i18n="theater.marketPreparing">正在连接剧本市场…</p>
+    </main>
+    {% else %}
     <main class="theater-selector-shell" data-theater-selector-app>
         <header class="theater-title-bar page-title-bar">
             <div class="theater-title-copy">
@@ -33,7 +39,6 @@
             <aside class="theater-story-library" aria-labelledby="theater-library-title">
                 <div class="theater-library-heading">
                     <div><p data-i18n="theater.selectorKicker">STORY LIBRARY</p><h1 id="theater-library-title" data-i18n="theater.selectorTitle">选择一个剧本</h1></div>
-                    <button type="button" class="theater-icon-action" id="theater-settings-btn" data-theater-settings data-i18n="theater.settingsButton">剧场设置</button>
                     <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
                     <input id="theater-import-input" type="file" accept="application/json,.json" hidden>
                 </div>
@@ -80,5 +85,6 @@
             <div class="theater-modal-actions"><button type="button" class="theater-secondary" id="theater-modal-cancel"></button><button type="button" class="theater-primary" id="theater-modal-confirm"></button></div>
         </section>
     </div>
+    {% endif %}
 </body>
 </html>

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 from threading import Condition, RLock, local
+from typing import Mapping
 import uuid
 
 from . import contracts as C
@@ -20,6 +21,7 @@ from .numeric_v2 import NumericV2Compiler, normalize_metric_drafts, preset_metri
 from .numeric_v2_branch import NumericV2BranchService
 from .numeric_v2_project_store import NumericV2ProjectStore, NumericV2RevisionConflictError, _setup_fields
 from .packages import PackageError, PublishCandidate
+from .readiness import assess_candidate_readiness
 
 
 class WorkshopError(RuntimeError):
@@ -249,8 +251,35 @@ class TheaterWorkshop:
         names = checkpoint.get("cast_names") if checkpoint is not None else self._names()
         self._store.begin_generation(project_id, base_revision=base_revision)
         try:
-            result = self._generator.generate(title=project["title"], setup=setup,
-                                              checkpoint=checkpoint, cast_names=names)
+            if checkpoint is not None and checkpoint.get("flow") != "staged.v1":
+                # Resume existing whole-outline checkpoints with their original protocol.
+                result = self._generator.generate(title=project["title"], setup=setup,
+                                                  checkpoint=checkpoint, cast_names=names)
+            else:
+                result = self._generator.generate_staged(title=project["title"], setup=setup,
+                    checkpoint=checkpoint, cast_names=names,
+                    save_checkpoint=lambda state: self._store.record_generation_checkpoint(
+                        project_id, base_revision=base_revision, checkpoint=state))
+                checkpoint = self._store.generation_checkpoint(project_id)
+                # Do not report generation success or replace the existing story with a package NEKO rejects.
+                self._compiler.compile(result["story"])
+        except NumericV2RevisionConflictError:
+            raise
+        except PackageError as error:
+            if checkpoint is not None and checkpoint.get("flow") == "staged.v1":
+                issues = list(error.details.get("issues") or [])
+                repairs = set()
+                for issue in issues:
+                    path = str(issue.get("path") or "")
+                    index = path[6:].split("]", 1)[0] if path.startswith("nodes[") else ""
+                    if index.isdigit() and int(index) <= len(checkpoint["candidate"]["mainline_chapters"]):
+                        repairs.add(int(index))
+                checkpoint.update(stage="repair" if repairs else "complete", repairs=sorted(repairs),
+                    native_issues=issues, issues=issues, phase_candidate=None)
+            self._store.fail_generation(project_id, base_revision=base_revision,
+                error={"code": error.code, "details": error.details},
+                checkpoint=checkpoint, source_project=project)
+            raise
         except NumericV2GenerationError as error:
             try:
                 self._store.fail_generation(project_id, base_revision=base_revision,
@@ -265,7 +294,7 @@ class TheaterWorkshop:
             try:
                 self._store.fail_generation(project_id, base_revision=base_revision,
                     error={"code": "generation_technical_failed", "exception_type": type(error).__name__},
-                    checkpoint=checkpoint, source_project=project)
+                    checkpoint=getattr(error, "checkpoint", checkpoint), source_project=project)
             except Exception as persistence_error:
                 error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
@@ -329,18 +358,21 @@ class TheaterWorkshop:
             if field in enhancement:
                 beat[field] = deepcopy(enhancement[field])
         beat.pop("must_happen", None)
-        current_goal_refs = {f"goal.{goal['id']}" for goal in beat.get("goals") or [] if goal.get("id")}
+        goals = beat.get("goals") or []
+        current_goal_refs = {f"goal.{goal['id']}" for goal in goals if goal.get("id")}
+        current_final_ref = f"goal.{goals[-1]['id']}" if goals and goals[-1].get("id") else None
         for route in node.get("route_gates") or []:
             contract = route.get("transition_contract") or {}
             refs = contract.get("source_ids") or []
-            if any(ref in previous_goal_refs for ref in refs) and previous_goal_refs != current_goal_refs:
+            if any(ref in previous_goal_refs for ref in refs) and (
+                    previous_goal_refs != current_goal_refs or previous_final_ref != current_final_ref):
                 # The generator derives outgoing source evidence from the final
-                # source goal. Regenerate that reference with the enhanced goals.
+                # source goal. Reordering can change it even when all IDs survive.
+                # Rebind that derived reference while retaining valid nonfinal sources.
                 replaced_refs = previous_goal_refs.difference(current_goal_refs) | {previous_final_ref}
                 if not any(ref in replaced_refs for ref in refs):
                     continue
                 refs = [ref for ref in refs if ref not in replaced_refs]
-                goals = beat.get("goals") or []
                 if goals:
                     refs.append(f"goal.{goals[-1]['id']}")
                 contract["source_ids"] = list(dict.fromkeys(refs))
@@ -457,6 +489,24 @@ class TheaterWorkshop:
     def export(self, project_id, *, base_revision):
         with self._store.transaction():
             return self._publish_candidate(project_id, base_revision)
+
+    @_exclusive
+    def assess_runtime_readiness(self, project_id, *, base_revision, runtime_options):
+        """Diagnose one validated candidate without granting publication quality approval."""
+        if not isinstance(runtime_options, Mapping):
+            raise WorkshopError("runtime_options_invalid")
+        profile = dict(runtime_options)
+        if ("review" not in profile
+                or any(not isinstance(key, str) or not key or type(value) is not bool
+                       for key, value in profile.items())):
+            raise WorkshopError("runtime_options_invalid")
+        candidate = self._publish_candidate(project_id, base_revision)
+        report = assess_candidate_readiness(candidate, profile)
+        # Ordinary editing is allowed during diagnostics just as during model
+        # operations. Do not return an apparently current report after an edit.
+        with self._store.transaction():
+            self._project(project_id, base_revision, story=True)
+        return report
 
     def _install_candidate(self, candidate, install):
         """Host already owns the story lifecycle lock on its serving event loop."""

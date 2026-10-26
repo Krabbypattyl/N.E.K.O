@@ -12,7 +12,7 @@ STORY_BEAT_FIELDS = {"summary", "opening_scene", "must_not_happen", "catgirl_sit
 CHARACTER_STATE_TEXT_FIELDS = {"catgirl_state", "player_state", "environment_state"}
 TRANSITION_CONTRACT_FIELDS = {"reason", "bridge_scene_narration", "must_deliver", "must_preserve", "tone"}
 
-REPAIR_PLAN_RULE = """每条问题和人物关系建议必须列repair_targets:[{"node_id":"真实节点ID","field":"该节点在story_outline内的相对JSON Pointer"}]，指出修改方案确实需要改变的全部字段，不把仅作证据或需要保留的字段列为修改目标。例：/character_state/catgirl、/goals/0/description、/outgoing_routes/0/transition_contract/bridge_scene_narration。结局的/summary是结局记录摘要，/scene_summary是节点正文摘要，两处都要改时分别列出。只能直接修的字段由节点text_repair_fields列出；goals等不在其中的字段仍可提出建议，但只能手动调整。新增节点或无法定位已有字段时repair_targets=[]，标structure。不能为了获得text权限将实际要改的目标描述写成summary。相同修改位置且相同修法尽量复用同一方案文字，独立影响仍分别说明。"""
+REPAIR_PLAN_RULE = """每条问题和人物关系建议必须列repair_targets:[{"node_id":"真实节点ID","field":"该节点在story_outline内的相对JSON Pointer"}]，指出修改方案确实需要改变的全部字段，不把仅作证据或需要保留的字段列为修改目标。例：/character_state/catgirl、/goals/0/description、/outgoing_routes/0/transition_contract/bridge_scene_narration。结局的/summary是结局记录摘要，/scene_summary是节点正文摘要，两处都要改时分别列出。若同一待修状态还重复出现在relationship_state等字段，核对原文并将也必须改变的位置一并列明；没有重复或不需修改的字段不扩入目标。只能直接修的字段由节点text_repair_fields列出；goals等不在其中的字段仍可提出建议，但只能手动调整。新增节点或无法定位已有字段时repair_targets=[]，标structure。不能为了获得text权限将实际要改的目标描述写成summary。相同修改位置且相同修法尽量复用同一方案文字，独立影响仍分别说明。"""
 
 
 def text_repair_fields(node: Mapping[str, Any]) -> list[str]:
@@ -107,4 +107,24 @@ def changed_fields(before: Any, after: Any, path: str = "") -> list[str]:
     if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
         return [changed for index, item in enumerate(before)
                 for changed in changed_fields(item, after[index], f"{path}/{index}")]
+    if (isinstance(before, list) and isinstance(after, list) and len(after) < len(before)
+            and all(isinstance(item, str) for values in (before, after) for item in values)):
+        # Pure text deletion shifts surviving indices. Report only deleted OLD positions so
+        # existing field permissions can preserve correct siblings without authorizing their replacement.
+        earliest, latest = [], []
+        next_index = 0
+        for index, item in enumerate(before):
+            if next_index < len(after) and item == after[next_index]:
+                earliest.append(index)
+                next_index += 1
+        next_index = len(after) - 1
+        for index in range(len(before) - 1, -1, -1):
+            if next_index >= 0 and before[index] == after[next_index]:
+                latest.append(index)
+                next_index -= 1
+        # Equal earliest/latest embeddings prove unique, exact, ordered retention. Ambiguous
+        # duplicates, inserted/replaced text and structural arrays retain the conservative parent path.
+        if len(earliest) == len(after) and earliest == latest[::-1]:
+            kept = set(earliest)
+            return [f"{path}/{index}" for index in range(len(before)) if index not in kept]
     return [path]

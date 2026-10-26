@@ -57,36 +57,22 @@ def test_targeted_launch_only_claims_one_web_runtime(mock_page: Page, running_se
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('page_path', ['/', '/chat'])
-@pytest.mark.parametrize('failure', [None, 'numeric_base_revision_mismatch', 'numeric_reinvitation_not_available', 'invalid', 'network'])
-def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, running_server: str, page_path, failure):
+def test_recovery_is_not_injected_and_generated_suggestions_submit_normally(mock_page: Page, running_server: str, page_path):
     calls = []
     snapshot = _snapshot(revision=1)
-    snapshot['suggested_inputs'] = []
-    snapshot['invitation_recovery_available'] = True
+    snapshot.update(suggested_inputs=['先看看周围。'], invitation_recovery_available=True)
 
     def handler(route: Route):
         path = route.request.url.split('?')[0]
         payload = snapshot
         if path.endswith('/session/input'):
-            body = json.loads(route.request.post_data or '{}')
-            calls.append(body)
-            if failure == 'network':
-                route.abort()
-                return
-            if failure:
-                route.fulfill(status=409 if failure == 'numeric_base_revision_mismatch' else 400,
-                    content_type='application/json', body=json.dumps({'ok': False, 'reason': failure}))
-                return
-            record = {'revision': 2, 'input_text': '',
-                      'performance': '再请你一起去阅览室。', 'suggested_inputs': ['好，带路吧。']}
+            calls.append(json.loads(route.request.post_data or '{}'))
+            record = {'revision': 2, 'input_text': '先看看周围。',
+                      'performance': '周围保持安静。', 'suggested_inputs': ['我再观察一下。']}
             payload = _snapshot(revision=2, performance_history=[record])
-            payload.update(performance=record, suggested_inputs=record['suggested_inputs'],
-                           invitation_recovery_available=False)
+            payload.update(performance=record, suggested_inputs=record['suggested_inputs'])
         elif path.endswith('/session/speak-block') or path.endswith('/session/release'):
             payload = {'ok': True, 'audio_queued': False}
-        elif calls and failure in ('numeric_base_revision_mismatch', 'numeric_reinvitation_not_available'):
-            payload = _snapshot(revision=2)
-            payload.update(suggested_inputs=['先看看周围。'], invitation_recovery_available=False)
         route.fulfill(status=200, content_type='application/json', body=json.dumps(payload, ensure_ascii=False))
 
     mock_page.route('**/api/theater-numeric/**', handler)
@@ -109,26 +95,11 @@ def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, run
     }""")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     label = mock_page.evaluate("() => { const value = window.i18next && window.i18next.t('theater.reinvite'); return value && value !== 'theater.reinvite' ? value : '重新邀请'; }")
-    mock_page.get_by_role('button', name=label, exact=True).click()
-    if failure:
-        mock_page.wait_for_function("() => !!window.nekoTheaterRuntime.getState().draftRestore")
-        state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
-        assert state['draftRestore']['text'] == ''
-        assert all(row.get('text') != label for row in state['history'])
-        assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
-        if failure in ('numeric_base_revision_mismatch', 'numeric_reinvitation_not_available'):
-            assert state['revision'] == 2
-            assert state['invitationRecoveryAvailable'] is False
-            expect(mock_page.get_by_role('button', name=label, exact=True)).to_have_count(0)
-            expect(mock_page.get_by_role('button', name='先看看周围。', exact=True)).to_be_visible()
-            assert state['errorMessage'] == mock_page.evaluate(
-                "window.i18next.t('theater.numericSessionUpdatedControl')")
-        return
-    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2 && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
-    assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
-    assert mock_page.evaluate('window.nekoTheaterRuntime.getState().scene.id') == 'mainline_01'
-    expect(mock_page.get_by_role('button', name='好，带路吧。', exact=True)).to_be_visible()
     expect(mock_page.get_by_role('button', name=label, exact=True)).to_have_count(0)
+    mock_page.get_by_role('button', name='先看看周围。', exact=True).click()
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2")
+    assert len(calls) == 1 and calls[0]['input_source'] == 'suggestion'
+    assert calls[0]['message'] == '先看看周围。'
 
 
 def _snapshot(
@@ -175,6 +146,75 @@ def _snapshot(
             "performance_history": performance_history or [],
         },
     }
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('page_path', ['/', '/chat'])
+def test_committed_playback_can_expand_or_yield_to_player_input(mock_page: Page, running_server: str, page_path):
+    calls = []
+    records = []
+    text = '这段已经提交的对白可以立即完整显示。' * 12
+
+    def handler(route: Route):
+        path = route.request.url.split('?')[0]
+        if path.endswith('/session/speak-block'):
+            body = json.loads(route.request.post_data or '{}')
+            payload = {'ok': True, 'audio_queued': True, 'speech_id': body['playback_request_id']}
+        elif path.endswith('/session/release'):
+            payload = {'ok': True}
+        elif path.endswith('/session/input'):
+            body = json.loads(route.request.post_data or '{}')
+            calls.append(body)
+            record = {'revision': len(calls) + 1, 'input_text': body['message'], 'performance': text,
+                      'suggested_inputs': ['继续。']}
+            records.append(record)
+            payload = _snapshot(revision=len(calls) + 1, performance_history=records)
+            payload['performance'] = record
+        else:
+            payload = _snapshot(revision=1)
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(payload, ensure_ascii=False))
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.route('**/api/seven-day-tutorial/state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'initialized': True, 'revision': 1,
+            'state': {'completedRounds': list(range(1, 8))}})))
+    mock_page.route('**/api/characters/persona-onboarding-state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body='{"success":true,"state":{"status":"completed"}}'))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate("""() => {
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'playback-controls', story_id:'capsule-browser-story',
+            session_id:'capsule-browser-session', revision:1}, window.location.origin);
+    }""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    composer = mock_page.locator('.composer-input:visible')
+    composer.fill('开始这一轮。')
+    composer.press('Enter')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'performing'")
+    expect(composer).to_be_editable()
+    composer.fill('边听边写的草稿。')
+    skip = mock_page.locator('[data-compact-hit-region-id="history:theater-skip-playback"]')
+    expect(skip).to_be_visible()
+    skip.click()
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    expect(composer).to_have_value('边听边写的草稿。')
+    assert mock_page.evaluate('(text) => window.nekoTheaterRuntime.getState().history.some(row => row.text === text)', text)
+    assert len(calls) == 1
+
+    composer.press('Enter')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'performing' && window.nekoTheaterRuntime.getState().revision === 3")
+    composer.fill('打断播放后再继续。')
+    composer.press('Enter')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 4")
+    assert [body['base_revision'] for body in calls] == [1, 2, 3]
+    assert calls[-1]['message'] == '打断播放后再继续。'
+    assert mock_page.evaluate('(text) => window.nekoTheaterRuntime.getState().history.filter(row => row.text === text).length', text) == 2
+    mock_page.evaluate("window.nekoTheaterRuntime.clear('test-cleanup')")
 
 
 @pytest.mark.frontend
@@ -1946,7 +1986,8 @@ def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_serv
         }, location.origin)""")
     mock_page.clock.run_for(16000)
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
-    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == []
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == snapshot["suggested_inputs"]
+    expect(mock_page.locator('.composer-galgame-option').first).to_be_visible()
     mock_page.evaluate("""() => window.dispatchEvent(new CustomEvent(
         'neko-assistant-speech-end', {detail:{turnId:'unrelated-speech'}}))""")
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"

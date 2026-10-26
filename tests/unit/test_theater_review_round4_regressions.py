@@ -107,22 +107,45 @@ async def test_actor_invitation_not_duplicated_and_mute_scene_has_no_author_butt
         '我们一起去长街继续调查吧？' if invites else '才、才没有紧张呢。只是有点累了。')
     async def options():
         from services.theater.numeric_v2_options import default_options
-        return {**default_options(), 'review': False, 'evaluator': evaluator}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': False, 'evaluator': evaluator}
     async def evaluate(self, **kwargs):
         return ev.NumericV2EvaluationResult((), False, transition_intent='unclear')
     async def generate(self, **kwargs):
         return {'performance': actor_text, 'suggested_inputs': ['好啊，走吧。', '再歇一会儿。'], 'transition_offered': actor_flag}
+    async def review(self, **kwargs):
+        # 只批准实际 Actor 邀请与实际首按钮；默认判定不能替无邀请稿拼作者台词。
+        assert invites and not silent
+        candidate = kwargs['actor_performance']
+        assert candidate['performance'] == actor_text
+        assert candidate['suggested_inputs'] == ['好啊，走吧。', '再歇一会儿。']
+        assert kwargs['require_offer_acceptance'] is True
+        return ev.NumericV2TransitionOfferReview(True, True, (), (),
+            offer_quote=actor_text, offer_kind='invitation',
+            approved_suggestion_texts=('好啊，走吧。', '再歇一会儿。'),
+            offer_acceptance_valid=True)
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('invite', current.session.revision, '接下来呢？'), ensure_current_binding=lambda _: _binding())
     if not silent:
-        assert authored in result.performance['performance']
-        assert result.performance['suggested_inputs'][0] == '好，我们现在过去。'
-        assert result.stored.session.transition_offered
-        assert result.stored.ledger_events[-1]['program_invitation']['offer'] == authored
+        assert result.performance['performance'] == actor_text
+        assert authored not in result.performance['performance']
+        assert result.diagnostics['completion_fallback_offer_applied'] == 0
+        assert result.stored.session.transition_offered is invites
+        assert result.diagnostics['transition_judge_calls'] == int(invites)
+        if invites:
+            assert result.performance['suggested_inputs'] == ['好啊，走吧。', '再歇一会儿。']
+            receipt = result.stored.ledger_events[-1]['program_invitation']
+            assert receipt['kind'] == 'reviewed_dynamic'
+            assert receipt['offer'] == actor_text
+            assert receipt['performance'] == actor_text
+            assert receipt['accept_input'] == '好啊，走吧。'
+        else:
+            assert 'program_invitation' not in result.stored.ledger_events[-1]
+            assert '好，我们现在过去。' not in result.performance['suggested_inputs']
         return
     assert result.performance['performance'] == actor_text
     if actor_flag:

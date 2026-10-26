@@ -162,7 +162,7 @@ async def test_workflow_commits_display_without_fact_approval(tmp_path, monkeypa
     calls = {'actor': 0, 'review': 0}
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return NumericV2EvaluationResult((), False)

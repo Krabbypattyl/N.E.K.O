@@ -88,7 +88,7 @@ def test_scoring_reviews_all_eligible_plans_once_or_skips(has_plan):
         return original(messages, **options)
     agent.call_llm = reply
     report = agent.assess(story=story, setup=_generation_setup(), authoring=authoring)
-    assert len(calls) == (3 if has_plan else 2)
+    assert len(calls) == len(story["nodes"]) + (2 if has_plan else 1)
     assert report["plan_review"]["status"] == ("complete" if has_plan else "not_needed")
 
 
@@ -200,6 +200,7 @@ def test_three_eligible_plans_have_each_distinct_pair_once_and_ignore_manual_pla
     calls = []
     def reply(messages, **options):
         body = json.loads(messages[1]["content"]);calls.append(options)
+        assert all(set(pair) == {"issue_ids"} for pair in body["pairs_to_compare"])
         assert [pair["issue_ids"] for pair in body["pairs_to_compare"]] == [
             ["quality_issue_01", "quality_issue_02"], ["quality_issue_01", "quality_issue_03"],
             ["quality_issue_02", "quality_issue_03"]]

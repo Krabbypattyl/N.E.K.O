@@ -199,6 +199,9 @@ def _conditions_match(route: Mapping[str, Any], values: Mapping[str, int]) -> bo
     mode, rows = projected
     checks: list[bool] = []
     for row in rows:
+        if row.get("type") == "fact_equals":
+            # Authored equality is not evidence the player will commit this fact.
+            return None
         metric_id = str(row.get("metric") or "")
         comparator = _COMPARATORS.get(str(row.get("op") or ""))
         if metric_id not in values or comparator is None:
@@ -443,8 +446,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
         if str(node.get("id") or "")
     }
     start_node_id = str(story.get("start_node_id") or "")
-    if not definitions or start_node_id not in nodes_by_id:
-        # Stories without hidden metrics still need fixed-narration witness checks, independent of numeric reachability.
+    if start_node_id not in nodes_by_id:
         return tuple((
             *_duplicate_transition_warnings(ordered_nodes),
             *_fixed_narration_witness_warnings(ordered_nodes),
@@ -466,7 +468,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
             warnings.append(NumericV2AnalysisWarning(
                 code="route_analysis_unknown",
                 path=_route_path(node_index),
-                message="该幕的条件组合数量过多或结构超出当前确定性分析范围，无法可靠判断全部路线。",
+                message="该幕依赖运行时事实，或条件组合超出当前确定性分析范围，无法可靠判断全部路线。",
             ))
 
     # Theoretical reachability uses full metric declaration ranges; soft recommended turns must not become hard limits.
@@ -654,7 +656,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
             warnings.append(NumericV2AnalysisWarning(
                 code="route_analysis_unknown",
                 path=_route_path(*location),
-                message=f"路线 {route_id} 经过循环或复杂入口，无法可靠给出软节奏结论。",
+                message=f"路线 {route_id} 依赖运行时事实、循环或复杂入口，无法可靠给出软节奏结论。",
             ))
             continue
         if pacing_analysis_incomplete:

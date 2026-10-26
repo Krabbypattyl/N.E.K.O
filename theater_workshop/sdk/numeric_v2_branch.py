@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+import re
 from typing import Any, Callable, Mapping
 import uuid
 
@@ -83,6 +84,42 @@ def _estimate_tokens(value: Any) -> int:
 def _opaque_key(prefix: str, *parts: Any) -> str:
     digest = hashlib.sha256("\n".join(str(part) for part in parts).encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{digest}"
+
+
+def entry_prerequisite_conditions(
+    facts: Any, references: Any, *, node_id: str, path: str,
+) -> list[dict[str, Any]]:
+    """Project only explicit author prerequisites into the existing route protocol.
+
+    Completion/thanks and entrance permission are different author decisions.
+    Never infer this list from goals or state prose; an empty list preserves the
+    old freely requested movement. Display receipts are not typed story facts.
+    """
+    def reject() -> None:
+        raise NumericV2BranchError("entry_prerequisite_invalid", {"path": path})
+
+    if (not isinstance(references, list)
+            or any(not isinstance(key, str) or not key for key in references)
+            or len(set(references)) != len(references)):
+        reject()
+    definitions = {
+        fact["id"]: fact for fact in (facts if isinstance(facts, list) else [])
+        if isinstance(fact, Mapping) and isinstance(fact.get("id"), str)
+    }
+    conditions = []
+    for key in references:
+        fact = definitions.get(key)
+        if fact is None or "fixed_narration_id" in fact:
+            reject()
+        value_type, value = fact.get("value_type"), fact.get("target_value")
+        if not (
+            (value_type == "bool" and type(value) is bool)
+            or (value_type == "int" and type(value) is int)
+            or (value_type == "string" and isinstance(value, str) and bool(value.strip()))
+        ):
+            reject()
+        conditions.append({"type": "fact_equals", "key": f"scene:{node_id}:{key}", "value": value})
+    return conditions
 
 
 def _nodes(story: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -464,6 +501,11 @@ class NumericV2BranchService:
         transitions = list(draft.get("transitions") or [])
         if len(scene_ids) != len(scenes) or len(route_ids) != len(scenes) + 1:
             raise NumericV2BranchError("branch_draft_invalid")
+        # Recheck persisted explicit contracts before constructing any replacement
+        # Story. Missing fields are tolerated only for wholly legacy drafts.
+        self.validate_completion_contracts(
+            {"scenes": scenes, "transitions": transitions}, required=False,
+        )
         source_node_id = str(draft.get("source_node_id") or "")
         active_key_props = self._active_key_props(project, source_node_id)
         persisted_key_props = deepcopy(list((project.get("authoring") or {}).get("key_props") or []))
@@ -546,16 +588,36 @@ class NumericV2BranchService:
         for index, scene in enumerate(scenes):
             target_id = scene_ids[index + 1] if index + 1 < len(scene_ids) else endpoint_node_id
             projected_goals = self._project_goals(scene_ids[index], scene["ordered_goals"])
-            # The branch model does not emit a separate completion_facts field. The final atomic objective is therefore satisfied only after the preceding objectives
-            # have been delivered; use it to generate a stable completion fact so the branch act does not remain stuck in playing forever.
-            completion_fact_key = f"scene:{scene_ids[index]}:branch_complete"
-            story.setdefault("fact_contract", {}).setdefault("facts", {})[
-                completion_fact_key
-            ] = {
-                "value_type": "bool",
-                "visibility": "public",
-                "description": str(scene["ordered_goals"][-1]["description"]).strip(),
-            }
+            if "completion_facts" in scene:
+                completion_facts = scene["completion_facts"]
+                trigger_fact_ids = transitions[index + 1]["trigger_fact_ids"]
+            else:
+                # Compatibility only: old saved drafts had no explicit completion
+                # contract. Preserve their original projection; do not migrate them
+                # or claim that their final goal proves earlier goals occurred.
+                completion_facts = [{
+                    "id": "branch_complete", "value_type": "bool",
+                    "visibility": "public", "target_value": True,
+                    "description": str(scene["ordered_goals"][-1]["description"]).strip(),
+                }]
+                trigger_fact_ids = ["branch_complete"]
+            completion_by_id = {}
+            for fact in completion_facts:
+                if "fixed_narration_id" in fact:
+                    completion_by_id[fact["id"]] = {
+                        "fixed_narration_id": fact["fixed_narration_id"],
+                    }
+                    continue
+                key = f"scene:{scene_ids[index]}:{fact['id']}"
+                story.setdefault("fact_contract", {}).setdefault("facts", {})[key] = {
+                    "value_type": fact["value_type"], "visibility": fact["visibility"],
+                    "description": fact["description"].strip(),
+                }
+                completion_by_id[fact["id"]] = {"key": key, "equals": fact["target_value"]}
+            # Like mainline chapters, only author-selected results govern completion
+            # and fallback invitations. This does not add route conditions or lock
+            # every player-initiated departure behind all ordered goals.
+            completion_requirements = [completion_by_id[key] for key in trigger_fact_ids]
             # The branch's expected_turns is likewise kept only in author diagnostics; the Runtime recommendation is fixed at 3.
             min_turns, recommended_turns = scene_turn_budget(scene["ordered_goals"])
             scene_context = self._character_scene_context(
@@ -592,9 +654,7 @@ class NumericV2BranchService:
                 "chapter": scene["title"],
                 "min_turns": min_turns,
                 "recommended_turns": recommended_turns,
-                "completion_contract": {
-                    "all": [{"key": completion_fact_key, "equals": True}],
-                },
+                "completion_contract": {"all": completion_requirements},
                 "story_beat": {
                     **({"fixed_narrations": deepcopy(scene["fixed_narrations"])}
                        if "fixed_narrations" in scene else {}),
@@ -617,11 +677,16 @@ class NumericV2BranchService:
                     "id": route_ids[index + 1],
                     "target_node_id": target_id,
                     "priority": 100,
-                    "conditions": {"all": []},
+                    "conditions": {"all": entry_prerequisite_conditions(
+                        scene.get("completion_facts"),
+                        outgoing_transition.get("entry_prerequisite_fact_ids", []),
+                        node_id=scene_ids[index],
+                        path=f"transitions[{index + 1}].entry_prerequisite_fact_ids",
+                    )},
                     "transition_contract": self._transition_contract(
                         outgoing_transition,
                         source_ids=[f"goal.{projected_goals[-1]['id']}"],
-                        trigger_fact_ids=["branch_complete"],
+                        trigger_fact_ids=trigger_fact_ids,
                         fallback_offer=(
                             None
                             if target_is_terminal
@@ -1693,6 +1758,7 @@ class NumericV2BranchService:
         allowed = {"condition_key", "condition_reason", "scenes", "transitions", "continuity_handling"}
         if set(result).difference(allowed):
             raise NumericV2BranchError("invalid_branch_generation")
+        self.validate_completion_contracts(result, required=False)
         result["condition_reason"] = self._required_text(result.get("condition_reason"), "condition_reason")
         available_prop_ids = {
             str(prop.get("id") or "")
@@ -1862,6 +1928,90 @@ class NumericV2BranchService:
             "transitions": normalized_transitions,
             "continuity_handling": normalized_handling,
         }
+
+    @staticmethod
+    def validate_completion_contracts(candidate: Mapping[str, Any], *, required: bool) -> None:
+        """Validate mainline-shaped completion facts without inferring intent from prose.
+
+        Fresh model output must declare the contract. Old saved drafts may omit it
+        entirely; once any explicit field is present, no missing field can silently
+        reactivate the legacy final-goal assumption.
+        """
+        scenes = candidate.get("scenes")
+        transitions = candidate.get("transitions")
+        explicit = (
+            any(isinstance(scene, Mapping) and "completion_facts" in scene
+                for scene in (scenes if isinstance(scenes, list) else []))
+        ) or (
+            any(isinstance(row, Mapping) and (
+                    "trigger_fact_ids" in row
+                    or row.get("entry_prerequisite_fact_ids", []) != [])
+                for row in (transitions if isinstance(transitions, list) else []))
+        )
+        if not required and not explicit:
+            return
+
+        def reject(path: str) -> None:
+            raise NumericV2BranchError("branch_completion_contract_invalid", {"path": path})
+
+        if not isinstance(scenes, list) or not scenes:
+            reject("scenes")
+        if not isinstance(transitions, list) or len(transitions) != len(scenes) + 1:
+            reject("transitions")
+        # This operation authors branch scenes, not new permissions for its
+        # existing source. That source keeps its original author/runtime contract.
+        if (isinstance(transitions[0], Mapping)
+                and transitions[0].get("entry_prerequisite_fact_ids", []) != []):
+            reject("transitions[0].entry_prerequisite_fact_ids")
+        for index, scene in enumerate(scenes):
+            path = f"scenes[{index}].completion_facts"
+            facts = scene.get("completion_facts") if isinstance(scene, Mapping) else None
+            if not isinstance(facts, list) or not 1 <= len(facts) <= 8:
+                reject(path)
+            ids: set[str] = set()
+            display_ids: set[str] = set()
+            pieces = scene.get("fixed_narrations")
+            piece_ids = {
+                row.get("id") for row in (pieces if isinstance(pieces, list) else [])
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+            }
+            for fact_index, fact in enumerate(facts):
+                fact_path = f"{path}[{fact_index}]"
+                fields = {"id", "description", "value_type", "target_value", "visibility"}
+                if not isinstance(fact, Mapping) or set(fact) not in (fields, fields | {"fixed_narration_id"}):
+                    reject(fact_path)
+                fact_id = fact["id"]
+                if (not isinstance(fact_id, str)
+                        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", fact_id)
+                        or fact_id in ids):
+                    reject(fact_path)
+                ids.add(fact_id)
+                value_type, value = fact["value_type"], fact["target_value"]
+                if (not isinstance(fact["description"], str) or not fact["description"].strip()
+                        or fact["visibility"] not in ("public", "story")
+                        or not (
+                            (value_type == "bool" and type(value) is bool)
+                            or (value_type == "int" and type(value) is int)
+                            or (value_type == "string" and isinstance(value, str) and bool(value.strip()))
+                        )):
+                    reject(fact_path)
+                if "fixed_narration_id" in fact:
+                    reference = fact["fixed_narration_id"]
+                    if (not isinstance(reference, str) or reference not in piece_ids
+                            or reference in display_ids or value_type != "bool"
+                            or value is not True or fact["visibility"] != "public"):
+                        reject(fact_path)
+                    display_ids.add(reference)
+            outgoing = transitions[index + 1]
+            triggers = outgoing.get("trigger_fact_ids") if isinstance(outgoing, Mapping) else None
+            if (not isinstance(triggers, list) or not triggers
+                    or any(not isinstance(key, str) or key not in ids for key in triggers)
+                    or len(set(triggers)) != len(triggers)):
+                reject(f"transitions[{index + 1}].trigger_fact_ids")
+            entry_prerequisite_conditions(
+                facts, outgoing.get("entry_prerequisite_fact_ids", []),
+                node_id="", path=f"transitions[{index + 1}].entry_prerequisite_fact_ids",
+            )
 
     @staticmethod
     def _pacing_diagnostics(scenes: list[Mapping[str, Any]]) -> dict[str, Any]:

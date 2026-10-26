@@ -150,7 +150,7 @@ def test_claims_and_restricted_evidence_survive_ordinary_and_formal_projection(f
 @pytest.mark.asyncio
 @pytest.mark.parametrize("formal", [False, True])
 @pytest.mark.parametrize("dispute", [False, True])
-async def test_fact_approval_uses_one_existing_call_and_existing_output_allowance(monkeypatch, formal, dispute):
+async def test_fact_approval_uses_scene_half_and_existing_output_allowance(monkeypatch, formal, dispute):
     engine, session, claims = _context()
     outcome = engine.resolve_turn(
         session, TurnRequestV2("fact_review_turn", 0, "我按下开关。"), (),
@@ -167,6 +167,8 @@ async def test_fact_approval_uses_one_existing_call_and_existing_output_allowanc
             return False
 
         async def ainvoke(self, messages):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             requests.append(messages)
             return SimpleNamespace(content=json.dumps(_payload(approved_evaluator_fact_indexes=[0],
                 **({"delivery_matches_route": True} if formal else {}))))
@@ -190,7 +192,8 @@ async def test_fact_approval_uses_one_existing_call_and_existing_output_allowanc
         evaluator_fact_claims=claims,
     )
     assert review.approved_evaluator_fact_indexes == (0,)
-    assert len(calls) == len(requests) == 1
+    assert len(requests) == 1  # Scene half retains the complete fact/narrative table.
+    assert len(calls) == (2 if formal else 1)
     assert calls[0]["max_completion_tokens"] == (4096 if dispute else 512 if formal else 350)
     assert calls[0]["timeout"] == (
         evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS if dispute

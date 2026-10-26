@@ -14,7 +14,7 @@ from services.theater.numeric_v2_usage import numeric_v2_usage_scope, invoke_wit
 from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
 
 
-@pytest.mark.parametrize('profile,limits', [(name, (7000, 8500, 8500, 1500))
+@pytest.mark.parametrize('profile,limits', [(name, (7000, 10000, 10000, 1500))
     for name in ('economy', 'balanced', 'quality')])
 def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
     # Narrative exceeds the old 360-character field cap; trailing negation must reach every tier's messages, and current input must remain complete.

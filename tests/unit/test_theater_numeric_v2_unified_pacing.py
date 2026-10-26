@@ -138,7 +138,7 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
     captured = []
 
     async def options():
-        return {**default_options(), "review": True}
+        return {**{key: key == 'evaluator' for key in default_options()}, "review": True}
 
     async def evaluate(self, **kwargs):
         return ev._parse_output(
@@ -169,8 +169,10 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
     async def review(self, **kwargs):
         if kwargs["actor_performance"]["performance"].endswith(f"要现在一起去{destination}吗？"):
             assert kwargs["actor_performance"]["suggested_inputs"][0] == "好，我们现在过去。"
-            return ev.NumericV2TransitionOfferReview(True, True, (), ())
-        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+            return ev.NumericV2TransitionOfferReview(True, True, (), (),
+                approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or []))
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or []))
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
@@ -236,6 +238,10 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
     assert continued.diagnostics["completion_fallback_offer_applied"] == 0
     assert "本轮确定性完成收束合同" not in captured[-1][0].content
     assert "本轮自然收束合同" not in captured[-1][0].content
+    data = json.loads(captured[-1][1].content[captured[-1][1].content.index("{"):])
+    # Withdrawal stops pressure to leave, while the same turn can still deliver NPC causality.
+    assert "留幕不冻结当前因果" in data["pacing"]
+    assert "按玩家实际授权和作者边界承接结果" in data["pacing"]
     resumed = runtime.prepare_turn(
         continued.stored,
         TurnRequestV2("changed_mind", 4, "我休息好了，我们现在过去吧。"),

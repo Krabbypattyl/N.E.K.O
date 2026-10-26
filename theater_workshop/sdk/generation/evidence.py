@@ -6,16 +6,18 @@ from .runtime_rules import SCORING_RUNTIME_RULES
 
 # User confirmation adds one review only when the factual stage reports a problem; keep the load-tested per-field boolean output.
 # Use the same explanatory framework as the factual and literary stages; review only the original issues and fields, without adding judgment steps.
-EVIDENCE_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n" + """你负责核对已有事实报告的证据，不寻找新问题，不改剧本、不评分。输入story_outline是原作者规划，proposed_issues是另一份可能出错的评审。逐条判断原文是否真的证明该问题，并核对已列修改字段是否必要。
+EVIDENCE_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n" + """你负责核对已有事实报告的证据，不寻找新问题，不改剧本、不评分。输入story_outline含原作者规划和自动播放的opening_scene，proposed_issues是另一份可能出错的评审。逐条判断原文是否真的证明该问题，并核对已列修改字段是否必要。
 
-时间依据：每幕summary是整幕概览；opening_scene与character_state同属开场演完时点；goals的turn事件规划在普通回合中呈现，不是程序逐项完成记录；outgoing_routes是来源核心互动成立、玩家接受换场后的桥段；目标幕开场随后发生。结局承接最后互动完成后的结果，没有普通玩家回合。目标结果可以延续，桥段不必逐字重复它。参考实际路线，不把同节点开场和出口当成同一时点。
+时间依据：每幕summary是整幕概览；opening_scene与character_state同属开场演完时点；goals的turn事件是待演规划，不是逐项完成记录。outgoing_routes内的fallback_offer/silent_choice在接受前展示，accept_input是待玩家选择，桥段与目标开场在接受后发生；依出口执行时点核对完成合同及路线条件，不将整份出口合同后移到全部目标已完成之后。结局承接最后互动完成后的结果，没有普通玩家回合。已获保证的结果可以延续，桥段不必逐字重复它；未获保证的预期不能靠出口文字自证。参考实际路线，不把同节点开场和出口当成同一时点。key_props.states为首次出现或状态变化时的生命周期规划，不统一对应开场演完；仅凭同node_id或“被发现”不能反证后来已取出。
 
-判定标准：同一主体、对象、时点是否存在明确互斥事实或权限？缺少某处重述、等待不同动作、概览涵盖后来结果、状态保持、正常移动均不能单独证明冲突。不能自行补设备依赖、目标触发方式或玩家已做动作。把引文读完整，不能忽略前半句、把不同动作混成一个，或将女主禁令当玩家禁令。
+terminal_node_ids由程序标明真实终止节点。自然结局不依赖普通邀约或接受按钮，不因其fallback_offer/accept_input/silent_choice为空就判出口不可达。
+
+判定标准：同一主体、对象、时点是否存在明确互斥事实或权限？时点一致与行动获准是两回事；开场自动预写玩家新台词或选择本身属于越权，不能仅因character_state与台词相配就判不成立。acting_contract允许女主协作或对话，不授权玩家在自动正文中作新决定或说新台词；不能用女主许可替玩家台词免责。缺少某处重述、等待不同动作、概览涵盖后来结果、状态保持、正常移动均不能单独证明冲突。不能自行补设备依赖、目标触发方式或玩家已做动作。递向、递出待接不证明对方已接过；单手动作不证明双手被占用，佩戴设备不证明手持介质。若持有者冲突依赖这些推测，不能判supported；明确完成交接后仍写原持有人持物则继续拦截。把引文读完整，不能忽略前半句、把不同动作混成一个，或将女主禁令当玩家禁令。
 
 verdict三选一：supported（原文能证明该问题），unsupported（原文与该判断相反或互相相容），uncertain（现有原文不足以确定）。reason用一两句话说明引用内容与时点，写最终结论。
 逐个核对原报告的repair_targets，全部写入target_checks，不删条目。每项先写requires_change布尔值，再用一句话解释。本字段原文有错、必须改变才能消除该问题时才为true；原文已正确、仅作证据或仅需保留时为false。若只改另一个字段就能消除冲突，本字段为false。不能新增字段。verdict为unsupported或uncertain时，本问题全部requires_change为false。
 
-只输出JSON，checks覆盖每个原issue_id一次，target_checks覆盖该问题每个原repair_target一次。原建议和每个字段的核对结果都保留，不输出推敲过程：
+字符串正文的引文用中文引号“”，不要内嵌未转义的英文双引号；JSON键和字符串边界仍用英文双引号。只输出JSON，checks覆盖每个原issue_id一次，target_checks覆盖该问题每个原repair_target一次。原建议和每个字段的核对结果都保留，不输出推敲过程：
 {"checks":[{"issue_id":"原issue_id","verdict":"supported|unsupported|uncertain","reason":"证据支持或不支持的具体原因","target_checks":[{"node_id":"原报告已列节点","field":"原报告已列字段","requires_change":false,"reason":"该字段要改或保持原文的理由"}]}]}
 """
 

@@ -3921,6 +3921,16 @@ PROACTIVE_SOURCE_LABELS = {
 # inner keys hold supported-locale lines. New games require another outer
 # key only, without shortcut-dispatch changes.
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    "theater": {
+        "zh": "{master_name}，要不要挑个剧本，和我一起演一场小剧场？",
+        "zh-TW": "{master_name}，要不要挑個劇本，和我一起演一場小劇場？",
+        "en": "{master_name}, want to pick a story and act it out with me in the theater?",
+        "ja": "{master_name}、台本を選んで、一緒にミニシアターで演じてみない？",
+        "ko": "{master_name}, 대본을 골라서 나랑 작은 극장에서 함께 연기해 볼래?",
+        "ru": "{master_name}, выберем историю и разыграем её вместе в мини-театре?",
+        "es": "{master_name}, ¿elegimos una historia y la interpretamos juntos en el teatro?",
+        "pt": "{master_name}, vamos escolher uma história e encenar juntos no teatro?",
+    },
     "watch-together": {
         "zh": "{master_name}，要不要选个视频和我一起看？",
         "zh-TW": "{master_name}，要不要選個影片和我一起看？",

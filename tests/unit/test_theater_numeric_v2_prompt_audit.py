@@ -28,7 +28,7 @@ def test_full_boundary_exception_and_last_rule_reach_actor_and_reviewer(prop):
     story['nodes'][0]['story_beat'].update(beat)
     engine = NumericV2Engine.from_mapping(story)
     cast = NumericV2CastProjection.from_story(engine.story, catgirl_name='猫娘', player_name='玩家')
-    expected = list(project_contract_boundaries(beat))
+    expected = list(project_contract_boundaries(beat, explicit_prohibitions=True))
     assert actor._suggestion_hard_boundaries(cast, beat) == expected
     assert evaluator._actor_fact_boundaries(beat) == expected
     relationship = '只允许已建立的关系表达；' * 40 + '玩家可以拒绝。'

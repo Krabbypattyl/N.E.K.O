@@ -99,6 +99,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onGalgameOptionSelect?: (option: GalgameOption) => void;
   onTheaterSuggestedInputSelect?: (text: string) => void;
   onTheaterEnd?: () => void;
+  onTheaterSkipPlayback?: () => void;
   // ChoicePrompt remains part of ChatWindowSchemaProps. Keep the legacy galgame
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
@@ -958,6 +959,7 @@ function CompactChatApp({
   onGalgameOptionSelect,
   onTheaterSuggestedInputSelect,
   onTheaterEnd,
+  onTheaterSkipPlayback,
   choicePrompt = null,
   onChoiceSelect,
   visitBar = null,
@@ -984,7 +986,8 @@ function CompactChatApp({
   const visibleDraft = theaterActive ? theaterDraft : (catLocalTextOnly ? catDraft : draft);
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
-    || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
+    || (theaterActive && (theaterPresentation.sessionEnded === true
+      || !['awaiting_player', 'performing'].includes(theaterPresentation.phase)));
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -1276,7 +1279,7 @@ function CompactChatApp({
   // 避免在一个紧凑输入区里叠放两组选项。
   const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const theaterSuggestedOptions: GalgameOption[] = theaterActive
-    && theaterPresentation.phase === 'awaiting_player'
+    && (theaterPresentation.phase === 'awaiting_player' || theaterPresentation.phase === 'performing')
     && theaterDraft.trim().length === 0
     ? (theaterPresentation.suggestedInputs ?? []).slice(0, 3).map((text, index) => ({
         label: String.fromCharCode(65 + index),
@@ -5916,6 +5919,7 @@ function CompactChatApp({
       theaterEnded={theaterPresentation.sessionEnded === true}
       theaterError={theaterPresentation.errorMessage}
       onTheaterEnd={onTheaterEnd}
+      onTheaterSkipPlayback={theaterPresentation.phase === 'performing' ? onTheaterSkipPlayback : undefined}
       selectedIds={compactExportSelectedIds}
       selectedCount={compactExportSelectedCount}
       selectableCount={compactExportSelectableCount}

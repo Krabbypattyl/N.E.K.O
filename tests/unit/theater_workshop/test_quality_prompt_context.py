@@ -14,6 +14,18 @@ from .test_numeric_v2_generation import (
 from .test_numeric_v2_plan_review import ready_payload
 
 
+def test_assessment_reads_temporal_plan_without_adding_text_repair_permission():
+    story, authoring = _quality_story_context()
+    temporal = {"anchor": "午后", "relation_to_previous": "same_day"}
+    story["nodes"][0]["story_beat"].setdefault("character_state", {})["temporal_context"] = temporal
+    before = deepcopy(story)
+    context = NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring)
+    node = context["mainline"][0]
+    assert node["character_state"]["temporal_context"] == temporal
+    assert all("temporal_context" not in field for field in node["text_repair_fields"])
+    assert story == before
+
+
 @pytest.mark.parametrize("effect", ["none", "positive", "negative", None])
 def test_assessment_receives_actual_relationship_effect_and_existing_missing_default(effect):
     story, authoring = _quality_story_context()
@@ -34,10 +46,10 @@ def test_assessment_receives_actual_relationship_effect_and_existing_missing_def
     assessor.call_llm = reply
     assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
     assert [operation for operation, _ in received] == [
-        "numeric_v2_fact_review", "numeric_v2_quality_assessment",
+        *["numeric_v2_fact_review"] * len(story["nodes"]), "numeric_v2_quality_assessment",
     ]
     assert received[0][1]["metrics"][0]["relationship_effect"]["text"] == (effect or "none")
-    assert received[1][1]["metrics"][0]["relationship_effect"] == (effect or "none")
+    assert received[-1][1]["metrics"][0]["relationship_effect"] == (effect or "none")
     assert story == before
 
 
@@ -62,6 +74,8 @@ def test_formal_background_is_citable_and_reaches_all_assessment_and_repair_stag
         assert "HIDDEN_AUTHOR_RULE_DO_NOT_PROJECT" not in messages[1]["content"]
         outline = request["story_outline"]
         if operation == "numeric_v2_fact_review":
+            if request["checked_node_ids"] != ["mainline_01"]:
+                return json.dumps({"checked_node_ids": request["checked_node_ids"], "issues": []})
             assert outline["background"]["text"] == background
             assert list(outline).index("background") < list(outline).index("mainline")
             return json.dumps({"checked_node_ids": request["checked_node_ids"], "issues": [{
@@ -77,6 +91,9 @@ def test_formal_background_is_citable_and_reaches_all_assessment_and_repair_stag
             # Review has not occurred; do not give the judge a negative conclusion inferred from the absence of review.
             assert "repairable" not in request["proposed_issues"][0]
             assert "repair_reason" not in request["proposed_issues"][0]
+            assert set(request["proposed_issues"][0]) == {
+                "issue_id", "problem", "evidence", "target_node_ids", "repair_targets",
+            }
             return json.dumps(review_payload(request["proposed_issues"]), ensure_ascii=False)
         if operation == "numeric_v2_quality_assessment":
             return json.dumps(_quality_wire_payload(_quality_payload()), ensure_ascii=False)
@@ -101,7 +118,7 @@ def test_formal_background_is_citable_and_reaches_all_assessment_and_repair_stag
     expected["nodes"][0]["story_beat"]["opening_scene"] = corrected
     assert repaired == expected
     assert story == before and authoring == authoring_before
-    assert calls == ["numeric_v2_fact_review", "numeric_v2_fact_evidence_review", "numeric_v2_quality_assessment",
+    assert calls == [*["numeric_v2_fact_review"] * len(story["nodes"]), "numeric_v2_fact_evidence_review", "numeric_v2_quality_assessment",
                      "numeric_v2_repair_plan_review", "numeric_v2_quality_single_node_optimization"]
 
 

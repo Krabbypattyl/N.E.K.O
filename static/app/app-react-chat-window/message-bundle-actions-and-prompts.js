@@ -525,6 +525,9 @@
     I.handleTheaterEnd = function handleTheaterEnd() {
         if (typeof I.state.onTheaterEnd === 'function') I.state.onTheaterEnd();
     };
+    I.handleTheaterSkipPlayback = function handleTheaterSkipPlayback() {
+        if (typeof I.state.onTheaterSkipPlayback === 'function') I.state.onTheaterSkipPlayback();
+    };
 
     I.handleAvatarInteraction = function handleAvatarInteraction(payload) {
         var detail = payload || {};

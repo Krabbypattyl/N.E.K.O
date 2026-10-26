@@ -1725,6 +1725,7 @@ def test_invite_game_configs_and_i18n_complete():
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
     expected_urls = {
+        'theater': '/theater',
         'watch-together': '/watch_together',
         'soccer': '/soccer_demo',
         'badminton': '/badminton_demo',
@@ -1814,3 +1815,76 @@ async def test_short_circuit_invite_respects_round_ownership(monkeypatch, retire
             == "current-round"
         )
     assert state_machine.proactive_round_id == "current-round"
+
+
+@pytest.mark.parametrize(
+    ('games_enabled', 'theater_enabled', 'expected'),
+    [(False, True, ['theater']), (True, False, ['soccer', 'badminton', 'air_basketball']),
+     (False, False, []), (True, True, ['soccer', 'badminton', 'air_basketball', 'theater'])],
+)
+def test_theater_invite_toggle_selects_independently(monkeypatch, games_enabled, theater_enabled, expected):
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES',
+                        ('soccer', 'badminton', 'air_basketball', 'theater'))
+    seen = []
+    monkeypatch.setattr('random.choice', lambda candidates: seen.extend(candidates) or candidates[0])
+    selected = sr._pick_mini_game_type(
+        LANLAN, user_toggle_enabled=games_enabled, theater_toggle_enabled=theater_enabled,
+    )
+    assert seen == expected
+    assert selected == (expected[0] if expected else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('choice,action', [('accept', 'open_game'), ('decline', 'cooldown'), ('later', 'suppress')])
+async def test_theater_invite_reuses_response_and_cooldown(monkeypatch, choice, action):
+    from main_logic.proactive_chat import mini_game_invite as invites
+    monkeypatch.setattr(invites, "_select_theater_story", AsyncMock(return_value={"id": 42, "revision": 3, "file_sha256": "a" * 64}))
+    from urllib.parse import parse_qs, urlparse
+
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(), activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=False, theater_toggle_enabled=True,
+    )
+    assert out is not None
+    assert out['game_type'] == 'theater'
+    result = sr._apply_mini_game_invite_choice(LANLAN, choice, source='button')
+    assert result['action'] == action
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'theater')
+    if choice == 'accept':
+        parsed = urlparse(result['game_url'])
+        assert parsed.path == '/theater'
+        assert parse_qs(parsed.query) == {'lanlan_name': [LANLAN], 'session_id': [out['invite_session_id']],
+                                            'market': ['selected'], 'share_id': ['42'], 'market_revision': ['3'],
+                                            'file_sha256': ['a' * 64]}
+        assert result['game_type'] == 'theater'
+    else:
+        assert 'game_url' not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('enabled', [False, True])
+async def test_forced_theater_invite_respects_own_toggle(monkeypatch, enabled):
+    from main_logic.proactive_chat import mini_game_invite as invites
+    monkeypatch.setattr(invites, "_select_theater_story", AsyncMock(return_value={"id": 42, "revision": 3, "file_sha256": "a" * 64}))
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'theater')
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(), activity_snapshot=None,
+        invite_lang='en', master_name=MASTER,
+        user_toggle_enabled=not enabled, theater_toggle_enabled=enabled,
+    )
+    assert (out is not None) is enabled
+
+
+def test_theater_toggle_payload_and_persistence_are_independent():
+    from main_logic.proactive_chat.contracts import ProactiveChatCommand
+    from utils.preferences import _validate_conversation_settings
+
+    command = ProactiveChatCommand.from_payload({
+        'mini_game_invite_enabled': False, 'theater_invite_enabled': True,
+    })
+    assert command.theater_invite_enabled and not command.mini_game_invite_enabled
+    assert not ProactiveChatCommand.from_payload({}).theater_invite_enabled
+    settings = {'proactiveMiniGameInviteEnabled': False, 'proactiveTheaterInviteEnabled': True}
+    assert _validate_conversation_settings(settings) == settings

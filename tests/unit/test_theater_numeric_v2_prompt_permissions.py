@@ -195,7 +195,7 @@ def test_opening_does_not_assign_later_turn_or_transition_tasks():
     assert '已实施的动作是已发生事实' not in system
     assert 'current_story_beat.opening_scene' in system
     assert 'opening_deliverables' not in system
-    assert '2—3' in system
+    assert '一至三条' in system
     assert '不得假定玩家已经说话' in _payload(messages)['instruction']
 
 
@@ -212,6 +212,6 @@ def test_suggestion_fill_only_assigns_suggestion_duties(boundary, offered):
     assert '来源禁令不延伸到目标段' not in system
     assert 'scene_update' not in system
     assert sum(m.content.count(boundary) for m in messages) == 1
-    assert '2—3' in system
+    assert '一至三条' in system
     assert ('accept_input' in system) == offered
     assert _payload(messages)['visible_performance'] == '先确认许可，再决定下一步。'

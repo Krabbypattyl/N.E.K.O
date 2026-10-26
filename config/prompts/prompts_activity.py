@@ -2134,6 +2134,16 @@ ANTI_SLACK_REMINDER_PROMPT: dict[str, str] = {
 # the existing mini-game invite structure.
 # Placeholders: {master} {app} {minutes}
 WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
+    "theater": {
+        "zh": "{master}已经在{app}专注工作{minutes}分钟了。用符合你性格的方式，简短自然地关心对方，并邀请挑个剧本一起演绎小剧场、休息一下。只说邀请，不输出思考过程。",
+        "zh-TW": "{master}已經在{app}專注工作{minutes}分鐘了。用符合你個性的方式，簡短自然地關心對方，並邀請挑個劇本一起演繹小劇場、休息一下。只說邀請，不輸出思考過程。",
+        "en": "{master} has focused on {app} for {minutes} minutes. Briefly and naturally show care in your own character voice and invite them to pick a story and act it out together in the theater for a break. Output only the invitation, no reasoning.",
+        "ja": "{master}は{app}で{minutes}分間集中しています。あなたらしく短く自然に気遣い、休憩に台本を選んで一緒にミニシアターで演じようと誘ってください。誘いの言葉だけを出力し、思考過程は出力しないでください。",
+        "ko": "{master}가 {app}에서 {minutes}분 동안 집중했습니다. 캐릭터답게 짧고 자연스럽게 배려하며, 쉬면서 대본을 골라 작은 극장에서 함께 연기하자고 초대하세요. 생각 과정 없이 초대만 출력하세요.",
+        "ru": "{master} работает в {app} уже {minutes} минут. Коротко и естественно прояви заботу в стиле своего персонажа и пригласи выбрать историю и вместе разыграть её в мини-театре на перерыве. Выведи только приглашение, без рассуждений.",
+        "es": "{master} lleva {minutes} minutos concentrado en {app}. Muestra interés de forma breve y natural con tu personalidad e invítalo a elegir una historia e interpretarla juntos en el teatro para descansar. Escribe solo la invitación, sin razonamiento.",
+        "pt": "{master} está concentrado em {app} há {minutes} minutos. Demonstre cuidado de forma breve e natural com sua personalidade e convide para escolher uma história e encenar juntos no teatro durante uma pausa. Escreva só o convite, sem raciocínio.",
+    },
     "watch-together": {
         "zh": "========以下为环境提示========\n{master}已经在{app}专注工作{minutes}分钟了。用符合你性格的方式，简短自然地关心对方，并邀请一起看一个短视频放松一下。只说邀请，不输出思考过程。\n========以上为环境提示========",
         "zh-TW": "========以下为环境提示========\n{master}已經在{app}專注工作{minutes}分鐘了。用符合你個性的方式，簡短自然地關心對方，並邀請一起看個短影片放鬆一下。只說邀請，不輸出思考過程。\n========以上为环境提示========",

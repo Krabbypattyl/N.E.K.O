@@ -77,7 +77,6 @@ from services.theater.numeric_v2_store import (
 from services.theater.numeric_v2_workflow import (
     execute_numeric_v2_turn,
     generate_validated_opening,
-    invitation_recovery_contract,
 )
 from services.theater.tts_bridge import speak_committed_line
 from utils.cloudsave_runtime import (
@@ -326,15 +325,10 @@ def _surface_player_name(binding: Mapping[str, str], *, known: bool) -> str:
     return str(binding.get("player_address") or "你").strip() or "你"
 
 
-def _participants(binding: Mapping[str, str], *, known: bool) -> dict[str, str]:
-    """Speaker labels for the page's history; never a hard-coded Chinese placeholder.
+def _participants(binding: Mapping[str, str]) -> dict[str, str]:
+    """UI labels use the normal chat nickname, independently of in-story name disclosure."""
 
-    The cast projection keeps substituting the second-person pronoun into the (Chinese) story prose while
-    the address is undisclosed. Labels are UI chrome instead: an unknown or unset
-    name is sent empty so the page renders its own localized fallback.
-    """
-
-    player_name = _surface_player_name(binding, known=known)
+    player_name = str(binding.get("player_address") or "你").strip() or "你"
     return {
         # "你" is the projection placeholder / no-nickname default, not a name.
         "player_name": "" if player_name == "你" else player_name,
@@ -494,19 +488,13 @@ async def _numeric_payload(
     display_binding: Mapping[str, str] | None = None,
     story_projection_compatible: bool = True,
 ) -> dict[str, Any]:
-    from services.theater.numeric_v2_options import aload_theater_module_options
-
-    modules = await aload_theater_module_options()
     binding = display_binding or stored.session.catgirl_binding
     if not story_projection_compatible:
         # Old Sessions may end after script upgrades, but must not project new-script scenes as old story content.
         payload = {
             "session": {**_public_session(stored.session), "continuation_allowed": False},
             "story_title": str(runtime.engine.story["meta"]["title"]),
-            "participants": _participants(
-                binding,
-                known=bool(stored.session.player_address_known),
-            ),
+            "participants": _participants(binding),
             "story_intro": {},
             "scene": None,
             "suggested_inputs": [],
@@ -526,27 +514,17 @@ async def _numeric_payload(
         ),
         catgirl_name=str(binding.get("catgirl_name") or "当前猫娘"),
     )
-    try:
-        recovery_available = invitation_recovery_contract(
-            runtime, stored, condition_narrations_enabled=bool(modules.get("review")),
-        ) is not None
-    except NumericV2RuntimeError as exc:
-        # An unusable invitation must not prevent reading the session itself.
-        if str(exc) != "numeric_silent_choice_input_too_long":
-            raise
-        recovery_available = False
     payload = {
         "session": _public_session(stored.session),
         "story_title": str(runtime.engine.story["meta"]["title"]),
         # History attribution uses current display bindings; frontends must not infer player/catgirl names from local prose.
-        "participants": _participants(
-            binding,
-            known=bool(stored.session.player_address_known),
-        ),
+        "participants": _participants(binding),
         "story_intro": cast.intro(runtime.engine.story),
         "scene": _scene_projection(runtime, stored, binding),
         "suggested_inputs": list(latest.get("suggested_inputs") or []),
-        "invitation_recovery_available": recovery_available,
+        # 公开能力来自同一原生回执校验，客户端不接收作者出口表或自行推断目标。
+        "invitation_acceptance_available": bool(runtime.engine.invitation_acceptance_route(
+            stored.session, ledger_events=stored.ledger_events)),
     }
     if end_receipt:
         payload["end_receipt_id"] = str(end_receipt.get("receipt_id") or "")
@@ -647,64 +625,6 @@ async def list_numeric_memory_stories():
             result.append({**row, "memory_only": True})
     return {"ok": True, "stories": result, "character_id": binding["character_id"],
             "memory_available": available}
-
-
-@router.get("/options")
-async def get_numeric_options():
-    """Return optional theater-module switches, defaulting unset modules off except replies."""  # noqa: DOCSTRING_CJK
-
-    from services.theater.numeric_v2_options import aload_theater_module_options, disabled_effects
-
-    modules = await aload_theater_module_options()
-    return {
-        "ok": True,
-        "modules": modules,
-        "disabled_effects": disabled_effects(),
-        # Preserve existing frontend keys: dispute review corresponds to the dispute module.
-        "dispute_review_enabled": bool(modules.get("dispute")),
-    }
-
-
-@router.post("/options")
-async def set_numeric_options(request: Request):
-    """Save optional theater-module switches; accept declared module keys and booleans only, rejecting unknown keys."""  # noqa: DOCSTRING_CJK
-
-    payload = await _json_object(request)
-    validation_error = _validate_local_mutation_request(
-        request, payload=payload, error_defaults={"ok": False, "reason": "csrf_validation_failed"},
-    )
-    if validation_error is not None:
-        return validation_error
-    from services.theater.numeric_v2_options import (
-        aload_theater_module_options,
-        asave_theater_module_options,
-        disabled_effects,
-        option_keys,
-    )
-
-    changes: dict[str, bool] = {}
-    if "modules" in payload:
-        values = payload.get("modules")
-        if not isinstance(values, Mapping):
-            return _error("numeric_theater_options_invalid", 400)
-        for key, value in values.items():
-            if key not in option_keys() or not isinstance(value, bool):
-                return _error("numeric_theater_options_invalid", 400)
-            changes[str(key)] = value
-    if "dispute_review_enabled" in payload:
-        legacy = payload.get("dispute_review_enabled")
-        if not isinstance(legacy, bool):
-            return _error("numeric_theater_options_invalid", 400)
-        changes["dispute"] = legacy
-    if changes and not await asave_theater_module_options(changes):
-        return _error("numeric_theater_options_save_failed", 500)
-    modules = await aload_theater_module_options()
-    return {
-        "ok": True,
-        "modules": modules,
-        "disabled_effects": disabled_effects(),
-        "dispute_review_enabled": bool(modules.get("dispute")),
-    }
 
 
 @router.post("/packages/import")
@@ -1178,6 +1098,12 @@ async def _submit_numeric_input_once(
             return _error("session_already_ended", 409)
         if turn.base_revision != current.session.revision:
             return _error("numeric_base_revision_mismatch", 409)
+        if turn.input_source == "reinvite":
+            # Historical receipts remain readable/idempotent; new fallback requests are retired.
+            return _error("numeric_reinvitation_not_available", 422)
+        if turn.input_source == "accept_invitation" and not runtime.engine.invitation_acceptance_route(
+                current.session, ledger_events=current.ledger_events):
+            return _error("numeric_invitation_acceptance_not_available", 409)
         if (
             turn.input_source == "suggestion"
             and turn.message not in _current_suggested_inputs(current.session)
@@ -1229,6 +1155,8 @@ async def _submit_numeric_input_once(
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
     except (NumericV2RuntimeError, NumericV2StoreError) as exc:
+        if str(exc) == "numeric_invitation_acceptance_not_available":
+            return _domain_value_error(exc, 409)
         return _domain_value_error(exc, 400)
     except ValueError as exc:
         if str(exc) in {

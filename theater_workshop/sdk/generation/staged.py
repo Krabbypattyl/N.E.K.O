@@ -1,0 +1,391 @@
+"""Generate a fixed story frame, then commit one author scene at a time."""
+from __future__ import annotations
+
+from copy import deepcopy
+import json
+from typing import Mapping
+
+from ..model import LLMCallFailure
+from .numeric_v2 import (
+    NumericV2GenerationError, _AUTHORING_RUNTIME_RULES, _LENGTH_PRESETS,
+    _MAINLINE_OUTPUT_CONTRACT, _validate_idea_outline,
+)
+
+FLOW = "staged.v1"
+_CONTRACT = json.loads(_MAINLINE_OUTPUT_CONTRACT)
+_FRAME_CONTRACT = {
+    **{key: deepcopy(_CONTRACT[key]) for key in (
+        "world", "story_protagonist", "player_role", "relationship", "tone", "key_props",
+    )},
+    "relationship_arc": {key: value for key, value in _CONTRACT["relationship_arc"].items() if key != "stages"},
+    "mainline_chapters": [{"title": "本幕标题", "narrative": "本幕必要事件，关键线索的具体内容、来源与揭示事件，玩家可改变的安排，以及这些结果如何支持下一幕；只写规划"}],
+    "ending": {**{key: _CONTRACT["ending"][key] for key in ("type", "title")},
+               "summary": "各合法选择共同成立的收束，不用若/如果分别编写互斥结局，不固定可变处置或许可"},
+}
+_FRAME_PROMPT = """你是互动剧本策划。本轮只确定故事框架，不生成完整幕或可执行演出。
+尊重作者想法、世界边界和人物动机。主角是用户与自己的猫娘，使用 cast_names 的完整姓名及角色归属。
+身份分别以猫娘姓名和玩家姓名加中文逗号开头；无姓名时才用“女主，”“男主，”。
+章节数量严格满足 length；用因果、选择与代价连接各幕，保留玩家不同安排的空间，不预写玩家已经行动或同意。
+后幕依赖的人物位置、物品或许可，须在来源幕安排具体可演的交付；不能只写“取得线索”，却在后幕临时指定一个地址或前提。可选准备与真正必要结果分开。
+本合同只有一条主线和一个结局；作者允许多种选择时，后幕和结局只固定各合法选择共同保证的结果，不提前选定其中一项处置方式。具体做法可不同，不能在目标中允许多种结果，却在固定出口、道具状态或结局锁成一种。
+主线最后一幕仍有需要互动的事件，结局只收束结果，不能复制最后一幕凑幕数。
+关系弧的 opening_relationship 与 relationship 完全一致。道具 states 是规划，不证明玩家已取得、交付或操作完成。
+只按 output_contract 返回 JSON object。不要返回角色状态线、每幕目标、开场或桥段；后续逐幕生成。"""
+_SCENE_PROMPT = _AUTHORING_RUNTIME_RULES + """
+你是当前一幕的编剧。本轮只返回 output_contract 中的 chapter、relationship_stage、character_state_stage。
+story_frame 是已确定的策划；previous_scene 是前一幕作者稿，仍须区分受出口条件保证的结果与可能发生的互动。
+按照 assigned_chapter 的标题和核心因果写当前幕，不能重排、增删或重写其它幕。chapter_index 使用当前指定序号。
+narrative须把本幕框架展开为可演的具体因果，不照抄提纲。本幕负责锁定后幕人物或地点时，写明线索的具体内容、由谁在当前地点怎样交付及其指向的明确对象，不能只写“获得地址或身份线索”让演出另编对象。
+核对前幕出口、当前 entry_bridge、opening_scene 和开场演完后的三方状态：时段、地点、持物、立场和未决选择必须相容。
+前幕没有安排等候或改日时，entry_bridge不自行跨日；同日的自然经过仍须与开场时段相容。
+前幕narrative和目标是计划，不证明配角已经答复或同意。entry_bridge只承接来源出口与接受输入共同保证的移动，不扩大行动范围。出口只决定接触或尝试时，开场停在结果尚未发生的边界，所需配角接待、许可及结果后的姿态留在本幕turn中实际交付，不能凭本幕规划预先跨过。保留未决状态，不用“无论选择哪种”混合互斥结果。
+opening_scene 与 entry_bridge 不新增玩家行动、心理、台词或承诺；第一幕 entry_bridge 为空。桥段不重复开场。
+开场在需要玩家回应或操作的位置停笔：猫娘提出请求后，不能接着写玩家已经照做，也不能替玩家接话；这些内容留在 turn 目标。先写开场，再摘录收笔时的三方状态，不能第二遍设计场面；只保留开场或合法入路明确支持的姿态、视线、位置与持物，未明确的细节省略，不为填满状态补出动作或新道具，也不补玩家的心理、期待或决定。递出待接不等于已交付，已完成交接不仍写原持有人持物；开场确有后续动作时按最后状态摘录。
+每幕给出1—6项 ordered_goals，完整使用合同枚举。sources 只允许 opening、player_input、previous_goal；previous_goal 只指本幕前一个目标，不是前幕，首个目标不能引用它。player 目标 sources 包含 player_input；opening 最多一项。
+owner与delivery_type必须配对：catgirl对应catgirl_dialogue/catgirl_action，environment对应environment_fact，player对应player_action，shared对应shared_agreement；semantic_state可对应catgirl/player/shared。玩家与shared目标的timing均为turn。
+dialogue_policy_after通常为unchanged；只有睡眠、昏迷、禁言或恢复发声等真实权限变化才填写其它值，不用它表示暂时倾听或下一句想说话。
+completion_facts 是本幕独立可观察的结果；Runtime的completion_contract只由exit_plan.trigger_fact_ids引用的事实组成，目标列表和preserve_facts不会保证结果发生。下一幕确实依赖的本幕交付或配角答复须在本幕可见演出中完成，并由trigger_fact_ids引用；决定去商量不等于已获对方同意。只纳入必要结果，不把可选准备、接受换幕或下一幕结果当本幕完成。
+非最后主线幕的 fallback_offer 和 accept_input 必须是对应同一具体安排的完整邀请与接受输入；最后主线幕两项为空，自然进入结局。最后一幕也完整返回 exit_plan；preserve_facts、carry_props 等数组没有条目时返回[]，不省略字段或用空对象代替。
+只有按本幕目标顺序最终仍 forbidden 时才可省略口头邀请，并填写 silent_choice 的具体去向和待接受安排。
+关系与三方状态使用已有合同，不因换幕重置；沿用已知名字、持物和未决分歧，关系上限相邻最多变化一级。known_player_facts、allowed_behaviors、forbidden_behaviors各最多4项；known_player_facts 每条以玩家全名开头。catgirl_situation只写开场时猫娘已有的顾虑或立场，不重复位置、持物，不提前认定本幕目标已发生。progress_opportunity以猫娘全名或“环境”开头，写清什么实际互动可引起怎样的有限态度变化；玩家拒绝或条件未成立时保留分歧，不预写回应或自动升温。第一幕address_state不能使用known_from_prior_scene。scene_boundaries 每条按当前NEKO合同以“不得”“禁止”或“不能”开头，正向状态写入三方state，不转成禁令。
+短篇 expected_turns 不超过8，合并重复事件，不删核心选择。未要求固定原文时省略 fixed_narrations，不凭例子新增资产。
+文字要简洁：三方状态、本幕处境、关系与道具会共同组装到384-token字段，不能每项各写成长段。
+issues.path 是当前输出中的修订位置，source_path 是整稿定位。native_validation_issues 是本幕正式编译错误；只修当前返回对象，保留其它正文与事件，不修改已完成前幕、后幕或故事框架。只返回 JSON object。"""
+_ENDING_PROMPT = _AUTHORING_RUNTIME_RULES + """
+本轮只生成结局 ending 与 ending_stage，使用 output_contract。previous_scene.chapter.completion_facts只含末幕离幕合同保证的结果，据此收束，不补做后续计划。
+previous_scene.character_state_stage只保留权限与边界，不是出幕状态。结局聚焦已保证结果的猫娘反应，不从前幕入幕推定地点、陈设、姿态或持物，也不另安排换场。
+交付、许可或活动尚未实际完成时，结局保留当前准备状态，不安排新互动、玩家动作或跨时段后果。
+同场自然收束不需要换场旁白，ending.entry_bridge返回空字符串，不为填满字段写编写说明。
+结局没有普通回合，不留待玩家回答的新问题或新决定，不借收束替玩家承诺、离开或执行附加动作。
+结局开场、摘要与三方状态是同一时点；状态摘录开场收笔时已有依据的姿态与持物，未明确的细节省略，不另设计画面或新道具。承接人物改变的原因，保留合法分歧，不复制最后一幕全文。
+只固定各合法选择共同保证的结果；处置方式、道具归属或去向取决于玩家选择时，不在静态结局擅自选定一种。
+ending_stage 不带 chapter_index，continuity_from_previous 不能为空。各项简洁，组合字段上限384 tokens。
+catgirl_state、player_state分别以cast_names中猫娘和玩家的完整姓名开头，environment_state以“环境”开头；没有姓名时才用“女主”“男主”。
+scene_boundaries 只放以“不得”“禁止”或“不能”开头的负向边界，正向描述放在对应状态字段。
+output_contract中的字符串是字段说明，返回时须换成实际正文；entry_bridge写可直接展示的旁白，不返回编写规则。
+若有 issues，修正当前结局，已完成主线与框架保持。只返回 JSON object。"""
+_STATE_PROMPT = """只从opening_scene收笔时的事实摘录三方状态与当前处境，不续写或另设计画面。
+按cast_names辨明猫娘与玩家；三字段分别以猫娘全名、玩家全名和“环境”开头。
+除这两个指定姓名外，店主、师傅、老人等配角都不是玩家；按明确指代核对，不能为填满玩家状态把配角动作换成玩家姓名。玩家状态没有依据时只写其具体状态未明确，不补站坐、手势或持物。
+只保留原文已建立的位置、姿态、视线和物件状态；未写的手势、心理、期待、决定和持物都不补。
+最后动作覆盖更早动作；多人共同持物保留共同范围，放在身旁不等于拿在手中，递出待接不等于已交付。
+不把比喻、假设或问句的前提当作实际状态；未明确的细节省略。简短概括当前状态，不复述完整动作过程。
+合同要求catgirl_situation时，只摘录开场明确的猫娘顾虑、立场或未决问题；未交代就说明未明确，不借未来目标补写，不重复三方物理状态。
+temporal_context可选：anchor逐字摘录开场或entry_bridge明确建立的本幕当前时间短语；relation_to_previous只填unspecified、same_day、next_day或after_interval。前幕关系不明确填unspecified；桥段明确同日时用same_day，不细分同一时段与稍晚时段。时间未交代时省略整个字段，或返回anchor为空字符串且relation_to_previous为unspecified，表示未知。对白中的未来约定、假设或回忆不建立当前时间，普通换幕也不自动变为次日。entry_bridge只供时序核对，不用它覆盖开场收笔状态。
+只按output_contract返回JSON对象；若有issues，仅纠正本次摘录。"""
+
+
+def _belongs(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith((prefix + ".", prefix + "["))
+
+
+def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None, save_checkpoint=None):
+    """Keep completed scenes in the checkpoint; retries only replace the current phase."""
+    brief = str(setup.get("brief") or "").strip()
+    if len("".join(brief.split())) <= 30:
+        raise NumericV2GenerationError("mainline_generation_input_too_short")
+    preset = setup.get("length_preset")
+    if preset not in _LENGTH_PRESETS:
+        raise NumericV2GenerationError("invalid_length_preset")
+    minimum, maximum = _LENGTH_PRESETS[preset]
+    state = deepcopy(dict(checkpoint)) if checkpoint is not None else {
+        "flow": FLOW, "stage": "frame", "candidate": {}, "completed_chapters": 0,
+        "phase_candidate": None, "issues": [],
+        **({"cast_names": dict(cast_names)} if cast_names is not None else {}),
+    }
+    if state.get("flow") != FLOW:
+        raise NumericV2GenerationError("generation_checkpoint_invalid")
+    names = state.get("cast_names")
+    if names is not None and (
+        not isinstance(names, Mapping)
+        or any(not isinstance(names.get(key), str) or not names[key].strip()
+               or names[key] != names[key].strip() for key in ("player_name", "catgirl_name"))
+        or names["player_name"] == names["catgirl_name"]
+    ):
+        raise NumericV2GenerationError("invalid_cast_names")
+    attempts = 0
+
+    def outline_issues(candidate):
+        return _validate_idea_outline(candidate, minimum=minimum, maximum=maximum,
+            scene_expected_turns_target=8 if preset == "short" else None,
+            cast_names=names, token_counter=generator._token_counter)
+
+    def persist():
+        if save_checkpoint is not None:
+            save_checkpoint(deepcopy(state))
+
+    def phase(system, contract, context, validate, operation, max_tokens, locations=()):
+        nonlocal attempts
+        draft = state.get("phase_candidate")
+        issues = validate(draft) if isinstance(draft, Mapping) else []
+        # Structural validation cannot reproduce all saved author/review diagnostics.
+        if not issues:
+            issues = deepcopy(state.get("issues") or [])
+        last_failure = None
+        for _ in range(3):
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({
+                    **context, "cast_names": names, "output_contract": contract,
+                    "current_candidate": draft,
+                    # Validator paths refer to the assembled outline; the model edits a phase response.
+                    "issues": [{**issue, "source_path": issue["path"], "path": next(
+                        (target + issue["path"][len(source):] for source, target in locations
+                         if _belongs(issue["path"], source)), issue["path"])} for issue in issues],
+                }, ensure_ascii=False)},
+            ]
+            attempts += 1
+            try:
+                response = generator.call_llm(messages, temperature=0.25, max_tokens=max_tokens,
+                    max_retries=1, response_format={"type": "json_object"},
+                    thinking={"type": "disabled"}, operation=operation)
+            except Exception as error:
+                # Preserve host refusals (budget, revision, storage) as their original public errors.
+                error.checkpoint = deepcopy(state)
+                raise
+            if isinstance(response, LLMCallFailure):
+                last_failure = response
+                continue
+            parsed = generator.parse_json_response(response) if isinstance(response, str) else None
+            if not isinstance(parsed, Mapping) or parsed.get("parse_error"):
+                continue
+            draft = deepcopy(dict(parsed))
+            state["phase_candidate"] = draft
+            issues = validate(draft)
+            state["issues"] = issues
+            if not issues:
+                return draft
+        raise NumericV2GenerationError(
+            last_failure.error_code if last_failure is not None else "invalid_mainline_generation",
+            checkpoint=deepcopy(state), issues=issues, attempts=attempts,
+            provider_details=last_failure.diagnostic() if last_failure is not None else None,
+        )
+
+    def extract_states(draft, scene_key, state_key, validate, locations):
+        # Persist the written scene before the short call; a failed extraction resumes here.
+        if "written_scene" not in state:
+            state.update(written_scene=deepcopy(draft), phase_candidate=None, issues=[])
+            persist()
+        fields = ("catgirl_state", "player_state", "environment_state")
+        if scene_key == "chapter":
+            fields += ("catgirl_situation",)
+
+        def apply_excerpt(excerpt):
+            result = deepcopy(draft)
+            result[state_key].pop("temporal_context", None)
+            result[state_key].update({key: value for key, value in excerpt.items()
+                if key != "catgirl_situation" and not (key == "temporal_context" and value == {
+                    "anchor": "", "relation_to_previous": "unspecified"})})
+            if "catgirl_situation" in excerpt:
+                result[scene_key]["catgirl_situation"] = excerpt["catgirl_situation"]
+            return result
+
+        def validate_excerpt(excerpt):
+            if (set(excerpt) - {"temporal_context"} != set(fields)
+                    or any(not isinstance(excerpt.get(key), str) for key in fields)):
+                return [{"code": "expected_state_strings", "path": "", "message": "按合同返回三方状态及当前处境字符串，temporal_context可省略。"}]
+            issues = validate(apply_excerpt(excerpt))
+            temporal = excerpt.get("temporal_context")
+            if isinstance(temporal, Mapping) and isinstance(temporal.get("anchor"), str):
+                anchor = temporal["anchor"]
+                if anchor not in draft[scene_key]["opening_scene"] and anchor not in draft[scene_key].get("entry_bridge", ""):
+                    issues.append({"code": "temporal_anchor_without_source", "path": "temporal_context.anchor",
+                                   "message": "时间锚须逐字来自本次开场或入幕桥段，不推断日期。"})
+            return issues
+
+        excerpt = phase(_STATE_PROMPT, {
+            "catgirl_state": f"以{(names or {}).get('catgirl_name', '女主')}开头的开场收笔状态",
+            "player_state": f"以{(names or {}).get('player_name', '男主')}开头的开场收笔状态",
+            "environment_state": "以环境开头的开场收笔状态",
+            **({"catgirl_situation": "开场明确的猫娘当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
+            "temporal_context": {"anchor": "有依据时逐字摘录当前时间短语，未交代则省略整个temporal_context",
+                                 "relation_to_previous": "unspecified | same_day | next_day | after_interval"},
+        }, {"opening_scene": draft[scene_key]["opening_scene"],
+            "entry_bridge": draft[scene_key].get("entry_bridge", "")}, validate_excerpt,
+            "numeric_v2_opening_state_extraction", 600, locations)
+        result = apply_excerpt(excerpt)
+        state.pop("written_scene")
+        return result
+
+    candidate = state["candidate"]
+    if state["stage"] == "frame":
+        def validate_frame(frame):
+            prefixes = ["world", "story_protagonist", "player_role", "relationship", "tone",
+                        "key_props", "relationship_arc.opening_relationship",
+                        "relationship_arc.long_term_direction", "ending.type", "ending.title", "ending.summary"]
+            chapters = frame.get("mainline_chapters")
+            issues = outline_issues(frame)
+            return [issue for issue in issues if any(
+                _belongs(issue["path"], prefix) for prefix in prefixes)
+                or issue["path"] == "mainline_chapters"
+                or (isinstance(chapters, list) and any(
+                    issue["path"] in (f"mainline_chapters[{index}].title", f"mainline_chapters[{index}].narrative")
+                    for index in range(len(chapters))))]
+        frame = phase(_FRAME_PROMPT, _FRAME_CONTRACT,
+            {"core_idea": brief, "author_setup": dict(setup),
+             "length": {"preset": preset, "minimum": minimum, "maximum": maximum}},
+            validate_frame, "numeric_v2_story_frame", 5000)
+        candidate = deepcopy(frame)
+        candidate["relationship_arc"]["stages"] = []
+        candidate["character_state_arc"] = {"stages": [], "ending_stage": {}}
+        state.update(candidate=candidate, stage="chapter", phase_candidate=None, issues=[])
+        persist()
+
+    frame = {
+        **{key: deepcopy(candidate[key]) for key in _FRAME_CONTRACT if key not in ("mainline_chapters", "ending")},
+        "mainline_chapters": [
+            {key: chapter[key] for key in ("title", "narrative")}
+            for chapter in candidate["mainline_chapters"]
+        ],
+        "ending": {key: candidate["ending"][key] for key in ("type", "title", "summary")},
+    }
+    frame["relationship_arc"].pop("stages", None)
+    count = len(candidate["mainline_chapters"])
+
+    def previous(index):
+        if index == 0:
+            return None
+        return {"chapter": deepcopy(candidate["mainline_chapters"][index - 1]),
+                "relationship_stage": deepcopy(candidate["relationship_arc"]["stages"][index - 1]),
+                "character_state_stage": deepcopy(candidate["character_state_arc"]["stages"][index - 1])}
+
+    while ((state["stage"] == "chapter" and state["completed_chapters"] < count)
+           or (state["stage"] == "repair" and state["repairs"][0] < count)):
+        repairing = state["stage"] == "repair"
+        index = state["repairs"][0] if repairing else state["completed_chapters"]
+        if repairing and state.get("phase_candidate") is None and "written_scene" not in state:
+            state["phase_candidate"] = {"chapter": deepcopy(candidate["mainline_chapters"][index]),
+                "relationship_stage": deepcopy(candidate["relationship_arc"]["stages"][index]),
+                "character_state_stage": deepcopy(candidate["character_state_arc"]["stages"][index])}
+        assigned = deepcopy(frame["mainline_chapters"][index])
+        prior_issues = outline_issues(candidate) if repairing else []
+        contract = {"chapter": {**_CONTRACT["mainline_chapters"][0],
+                        "opening_scene": "首幕可使用作者初始设定；后续幕只写环境、NPC与猫娘，并承接已选出口的直接结果，不新增玩家手势、视线、站坐或持物变化，待玩家实施的动作留在turn"},
+                    # The example is part of the model's input contract, so make its required subject explicit too.
+                    "relationship_stage": {**_CONTRACT["relationship_arc"]["stages"][0],
+                        "known_player_facts": [f"以{(names or {}).get('player_name', '男主')}开头，只列开场前已知或入路保证的事实，不把本幕turn目标中的玩家决定提前写成已知"],
+                        "progress_opportunity": f"以{(names or {}).get('catgirl_name', '女主')}或环境开头，说明本幕提供的具体关系发展机会，不代表自动升温"},
+                    "character_state_stage": {**_CONTRACT["character_state_arc"]["stages"][0],
+                        "catgirl_state": f"以{(names or {}).get('catgirl_name', '女主')}开头，摘录opening_scene收笔时的明确状态；未写的手势、视线和持物省略，不另设计姿态，不填动作前状态",
+                        "player_state": f"以{(names or {}).get('player_name', '男主')}开头，摘录opening_scene收笔时已有依据的状态；不新增手势、持物、玩家动作、台词或选择",
+                        "environment_state": "以环境开头，地点、时段和物件位置与opening_scene演完后的三方状态相容"}}
+
+        def validate_scene(draft, *, extracted=False):
+            required = ("chapter", "relationship_stage", "character_state_stage")
+            missing = [{"code": "expected_object", "path": key, "message": "必须返回当前幕的完整对象。"}
+                       for key in required if not isinstance(draft.get(key), Mapping)]
+            if missing:
+                return missing
+            proposed = deepcopy(candidate)
+            proposed["mainline_chapters"][index] = draft["chapter"]
+            for field, key in (("relationship_arc", "relationship_stage"), ("character_state_arc", "character_state_stage")):
+                stages = proposed[field]["stages"]
+                if index < len(stages):
+                    stages[index] = deepcopy(draft[key])
+                else:
+                    stages.append(deepcopy(draft[key]))
+            if not extracted:
+                # Only the opening extractor owns time; stale writer output is replaced before publication.
+                proposed["character_state_arc"]["stages"][index].pop("temporal_context", None)
+            prefixes = (f"mainline_chapters[{index}]", f"relationship_arc.stages[{index}]",
+                        f"character_state_arc.stages[{index}]")
+            issues = [issue for issue in outline_issues(proposed) if any(
+                _belongs(issue["path"], prefix) for prefix in prefixes)
+                or (repairing and issue not in prior_issues)]
+            if draft["chapter"].get("title") != assigned["title"]:
+                issues.append({"code": "assigned_title_changed", "path": "chapter.title",
+                               "message": "沿用故事框架指定的当前幕标题，不重排剧情。"})
+            return issues
+
+        source_scene = previous(index)
+        if source_scene is not None:
+            # This bridge entered the source; only its exit plan can authorize the next bridge.
+            source_scene["chapter"].pop("entry_bridge", None)
+        draft = deepcopy(state["written_scene"]) if "written_scene" in state else phase(_SCENE_PROMPT, contract, {
+            "story_frame": frame, "assigned_chapter": assigned, "chapter_index": index + 1,
+            "previous_scene": source_scene, "is_final_mainline": index == count - 1,
+            "next_outline": frame["mainline_chapters"][index + 1] if index + 1 < count else frame["ending"],
+            "following_scene": previous(index + 2) if repairing and index + 1 < count else None,
+            "native_validation_issues": [issue for issue in state.get("native_issues", [])
+                if _belongs(issue.get("path", ""), f"nodes[{index}]")],
+        }, validate_scene, "numeric_v2_chapter_generation", 5000, (
+            (f"mainline_chapters[{index}]", "chapter"),
+            (f"relationship_arc.stages[{index}]", "relationship_stage"),
+            (f"character_state_arc.stages[{index}]", "character_state_stage"),
+        ))
+        draft = extract_states(draft, "chapter", "character_state_stage", lambda value: validate_scene(value, extracted=True), tuple(
+            (f"character_state_arc.stages[{index}].{field}", field)
+            for field in ("catgirl_state", "player_state", "environment_state", "temporal_context"))
+            + ((f"mainline_chapters[{index}].catgirl_situation", "catgirl_situation"),))
+        candidate["mainline_chapters"][index] = deepcopy(draft["chapter"])
+        for field, key in (("relationship_arc", "relationship_stage"), ("character_state_arc", "character_state_stage")):
+            stages = candidate[field]["stages"]
+            if index < len(stages):
+                stages[index] = deepcopy(draft[key])
+            else:
+                stages.append(deepcopy(draft[key]))
+        state.update(phase_candidate=None, issues=[])
+        if repairing:
+            state["repairs"].pop(0)
+            if not state["repairs"]:
+                state["stage"] = "complete"
+        else:
+            state["completed_chapters"] = index + 1
+        if not repairing and index + 1 == count:
+            state["stage"] = "ending"
+        persist()
+
+    if state["stage"] == "ending" or (state["stage"] == "repair" and state["repairs"] == [count]):
+        if state["stage"] == "repair" and state.get("phase_candidate") is None and "written_scene" not in state:
+            state["phase_candidate"] = {"ending": deepcopy(candidate["ending"]),
+                "ending_stage": deepcopy(candidate["character_state_arc"]["ending_stage"])}
+        def validate_ending(draft, *, extracted=False):
+            if not isinstance(draft.get("ending"), Mapping) or not isinstance(draft.get("ending_stage"), Mapping):
+                return [{"code": "expected_object", "path": "ending", "message": "必须返回 ending 和 ending_stage 对象。"}]
+            proposed = deepcopy(candidate)
+            proposed["ending"] = draft["ending"]
+            proposed["character_state_arc"]["ending_stage"] = deepcopy(draft["ending_stage"])
+            if not extracted:
+                proposed["character_state_arc"]["ending_stage"].pop("temporal_context", None)
+            return outline_issues(proposed)
+        ending_source = previous(count)
+        last_chapter = ending_source["chapter"]
+        # A proposed next activity is not a completed fact for the input-closed ending.
+        ending_source["chapter"] = {"title": last_chapter["title"], "completion_facts": [
+            fact for fact in last_chapter["completion_facts"]
+            if fact["id"] in last_chapter["exit_plan"]["trigger_fact_ids"]]}
+        # No entry-time physical state proves where or how the player's final choice ended.
+        ending_source["character_state_stage"] = {key: value for key, value in
+            ending_source["character_state_stage"].items()
+            if key not in ("catgirl_state", "player_state", "environment_state", "continuity_from_previous", "temporal_context")}
+        draft = deepcopy(state["written_scene"]) if "written_scene" in state else phase(_ENDING_PROMPT,
+            {"ending": {**_CONTRACT["ending"],
+                "summary": "只概括completion_facts已明确的结果和猫娘对此的回应；不替泛指共识补出具体方案、许可或物品去向",
+                "opening_scene": "在当前位置以猫娘的简短反应收束；完成事实未明确的物品归属、交接和答复省略，不写玩家新行动",
+                "entry_bridge": "",
+            }, "ending_stage": {
+                **_CONTRACT["character_state_arc"]["ending_stage"],
+                "catgirl_state": "摘录本次ending.opening_scene收笔时猫娘的明确状态，不复制前幕初始姿态或持物",
+                "player_state": "摘录本次结局开场已明确的玩家状态，不补心理、期待或新动作",
+                "environment_state": "摘录本次结局开场的地点、时段和物件位置；物品不在场就不再描写触碰或注视它",
+                "continuity_from_previous": ["用自然语言重述本次completion_facts保证的结果，不填写ID，不新增处置、物品归属或许可"],
+            }},
+            {"story_frame": {key: frame[key] for key in
+                ("world", "story_protagonist", "player_role", "tone")},
+             "ending_identity": {key: frame["ending"][key] for key in ("type", "title")},
+             "previous_scene": ending_source,
+             "native_validation_issues": [issue for issue in state.get("native_issues", [])
+                 if _belongs(issue.get("path", ""), f"nodes[{count}]")]},
+            validate_ending, "numeric_v2_ending_generation", 3000,
+            (("character_state_arc.ending_stage", "ending_stage"),))
+        draft = extract_states(draft, "ending", "ending_stage", lambda value: validate_ending(value, extracted=True), tuple(
+            (f"character_state_arc.ending_stage.{field}", field)
+            for field in ("catgirl_state", "player_state", "environment_state", "temporal_context")))
+        candidate["ending"] = deepcopy(draft["ending"])
+        candidate["character_state_arc"]["ending_stage"] = deepcopy(draft["ending_stage"])
+        state.update(stage="complete", phase_candidate=None, issues=[])
+        state.pop("repairs", None)
+        persist()
+
+    return generator._generation_result(title=title, normalized_idea=brief, normalized_setup=setup,
+        candidate=candidate, cast_names=names)

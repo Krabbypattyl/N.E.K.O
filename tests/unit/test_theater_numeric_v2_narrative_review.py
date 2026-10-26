@@ -100,7 +100,7 @@ def test_schema_requests_narrative_confirmation_only_for_enabled_drafts(enabled)
 
 @pytest.mark.parametrize("phase", ["ordinary", "formal", "opening"])
 @pytest.mark.asyncio
-async def test_narrative_table_uses_one_existing_review_in_all_body_phases(monkeypatch, phase):
+async def test_narrative_table_stays_in_scene_review_in_all_body_phases(monkeypatch, phase):
     engine, session = _context()
     event_phase = {"ordinary": "turn", "formal": "source_response", "opening": "opening"}[phase]
     event = _event(phase=event_phase)
@@ -124,6 +124,8 @@ async def test_narrative_table_uses_one_existing_review_in_all_body_phases(monke
             return False
 
         async def ainvoke(self, messages, **kwargs):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             requests.append((messages, kwargs))
             return SimpleNamespace(content=json.dumps(_payload(
                 approved_narrative_event_indexes=[0], narrative_review_complete=True,
@@ -154,8 +156,9 @@ async def test_narrative_table_uses_one_existing_review_in_all_body_phases(monke
         route_changed=phase != "ordinary", **kwargs,
     )
     assert supplied == original
-    assert len(calls) == len(requests) == 1
-    assert calls[0]["max_completion_tokens"] == (620 if phase == "formal" else 280)
+    assert len(requests) == 1  # Scene half retains the complete fact/narrative table.
+    assert len(calls) == (2 if phase == "formal" else 1)
+    assert calls[0]["max_completion_tokens"] == (620 if phase == "formal" else 320)
     assert calls[0]["max_retries"] == 0
     assert calls[0]["timeout"] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
     assert "extra_body" not in calls[0]

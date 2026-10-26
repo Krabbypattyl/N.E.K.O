@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from copy import deepcopy
+from dataclasses import replace
 import difflib
 import inspect
 import json
@@ -14,6 +16,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from config.prompts.prompts_theater import (
+    NUMERIC_V2_ACTOR_EVENT_OWNERSHIP_INSTRUCTION,
     NUMERIC_V2_ACTOR_JSON_INSTRUCTION,
     NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION,
     NUMERIC_V2_ACTOR_OPENING_NARRATION_INSTRUCTION,
@@ -27,25 +30,31 @@ from .numeric_v2_trace import trace_event
 from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
 
 from .llm_context import (
+    THEATER_BEHAVIOR_PERSONA_FIELDS,
+    THEATER_STYLE_PERSONA_FIELDS,
     _load_character_profile,
     _load_player_address,
+    theater_persona_field,
 )
 from .numeric_v2_budget import (
     NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
     numeric_v2_actor_budget,
 )
 from .numeric_v2_action_projection import (
-    normalize_player_action_projection,
+    player_action_projection_for_prompt,
     project_player_action_result,
 )
 from .numeric_v2_cast import NumericV2CastProjection
 from .numeric_v2_context import (
+    EVIDENCE_SCOPE_RULE,
+    SUGGESTION_EVIDENCE_RULE,
     PLAYER_ACTION_LANGUAGE_RULE,
     PLAYER_ACTION_PROJECTION_RULE,
     SCENE_ENTRY_STATE_RULE,
     HISTORY_EVIDENCE_RULE,
     history_evidence,
     history_lookup_note,
+    current_scene_history_index,
     current_scene_records,
     pending_transition_performance,
     pending_transition_record,
@@ -61,6 +70,7 @@ from .numeric_v2_actor_output import (
     NumericV2ActorError,
     NumericV2ActorOutputError,
     NumericV2ActorUnavailableError,
+    _parse_actor_suggestions,
     _parse_output,
     _sentence_units,
     _text_is_covered,
@@ -68,6 +78,7 @@ from .numeric_v2_actor_output import (
 from .numeric_v2_performance import (
     content_blocks,
     performance_content_blocks,
+    scene_narration_text,
     transition_source_dialogue_policy,
 )
 from .numeric_v2_runtime import (
@@ -88,23 +99,13 @@ NUMERIC_V2_ACTOR_SLOW_CALL_SECONDS = 15.0
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_BLOCKS = 2
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_TOKENS = 80
 _RESTRICTED_KNOWLEDGE_SCOPE = (
-    "只把 current_story_beat、recent_context、player_input 与 acting_context 明确允许的可观察状态视为已知；"
+    "仅可读取 current_story_beat、recent_context、player_input 与 acting_context 明确允许的公开信息；"
+    "其中人物陈述与可观察状态按各自来源核对，不把推测变成确定知识；"
     "其余身份、历史和关系未知。"
 )
-_STYLE_ONLY_PERSONA_FIELDS = frozenset({
-    "自称",
-    "性格",
-    "核心特质",
-    "核心特点",
-    "口癖",
-    "常用口癖",
-    "说话风格",
-    "语言风格",
-    "表达风格",
-    "语气",
-})
+_STYLE_ONLY_PERSONA_FIELDS = THEATER_STYLE_PERSONA_FIELDS
 _PERSONA_TONE_FIELDS = frozenset({"性格", "核心特质", "核心特点"})
-def _output_schema_instruction(phase: str) -> str:
+def _output_schema_instruction(phase: str, *, single_ending_response: bool = False) -> str:
     """Send only the current call's output shape, excluding transition protocols from ordinary turns."""  # noqa: DOCSTRING_CJK
 
     if phase == "opening":
@@ -114,15 +115,25 @@ def _output_schema_instruction(phase: str) -> str:
         )
     elif phase == "transition_compact":
         shape = (
-            "顶层字段必须包含 source_scene_narration:string、source_performance:string、target_performance:string、"
-            "bridge_scene_narration:string、target_scene_narration:string、"
-            "suggested_inputs:string[]。"
+            ("顶层仅输出source_scene_narration:string、response_phase:string、performance:string、"
+             "bridge_scene_narration:string、target_scene_narration:string、suggested_inputs:string[]。"
+             "只写一份非空performance，response_phase只能是source_response或target_opening，分别表示在桥段前回应或在结局画面中回应。"
+             "下文source_performance与target_performance指这两个播放位置，择一对应performance，不输出这两个顶层字段。"
+             if single_ending_response else
+             "顶层字段按播放顺序生成：source_scene_narration:string、source_performance:string、"
+             "bridge_scene_narration:string、target_scene_narration:string、target_performance:string、suggested_inputs:string[]。")
+            +
             # Source segments may contain external responses, keeping NPC replies out of catgirl performance and transition bridges.
             "先写 source_scene_narration：本轮询问在场 NPC 时，用‘角色名回答：“具体内容”’交付他的答复；"
             "无待答问题或必要外部动作时填空字符串。"
-            "两个 performance 与 target_scene_narration 必须非空。"
-            "仅当 transition.bridge_required 为 false 时，bridge_scene_narration 可以填空字符串，"
-            "不为凑过场补写动作；为 true 时必须交付必要桥段。"
+            +
+            ("尚需交付的最后互动放在source_response，只有结局新反应时选target_opening；不为另一位置再补第二次回应。"
+             if single_ending_response else "source_performance 必须提供；没有尚需交付的来源回应时填空字符串。")
+            + ("target_scene_narration 必须非空。"
+               if single_ending_response else "target_performance 与 target_scene_narration 必须非空。")
+            +
+            "transition.bridge_required 为 false 且无独立时空变化或必要结果时，bridge_scene_narration 填空字符串；"
+            "为 true 时必须交付必要桥段，不为凑过场补写动作。"
             "两个 performance 写猫娘表演；桥段和目标旁白只写场景事实。"
             "不要输出顶层 segments、phase 或 opening_scene。"
         )
@@ -134,10 +145,21 @@ def _output_schema_instruction(phase: str) -> str:
             "accept_input 是玩家明确接受并亲自执行正文转场提议的输入，"
             "alternative_inputs 是 1—2 条拒绝、暂缓或当前幕替代行动。"
         )
+    elif phase == "reinvitation":
+        shape = (
+            "顶层必须且只能包含 performance:string、transition_offered:boolean。"
+            "performance 只交付猫娘提出的未来邀请，设置 transition_offered=true；"
+            "不得输出 scene_update、fact_candidates 或其他状态生成字段，也不得输出 suggested_inputs。"
+        )
     else:
         shape = (
-            "顶层必须包含 performance:string、suggested_inputs:string[]、transition_offered:boolean；仅当本轮产生新的可见环境、"
-            "时间、地点、实体或关键物品状态时，才额外输出 scene_update:string，否则必须省略该字段。"
+            "按 scene_update（如需）、performance、suggested_inputs、transition_offered、fact_candidates（如需）的顺序生成。"
+            "顶层必须包含 performance:string、suggested_inputs:string[]、transition_offered:boolean；"
+            "scene_update:string 只交付独立外部变化或在场 NPC 的具体回应，没有此类事件则省略。"
+            "先按 player_input 辨明受话人：玩家直接询问或等待在场 NPC 时，scene_update 用明确归属于该 NPC 的话"
+            "交付具体答复、拒绝、未知或尚缺的信息；不能用神情动作或猫娘重问同一问题代替答复。"
+            "NPC 只在自身权限和已知前提内回应，不替玩家决定或补出未知安排。"
+            "performance 再承接猫娘自身需要的反应，不复述该答复或重演已完成动作。"
             "如果输入提供结构化幕完成事实，顶层必须包含 fact_candidates:object[]；没有本轮新确认事实时必须填空数组。"
             "输入未提供结构化幕完成事实时，省略 fact_candidates。"
             "scene_update 只能记录当前幕已经发生的变化；无论 transition_offered 为 true 还是 false，都不得在其中写成玩家已接受、"
@@ -153,8 +175,9 @@ def _completion_fact_prompt_context(
     outcome: TurnOutcomeV2,
     *,
     cast: NumericV2CastProjection,
+    approved_facts: tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any] | None:
-    """Unfinished items use author targets; completed items use recorded values/original performance, never targets rewritten as history."""  # noqa: DOCSTRING_CJK
+    """Keep unfinished targets and registered values without inventing occurrence provenance."""  # noqa: DOCSTRING_CJK
 
     contract = node.get("completion_contract")
     if not isinstance(contract, Mapping):
@@ -162,8 +185,11 @@ def _completion_fact_prompt_context(
     facts = outcome.session.story_state.get("facts")
     if not isinstance(facts, Mapping):
         facts = {}
+    # 预审与磁盘提交分开：仅接收 Workflow 独立批准的结果，不能把所有暂存候选当历史。
+    # 本视图不写 Session，整轮失败时原存档仍可原子回滚。
+    approved = {claim["key"]: claim for claim in approved_facts
+                if claim.get("op") == "set"}
     requirements: list[dict[str, Any]] = []
-    evidence_revisions: set[int] = set()
     all_satisfied = True
     narration_requirements = [row["fixed_narration_id"] for row in contract.get("all") or []
                              if isinstance(row, Mapping) and "fixed_narration_id" in row]
@@ -180,6 +206,7 @@ def _completion_fact_prompt_context(
         if not isinstance(definition, Mapping):
             continue
         fact = facts.get(key)
+        approval = approved.get(key)
         satisfied = (
             isinstance(fact, Mapping)
             and fact.get("value") == requirement.get("equals")
@@ -190,49 +217,83 @@ def _completion_fact_prompt_context(
             "value_type": definition.get("value_type"),
             "visibility": definition.get("visibility"),
             "committed": key in facts,
-            "satisfied": satisfied,
+            "satisfied": satisfied or (approval is not None and approval.get("value") == requirement.get("equals")),
         }
-        if not satisfied:
+        if approval is not None:
+            row.update(approved_this_turn=True, approved_value=approval["value"])
+            # 普通视图原本含 public/story 的值；不因补记扩大 story 原文的知情范围。
+            if definition.get("visibility") == "public":
+                row["evidence"] = [{"source": item["source"], "quote": cast.text(item["quote"])}
+                                   for item in approval.get("evidence", ())]
+        if not row["satisfied"]:
             row["description"] = cast.text(definition.get("description", ""))
-        else:
-            # Author targets may prescribe one actor while actual performance used another; recorded values must not
-            # elevate target wording into history. Attribute behavior from actual turn text rather than restating author plans.
+        elif satisfied:
+            # Runtime revisions record when a value was written. Evaluator may
+            # backfill a previous performance, so that round's body cannot be
+            # attached as proof of who acted, when, or how the result occurred.
+            # Keep the value; normal history remains the source for those details.
             revision = fact.get("updated_revision", fact.get("source_revision"))
             if type(revision) is int:
-                row["evidence_revision"] = revision
-                evidence_revisions.add(revision)
+                row["registration_revision"] = revision
         if isinstance(fact, Mapping) and "value" in fact:
             row["committed_value"] = fact["value"]
         requirements.append(row)
-        all_satisfied = all_satisfied and satisfied
-    completion_evidence: list[dict[str, Any]] = []
-    evidence_budget = numeric_v2_actor_budget(
-        getattr(outcome.session, "actor_budget_profile", NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE)
-    )["evidence_max_tokens"]
-    # Preserve complete originals only; over-budget evidence references remain empty, never treating truncated actions as complete evidence.
-    for record in reversed(outcome.session.performance_history):
-        if record.get("revision") not in evidence_revisions:
-            continue
-        evidence = {
-            "revision": record["revision"],
-            "player_input": str(record.get("input_text") or ""),
-            "content": performance_content_blocks(record),
-        }
-        tokens = count_tokens(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")))
-        if tokens <= evidence_budget:
-            completion_evidence.append(evidence)
-            evidence_budget -= tokens
+        all_satisfied = all_satisfied and row["satisfied"]
     return (
         {
             "status": "satisfied" if all_satisfied else "pending",
             "all": requirements,
             **({"fixed_narrations": {"required": len(narration_requirements), "displayed": narration_delivered}}
                if narration_requirements else {}),
-            **({"completion_evidence": completion_evidence} if evidence_revisions else {}),
         }
         if requirements or narration_requirements
         else None
     )
+
+
+def _route_fact_prompt_context(
+    engine: NumericV2Engine,
+    node_id: str,
+    session: ScriptSessionV2,
+    *,
+    cast: NumericV2CastProjection,
+    approved_facts: tuple[Mapping[str, Any], ...] = (),
+) -> list[dict[str, Any]]:
+    """Keep alternative exit facts separate from the act's mandatory completion targets."""  # noqa: DOCSTRING_CJK
+
+    committed = session.story_state.get("facts") or {}
+    approved = {claim["key"]: claim for claim in approved_facts if claim.get("op") == "set"}
+    groups: dict[str, dict[str, Any]] = {}
+    for target in engine.scene_fact_targets(node_id):
+        if "route_id" not in target:
+            continue
+        key, value = target["key"], target["value"]
+        definition = engine.fact_contract[key]
+        fact, approval = committed.get(key), approved.get(key)
+        satisfied = (isinstance(fact, Mapping) and type(fact.get("value")) is type(value)
+                     and fact["value"] == value)
+        approved_match = (isinstance(approval, Mapping) and type(approval.get("value")) is type(value)
+                          and approval["value"] == value)
+        row = {"key": key, "value": value, "value_type": definition["value_type"],
+               "visibility": definition["visibility"], "committed": key in committed,
+               "satisfied": satisfied or approved_match}
+        if not row["satisfied"]:
+            row["description"] = cast.text(definition.get("description", ""))
+        if isinstance(fact, Mapping) and "value" in fact:
+            row["committed_value"] = fact["value"]
+        if satisfied:
+            revision = fact.get("updated_revision", fact.get("source_revision"))
+            if type(revision) is int:
+                row["registration_revision"] = revision
+        if approved_match:
+            # 预审结果尚未落盘；只交接该批获准原证据，不从本轮待生成稿补历史。
+            row.update(approved_this_turn=True, approved_value=approval["value"],
+                       evidence=[{"source": item["source"], "quote": cast.text(item["quote"])}
+                                 for item in approval.get("evidence", ())])
+        group = groups.setdefault(target["route_id"], {"route_id": target["route_id"],
+            "condition_mode": target["condition_mode"], "facts": []})
+        group["facts"].append(row)
+    return list(groups.values())
 
 _RELATIONSHIP_STAGES = ("stranger", "guarded", "cooperative", "trusted", "intimate")
 _RELATIONSHIP_STAGE_LABELS = {
@@ -241,28 +302,6 @@ _RELATIONSHIP_STAGE_LABELS = {
     "合作": "cooperative",
     "信赖": "trusted",
     "亲密": "intimate",
-}
-_RELATIONSHIP_BEHAVIORS = {
-    "stranger": {
-        "allowed": ["基本礼貌", "核验身份", "保持明显距离", "只授予可随时撤销的单次许可"],
-        "forbidden": ["主动肢体接触", "主动撒娇或依赖", "使用亲昵称呼", "作出关系承诺", "交出核心权限或无条件服从"],
-    },
-    "guarded": {
-        "allowed": ["有限软化", "说明边界", "在安全距离内回应", "授予用途和范围明确的临时许可"],
-        "forbidden": ["主动肢体接触", "主动撒娇或依赖", "暧昧试探", "伴侣式称呼或承诺", "无限授权或放弃自主判断"],
-    },
-    "cooperative": {
-        "allowed": ["主动协作", "表达普通关心", "分享与当前任务有关的信息", "授予当前任务所需的有限权限"],
-        "forbidden": ["恋人式肢体接触", "主动撒娇或依赖", "占有式表达", "确认爱意或永久绑定", "永久授权或把个人安全完全托付"],
-    },
-    "trusted": {
-        "allowed": ["主动信任", "表达明确关心", "有限度靠近", "分享敏感信息但保留撤销权"],
-        "forbidden": ["未经铺垫的恋人式接触", "强依赖或占有", "直接确认相爱", "永久关系承诺", "放弃人格、自主权或全部控制权限"],
-    },
-    "intimate": {
-        "allowed": ["在已发生事实支撑下表达亲密", "自然使用已建立的亲昵称呼"],
-        "forbidden": ["超出已发生事实的关系结论", "替玩家作出亲密选择或承诺"],
-    },
 }
 _RELATIONSHIP_RESPONSE_CONTRACTS = {
     "stranger": (
@@ -359,45 +398,22 @@ def _relationship_control(
             ),
             "intimate",
         )
-    metric_states: dict[str, dict[str, str]] = {}
     metric_ceiling = "intimate"
-    projections = _band_projection(engine, metrics)
     for metric_id, definition in engine.metric_schema.items():
         effect = str(definition.get("relationship_effect") or "none")
         if effect not in {"positive", "negative"}:
             continue
         stage = _relationship_metric_stage(definition, int(metrics[metric_id]))
-        projection = projections[metric_id]
-        metric_states[metric_id] = {
-            "effect": effect,
-            "label": projection["label"],
-            "stage": stage,
-        }
         if _RELATIONSHIP_STAGES.index(stage) < _RELATIONSHIP_STAGES.index(metric_ceiling):
             metric_ceiling = stage
     effective_stage = min(
         (metric_ceiling, scene_ceiling),
         key=_RELATIONSHIP_STAGES.index,
     )
-    behaviors = _RELATIONSHIP_BEHAVIORS[effective_stage]
+    # 调用方只消费最终上限及对应规则，不构造随后会被投影丢弃的中间表和行为副本。
     return {
-        "metric_ceiling": metric_ceiling,
-        "scene_ceiling": scene_ceiling,
         "effective_stage": effective_stage,
-        "metric_states": metric_states,
-        "allowed_behaviors": list(behaviors["allowed"]),
-        "forbidden_behaviors": list(behaviors["forbidden"]),
         "response_contract": _RELATIONSHIP_RESPONSE_CONTRACTS[effective_stage],
-        "rule": "effective_stage 是实际关系硬上限，禁止行为不得由角色卡风格、剧情身份或推荐输入绕过。",
-    }
-
-
-def _relationship_contract_for_actor(control: Mapping[str, Any]) -> dict[str, Any]:
-    """Project only needed relationship conclusions, omitting metric labels/behavior lists already in response_contract."""  # noqa: DOCSTRING_CJK
-
-    return {
-        "effective_stage": str(control.get("effective_stage") or ""),
-        "response_contract": str(control.get("response_contract") or ""),
     }
 
 
@@ -407,7 +423,7 @@ def _story_context_for_actor(
     *,
     beats: tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any]:
-    """Project stable premises through cognition contracts, hiding backstage facts during unknown stages."""  # noqa: DOCSTRING_CJK
+    """Project author intro through cognition contracts, hiding backstage facts during unknown stages."""  # noqa: DOCSTRING_CJK
 
     contracts = tuple(_acting_contract_for_actor(cast, beat) for beat in beats)
     if any(_acting_contract_restricts_knowledge(contract) for contract in contracts):
@@ -488,8 +504,9 @@ def _acting_context(
     dialogue_policy: str = "required",
     target_dialogue_policy: str = "required",
 ) -> dict[str, Any]:
-    # Plot identity establishes circumstances, core persona determines expression, and relationship contracts finally bound permitted behavior,
-    # preventing clingy/affection-dependent card traits being enacted directly at low relationship stages.
+    # Plot identity establishes circumstances. Full persona may shape attention,
+    # judgment and the character's own response, but grants no story abilities or
+    # player authorization; style_only and relationship ceilings remain stricter.
     # New relationship changes affect performance only next turn, avoiding sudden guarded-to-intimate shifts within
     # one reply after crossing bands. Ability metrics still use settled state.
     relationship_control = _relationship_control(
@@ -497,11 +514,6 @@ def _acting_context(
         node,
         relationship_metrics if relationship_metrics is not None else metrics,
     )
-    capability_state = {
-        metric_id: projection
-        for metric_id, projection in _band_projection(engine, metrics).items()
-        if engine.metric_schema[metric_id].get("relationship_effect", "none") == "none"
-    }
     current_contract = _acting_contract_for_actor(cast, node["story_beat"])
     current_character_state = _character_state_for_actor(cast, node["story_beat"])
     target_contract = (
@@ -547,7 +559,11 @@ def _acting_context(
     # Transition calls generate both source response and target opening; if either side is amnesiac, hide shared backstage facts,
     # preventing source-known information leaking through target_acting_contract. story_context already supplies knowledge scope once.
     if target is None:
-        context["capability_state"] = capability_state
+        context["capability_state"] = {
+            metric_id: projection
+            for metric_id, projection in _band_projection(engine, metrics).items()
+            if engine.metric_schema[metric_id].get("relationship_effect", "none") == "none"
+        }
     else:
         target_control = _relationship_control(
             engine,
@@ -562,26 +578,24 @@ def _acting_context(
         context["acting_contract"] = {
             key: value
             for key, value in current_contract.items()
-            # Full plot direction already explains scene development; repeating long allowed lists each turn encourages itemized paraphrase.
-            # Retain prohibited actions, cognition limits, and identity boundaries every turn.
-            if key != "allowed_behaviors" and value not in ("", [], {})
+            # Review sees these same author permissions. Keep their full conditions
+            # for Actor too; permissions are options, never tasks or proof of results.
+            if value not in ("", [], {})
         }
-    if target is None:
-        # Static persona/relationship guidance is already in system prompts; human messages retain dynamic contracts only,
-        # avoiding repeated fixed-budget costs while preserving core_persona -> acting_contract -> relationship_control order.
-        context["relationship_control"] = _relationship_contract_for_actor(relationship_control)
-    else:
-        context["relationship_control"] = _relationship_contract_for_actor(relationship_control)
+    context["relationship_control"] = relationship_control
+    if target is not None:
         if target_contract:
             context["target_acting_contract"] = {
                 key: value
                 for key, value in target_contract.items()
-                if key != "allowed_behaviors" and value not in ("", [], {})
+                # Source and target permissions stay separate: entering the next
+                # phase must not authorize its actions in the source response.
+                if value not in ("", [], {})
             }
         if target_character_state:
             context["target_character_state"] = target_character_state
         context["target_dialogue_policy"] = target_dialogue_policy
-        context["target_relationship_control"] = _relationship_contract_for_actor(target_control)
+        context["target_relationship_control"] = target_control
     return context
 
 
@@ -595,7 +609,7 @@ def _role_prompt_text(
 
     lines = [f"你是：{catgirl_name}。"]
     # Accept stable premises already filtered by cognition contracts, never adding backstage identities/future plot to character knowledge.
-    for key, label in (("background", "共同背景"), ("player_identity", "玩家身份"),
+    for key, label in (("initial_background", "剧本初始前情"), ("player_identity", "玩家身份"),
                        ("knowledge_scope", "认知范围")):
         value = str((story_context or {}).get(key) or "").strip()
         if value:
@@ -606,27 +620,39 @@ def _role_prompt_text(
     story_role_context = str(acting_context.get("story_role_context") or "").strip()
     if story_role_context:
         lines.append(f"剧本中的职责与背景：{story_role_context}")
-    # These fields reflect author-defined post-opening starting state from the same node each turn; dynamic state follows actual performance history.
+    # Preserve author staging without promoting a planned player action to a
+    # committed result. Initial facts remain available; actual history wins.
     entry_state_lines: list[str] = []
     current_scene_state = str(acting_context.get("current_scene_state") or "").strip()
     if current_scene_state:
-        entry_state_lines.append(f"开场演完后的处境：{current_scene_state}")
+        entry_state_lines.append(f"作者入幕规划中的处境：{current_scene_state}")
 
     character_state = acting_context.get("character_state")
     if isinstance(character_state, Mapping):
         catgirl_state = str(character_state.get("catgirl_state") or "").strip()
         if catgirl_state:
-            entry_state_lines.append(f"开场演完后的身体与认知状态：{catgirl_state}")
+            entry_state_lines.append(f"作者入幕规划中的猫娘状态：{catgirl_state}")
         player_state = str(character_state.get("player_state") or "").strip()
         if player_state:
-            entry_state_lines.append(f"玩家开场演完后的已知处境：{player_state}")
+            entry_state_lines.append(f"作者入幕规划中的玩家处境：{player_state}")
         environment_state = str(character_state.get("environment_state") or "").strip()
+        if character_state.get("temporal_context"):
+            lines.append("作者入幕时序规划：" + json.dumps(character_state["temporal_context"], ensure_ascii=False))
         if environment_state:
-            entry_state_lines.append(f"开场演完后的环境状态：{environment_state}")
+            entry_state_lines.append(f"作者入幕规划中的环境：{environment_state}")
+        # Structured opening/transition prompts already carry this cast-projected
+        # author plan. Retain it in ordinary role text without treating it as
+        # committed history or bypassing the existing identity/knowledge gates.
+        continuity = character_state.get("continuity_from_previous") or []
+        if continuity:
+            entry_state_lines.append(
+                "作者入幕延续规划（须核对实际开场、已提交历史与本轮授权，"
+                "不是已发生事实、任务或新增权限）：\n" + "\n".join(continuity)
+            )
     if entry_state_lines:
         lines.extend(entry_state_lines)
         lines.append(
-            "开场演完后的状态是起点；动态变化承接 story_so_far 已提交事实，不能复位；"
+            "这些规划须与实际开场及已提交历史核对；动态变化承接 story_so_far 已提交事实，不能复位；"
             "作者身份、能力、认知/记忆限制与硬边界持续有效。"
         )
 
@@ -643,6 +669,13 @@ def _role_prompt_text(
             lines.append("当前非关系状态（不改变关系距离）：" + "；".join(labels))
     acting_contract = acting_context.get("acting_contract")
     if isinstance(acting_contract, Mapping):
+        allowed_behaviors = [str(item).strip() for item in acting_contract.get("allowed_behaviors") or []
+                             if str(item).strip()]
+        if allowed_behaviors:
+            # Ordinary turns consume natural role text rather than the raw contract.
+            # Preserve author conditions without turning a permission into a checklist.
+            lines.append("猫娘可自主选择的行为（可选权限，不是待办或已完成事实；"
+                         "仍受当前认知、关系、禁令和实际前提限制）：" + "；".join(allowed_behaviors))
         assertable_facts = [
             str(item).strip()
             for item in acting_contract.get("assertable_self_facts") or []
@@ -689,7 +722,7 @@ def _prompt_container(container: Mapping[str, Any], *, phase: str) -> dict[str, 
 
     if "scene_narration" in container or "performance" in container:
         result = {}
-        scene_narration = str(container.get("scene_narration") or "").strip()
+        scene_narration = scene_narration_text(container)
         performance = str(container.get("performance") or "").strip()
         if scene_narration:
             result["scene_narration"] = scene_narration
@@ -809,7 +842,19 @@ def _current_scene_history_row(
             projected_segments.append(segment)
             continue
         if include_previous_scene_tail:
-            tail = _source_response_tail(segment)
+            original_source = next((part for part in record.get("segments", [])
+                                    if isinstance(part, Mapping)
+                                    and part.get("phase") == "source_response"), {})
+            # _history_row has renamed originals to fixed_narration_before/after;
+            # content_blocks cannot read those prompt-only fields and would lose
+            # delivered source text. Read its captured original so display order,
+            # echo handling and saved name bindings survive the existing tail cap.
+            # Keep the old projection for all other sources, including legacy
+            # content whose dialogue blocks were already combined for prompts.
+            tail_source = (original_source if original_source.get("fixed_narrations")
+                           and ("performance" in original_source or "scene_narration" in original_source)
+                           else segment)
+            tail = _source_response_tail(tail_source)
             if tail:
                 # Synthetic content exists only in this prompt, never writes Session, and carries neither old player input nor full prior-scene responses.
                 projected_segments.append({
@@ -945,32 +990,17 @@ def _story_so_far_text(history_rows: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
-def _current_scene_fact_index_text(
+def _current_scene_fact_index(
     session: ScriptSessionV2,
     *,
+    query: str = "",
     max_tokens: int = 900,
-) -> str:
-    """Compress full-scene visible records into continuity indexes preserving early completed facts in long scenes."""  # noqa: DOCSTRING_CJK
+) -> dict[str, Any] | None:
+    """Pack complete committed originals, never treating a request prefix as its result."""  # noqa: DOCSTRING_CJK
 
-    visit_records, _ = current_scene_records(session)
-    chronological_records = list(reversed(visit_records))
-    if not chronological_records:
-        return ""
-    per_record_tokens = max(16, min(60, max_tokens // len(chronological_records)))
-    lines = []
-    for record in chronological_records:
-        # Entry records retain current-scene bridges/openings only; source input/responses still follow one-shot short-epilogue rules.
-        projected = _current_scene_history_row(
-            record,
-            current_node_id=str(session.current_node_id),
-            include_previous_scene_tail=False,
-        )
-        rendered = _story_so_far_row_text(projected).replace("\n", "；")
-        compact = truncate_to_tokens(rendered, per_record_tokens).strip()
-        if compact:
-            lines.append(compact)
-    index = "\n".join(lines)
-    return truncate_to_tokens(index, max_tokens).strip()
+    # Keep structured provenance until final packing: a rendered string cannot
+    # safely identify originals already carried by another evidence attachment.
+    return current_scene_history_index(session, query, max_tokens=max_tokens)
 
 
 
@@ -1112,6 +1142,14 @@ def _is_short_stable_dialogue(performance: Mapping[str, Any]) -> bool:
     return bool(dialogue) and len(dialogue) <= 16
 
 
+def _can_defer_dialogue_repetition(performance: Mapping[str, Any]) -> bool:
+    """Only wording can be deferred; actions, narration, facts and offers retain their guards."""
+    blocks = performance_content_blocks(performance)
+    return bool(blocks) and all(block.get("type") == "dialogue" for block in blocks) and not any(
+        performance.get(key) for key in ("segments", "fact_candidates", "transition_offered")
+    ) and count_tokens(_performance_text(performance)) <= 80  # 沿用既有短回应口径。
+
+
 def _timeline_visit_id(record: Mapping[str, Any]) -> str:
     """Read Runtime scene-visit IDs; return empty for legacy history lacking projections."""  # noqa: DOCSTRING_CJK
 
@@ -1182,11 +1220,9 @@ def _soft_pacing(
     node: Mapping[str, Any],
     current_turn: int,
     *,
-    route_changed: bool,
     transition_intent: str = "unclear",
 ) -> dict[str, Any]:
-    # min_turns provides author pacing hints only, never closure or transition decisions.
-    min_turns = int(node.get("min_turns") or 1)
+    # 推荐回合只影响软节奏，不授权收束或转场。
     raw_budget = node.get("recommended_turns")
     recommended_turns = (
         int(raw_budget)
@@ -1194,13 +1230,15 @@ def _soft_pacing(
         else 4
     )
     turns_remaining = max(recommended_turns - current_turn, 0)
-    if route_changed:
-        phase = "transition"
-        instruction = "路线已确定：回应并收住当前幕，完成作者桥段，再建立下一幕开场。"
-    elif transition_intent == "reject":
+    if transition_intent == "reject":
         # After refusal, do not return to old proposals or repeatedly urge scene_complete; respond to the player's current choice.
         phase = "after_reject"
-        instruction = "玩家拒绝或暂停了上一提议：回应当前意图并留在本幕，不再重复催促。"
+        instruction = (
+            "玩家拒绝或暂停了上一提议：回应当前意图并留在本幕，不再重复催促。"
+            "留幕不冻结当前因果；玩家等候已开始的过程时，可概括时间经过，交付本幕配角自己的答复、拒绝或过程结果，"
+            "按玩家实际授权和作者边界承接结果，不把预测或临时补出的手续变成必做条件。"
+            "结果仍未知时保留可行选择，不能只反复劝等、重做准备或另加传话任务。"
+        )
     elif current_turn > recommended_turns:
         phase = "overdue"
         instruction = (
@@ -1231,12 +1269,8 @@ def _soft_pacing(
         phase = "normal"
         instruction = "距离推荐回合尚远：专注回应玩家并自然展开当前互动；内容建议只提供灵感，不必按顺序执行。"
     return {
-        "minimum_turns": min_turns,
         "recommended_turns": recommended_turns,
         "current_turn": current_turn,
-        "turns_until_minimum": max(min_turns - current_turn, 0),
-        "turns_remaining": turns_remaining,
-        "overdue_by": max(current_turn - recommended_turns, 0),
         "phase": phase,
         "instruction": instruction,
     }
@@ -1253,8 +1287,6 @@ def _beat_for_actor(
     projected = cast.value(beat)
     return {
         "opening_scene": scene_opening_text(projected),
-        # Current focus is natural creative guidance, not itemized objectives or Runtime criteria.
-        "narrative_focus": scene_narrative_focus(projected),
         # Plot direction is director information rather than character knowledge; restricted cognition limits asserted facts,
         # not Actor's understanding of event order after formal transitions, needed to avoid premature recommendation spoilers.
         "scene_direction": str(
@@ -1311,6 +1343,7 @@ def _character_state_for_actor(
         return {}
     projected = cast.value(raw)
     return {
+        **({"temporal_context": projected["temporal_context"]} if "temporal_context" in projected else {}),
         "catgirl_state": str(projected.get("catgirl_state") or ""),
         "player_state": str(projected.get("player_state") or ""),
         "environment_state": str(projected.get("environment_state") or ""),
@@ -1347,23 +1380,9 @@ def _chapter_title_for_actor(
 
 
 def _profile_field(line: str) -> tuple[str, str]:
-    """Read explicit card field:value pairs, without free-text semantic interpretation."""  # noqa: DOCSTRING_CJK
+    """Use the same explicit labels as the bound-card and memory reader."""  # noqa: DOCSTRING_CJK
 
-    stripped = str(line or "").strip()
-    separators = [
-        index
-        for separator in (":", "：")
-        if (index := stripped.find(separator)) >= 0
-    ]
-    if not separators:
-        return "", ""
-    separator_index = min(separators)
-    field_name = "".join(
-        character
-        for character in stripped[:separator_index]
-        if not character.isspace() and character not in "*`\\"
-    ).casefold()
-    return field_name, stripped[separator_index + 1:].strip()
+    return theater_persona_field(line)
 
 
 def _profile_self_reference_tokens(character_profile: str) -> tuple[str, ...]:
@@ -1392,16 +1411,37 @@ def _profile_for_acting_contract(
     character_profile: str,
     acting_contract: Mapping[str, Any],
 ) -> str:
-    """Project structured persona contracts without guessing free-text relationship meaning."""  # noqa: DOCSTRING_CJK
+    """Keep personality choices distinct from identity, knowledge and consent.
 
-    lines = [line for line in str(character_profile or "").splitlines() if line.strip()]
-    parsed = [(_profile_field(line)[0], line) for line in lines]
-    has_structured_fields = any(field_name for field_name, _ in parsed)
+    full can retain existing card behavior/preferences as tendencies; style_only
+    keeps its established expressive scope. Neither turns real-world biography,
+    relationships or a favorite activity into a fact in the author's world.
+    """  # noqa: DOCSTRING_CJK
+
+    # Keep explicit field continuations together, including unknown fields that
+    # must be rejected as a whole. The reader separates independent facts with
+    # blank lines, so a legacy unlabelled supplement keeps expressive-only scope.
+    parsed: list[tuple[str, str]] = []
+    continuing_field = False
+    for line in str(character_profile or "").splitlines():
+        if not line.strip():
+            continuing_field = False
+            continue
+        field_name = _profile_field(line)[0]
+        if not field_name and continuing_field:
+            previous_field, previous_text = parsed[-1]
+            parsed[-1] = (previous_field, previous_text + "\n" + line)
+        else:
+            parsed.append((field_name, line))
+            continuing_field = bool(field_name)
+    full = acting_contract.get("persona_scope") != "style_only"
+    allowed = _STYLE_ONLY_PERSONA_FIELDS | (THEATER_BEHAVIOR_PERSONA_FIELDS if full else frozenset())
     selected: list[str] = []
+    has_character_traits = False
     for field_name, line in parsed:
         if not (
-            field_name in _STYLE_ONLY_PERSONA_FIELDS
-            or (not has_structured_fields and not field_name)
+            field_name in allowed
+            or not field_name
         ):
             continue
         if (
@@ -1409,16 +1449,25 @@ def _profile_for_acting_contract(
             and field_name == "自称"
         ):
             continue
-        if field_name in _PERSONA_TONE_FIELDS:
-            # Core traits often combine gentle tone and clingy behavior in one field; do not analyze internal wording,
-            # Treat the entire structured field as wording/atmosphere; relationship behavior follows Runtime projections only.
+        if full and field_name in _PERSONA_TONE_FIELDS | THEATER_BEHAVIOR_PERSONA_FIELDS:
+            # Do not guess which words are safe actions. Preserve the explicit
+            # trait and give it a bounded role, under world/knowledge/consent rules.
+            selected.append(line)
+            has_character_traits = True
+        elif field_name in _PERSONA_TONE_FIELDS or not field_name:
+            # Unstructured legacy prose has no reliable field ownership; retain
+            # only the expressive fallback rather than promote it to world facts.
             raw_value = _profile_field(line)[1]
             selected.append(
                 "语言氛围参考（只影响措辞，不授权肢体接触、亲昵称呼、依赖或既有关系）："
-                + raw_value
+                + (raw_value if field_name else line)
             )
         else:
             selected.append(line)
+    if has_character_traits:
+        selected.insert(0,
+            "人格倾向参考（影响关注、判断与自主反应；不授权新增能力、知识、玩家行动或既有关系；"
+            "实际行动仍服从剧中职责、作者世界、认知与关系边界）：")
     return "\n".join(selected).strip()
 
 
@@ -1485,23 +1534,73 @@ def _deduplicate_scene_update(
     return sanitized
 
 
+def _deduplicate_transition_bridge_prefix(
+    performance: Mapping[str, Any],
+    previous: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Trim an exact bridge prefix only when it repeats the previous narration's complete, ordered suffix."""  # noqa: DOCSTRING_CJK
+
+    segments = performance.get("segments")
+    if not isinstance(segments, list) or len(segments) != 3:
+        return dict(performance)
+    previous_segments = previous.get("segments")
+    if isinstance(previous_segments, list):
+        previous = next(
+            (part for part in reversed(previous_segments) if part.get("scene_narration")),
+            {},
+        )
+    previous_narration = str(previous.get("scene_narration") or "")
+    # Quoted or parenthetical text may describe a memory or hypothetical event, not an action already played.
+    if any(char in previous_narration for char in "“”‘’「」『』\"'（）()[]{}【】"):
+        return dict(performance)
+    previous_units = _sentence_units(previous_narration)
+    bridge = str(segments[1].get("scene_narration") or "")
+    offset = 0
+    matched_units = []
+    for unit in _sentence_units(bridge):
+        if unit not in previous_units or unit[-1] not in "。！？!?":
+            break
+        matched_units.append(unit)
+        offset = bridge.index(unit, offset) + len(unit)
+    remainder = bridge[offset:].strip()
+    if not offset or not remainder:
+        return dict(performance)
+    if matched_units != previous_units[-len(matched_units):]:
+        return dict(performance)
+    # The shared splitter ends at punctuation inside quotes too; never leave a closing delimiter behind.
+    prefix = bridge[:offset]
+    if any(
+        prefix.count(left) != prefix.count(right)
+        for left, right in (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"), ("（", "）"), ("(", ")"))
+    ) or prefix.count('"') % 2:
+        return dict(performance)
+    sanitized = dict(performance)
+    sanitized["segments"] = list(segments)
+    sanitized["segments"][1] = {**segments[1], "scene_narration": remainder}
+    trace_event(
+        "actor.transition_bridge_prefix_deduplicated",
+        removed_sentences=len(_sentence_units(prefix)),
+        removed_characters=offset,
+    )
+    return sanitized
+
+
 def _opening_beat_for_actor(
-    engine: NumericV2Engine,
     cast: NumericV2CastProjection,
     node: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Openings show current visuals only, never author targets as to-do/delivery instructions."""  # noqa: DOCSTRING_CJK
 
-    opening_beat = _beat_for_actor(
-        cast,
-        node["story_beat"],
-        include_opening_only_boundaries=True,
-    )
     # Full scene direction serves ordinary Actor after the player's first input; public opening establishes opening_scene only.
     # Otherwise models compress later identity/ability/crisis outcomes prematurely into the first sentence.
-    opening_beat.pop("narrative_focus", None)
-    opening_beat.pop("scene_direction", None)
-    return opening_beat
+    return {
+        "opening_scene": scene_opening_text(cast.value(node["story_beat"])),
+        "boundaries": _suggestion_hard_boundaries(
+            cast,
+            node["story_beat"],
+            include_opening_only=True,
+        ),
+    }
 
 
 
@@ -1511,6 +1610,8 @@ def _next_scene_preview_for_actor(
     cast: NumericV2CastProjection,
     source: Mapping[str, Any],
     metrics: Mapping[str, int],
+    *,
+    facts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Project selected-exit reasons/themes/movement scope, without target plot/opening reads."""  # noqa: DOCSTRING_CJK
 
@@ -1518,7 +1619,7 @@ def _next_scene_preview_for_actor(
         return {"status": "none"}
     # Share Guard's read-only routing for this round: multiple exits provide feasible direction without freezing invitations.
     # Runtime reroutes using actual metrics on acceptance; hidden values and unselected contracts stay out of Actor prompts.
-    route = engine.preview_route(str(source["id"]), metrics)
+    route = engine.preview_route(str(source["id"]), metrics, facts=facts)
     if route is None:
         return {"status": "runtime_unresolved"}
     target_id = str(route["target_node_id"])
@@ -1567,15 +1668,16 @@ def _next_scene_summary_text(preview: Mapping[str, Any]) -> str:
             )
         entry_movement = str(preview.get("entry_movement") or "").strip()
         entry_hint = (
-            f"实际出口的移动范围（尚未发生，只有获准后才执行）：{entry_movement}\n"
-            "邀请须说明这个范围中的去向、时段和活动，不能只凭主题或含糊理由另造目的地。"
+            f"作者预期的出口衔接范围（不是已发生事实，也不否定实际历史）：{entry_movement}\n"
+            "按实际历史承接其中已发生的部分，不重新执行；邀请只覆盖仍未发生的下一阶段，获准后才推进。"
+            "具备必要前因并提出邀请时，须说明这个范围中的去向、时段和活动，不能只凭主题或含糊理由另造目的地。"
             "来源理由列出的其他地点若与实际移动不符，不把它们作为本出口可兑现的选择。"
             "仅在已公开路径支持时承接途中经过，不临时编造捷径、停业或玩家同意来解释换错地方。"
             if entry_movement else ""
         )
         if direction:
             return (
-                f"{chapter_hint}{entry_hint}接受当前转场提议后，剧情方向是：{direction}\n"
+                f"{chapter_hint}{entry_hint}本出口的来源前因与后续方向（不表示已经满足或已有邀请）：{direction}\n"
                 "这是作者希望的因果衔接方向，不是目标清单或固定动作；可以使用 story_so_far 已自然建立的语义等价方案，"
                 # Equivalence permits history-adapted wording only, never unrelated everyday destinations replacing actual exits.
                 "等价方案须保持该方向的时间、地点和下一互动阶段；不能为回避转场而另造去向或当前追加任务。"
@@ -1588,7 +1690,7 @@ def _next_scene_summary_text(preview: Mapping[str, Any]) -> str:
                 "方向指定未来时点的互动，应邀请届时开始，不能改成现在先讨论或实施该互动；"
                 "实际历史已经做过的动作只承接结果，不重做。"
             )
-        return f"{chapter_hint}{entry_hint}接受当前转场提议后进入下一幕；当前回合不能提前写成已经抵达。"
+        return f"{chapter_hint}{entry_hint}必要前因成立且玩家接受合法邀请后才进入下一幕；当前回合不能提前写成已经抵达。"
     if status == "runtime_unresolved":
         # Preserve unknown when no exit conditions hold; never invent an eligible route.
         return "下一幕尚未确定；玩家接受具体转场提议后由 Runtime 决定。"
@@ -1633,6 +1735,24 @@ def _suggestion_source_text(performance: Mapping[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _authored_entry_player_inputs(
+    cast: NumericV2CastProjection,
+    beat: Mapping[str, Any],
+) -> list[str] | None:
+    """Project compiled author entry choices through the existing player-input parser."""  # noqa: DOCSTRING_CJK
+
+    if "entry_player_inputs" not in beat:
+        return None
+    projected = cast.value(beat["entry_player_inputs"])
+    suggestions = _parse_actor_suggestions(projected)
+    trace_event(
+        "actor.entry_player_inputs_projected",
+        authored_count=len(projected),
+        accepted_count=len(suggestions),
+    )
+    return suggestions
+
+
 def _suggestion_hard_boundaries(
     cast: NumericV2CastProjection,
     beat: Mapping[str, Any],
@@ -1647,6 +1767,7 @@ def _suggestion_hard_boundaries(
     boundaries = list(project_contract_boundaries(
         projected,
         include_opening_only=include_opening_only,
+        explicit_prohibitions=True,
     ))
     relationship_text = str(relationship_boundary).strip()
     if relationship_text:
@@ -1691,17 +1812,35 @@ def _hard_boundary_system_instruction(boundaries: list[str] | tuple[str, ...], *
         )
         + "\n- "
         + "\n- ".join(normalized)
+        + "\n以上限制须逐条遵守，但无需逐条宣读；未被问及且无当场必要的禁令、能力和自我事实不必主动声明。"
     )
 
 
-# Recommendations may offer new actions, never invent undisclosed personal player facts; shared by primary/completion calls.
+# A button proposes the player's next act; other people's completed acts and the
+# player's biography are premises, not choices the button is allowed to invent.
+# Primary and optional fill calls share this boundary; no self-reported evidence
+# is treated as a semantic approval by the parser.
+# A question needs no invented gesture or prop. Keep all three sendable forms;
+# concrete examples avoid the literal role labels copied by earlier probes.
+# Format acceptance never approves the option's world or biographical premises.
+_SUGGESTION_FORMAT_RULE = (
+    "推荐可直接写玩家对白，例如“你愿意多说一点吗？”；不为问话补动作。"
+    "确有玩家动作时用全角括号，可接对白，例如“（抬眼）你愿意多说一点吗？”或仅“（保持安静）”；"
+    "例子只说明格式，实际内容承接当前剧情。"
+    "安静行动不必强行附加对白，动作中的‘我’可以自然省略；不得输出动作或对白的模板标签。"
+)
+
+
 _SUGGESTION_PLAYER_FACT_RULE = (
+    f"{SUGGESTION_EVIDENCE_RULE}"
+    "推荐创建的是点击后玩家本人要说或做的事；括号中的观察对象也不能预演他人尚未完成的动作。"
+    "可见对白中的猜测或传闻不因被演出就成为已证实事实，不能把它们填成玩家回忆或选项的既知前提。"
     "推荐不得编造玩家姓名、联系方式、职业、技能或既往经历，也不能预填未确认的个人资料与既定行程。"
     "当下选择、偏好与未来意愿可以提出；已经具备什么、以前做过什么须有公开依据。"
+    "未公开的时间、表格栏目或安排保持未知；可以提议新安排，但须写成待商量的意愿，"
+    "不能当作已有日程、栏目或已知空闲时段。"
     "被要求介绍自己或填写资料时，未知内容交给玩家自行输入；推荐可询问用途、保留称呼或暂缓填写，"
     "不能用假名、示例号码或占位符填空。"
-    "推荐只能承接当前可见正文已经交付的结果；正文明确为无记录、未知或尚未确认时，"
-    "可以让玩家继续询问或作出取舍，但不能把读数、去向、成功或其他后续结果预写成玩家已经知道的事实。"
 )
 
 
@@ -1734,14 +1873,13 @@ def _suggestion_fill_messages(
         "你是 N.E.K.O Numeric v2 的玩家输入推荐补全器。"
         f"当前猫娘是“{catgirl_name}”，但你不能替她说话或行动。"
         f"{_output_schema_instruction('transition_suggestion_fill' if transition_offered else 'suggestion_fill')}"
-        "只根据已经生成的可见正文和玩家本轮输入，给出 2—3 条真实不同、可直接发送的玩家选择。"
+        "只根据已经生成的可见正文和玩家本轮输入，给出一至三条真实不同、可直接发送的玩家选择，不能为凑数量补造前提。"
         "不得把 player_input 原样或仅改空白后再次列为推荐；玩家已经做过的同一句不是下一步选择。"
-        "每条使用“（玩家动作）玩家对白”或仅“（玩家动作）”；安静行动不必强行附加对白，动作中的‘我’可以自然省略；"
-        "括号内默认由程序标记为玩家动作，不能明写猫娘、她、他、环境或结果为动作主体。"
+        f"{_SUGGESTION_FORMAT_RULE}"
+        "有动作括号时由程序标记为玩家动作，不能明写猫娘、她、他、环境或结果为动作主体。"
         "推荐是玩家对当前回应的下一步反应，不能把猫娘正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
-        "不能把尚未发生的结果或其他角色行为写成已经发生。"
         "只能使用可见正文与玩家输入已经支持的玩家身份、地点、能力、物品和事实；"
-        "不得虚构姓名、职业、地点、装备或检查结果，也不得保留方括号占位符。"
+        "不得保留方括号占位符。"
         f"{_SUGGESTION_PLAYER_FACT_RULE}"
         "一般状态不授权推荐补出未经支持的具体属性、子类、位置或程度；物品只有在可见正文明确由玩家持有或可直接取得时，才能写成玩家正在使用。"
         "hard_boundaries 是作者硬边界，所有推荐的动作、对白、物品用途和关系距离都必须逐条遵守；"
@@ -1781,8 +1919,6 @@ def _transition_contract_for_actor(
         if text and not _text_is_covered(
             text,
             target_references,
-            similarity=0.55,
-            common_span=3,
         ):
             must_deliver.append(text)
     return {
@@ -1798,13 +1934,21 @@ def _transition_contract_for_actor(
     }
 
 
+# Both opening and continuing calls need positive author permission semantics;
+# openings deliberately do not inherit the continuing player's action contract.
+_AUTHOR_BEHAVIOR_PERMISSION_RULE = (
+    "允许行为是条件成立后的可选权限，不是已执行事实或逐项任务；"
+    "角色可按人格自主选择自己的合法反应，不能据此替玩家作出决定、跳过前因或证明未知结果。"
+)
+
+
 _PLAYER_AUTHORIZATION_RULE = (
     "玩家已授权事项只按本轮player_input、实际历史及原公开邀请确定；不因角色本稿的新请求扩大范围。"
     "允许顺着玩家已表达意图补足点头、抬眼、转身等轻微衔接，前提是不改变实际位置、持物、任务结果或关系立场；"
     "不得补出未经授权的重要状态变化、选择或承诺。"
     "角色本稿新提出的邀请、请求或建议只证明角色说过；没有玩家本轮对应授权，"
     "后段不能写成玩家已经回应或实施。玩家已授权动作、角色必要配合及获准桥段的直接结果照常交付。"
-)
+) + _AUTHOR_BEHAVIOR_PERMISSION_RULE
 
 
 _COMMITTED_NARRATIVE_STATE_RULE = (
@@ -1815,44 +1959,74 @@ _COMMITTED_NARRATIVE_STATE_RULE = (
 )
 
 
-# Ordinary and formal-transition responses share expression requirements, affecting wording only, never plot tasks or runtime completion.
-_ACTOR_RESPONSE_RULE = (
-    "从玩家本轮的选择、提问或行动中抓住一个影响当前互动的具体细节，说明角色对此的判断或它为何令她在意；"
-    "让回应包含具体对象及态度或理由，而非只确认事情完成、表示放松。不必复述整句，也不必每轮夸奖。"
-    "已说清的内容不重复，事实有限时允许简短，但不能用与本次互动无关的风景或泛泛附和代替关键答复。"
+# Expression detail applies to the active scene, not an already concluded transition source.
+_ACTOR_EXPRESSION_RULE = (
+    "从玩家本轮的选择、提问或行动中抓住一个影响当前互动的具体细节，以自然对白或必要反应表达角色的态度；"
+    "针对具体对象回应，不必复述整句、每轮夸奖或说明自己的能力和做法。"
+    "玩家已明确收束或转向时接住新话头，不再评价旧安排。事实有限时允许简短，不用无关风景或泛泛附和代替关键答复。"
+)
+_ACTOR_STATE_RULE = (
     # Narration/dialogue once described identical work as fully complete and still unfinished; enforce within-turn state consistency too.
     "正文、旁白和推荐按同一时点核对完成程度：已经全部完成的同一工作不再要求完成剩余部分。"
     "按已有核心人格选择关注点、直率程度和句式，不只是替换口头禅；角色可以认可、保留意见或拒绝，"
-    "但不得借表现个性增加新事实、关系承诺、额外动作或需要玩家解决的新问题。"
+    "但不得借表现个性补造关键事实、扩大关系承诺或行动授权，或增加需要玩家解决的新任务。"
 )
+_ACTOR_RESPONSE_RULE = _ACTOR_EXPRESSION_RULE + _ACTOR_STATE_RULE
+_ACTOR_DRAMATIZATION_RULE = (
+    "作者状态只作连续性依据，旁白自然呈现现场，不照抄摘要。写作禁令不改成自我声明；"
+    "有当场理由的世界内规则、许可和个人边界照常表达，实际越界仍明确拒绝或给出替代。"
+) + EVIDENCE_SCOPE_RULE
 
 
 def _system_prompt(
     *,
     catgirl_name: str,
-    player_address: str,
     player_address_known: bool = True,
     phase: str = "turn",
+    single_ending_response: bool = False,
 ) -> str:
     player_address_state_rule = (
         "玩家称呼已确认，正文用“你”或给定称呼。"
         if player_address_known
         else "玩家称呼尚未确认，正文只用“你”，不要猜昵称。"
     )
+    if phase == "reinvitation":
+        # 控制请求从入口只生成邀请，不继承普通回合的 NPC 回应、结果交付或事实抽取任务。
+        # 人设、认知、历史与状态仍由原有六块投影提供；此处不批准任何新动作或换幕。
+        return (
+            "重新邀请控制合同：用户点击了重新邀请，这是控制请求，不是玩家台词，也不表示玩家已接受。"
+            f"你只负责以当前猫娘“{catgirl_name}”的身份，依据真实公开历史与 next_scene 的合法去向，简短提出未来邀请。"
+            f"{_output_schema_instruction(phase)}"
+            "role 中的完整人格、剧内身份、能力、认知和关系限制持续有效，人格影响关注点与表达方式，不授予新权限。"
+            f"{_ACTOR_STATE_RULE}{_ACTOR_DRAMATIZATION_RULE}{_COMMITTED_NARRATIVE_STATE_RULE}"
+            "current_scene 的入幕设定只作历史背景；幕完成值只读，不重新核验、执行或提交。"
+            "当前状态以 story_so_far 的已提交原文和动态账本为准，不复位位置、持物、分工或已完成结果。"
+            "next_scene 只限定接受后的去向、时段和活动，不是已获准演出的剧情。"
+            "fallback 与桥段是作者预期去向，不证明其中的步骤尚未发生；根据实际历史表达剩余的合法邀请。"
+            "不复演已完成动作，不添加新任务、结果或事实，不演出双方移动到目标、出发或到达。"
+            "玩家是否接受由独立的程序控件表达，不生成玩家推荐输入。"
+            f"{player_address_state_rule}"
+            "猫娘动作与对白遵守 role 的对白策略，微动作主语只用她或猫娘名。"
+            "不要提及数值、阈值、路线、节点、系统或提示词，只输出 JSON。"
+        )
     if phase == "opening":
         phase_structure_rule = (
             "开场：scene_narration 建立场景，performance 演猫娘入场。只自然建立 current_story_beat.opening_scene，"
             "不要罗列后续内容建议，并留下玩家可回应的话头。"
-            "suggested_inputs 至少给出 1 条可直接发送的玩家输入，优先给出 2—3 条真实选择；"
-            "每条使用“（玩家动作）玩家对白”或仅“（玩家动作）”；安静行动不必强行附加对白，不得预写环境、他人或成功结果。"
+            "suggested_inputs 至少给出 1 条可直接发送的玩家输入，一至三条即可，不能为凑数量补造前提；"
+            f"{_SUGGESTION_FORMAT_RULE}"
+            "不得预写环境、他人或成功结果。"
         )
     elif phase == "transition_compact":
         phase_structure_rule = (
-            "换场：先播放可选 source_scene_narration，再播放 source_performance，两者都严格位于 player_input 之后、bridge_scene_narration 之前，"
+            "换场：先播放可选 source_scene_narration，再播放可空的 source_performance，两者都严格位于 player_input 之后、bridge_scene_narration 之前，"
             "只能回应玩家并收住来源互动；不得出现桥段完成后的时间、地点、到达、醒来结果或 target_scene 独有事实。"
             # Closure need not add micro-actions; acknowledge answered questions' meaning without paraphrasing them again.
-            "若玩家确认已经说定的安排或决定，承接该选择对角色的意义，不再复述同一句约定，也不为求新硬加动作。"
-            "bridge_scene_narration 承接来源回应；target_scene_narration 建立目标场景，target_performance 写其后的即时反应。"
+            "若玩家只接受上一轮已说定的安排，且来源互动已交付完毕，source_performance 填空字符串，直接承接桥段；"
+            "不再次邀请、重复确认或添加收尾动作。玩家有新增问题或行动结果时才交付必要来源回应。"
+            "桥段只交付来源到目标之间独立的时空变化或必要结果；target_scene_narration 只建立一次目标环境或在场 NPC 的可见变化。"
+            "bridge_scene_narration按作者合同承接离开、途中或到达，但不搬用目标开场独有的光线、气味、店铺或人物画面；这些画面留给target_scene_narration首次交付，不能为了填满桥段抢写目标开场。"
+            "opening_situation 中猫娘自己的动作和对白交给 target_performance，两段共同交付开场，不在旁白预演猫娘再让她重演。"
             "后段承接前段已完成结果，不重做或重分配归属。"
             "transition.authorized只表示本次转场获准；transition_intent=accept时，"
             "pending_invitation是被接受的原公开邀请，结合player_input确定范围，后续澄清仍按recent_context核对。"
@@ -1860,11 +2034,17 @@ def _system_prompt(
             "作者桥段与 opening_situation 是时空、必要结果和边界约束，不是必须逐字播放的文字。"
             "根据 recent_context 与 player_input 改写两段旁白，保留作者必要事实、因果顺序与阶段边界；"
             "历史已发生的动作只承接结果，不再次演出，不覆盖玩家的实际选择，也不提前完成目标幕互动。"
-            "同地点连续收束不凭空换时空；来源交付互动，桥段只承接结果状态与必要时空变化，目标段给出角色后续反应。"
-            "同一动作只在首次交付处发生，后段不再写它开始或落下；没有新变化时简短保留状态，不强求每段制造事件。"
+            "同地点连续收束不凭空换时空；无独立变化时可空桥段保持空，已成立状态由目标段自然承接，不另造过场。"
+            "同一动作只在首次交付处发生；must_preserve 约束跨段不矛盾，不要求逐项复述或另写一段状态摘要。"
             # Dedup must not remove target content entirely; without new messages, brief in-character responses to established results remain valid.
-            "目标段没有新消息时，target_performance 简短承接角色对已成立结果的态度，仍按目标对白策略交付非空正文；"
-            "避免重复不等于省略字段、输出空串，或另造动作和任务填充篇幅。"
+            "目标段承接当前话题和目标开场；玩家已结束来源话题时不再评价或总结旧安排。"
+            + ("同场自然收束只在source_performance或target_performance一处回应玩家，另一处为空字符串。"
+               "尚有最后动作或直接回应时先在来源演完，目标仅用旁白收束；若只剩结局新反应，则来源为空，在目标回应一次。"
+               "不再次感谢、重复确认或复述玩家原话凑第二次回应。新的地点或独立的目标互动仍按实际需要演出，不省略必要交付。"
+               if single_ending_response else
+               "没有新问题时，target_performance 仍按目标对白策略简短交付非空回应；"
+               "target_scene_narration 与 target_performance 仍须非空；不另造动作、任务或规则说明填充篇幅。")
+            +
             "suggested_inputs 只承接最终可见的目标 opening_scene 与 target_performance，不再执行来源幕的离开、出发或收束提议。"
         )
     else:
@@ -1878,16 +2058,26 @@ def _system_prompt(
         # Four texts share history; Runtime assembles labels only, separating source reactions from completed player actions.
         return (
             "你负责生成本次 Runtime 已授权的正式转场：猫娘写入 performance，在场 NPC 的必要答复写入来源旁白。"
-            f"{_output_schema_instruction(phase)}{phase_structure_rule}"
-            f"{_ACTOR_RESPONSE_RULE}"
-            "recent_context 是已发生事实，story_context.runtime_scene_facts 是 Runtime 已提交的场景进入/离开事件，player_input 是本轮玩家原话。"
+            f"{_output_schema_instruction(phase, single_ending_response=single_ending_response)}{phase_structure_rule}"
+            "target_performance 演出目标开场中属于猫娘的动作与对白，以角色核心人格自然表达；"
+            "按实际历史改写目标开场，承接新局面，不另行回应来源幕已交付的玩家输入或评价已成立的旧安排。"
+            "必要的新反应、获准结果及作者结局内容仍须交付。"
+            f"所有段落的状态与角色边界：{_ACTOR_STATE_RULE}"
+            f"{_ACTOR_DRAMATIZATION_RULE}"
+            "recent_context 是已提交原文，须区分实际事件与其中人物的判断；story_context.runtime_scene_facts 是 Runtime 已提交的场景进入/离开事件，player_input 是本轮玩家原话。"
             f"{_COMMITTED_NARRATIVE_STATE_RULE}"
             f"{PLAYER_ACTION_PROJECTION_RULE}"
             f"{PLAYER_ACTION_LANGUAGE_RULE}{_PLAYER_AUTHORIZATION_RULE}{SCENE_ENTRY_STATE_RULE}"
             "玩家对可执行动作的直接表态已授权动作完成；只考虑、准备、尝试不证明完成。"
-            "source_performance 回应玩家的具体选择或动作带来的直接结果；不要把同一操作交给猫娘再做一遍。"
+            "source_performance 只交付尚未完成的必要回应；没有新内容就留空，不为凑齐段落补写判断、理由或动作。"
+            "玩家有新增问题或动作时交付尚缺的直接结果；先按原话和动作辨明受话人，不把对 NPC 的话当成对猫娘说。"
+            "玩家只向在场 NPC 发问、道谢或告别时，由该 NPC 在来源旁白回应；猫娘不代答、受谢或再次评价已完成结果，"
+            "没有新信息时 source_performance 留空。不要把玩家已做的同一操作交给猫娘再做一遍。"
             "猫娘确有尚未完成的必要配合才写自己的动作，不扩展玩家授权范围或补造外部未知结果。"
-            "source_performance 与 target_performance 都只扮演猫娘；括号内是猫娘动作，括号外是她的对白。"
+            "source_performance 与 target_performance 都只扮演猫娘；括号内是猫娘动作及必要直接结果，括号外是她的对白。"
+            f"{NUMERIC_V2_ACTOR_EVENT_OWNERSHIP_INSTRUCTION}"
+            "两个 performance 在允许发声时优先纯对白，通常一至三句；有必要的新动作才用一对括号写一个即时动作。"
+            "不要在猫娘动作括号中串写 NPC 或玩家的独立动作、对白；观察对象可以出现，外部事件写入对应旁白。"
             "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复、明确拒绝或说明未知；"
             "不能只写他的神情、感受或动作而省略答复内容。"
             "遵守来源幕的认知与事实边界，不补造未知答案，不用猫娘对他的评价代替他的答复。"
@@ -1895,11 +2085,14 @@ def _system_prompt(
             "bridge_scene_narration 与 target_scene_narration 只写可见场景事实；所有旁白不得替玩家补出新的选择，不复述角色已交付的内容。"
             # New independent contracts preserve cognition/causality restrictions; simplified prompts must not relax unknown facts.
             "作者剧情方向是导演信息，明确的因果先后不能倒置；普通目标开场停在玩家互动之前。"
-            "target_scene.opening_situation 已明确建立的内容在目标幕承接，历史已发生的动作不重演。"
+            "target_scene.opening_situation 是目标段整体的内容依据，不是 target_scene_narration 的逐字稿。"
+            "按环境/NPC 与猫娘分配到两个字段；若猫娘动作在实际历史已完成，就承接结果。"
             "作者只给出抽象状态或待确认事项时，不得自行具体化；重要事物保持实际归属和最新状态。"
             # Old author-opening poses encourage resetting possessions/location/companions; specify a shared three-segment starting point.
             "生成前先从最近实际原文确定角色位置、同行关系、物件位置和操作是否已结束，三段共用这个起点；"
-            "acting_context 的角色状态是作者入幕基线，不能让已结束的操作重新进行，或把同行写成分开等候后重逢。"
+            "source_author_entry_state 与 target_scene.author_entry_plan 均为作者预期入幕规划；"
+            "目标规划与 opening_situation 不一致时，按实际历史和本轮授权适配开场，不补演操作去凑齐规划。"
+            "已结束操作不重演，同行不写成分开重逢；身份、能力、认知与硬边界持续有效。"
             # Target templates may depend on expected source results but cannot prove delivery in actual play.
             "先核对目标段将承接的物品、知识与操作结果在实际历史中的来源；"
             "来源剧情计划及目标开场写着‘已取得／已获知／已完成’，都不证明相应事件实际发生。"
@@ -1913,13 +2106,15 @@ def _system_prompt(
             "本幕及结局只要求双方达成约定时，收束在约定已明确和角色回应，不能把约定的未来行动写成已经执行，"
             "也不能借房间、道具或地点变化暗示额外操作已完成；只有历史或已授权的作者转场明确建立的结果才能承接。"
             "作者入幕状态随实际历史更新；认知、记忆、能力、关系和明确硬边界持续有效。"
-            "acting_context.core_persona 决定措辞，acting_contract 限定认知身份，relationship_control 限定关系。"
+            "acting_context.core_persona 在 full 范围内影响关注、判断与自主反应，在 style_only 范围内只影响措辞；"
+            "acting_contract 限定认知身份，relationship_control 限定关系，人格不授予额外权限。"
             # Segment policies may differ; map input/output fields explicitly so source optional cannot override target required.
             "source_performance 遵守 acting_context.dialogue_policy；target_performance 遵守 acting_context.target_dialogue_policy。"
             "required 必须包含括号外对白，forbidden 只能动作，optional 两者均可。"
             "未获授权的额外操作、关系升级和未来承诺不能借转场成立。只承接已经成立的具体主体、对象和结果。"
             # Separate transition prompts still declare action-plus-optional-dialogue contracts, avoiding completion calls for valid action-only output.
-            "非终局的 suggested_inputs 必须是 2—3 条可直接发送的玩家输入；每条使用“（玩家动作）玩家对白”或仅“（玩家动作）”；安静行动不必强行附加对白。"
+            "非终局的 suggested_inputs 给出一至三条可直接发送的玩家输入，不能为凑数量补造前提；"
+            f"{_SUGGESTION_FORMAT_RULE}"
             "动作可省略‘我’，但必须由玩家实施且不能预写环境、他人或成功结果；推荐之间必须有真实选择。"
             f"{_SUGGESTION_PLAYER_FACT_RULE}"
             f"{player_address_state_rule}当前猫娘由“{catgirl_name}”扮演。"
@@ -1929,11 +2124,12 @@ def _system_prompt(
         # Ordinary turns retain cross-topic semantic contracts only; all concrete facts come from six dynamic context blocks.
         return (
             "你负责扮演当前猫娘，把剧本自然演成连续故事。"
-            "performance 只扮演当前猫娘；必要的可见环境变化，以及当前幕已出现 NPC 的动作或回应，写入 scene_update。"
+            "performance 只扮演当前猫娘；独立外部变化，以及当前幕已出现 NPC 的动作或回应，写入 scene_update。"
             f"{_output_schema_instruction(phase)}"
             f"{NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION}"
             f"{phase_structure_rule}"
             f"{_ACTOR_RESPONSE_RULE}"
+            f"{_ACTOR_DRAMATIZATION_RULE}"
             "\n事实与授权：role 约束人格、认知和关系；current_scene 区分开场事实与导演方向；story_so_far 是已提交历史；其中 Runtime 场景事件只证明已提交的进入/离开，不复制当前位置权威；"
             "next_scene 仅供提出未来行动，不授权提前演出。必须承认此前说过的话、已做动作与实体状态；"
             f"{_COMMITTED_NARRATIVE_STATE_RULE}"
@@ -1944,12 +2140,14 @@ def _system_prompt(
             "完整回应不等于必须满足请求：答案未知或受限时先明确承认问题并暂缓披露，再继续已授权因果。"
             "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场，不补心理，不交换玩家与猫娘的行动主体。"
             "玩家已实施的幕内动作从外部回应开始，不重演、不转给猫娘重做；保持实体的持有者、位置和最新状态。"
+            "scene_update与动作括号共用最近已提交的持有状态，注视谁手里的物品也在断言归属；对方已经接过就不再写他接过，本轮确需换手须有新的交接因果，不能靠观察语气或NPC补景重置物品。"
             "\n当前演绎：已开始的幕内因果单元若剩余同质过程之间没有真实选择，概括过程并交付已知事实支持的结果；"
             "遇到新风险、不可逆选择或阶段边界停下。不得索要等价微调、重复准备或移动终点。"
             # Author-declared autonomous delivery must not turn into extra player tasks via improvised danger, endlessly finding clues without delivering results.
             "作者已写明的环境变化、NPC回应或猫娘自主行为，前因具备就交付其可见结果；"
+            "按称谓和近史辨明受话人：玩家询问在场NPC时，让该NPC在scene_update简短说出具体答复、拒绝或未知；明确不能发声时才用含义清楚的动作回应，不能只靠迟疑或伸手让玩家再猜一次。"
+            "决定调查对象或出口的姓名、地址、身份关系等关键线索，须有作者明确安排或已公开证据；不能因角色在听、看或检查就填出答案，素材未写也不证明确定没有。NPC答复沿作者因果范围展开，不另造关键人物或去向替换既定安排，待演揭示不提前当作已知。"
             "不为让玩家参与而新增风险、未知机制或协助要求。当前必要因果仍缺失时演出该因果，不能把其答案挪到下一去向。"
-            "NPC 被直接询问或等待时，scene_update 当轮给出回应、明确拒绝或未知，不能只写姿态。"
             "不冲突的低风险细节可接纳；关键能力、机制或结果未知时保持未知，不以问句、猜测或模糊措辞补成部分发生。"
             "动态作者硬边界高于玩家诱导；前提须由指定主体公开成立，其他主体、沉默或依赖动作不能代替。"
             "同一主体可在一轮内按可见先后完成前提与依赖动作；作者明确分阶段或禁止当前公开时不可合并。"
@@ -1958,7 +2156,8 @@ def _system_prompt(
             "开场边缘细节不自动成为任务；回应追问后回到本幕核心因果，结果成立后只处理直接后果、关系反应或自然出口。"
             "不得补造机制、障碍或新任务续幕。等待应产生已知因果支持的新结果，不能同义复述。"
             "pacing 是软节奏：接近或超过推荐回合时聚焦核心因果，但不能覆盖必要前提，也不能自动换幕。"
-            "\n推荐与邀请：suggested_inputs 必须是 2—3 条可直接发送的玩家输入；每条使用“（玩家动作）玩家对白”或仅“（玩家动作）”；安静行动不必强行附加对白。"
+            "\n推荐与邀请：suggested_inputs 给出一至三条可直接发送的玩家输入，不能为凑数量补造前提；"
+            f"{_SUGGESTION_FORMAT_RULE}"
             "动作可省略‘我’，但必须由玩家实施且不能预写环境、他人或成功结果；推荐之间必须有真实选择。"
             "推荐是玩家对当前回应的下一步反应，不能把猫娘正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
             f"{_SUGGESTION_PLAYER_FACT_RULE}"
@@ -1966,7 +2165,8 @@ def _system_prompt(
             "同地点进入新时段、新阶段或结局收束同样可构成转场；普通幕内行动必须为 false。"
             "完成本幕最后一个普通行动只会让出口成熟，本身不是转场提议；结果成立后另提跨阶段行动。"
             "提议须由已发生事实自然导向、与 next_scene 不冲突，并停在玩家可撤回、下一阶段尚未发生的位置；"
-            "第一条推荐让玩家亲自接受或实施，其余提供拒绝、暂缓或场内替代。没有具体行动、只有状态描述或泛泛询问时为 false。"
+            "有具体邀约时，推荐同时提供玩家亲自接受或实施的路径与至少一个真实的拒绝、暂缓或场内替代；"
+            "无邀约时一至三条即可。没有具体行动、只有状态描述或泛泛询问时为 false。"
             f"{player_address_state_rule}"
             f"当前猫娘统一由“{catgirl_name}”扮演；微动作主语只用她或猫娘名。"
             "不要提及数值、阈值、路线、节点、系统或提示词；最终 JSON 不输出解释与推理。"
@@ -1978,9 +2178,11 @@ def _system_prompt(
         f"{NUMERIC_V2_ACTOR_OPENING_NARRATION_INSTRUCTION}"
         f"{phase_structure_rule}"
         "story_context 提供剧本背景，current_story_beat 提供本次开场，acting_context 约束角色与关系。"
+        f"{_ACTOR_DRAMATIZATION_RULE}"
+        f"{_AUTHOR_BEHAVIOR_PERMISSION_RULE}"
         f"{_COMMITTED_NARRATIVE_STATE_RULE}"
         "visible_player_history 为空，不得假定玩家此前说过话、做过选择或完成主动行动。"
-        "作者角色状态是开场演完后的起点，按本次开场建立，不当作整幕完成结果。"
+        "作者角色状态是预期的入幕起点；合法初始事实可建立，后续规划须与实际开场及历史核对，不授权玩家新动作。"
         "开场处境只建立背景，完整剧情方向决定因果重心；边缘细节没有得到方向支持时，不得扩成新机制、阻碍或多轮任务。"
         "作者条件必须先公开成立再执行依赖动作；允许目的地不代表未知路径和通行方式自动成立。"
         "作者剧情方向是导演信息，不是角色已经知道的事实；其中明确的因果先后不能倒置，"
@@ -1991,7 +2193,8 @@ def _system_prompt(
         "提议必须公开、具体、由已发生事实导向并停在下一阶段结果之前。"
         "推荐若包含结束当前互动阶段的行动，transition_offered 必须为 true，且要同时提供玩家执行路径和真实替代；"
         "普通幕内行动或泛泛询问必须为 false。"
-        "acting_context.core_persona 决定表达，acting_contract 决定认知与身份，dialogue_policy 决定能否说话，"
+        "acting_context.core_persona 在 full 范围内影响关注、判断与自主反应，在 style_only 范围内只影响表达；"
+        "acting_contract 决定认知与身份，dialogue_policy 决定能否说话，人格不授予额外权限，"
         "relationship_control.response_contract 决定当前关系边界。"
         "dialogue_policy=required 必须有括号外对白，forbidden 只能写动作，optional 两者均可。"
         f"{player_address_state_rule}"
@@ -2039,6 +2242,29 @@ def _remaining_history_evidence(
     ]
 
 
+def _prompt_token_counter(system_prompt: str) -> Callable[[str], int]:
+    # 每次装箱独立计量；System 不变，重复检查同一完整 Human 时只复用上一次结果。
+    # 内容一旦改变就重新编码整串，不相加字段计数，也不跨回合缓存人设或历史。
+    system_tokens = count_tokens(system_prompt)
+    previous_human: str | None = None
+    previous_tokens = 0
+
+    def total(human: str) -> int:
+        nonlocal previous_human, previous_tokens
+        if human != previous_human:
+            previous_tokens = count_tokens(human)
+            previous_human = human
+        return system_tokens + previous_tokens
+
+    return total
+
+
+_HistoryEvidenceExpander = Callable[
+    [Sequence[Mapping[str, Any]], Callable[[Sequence[Mapping[str, Any]]], bool]],
+    Sequence[Mapping[str, Any]],
+]
+
+
 def _fit_turn_prompt_data(
     *,
     system_prompt: str,
@@ -2046,23 +2272,41 @@ def _fit_turn_prompt_data(
     data: dict[str, Any],
     max_tokens: int = 4800,
     diagnostics: dict[str, Any] | None = None,
+    render_committed_history: bool = False,
+    evidence_expander: _HistoryEvidenceExpander | None = None,
 ) -> dict[str, Any]:
     """Delete auxiliary data/earliest whole turns only, never edit retained text."""  # noqa: DOCSTRING_CJK
 
     fitted = dict(data)
+    count_prompt_tokens = _prompt_token_counter(system_prompt)
     evidence = list(fitted.get("history_evidence") or [])
     initial_history_revisions = [
         item.get("revision")
         for item in fitted.get("recent_context") or []
         if isinstance(item, Mapping) and isinstance(item.get("revision"), int)
     ]
+    def prompt_data() -> dict[str, Any]:
+        if not render_committed_history:
+            return fitted
+        # Keep raw rows for evidence deduplication; only the wire representation loses old output phases.
+        rendered = {**fitted, "recent_context": [
+            {"revision": row.get("revision"), "player_input": row.get("player_input", ""),
+             "committed_text": _story_so_far_row_text({**row, "player_input": ""})}
+            for row in fitted.get("recent_context") or []
+        ]}
+        # Keep the just-finished player turn after old quotes and the transition
+        # plan on the wire; budget checks must count this identical ordering.
+        if "player_input" in rendered:
+            rendered["player_input"] = rendered.pop("player_input")
+        return rendered
+
     def tokens() -> int:
         if evidence:
             fitted["history_evidence"] = _remaining_history_evidence(
                 fitted.get("recent_context") or [], evidence,
             )
-        human = human_prefix + json.dumps(fitted, ensure_ascii=False, separators=(",", ":"))
-        return count_tokens(system_prompt) + count_tokens(human)
+        human = human_prefix + json.dumps(prompt_data(), ensure_ascii=False, separators=(",", ":"))
+        return count_prompt_tokens(human)
 
     def finish() -> dict[str, Any]:
         if diagnostics is not None:
@@ -2082,7 +2326,7 @@ def _fit_turn_prompt_data(
                     if revision not in included_history_revisions
                 ],
             })
-        return fitted
+        return prompt_data()
 
     history = list(fitted.get("recent_context") or [])
     while tokens() > max_tokens and len(history) > 1:
@@ -2105,6 +2349,21 @@ def _fit_turn_prompt_data(
                 state["projection"]["quotes_omitted"] += omitted_quotes
                 fitted["story_context"] = {**story_context, "narrative_state": state}
 
+    if evidence_expander is not None and evidence:
+        def within_prompt(candidate: Sequence[Mapping[str, Any]]) -> bool:
+            # 只替换最终 wire 的检索附件，不重新裁历史、状态或合同。
+            trial = {**prompt_data(), "history_evidence": _remaining_history_evidence(history, candidate)}
+            return count_prompt_tokens(
+                human_prefix + json.dumps(trial, ensure_ascii=False, separators=(",", ":")),
+            ) <= max_tokens
+
+        fits = tokens() <= max_tokens
+        if fits or within_prompt(()):
+            # 正常请求仍保留原附件并只用余量扩充。超限且固定内容能完整保留时，
+            # 让原检索器按问题/答复等既有优先级重选整条原文；不能按时间删旧引文。
+            evidence = list(evidence_expander(evidence if fits else (), within_prompt))
+            # 空选择也必须清掉旧附件，否则 tokens() 的非空判断会留下原超限副本。
+            fitted["history_evidence"] = _remaining_history_evidence(history, evidence)
     if tokens() > max_tokens:
         # Never silently delete or sentence-truncate current player input, stable background, target contracts, or character context.
         raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
@@ -2121,46 +2380,71 @@ def _fit_simple_turn_prompt_data(
     history_preselected: bool = False,
     evidence_text: str = "",
     evidence_records: Sequence[Mapping[str, Any]] = (),
-    fact_index: Callable[[], str] | None = None,
+    fact_index: Callable[[], Mapping[str, Any] | None] | None = None,
     pending_offer_text: str = "",
     narrative_state: Mapping[str, Any] | None = None,
     diagnostics: dict[str, Any] | None = None,
+    evidence_expander: _HistoryEvidenceExpander | None = None,
 ) -> dict[str, Any]:
     """Compress six-block prompts from earlier whole turns, never truncating current input/turn."""  # noqa: DOCSTRING_CJK
 
     fitted = dict(data)
+    count_prompt_tokens = _prompt_token_counter(system_prompt)
     history = list(history_rows)
     story_prefix = ""
     index_loaded = False
+    indexed_evidence: Sequence[Mapping[str, Any]] = ()
     initial_history_revisions = [
         row.get("revision")
         for row in history
         if isinstance(row.get("revision"), int)
     ]
+    def story_with_evidence(records: Sequence[Mapping[str, Any]]) -> str:
+        remaining = _remaining_history_evidence(history, records)
+        # Only replace an unambiguous, byte-exact current-visit source with the
+        # richer source already retained in the index. Different visits, speakers,
+        # revisions and final negations remain independent evidence. The generic
+        # retrieval has no field identity, so multiple matching fields stay intact.
+        def source_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
+            return (item.get("revision"), item.get("source"), item.get("text"))
+
+        indexed_sources = Counter(source_key(item) for item in indexed_evidence
+                                  if item.get("current_visit") is True)
+        retrieved_sources = Counter(source_key(item) for item in records
+                                    if item.get("current_visit") is True)
+        remaining = [item for item in remaining if not (
+            item.get("current_visit") is True
+            and indexed_sources[source_key(item)] == 1
+            and retrieved_sources[source_key(item)] == 1
+        )]
+        retrieved = (
+            "history_evidence（已提交原文）："
+            + json.dumps(remaining, ensure_ascii=False, separators=(",", ":"))
+            if remaining else ""
+        )
+        return "\n\n".join(
+            part for part in (evidence_text, retrieved, story_prefix, _story_so_far_text(history)) if part
+        )
+
     def refresh_story() -> None:
-        # story_so_far alone represents actual events; rerender from complete records after every eviction.
-        nonlocal story_prefix, index_loaded
+        # Preserve committed wording, including uncertain speech, not a derived
+        # truth summary. Rerender complete sources after every budget eviction.
+        nonlocal story_prefix, index_loaded, indexed_evidence
         if not index_loaded and (history_preselected or len(history) < len(history_rows)):
             # Both candidate windows and total-budget packing trim; generate indexes only when actual records disappear.
             index_loaded = True
-            compact = fact_index() if fact_index is not None else ""
-            if compact:
+            index = fact_index() if fact_index is not None else None
+            if index:
+                indexed_evidence = tuple(index.get("evidence") or ())
+                compact = json.dumps(index, ensure_ascii=False, separators=(",", ":"))
                 story_prefix = (
-                    "当前幕已提交记录摘录（历史已裁剪；片段可能不完整，不代表任务或完成判定）：\n"
+                    "当前幕已提交原文索引（历史已裁剪；仅所列原文完整，省略项保持未知；"
+                    "按回合和来源承接后续变化，不代表任务或完成判定）：\n"
                     f"{compact}\n\n最近完整对话："
                 )
-        recent_story = _story_so_far_text(history)
         # Remove originals only for the same turn/source when retained completely. Recalculate after every eviction,
         # restoring evidence for trimmed history rather than losing both; never deduplicate merely similar wording.
-        remaining_evidence = _remaining_history_evidence(history, evidence_records)
-        retrieved_story = (
-            "history_evidence（已提交原文）："
-            + json.dumps(remaining_evidence, ensure_ascii=False, separators=(",", ":"))
-            if remaining_evidence else ""
-        )
-        fitted["story_so_far"] = "\n\n".join(
-            part for part in (evidence_text, retrieved_story, story_prefix, recent_story) if part
-        )
+        fitted["story_so_far"] = story_with_evidence(evidence_records)
 
     def drop_previous_scene_tail() -> bool:
         # Prior-scene aftermath is disposable continuity; drop it before sacrificing real current-scene turns under budget pressure.
@@ -2187,7 +2471,7 @@ def _fit_simple_turn_prompt_data(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        return count_tokens(system_prompt) + count_tokens(human)
+        return count_prompt_tokens(human)
 
     refresh_story()
     if tokens() > max_tokens and drop_previous_scene_tail():
@@ -2231,8 +2515,25 @@ def _fit_simple_turn_prompt_data(
             fitted["current_scene"] = current_scene.replace(
                 original, marker + json.dumps(state, ensure_ascii=False, separators=(",", ":")), 1,
             )
+    if evidence_expander is not None and evidence_records:
+        def within_prompt(candidate: Sequence[Mapping[str, Any]]) -> bool:
+            # 整份 Human JSON 计量自然包括 story_so_far 的二次转义；试装不改基线字段。
+            trial = {**fitted, "story_so_far": story_with_evidence(candidate)}
+            return count_prompt_tokens(
+                human_prefix + json.dumps(trial, ensure_ascii=False, separators=(",", ":")),
+            ) <= max_tokens
+
+        fits = tokens() <= max_tokens
+        if fits or within_prompt(()):
+            # Keep the original seed on a fitting request, including duplicates
+            # carried elsewhere, so retrieval does not gain extra source slots.
+            # Otherwise reselect whole originals using the existing priorities;
+            # the fixed role, index, latest exchange and current input stay put.
+            evidence_records = evidence_expander(evidence_records if fits else (), within_prompt)
+            fitted["story_so_far"] = story_with_evidence(evidence_records)
     if tokens() > max_tokens:
-        # Never sentence-truncate fixed character data, either scene summary, or current player input.
+        # Recheck the exact final wire even if a selector ignored its predicate.
+        # Fixed character data, scene contracts and player input are never truncated.
         raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
     if diagnostics is not None:
         included_history_revisions = [
@@ -2323,14 +2624,28 @@ def _transition_prompt_data(
         "current_scene_state": "source_author_entry_situation",
         "character_state": "source_author_entry_state",
     }
+    transition_acting_context = {
+        source_author_fields.get(key, key): value
+        for key, value in acting_context.items()
+    }
+    # Match Review's target_scene.author_entry_plan: preserve the complete
+    # author snapshot beside its planned opening, separate from acting policies
+    # and committed history. Moving the plan does not establish any result.
+    target_author_entry_plan = transition_acting_context.pop("target_character_state", None)
+    if target_author_entry_plan:
+        transition["target_scene"]["author_entry_plan"] = target_author_entry_plan
+    # Effective per-segment policies already live above; author policies must not require a finished source to speak.
+    for field in ("acting_contract", "target_acting_contract"):
+        if field in transition_acting_context:
+            transition_acting_context[field] = {
+                key: value for key, value in transition_acting_context[field].items()
+                if key != "dialogue_policy"
+            }
     return {
         "story_context": dict(story_context),
         "player_address": str(player_address or "你"),
             "recent_context": list(recent_context),
-        "acting_context": {
-            source_author_fields.get(key, key): value
-            for key, value in acting_context.items()
-        },
+        "acting_context": transition_acting_context,
         "player_input": str(player_input or ""),
         "transition": transition,
     }
@@ -2351,11 +2666,7 @@ def _opening_messages(
         catgirl_name=catgirl_name,
     )
     node = engine.nodes[str(engine.story["start_node_id"])]
-    opening_beat = _opening_beat_for_actor(engine, cast, node)
-    # Narrative Actor receives no player to-do list; complete recommendations separately from generated text to preserve responsibilities.
-    opening_beat = dict(opening_beat)
-    opening_beat.pop("player_reply_goals", None)
-    opening_beat.pop("current_direction", None)
+    opening_beat = _opening_beat_for_actor(cast, node)
     dialogue_policy = str(
         _acting_contract_for_actor(cast, node["story_beat"]).get("dialogue_policy") or "required"
     )
@@ -2401,7 +2712,6 @@ def _opening_messages(
     }
     system_prompt = _system_prompt(
         catgirl_name=catgirl_name,
-        player_address=player_address,
         player_address_known=player_address_known,
         phase="opening",
     ) + _hard_boundary_system_instruction(
@@ -2436,6 +2746,11 @@ def _turn_messages(
     recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
     history_lookup: Mapping[str, Any] | None = None,
     player_action_projection: Mapping[str, Any] | None = None,
+    approved_completion_facts: tuple[Mapping[str, Any], ...] = (),
+    *,
+    draft_repair_context: Mapping[str, Any] | None = None,
+    combined_evaluation: bool = False,
+    combined_history: list[str] | None = None,
 ) -> list[Any]:
     cast = NumericV2CastProjection.from_story(
         engine.story,
@@ -2445,17 +2760,36 @@ def _turn_messages(
     source = engine.nodes[str(outcome.ledger_event["from_node_id"])]
     target = engine.nodes[str(outcome.ledger_event["to_node_id"])]
     route_changed = source["id"] != target["id"]
+    reinvitation = input_source == "reinvite" and not route_changed
     system_prompt = _system_prompt(
         catgirl_name=catgirl_name,
-        player_address=player_address,
         player_address_known=player_address_known,
-        phase="transition_compact" if route_changed else "turn",
+        phase="transition_compact" if route_changed else "reinvitation" if reinvitation else "turn",
+        single_ending_response=(route_changed and outcome.session.status == "ended"
+            and outcome.ledger_event.get("natural_ending_ready") is True
+            and outcome.session.dialogue_policy in {"optional", "forbidden"}),
     )
-    if retry_hint and route_changed:
-        # Retries explicitly require rewriting the current response, avoiding identical output from unchanged input/context.
-        system_prompt += f"\n本轮是输出重试：{retry_hint}"
+    if not route_changed and not reinvitation and session.performance_history:
+        last = session.performance_history[-1]
+        if (_can_defer_dialogue_repetition(last)
+                and last.get("from_node_id") == last.get("to_node_id") == session.current_node_id
+                and (_repeats_earlier_session_performance(last, session, route_changed=False)
+                     or (len(session.performance_history) > 1 and _is_repeated_performance(
+                         last, session.performance_history[-2])))):
+            # 从已提交原文恢复软修正，不另存记忆、不改写历史或再加一次模型审核。
+            system_prompt += (
+                "\n上一轮有重复措辞；本轮直接回应玩家最新输入，换一种自然表达。"
+                "只修正措辞，不重演动作、不撤销事实，不要求玩家重做选择。"
+            )
+    if input_source == "accept_invitation" and route_changed:
+        # 控件只确认已公开邀请本身；空输入不是缺失台词，不能让 Actor 补出额外行动授权。
+        system_prompt += (
+            "\n程序已确认玩家接受刚展示的邀请；这是控制动作，不是玩家台词，player_input 为空。"
+            "仅按 transition.pending_invitation 的原文、已提交历史与获准转场合同承接，"
+            "不新增玩家动作、分工或重要操作的授权，不替玩家执行目标幕尚待决定的事项。"
+        )
     current_player_input = str(player_input or "")
-    projected_player_action = normalize_player_action_projection(
+    projected_player_action = player_action_projection_for_prompt(
         player_action_projection
         if player_action_projection is not None
         else project_player_action_result(current_player_input)
@@ -2475,22 +2809,42 @@ def _turn_messages(
             system_prompt += f"\n{label}固定旁白说明：\n{fixed_note}"
     if source["story_beat"].get("fixed_narrations"):
         system_prompt += "\n已展示的作者原文可能含往事、书信或屏幕日志；其中的地点、伤情和敌人不自动成为当前现场状态。"
-    human_prefix = "以下 JSON 是本次获准转场的上下文；已提交事实与待演作者要求分开使用：\n"
-    # Deferral boundaries reuse this scene visit's invitation records, without separate chat/cooldown storage.
-    withdrawn_offer = (
-        not session.transition_offered
-        and pending_transition_record(
-            session, ledger_events=recent_ledger_events, include_withdrawn=True,
-        ) is not None
+    if combined_evaluation:
+        # Reuse Actor's scene/history evidence; do not duplicate Evaluator's prompt.
+        metrics = [{
+            "id": key, "name": definition["name"],
+            "criteria": {f"{key}.{direction}.{index + 1}": cast.text(text)
+                         for direction in ("increase", "decrease")
+                         for index, text in enumerate(definition[f"{direction}_criteria"])},
+        } for key, definition in engine.metric_schema.items()]
+        system_prompt += (
+            "\n本轮合并普通场景判断与表演：在原有输出后附加 turn_evaluation，"
+            "必须且只能包含 scene_complete:boolean、metric_changes:object、fact_candidates:object[]。"
+            "scene_complete 仅表示当前互动已有自然收束点，不授权换幕或结局；"
+            "没有已展示结果支持时为false，不把打算、推荐、后续目标当成完成。"
+            "metric_changes 只按本轮玩家实际输入与下列作者准则选择变化；无变化填{}。"
+            "每个键为指标id，值只能含 strength（weak/normal/strong/decisive）、criterion_id（下列准则原id）。"
+            "不能自行输出数值或根据自己编写的台词给玩家加减分。"
+            "turn_evaluation.fact_candidates 用于补记已演出的结果：逐项核对当前幕完成事实，"
+            "允许用 player_input 或 story_so_far 中本幕已实际展示的原句补记尚未登记的结果。"
+            "每项仅含 key、value、evidence_quote；逐字引用实际结果，不引用 current_scene 作者模板或未来目标。"
+            "开场已完成的介绍、报告、提议也应按实际原句补记，不为登记重演；"
+            "提议只证明提议已说出，不证明未来行动已完成，无证据填[]。"
+            "事实仍按原 fact_candidates 合同提供逐字证据；状态提案不等于已发生事实。"
+            "本轮只演当前场景，不播放下一幕；已完成当前互动时自然提出 next_scene 允许的未来安排，"
+            "等待玩家决定，不重演已经完成的步骤。作者指标准则："
+            + json.dumps(metrics, ensure_ascii=False, separators=(",", ":"))
+        )
+    human_prefix = (
+        "以下 JSON 是本次获准转场的上下文。末尾 player_input 是玩家刚结束的发言；"
+        f"source_performance 由猫娘“{catgirl_name}”承接来源幕尚未回应的内容，"
+        "target_performance 在目标开场接话，不把旧幕台词重新当作当前回应。"
+        "suggested_inputs 是玩家看到目标回应后的下一句；已提交事实与待演作者要求分开使用：\n"
     )
-    soft_pacing = _soft_pacing(
-        source,
-        session.node_turn_count + 1,
-        route_changed=route_changed,
-        transition_intent=str(
-            "reject" if withdrawn_offer else outcome.ledger_event.get("transition_intent") or "unclear"
-        ),
-    )
+    if input_source == "accept_invitation" and route_changed:
+        human_prefix = human_prefix.replace(
+            "末尾 player_input 是玩家刚结束的发言", "末尾 player_input 为空，接受控制已由程序确认",
+        )
     story_context = _story_context_for_actor(
         cast,
         engine.story,
@@ -2500,14 +2854,28 @@ def _turn_messages(
             else (source["story_beat"],)
         ),
     )
-    story_context["runtime_scene_facts"] = project_scene_facts(session)
+    if "background" in story_context:
+        story_context = {"initial_background" if key == "background" else key: value
+                         for key, value in story_context.items()}
+        system_prompt += (
+            "\n剧本初始前情描述故事开始时的处境，其中稳定的世界设定、身份和关系约束仍有效；"
+            "其中的时地和动作不作为当前时地或重演动作的依据。"
+        )
+    system_prompt += (
+        "\n章节标题只标示主题，不证明当前时地或事件已经发生；"
+        "当前状态承接实际历史；时地变化依据本轮输入中的已授权行动，或本次获准的具体开场或转场合同，"
+        "仍遵守既有阶段授权，不从标题推断。"
+    )
+    if route_changed:
+        story_context["runtime_scene_facts"] = project_scene_facts(session)
     narrative_state = project_narrative_state(session, focus=player_input)
     if route_changed and narrative_state is not None:
         story_context["narrative_state"] = narrative_state
         if "knowledge_scope" in story_context:
             story_context["knowledge_scope"] = (
-                "只把current_story_beat、recent_context、player_input与acting_context明确允许的可观察状态，"
-                "以及story_context.narrative_state中已过滤为角色可知的投影视为已知；其余身份、历史和关系未知。"
+                "仅可读取current_story_beat、recent_context、player_input与acting_context明确允许的公开信息，"
+                "以及story_context.narrative_state中已过滤为角色可知的投影；其中陈述与状态按各自来源核对，"
+                "不把推测变成确定知识；其余身份、历史和关系未知。"
             )
         system_prompt += (
             "\n正式转场继承current中已确认的持物和已完成结果；静态作者方向不得重新决定这些状态。"
@@ -2515,9 +2883,14 @@ def _turn_messages(
         )
     actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
     # Originals come only from committed history; route reasons guide retrieval without becoming past events.
-    preview_route = engine.preview_route(session.current_node_id, session.metrics)
+    preview_route = engine.preview_route(session.current_node_id, session.metrics, facts=session.story_state["facts"])
     evidence = history_evidence(session, current_player_input,
         focus=str(((preview_route or {}).get("transition_contract") or {}).get("reason") or ""), lookup=history_lookup)
+    def expand_evidence(retained: Sequence[Mapping[str, Any]], within_prompt: Callable[[Sequence[Mapping[str, Any]]], bool]) -> Sequence[Mapping[str, Any]]:
+        # 仅在原检索非空时由 fitter 调用，故不增加 System 合同或任何模型阶段。
+        return history_evidence(session, current_player_input,
+            focus=str(((preview_route or {}).get("transition_contract") or {}).get("reason") or ""),
+            lookup=history_lookup, retained=retained, within_prompt=within_prompt)
     # All rewrites this turn reuse originals and lookup state, avoiding duplicate model calls or next-turn fabricated facts.
     system_prompt += history_lookup_note(history_lookup)
     if evidence:
@@ -2629,9 +3002,11 @@ def _turn_messages(
             system_prompt += (
                 "本轮进入终局，交付后不再接收输入；suggested_inputs 必须为空数组，正文自然收住，不留下等待玩家回答的新问题。"
                 # Ending state must not hide source dialogue that still treats this turn's authorized action as pending.
-                "来源回应必须承接本轮已授权动作的完成及直接反应，不能退回递工具、催促实施或以完成为条件等待玩家。"
-                # Endings may address concrete current results; expressing feelings does not mean unrelated landscape chatter.
-                "逐段检查：已完成的动作不再做一遍；最后一句承接本次结果对角色的意义，不发出喝完再走、下次再来等新邀请。"
+                "只有尚未交付的最后互动、本轮新增的在场 NPC 问答或必要直接结果才在来源段交付；"
+                "已在历史中完成的互动不再重演，来源回应可以为空，由目标段一次承接已成立结果。"
+                "不能退回递工具、催促实施或以完成为条件等待玩家。"
+                # Ending delivery follows the authored closing material, without requiring another appraisal of completed source work.
+                "逐段检查：已完成的动作不再做一遍；按目标开场和结局方向完成本次收束，不发出喝完再走、下次再来等新邀请。"
             )
         if outcome.ledger_event.get("transition_intent") == "initiate":
             # Proactive player requests need no invented prior invitation; authorization covers only this movement/stage start.
@@ -2650,8 +3025,39 @@ def _turn_messages(
                 "必须交付已知条件支持的直接结果，不得跳过最后互动直接宣告结束；"
                 "不声称玩家接受了未提出的邀请，不补写玩家新行动、承诺，不再发出结束确认或后续任务。"
             )
+        # Carry prior public results into transitions too; this turn's unreviewed candidates are not committed history.
+        committed_completion = None
+        if not any(_acting_contract_restricts_knowledge(data["acting_context"].get(key) or {})
+                   for key in ("acting_contract", "target_acting_contract")):
+            committed_completion = _completion_fact_prompt_context(
+                engine, source, replace(outcome, session=session), cast=cast,
+                approved_facts=approved_completion_facts,
+            )
+        if committed_completion is not None:
+            completed_facts = [
+                row for row in committed_completion["all"]
+                if row["visibility"] == "public" and row["satisfied"]
+                and (row["committed"] or row.get("approved_this_turn"))
+            ]
+            if completed_facts:
+                # Missing occurrence bindings do not undo registered completion.
+                # Expose only values, never a guessed round of supporting prose.
+                final_transition["source_committed_completion"] = {
+                    "facts": completed_facts,
+                }
+                system_prompt += (
+                    "\ntransition.source_committed_completion 只含本轮前已入账或本轮独立预审通过的公开完成值；"
+                    "approved_this_turn表示已审结果尚待整轮提交，按evidence所引输入或历史承接，不重演补账；"
+                    "registration_revision仅表示入账回合，不证明事件发生回合、主体或过程。具体过程按实际历史核对，"
+                    "原文缺失时保持未知；完成值不是待播放台词，也不证明物件当前位置或持有人；按全部历史承接最新状态，"
+                    "不退回准备、催促或再次执行已完成项。"
+                    "未列出的事项不等于未发生，仍须核对实际历史；入账值不授权改写历史。"
+                )
         data["transition"] = final_transition
         system_prompt += player_action_note
+        if retry_hint:
+            # Formal repairs, like ordinary ones, follow the complete contracts.
+            system_prompt += f"\n本轮是输出重试：{retry_hint}"
         packing_diagnostics: dict[str, Any] = {}
         data = _fit_turn_prompt_data(
             system_prompt=system_prompt,
@@ -2659,6 +3065,8 @@ def _turn_messages(
             data=data,
             max_tokens=actor_budget["input_max_tokens"],
             diagnostics=packing_diagnostics,
+            render_committed_history=True,
+            evidence_expander=expand_evidence,
         )
         packing_diagnostics["history_available_revisions"] = (
             history_selection_diagnostics["history_available_revisions"]
@@ -2673,6 +3081,20 @@ def _turn_messages(
             HumanMessage(content=human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":"))),
         ]
 
+    # Deferral boundaries reuse this scene visit's invitation records, without separate chat/cooldown storage.
+    withdrawn_offer = (
+        not session.transition_offered
+        and pending_transition_record(
+            session, ledger_events=recent_ledger_events, include_withdrawn=True,
+        ) is not None
+    )
+    soft_pacing = _soft_pacing(
+        source,
+        session.node_turn_count + 1,
+        transition_intent=str(
+            "reject" if withdrawn_offer else outcome.ledger_event.get("transition_intent") or "unclear"
+        ),
+    )
     role_context = _acting_context(
         engine,
         cast,
@@ -2697,14 +3119,19 @@ def _turn_messages(
             or ""
         )
     ).strip()
-    if current_scene_direction and current_scene_direction != current_scene_opening:
-        current_scene_summary = (
-            f"当前已进入的开场处境：{current_scene_opening}\n"
+    # The author opening describes entry, not the current position after play.
+    # Preserve its wording while the committed recent history governs changes.
+    current_scene_summary = (
+        "本幕首次入场时的开场设定（后续位置与状态以已提交近史为准）："
+        f"{current_scene_opening}"
+    )
+    # 完成后的重邀保留实际历史及入账状态，不再把本幕导演计划作为新一轮结果生成任务。
+    if not reinvitation and current_scene_direction and current_scene_direction != current_scene_opening:
+        current_scene_summary += (
+            "\n"
             "本幕完整剧情方向（自然演绎，不是任务清单，也不是已发生事实）："
             f"{current_scene_direction}"
         )
-    else:
-        current_scene_summary = current_scene_opening
     if narrative_state is not None:
         # Keep it in the fixed current-scene block so old-history budget eviction cannot remove it.
         current_scene_summary += (
@@ -2714,15 +3141,35 @@ def _turn_messages(
     completion_fact_context = _completion_fact_prompt_context(
         engine,
         source,
-        outcome,
+        # 与正式来源段一样，只将本轮前已提交的值标为 committed；当前候选不证明已演出。
+        # 玩家本轮已实施的动作仍由完整 player_input 承接，不把未入账等同于尚未行动。
+        replace(outcome, session=session),
         cast=cast,
+        approved_facts=approved_completion_facts,
     )
+    # 路线事实是不同出口的备选条件，不改变 completion.status，也不成为新的全部必做清单。
+    route_fact_context = ([] if reinvitation else _route_fact_prompt_context(
+        engine, str(source["id"]), session, cast=cast, approved_facts=approved_completion_facts,
+    ))
+    if route_fact_context:
+        current_scene_summary += (
+            "\n当前幕路线事实条件（按route_id分组，仅列本幕公开事实子集；condition_mode保留作者all/any，"
+            "不代表必须满足所有出口，也不证明整条路线已获准。其他条件和最终出口由Runtime核对；"
+            "目标值不是已发生事实，未登记不证明未发生，先核对实际历史；不为选中出口补造结果）："
+            + json.dumps(route_fact_context, ensure_ascii=False, separators=(",", ":"))
+        )
+        # 仅在本次确实提供路线事实时扩展原输出合同，普通无路线事实的 wire 保持不变。
+        system_prompt = system_prompt.replace(
+            "如果输入提供结构化幕完成事实，", "如果输入提供结构化幕完成事实或当前幕路线事实，", 1,
+        ).replace("输入未提供结构化幕完成事实时，", "输入未提供上述结构化事实时，", 1)
     if completion_fact_context is not None:
         # Completion contracts are author control data, never history; Actor proposes only results it actually performed this round.
         current_scene_summary += (
-            ("\n结构化幕完成事实" if completion_fact_context["all"] else "\n程序展示完成条件")
+            ("\n已提交幕完成值（只读）" if reinvitation else
+             "\n结构化幕完成事实" if completion_fact_context["all"] else "\n程序展示完成条件")
             + "（description仅描述未完成目标，committed=true表示值已入账；"
-            "完成项的主体与过程以evidence_revision对应的completion_evidence原文为准，"
+            "approved_this_turn=true表示输入或历史结果已独立预审、本轮尚待原子提交，不再要求重新执行；"
+            "registration_revision仅表示入账回合，不证明事件发生回合、主体或过程，具体细节按实际历史核对；"
             "原文缺失时不从作者计划补造；入账值不授权改写历史）："
             + json.dumps(completion_fact_context, ensure_ascii=False, separators=(",", ":"))
         )
@@ -2731,17 +3178,26 @@ def _turn_messages(
                 "。fixed_narrations.required/displayed为程序要求/已展示的原文片段数，"
                 "只由真实展示记录决定，不由正文自称完成或fact_candidates更新。"
             )
-    if completion_fact_context is not None and completion_fact_context["all"]:
+    if ((completion_fact_context is not None and completion_fact_context["all"]) or route_fact_context) and not reinvitation:
         system_prompt += (
-            "\n结构化事实候选合同（仅在输入提供幕完成事实时适用）："
-            "fact_candidates 只能记录本轮最终 performance 或 scene_update 已经明确演出的新结果，"
-            "不得为了满足完成条件而补造正文、提前写入计划或重复提交 committed=true 的事实。"
-            "每项必须且只能包含 key、value、evidence_quote，准确形状为"
+            ("\n结构化事实候选合同（仅在输入提供幕完成事实或当前幕路线事实时适用）：" if route_fact_context else
+             "\n结构化事实候选合同（仅在输入提供幕完成事实时适用）：")
+            + "fact_candidates 只能记录本轮最终 performance 或 scene_update 已经明确演出的新结果，"
+            + ("不得为了满足条件而补造正文或提前写入计划；已登记同值不重复提交，"
+               "改变分支选择必须有本轮实际授权或结果支持，不能用旧史倒改当前选择。" if route_fact_context else
+               "不得为了满足完成条件而补造正文、提前写入计划或重复提交 committed=true 的事实。")
+            + "每项必须且只能包含 key、value、evidence_quote，准确形状为"
             "{\"key\":\"合同中的键\",\"value\":合同目标值,\"evidence_quote\":\"本轮最终正文中的逐字引文\"}。"
             "key 和 value 必须匹配输入合同；evidence_quote 必须逐字出现在本轮最终可见正文中。"
             "即使本轮没有新确认事实，也必须返回 fact_candidates:[]，不得省略字段。"
-            "如果已提交事实加上本轮候选会满足全部 all 条件，在交付直接结果后依据 next_scene 提出具体未来行动；"
-            "仍缺事实时不得提前提议，也不得把候选本身当成已获准换幕。"
+            + ("完成合同与各路线条件分别核对，不把多个出口当成全部必做，也不替玩家选择分支；"
+               "候选key/value只取相应合同原值，保留类型和拼写。"
+               "NPC可在自身权限和已具备前因内回应当前问题，不能由玩家意向代替NPC许可或结果。"
+               "合法候选不等于已登记或获准换幕；只按next_scene中Runtime实际给出的出口提出邀请。"
+               if route_fact_context else
+               ("" if retry_hint else
+                "如果已提交事实加上本轮候选会满足全部 all 条件，在交付直接结果后依据 next_scene 提出具体未来行动；")
+               + "仍缺事实时不得提前提议，也不得把候选本身当成已获准换幕。")
         )
     relationship_control = role_context.get("relationship_control")
     relationship_boundary = (
@@ -2770,6 +3226,7 @@ def _turn_messages(
         cast,
         source,
         outcome.session.metrics,
+        facts=outcome.session.story_state["facts"],
     )
     pacing_header = (
         f"当前是第 {int(soft_pacing['current_turn'])} 回合，本幕推荐 "
@@ -2788,7 +3245,13 @@ def _turn_messages(
         )
     pacing_text += "先回应玩家本轮的对白或情绪，再承接明确行动；交付该行动的已知结果或明确未知，不升级含糊意愿。"
     natural_closure_ready = (
-        outcome.ledger_event.get("scene_complete") is True
+        not reinvitation
+        and not retry_hint
+        and outcome.ledger_event.get("scene_complete") is True
+        and (
+            completion_fact_context is None
+            or completion_fact_context.get("status") == "satisfied"
+        )
         and not session.transition_offered
         and outcome.ledger_event.get("transition_intent") != "reject"
         and not withdrawn_offer
@@ -2796,7 +3259,9 @@ def _turn_messages(
         and not next_scene_preview.get("target_is_ending")
     )
     completion_closure_ready = (
-        isinstance(completion_fact_context, Mapping)
+        not reinvitation
+        and not retry_hint
+        and isinstance(completion_fact_context, Mapping)
         and completion_fact_context.get("status") == "satisfied"
         and not route_changed
         and not session.transition_offered
@@ -2808,6 +3273,7 @@ def _turn_messages(
     if completion_closure_ready:
         # Completion state comes from Runtime-adjudicated facts, never Actor guesses from prose/scene_complete.
         # Require public future invitations only; actual transition still needs explicit next-turn player acceptance and Runtime routing.
+        # Rewrites retain completed facts but must not also receive a conflicting demand to propose another invitation.
         system_prompt += (
             "\n本轮确定性完成收束合同：当前幕 completion_contract 已在 Actor 生成前全部满足。"
             "不要重复演出、重新检查或质疑这些已提交结果；先回应玩家当前输入，再依据 next_scene "
@@ -2850,7 +3316,8 @@ def _turn_messages(
         pacing_text += (
             "只有旧提议仍符合实际出口时，第一条推荐才可接受并亲自执行该提议，第二条拒绝、暂缓或留在本幕。"
         )
-    system_prompt += player_action_note
+    if not reinvitation:
+        system_prompt += player_action_note
     if retry_hint:
         # Place correction tasks after full contracts without extra progression pressure; author boundaries/current input remain effective.
         system_prompt += f"\n本轮是输出重试：{retry_hint}"
@@ -2882,7 +3349,6 @@ def _turn_messages(
             )
     # Write six blocks in fixed order with player input last, reducing history overriding current requests.
     runtime_scene_facts = scene_facts_prompt_text(session)
-    scene_history = _story_so_far_text(recent_context)
     data: dict[str, Any] = {
         "role": _role_prompt_text(
             catgirl_name=catgirl_name,
@@ -2890,12 +3356,27 @@ def _turn_messages(
             story_context=story_context,
         ),
         "current_scene": current_scene_summary,
-        "story_so_far": scene_history,
+        # Fitter fills complete history before token checks; keep this block's wire position.
+        "story_so_far": "",
         "pacing": pacing_text,
         "next_scene": _next_scene_summary_text(next_scene_preview),
         "player_input": current_player_input,
     }
-    human_prefix = "以下 JSON 是本回合六块演绎上下文：\n"
+    human_prefix = (
+        "以下 JSON 是本回合六块演绎上下文。末尾 player_input 是玩家刚结束的发言；"
+        "先从最新已提交原文和本轮独立预审证据确定当前起点，"
+        "承接 player_input 的实际原话，再交付尚缺的回应；"
+        "作者禁令不证明当前未发生，也不撤销实际历史。"
+        f"由猫娘“{catgirl_name}”在 performance 接话，"
+        "suggested_inputs 是玩家看到回应后的下一句：\n"
+    )
+    if reinvitation:
+        # 重新邀请沿用六块原文、状态和装箱预算，只切换生成任务；不构成玩家发言或新事件。
+        data["pacing"] = "本轮只重新邀请，不补当前幕任务、不执行换幕；保留玩家接受或暂缓的选择。"
+        human_prefix = (
+            "以下 JSON 是本次重新邀请的六块真实演绎上下文。末尾 player_input 为空；"
+            f"由猫娘“{catgirl_name}”在 performance 提出未来邀请，玩家选择由程序控件处理：\n"
+        )
     packing_diagnostics = {}
     data = _fit_simple_turn_prompt_data(
         system_prompt=system_prompt,
@@ -2908,11 +3389,33 @@ def _turn_messages(
         ),
         evidence_text=runtime_scene_facts,
         evidence_records=evidence,
-        fact_index=lambda: _current_scene_fact_index_text(session),
+        fact_index=lambda: _current_scene_fact_index(session, query=player_input),
         pending_offer_text=pending_offer_text,
         narrative_state=narrative_state,
         diagnostics=packing_diagnostics,
+        evidence_expander=expand_evidence,
     )
+    if combined_history is not None:
+        # Parser authority is limited to the history retained in this exact request.
+        combined_history[:] = [str(data["story_so_far"])]
+    if draft_repair_context is not None:
+        packing_diagnostics["draft_repair"] = "omitted_phase" if reinvitation else "omitted_not_repair"
+        if retry_hint and not reinvitation:
+            # 旧稿是可省的编辑附件：原六块先完整装箱，不为它裁掉历史、原话或权限合同。
+            repair_prefix = human_prefix.removesuffix("：\n") + (
+                "；draft_repair 仅为未提交编辑材料，不是历史或批准。按 issues 定位修改，"
+                "其余内容也须全部重审；不自动保留旧结果或沿用旧稿的行动授权。\n"
+            )
+            repair_data = {key: value for key, value in data.items() if key != "player_input"}
+            repair_data.update(draft_repair=dict(draft_repair_context), player_input=data["player_input"])
+            repair_tokens = _prompt_token_counter(system_prompt)(
+                repair_prefix + json.dumps(repair_data, ensure_ascii=False, separators=(",", ":")),
+            )
+            if repair_tokens <= actor_budget["input_max_tokens"]:
+                human_prefix, data = repair_prefix, repair_data
+                packing_diagnostics.update(draft_repair="admitted", final_tokens=repair_tokens)
+            else:
+                packing_diagnostics["draft_repair"] = "omitted_budget"
     packing_diagnostics["history_available_revisions"] = (
         history_selection_diagnostics["history_available_revisions"]
     )
@@ -3066,7 +3569,7 @@ class NumericV2Actor:
         engine: NumericV2Engine,
         actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE,
         retry_hint: str = "",
-        allow_suggestion_fill: bool = True,
+        allow_suggestion_fill: bool = False,
     ) -> dict[str, Any]:
         actor_budget = numeric_v2_actor_budget(actor_budget_profile)
         profile = self._character_profile()
@@ -3102,6 +3605,9 @@ class NumericV2Actor:
             max_output_tokens=NUMERIC_V2_ACTOR_OPENING_MAX_OUTPUT_TOKENS,
             dialogue_policy=opening_dialogue_policy,
         )
+        entry_inputs = _authored_entry_player_inputs(start_cast, start_node["story_beat"])
+        if entry_inputs is not None:
+            performance = {**performance, "suggested_inputs": entry_inputs}
         _assert_acting_contract_output(
             performance,
             character_profile=profile,
@@ -3115,7 +3621,7 @@ class NumericV2Actor:
         performance = dict(performance)
         # Submit valid primary-call recommendations directly; fill missing/malformed buttons once, avoiding fixed extra opening calls.
         performance["suggested_inputs"] = await self._ensure_suggestions(
-            allow_fill=allow_suggestion_fill,
+            allow_fill=allow_suggestion_fill and entry_inputs is None,
             performance=performance,
             player_input="",
             catgirl_name=catgirl_name,
@@ -3148,7 +3654,11 @@ class NumericV2Actor:
         input_source: str = "freeform",
         recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
         history_lookup: Mapping[str, Any] | None = None,
-        allow_suggestion_fill: bool = True,
+        allow_suggestion_fill: bool = False,
+        approved_completion_facts: tuple[Mapping[str, Any], ...] = (),
+        draft_repair_context: Mapping[str, Any] | None = None,
+        defer_dialogue_repetition: bool = False,
+        combined_evaluation: bool = False,
     ) -> dict[str, Any]:
         # Workflow may freeze actual persona text used this turn, enabling precommit validation against the same generation.
         profile = (
@@ -3170,6 +3680,7 @@ class NumericV2Actor:
             outcome.ledger_event["from_node_id"]
             != outcome.ledger_event["to_node_id"]
         )
+        reinvitation = input_source == "reinvite" and not route_changed
         source = engine.nodes[str(outcome.ledger_event["from_node_id"])]
         target = engine.nodes[str(outcome.ledger_event["to_node_id"])]
         cast = NumericV2CastProjection.from_story(
@@ -3177,12 +3688,12 @@ class NumericV2Actor:
             player_name=player_address,
             catgirl_name=catgirl_name,
         )
-        target_beat = _beat_for_actor(
-            cast,
-            target["story_beat"],
-            include_opening_only_boundaries=route_changed,
+        # Finalization only needs the formal target opening; ordinary turns consume no target beat here.
+        target_opening = (
+            scene_opening_text(cast.value(target["story_beat"]))
+            if route_changed
+            else ""
         )
-        target_opening = target_beat["opening_scene"]
         transition_contract = (
             _transition_contract_for_actor(
                 cast,
@@ -3200,6 +3711,7 @@ class NumericV2Actor:
             str(outcome.ledger_event.get("source_transition_dialogue_policy") or session.dialogue_policy)
         )
         actor_budget = numeric_v2_actor_budget(session.actor_budget_profile)
+        combined_history: list[str] = []
         performance = await self._invoke(
             _turn_messages(
                 engine,
@@ -3216,6 +3728,10 @@ class NumericV2Actor:
                 recent_ledger_events,
                 history_lookup,
                 outcome.ledger_event.get("player_action_projection"),
+                approved_completion_facts,
+                draft_repair_context=draft_repair_context,
+                combined_evaluation=combined_evaluation,
+                combined_history=combined_history if combined_evaluation else None,
             ),
             transition_required=route_changed,
             bridge_required=bool(transition_contract.get("bridge_required", True)),
@@ -3228,12 +3744,29 @@ class NumericV2Actor:
             dialogue_policy=outcome.session.dialogue_policy,
             source_dialogue_policy=source_transition_dialogue_policy,
             target_dialogue_policy=outcome.session.dialogue_policy,
+            natural_ending=route_changed and outcome.session.status == "ended"
+                and outcome.ledger_event.get("natural_ending_ready") is True,
+            reinvitation_only=reinvitation,
+            combined_metric_ids=tuple(engine.metric_schema) if combined_evaluation else None,
             fact_candidates_expected=(
-                not route_changed
-                and isinstance(source.get("completion_contract"), Mapping)
-                and any("key" in row for row in source["completion_contract"].get("all", []))
+                not route_changed and not reinvitation
+                and bool(engine.scene_fact_targets(str(source["id"])))
             ),
         )
+        if combined_evaluation:
+            performance["_turn_visible_history"] = combined_history
+        if reinvitation and (
+            performance.get("scene_narration") or performance.get("fact_candidates")
+        ):
+            # Parser 将 scene_update 规范为 scene_narration；去重前拒绝，不能靠删掉旧句掩盖控制越界。
+            raise NumericV2ActorOutputError("numeric_v2_actor_reinvitation_state_update")
+        entry_inputs = (
+            _authored_entry_player_inputs(cast, target["story_beat"])
+            if route_changed and outcome.session.status != "ended"
+            else None
+        )
+        if entry_inputs is not None:
+            performance = {**performance, "suggested_inputs": entry_inputs}
         if route_changed:
             # Runtime builds commit contracts before ownership/persona/fact validation.
             performance = engine.finalize_transition_performance(
@@ -3290,6 +3823,11 @@ class NumericV2Actor:
                 performance,
                 previous_scene_performance,
             )
+        else:
+            performance = _deduplicate_transition_bridge_prefix(
+                performance,
+                previous_scene_performance,
+            )
         def reject_repeated_output(guard: str) -> None:
             """Record repetition-protection source labels for Workflow retry budgets."""  # noqa: DOCSTRING_CJK
 
@@ -3317,7 +3855,15 @@ class NumericV2Actor:
             error.repetition_guard = guard
             raise error
 
-        repeats_earlier = _repeats_earlier_session_performance(
+        if route_changed and _repeats_earlier_session_performance(
+            target_output,
+            session,
+            route_changed=False,
+        ):
+            # Check the target independently: a nonempty source must not hide an older same-visit replay.
+            reject_repeated_output("transition_target")
+        # 用户主动重新索要邀请时允许重述邀请；普通回合与实际转场仍沿用原有重复守卫。
+        repeats_earlier = not reinvitation and _repeats_earlier_session_performance(
             performance,
             session,
             route_changed=route_changed,
@@ -3329,7 +3875,14 @@ class NumericV2Actor:
             and not performance.get("fact_candidates")
             and _is_short_stable_dialogue(performance)
         )
-        if repeats_earlier and not stable_short_dialogue:
+        # 仅有独立关键复核时，纯对白重复不消耗本轮重生成；下一轮从原文修正措辞。
+        deferred_repetition = defer_dialogue_repetition and not route_changed and _can_defer_dialogue_repetition(performance)
+        if deferred_repetition and (repeats_earlier or (
+            previous_visible_performance and _is_repeated_performance(performance, previous_visible_performance)
+        )):
+            logger.info("Numeric v2 dialogue repetition deferred: session_id=%s revision=%s",
+                        session.session_id, session.revision)
+        if repeats_earlier and not stable_short_dialogue and not deferred_repetition:
             logger.warning(
                 "Numeric v2 Actor failed: reason=numeric_v2_actor_repeated_session_output session_id=%s revision=%s",
                 session.session_id,
@@ -3350,8 +3903,15 @@ class NumericV2Actor:
                 session.revision,
             )
             reject_repeated_output("transition_source")
+        if previous_visible_performance and route_changed and any(
+            _is_repeated_performance(target_output, previous_variant)
+            for previous_variant in _performance_variants(previous_visible_performance)
+        ):
+            # A fresh source response must not dilute a copied target/ending segment.
+            reject_repeated_output("transition_target")
         if (
             previous_visible_performance
+            and not reinvitation
             and _is_repeated_performance(performance, previous_visible_performance)
         ):
             stable_confirmation = (
@@ -3368,10 +3928,10 @@ class NumericV2Actor:
                     ),
                 )
             )
-            if stable_confirmation or stable_short_dialogue:
+            if stable_confirmation or stable_short_dialogue or deferred_repetition:
                 # Repeated identical player input with unchanged state legitimately permits brief acknowledgment.
                 logger.debug(
-                    "Numeric v2 Actor accepted stable repeated confirmation: session_id=%s revision=%s",
+                    "Numeric v2 Actor accepted repeated dialogue: session_id=%s revision=%s",
                     session.session_id,
                     session.revision,
                 )
@@ -3385,12 +3945,13 @@ class NumericV2Actor:
         # After deterministic narrative validation, keep usable recommendations from the same Actor call;
         # opening, proposed-transition, and formal-transition paths retain valid suggestions, completing only anomalies once.
         performance = dict(performance)
-        if outcome.session.status == "ended":
+        if outcome.session.status == "ended" or reinvitation:
             # Endings close input: ignore mistakenly attached buttons and skip pointless recommendation completion/review.
+            # 重邀的接受入口由程序生成；即使默认允许补建议，也绝不为该控制请求另发模型调用。
             performance["suggested_inputs"] = []
             return performance
         performance["suggested_inputs"] = await self._ensure_suggestions(
-            allow_fill=allow_suggestion_fill,
+            allow_fill=allow_suggestion_fill and entry_inputs is None,
             performance=performance,
             player_input=player_input,
             catgirl_name=catgirl_name,
@@ -3400,6 +3961,9 @@ class NumericV2Actor:
             hard_boundaries=_suggestion_hard_boundaries(
                 cast,
                 (target if route_changed else source)["story_beat"],
+                # Refill responds to the same target opening as the primary
+                # reply; ordinary turns must not prolong entry-only limits.
+                include_opening_only=route_changed,
                 relationship_boundary=str(
                     _relationship_control(
                         engine,
@@ -3424,9 +3988,12 @@ class NumericV2Actor:
         dialogue_policy: str = "required",
         source_dialogue_policy: str = "required",
         target_dialogue_policy: str = "required",
+        natural_ending: bool = False,
         suggestions_only: bool = False,
         transition_suggestions_only: bool = False,
+        reinvitation_only: bool = False,
         fact_candidates_expected: bool = False,
+        combined_metric_ids: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         set_call_type("theater_numeric_v2_actor")
         request_messages = _ensure_actor_messages_fit(
@@ -3466,7 +4033,10 @@ class NumericV2Actor:
                         stage=request_stage, response_format=response_format_for(config, "theater_actor", actor_output_schema(
                             opening_required=opening_required, transition_required=transition_required,
                             suggestions_only=suggestions_only, transition_suggestions_only=transition_suggestions_only,
+                            reinvitation_only=reinvitation_only,
+                            single_ending_response=natural_ending and target_dialogue_policy in {"optional", "forbidden"},
                             fact_candidates_expected=fact_candidates_expected,
+                            combined_metric_ids=combined_metric_ids,
                         )))  # noqa: LLM_INPUT_BUDGET
                     request_finished_at = time.monotonic()
                     suggestion_diagnostics: dict[str, int] = {}
@@ -3479,11 +4049,14 @@ class NumericV2Actor:
                         dialogue_policy=dialogue_policy,
                         source_dialogue_policy=source_dialogue_policy,
                         target_dialogue_policy=target_dialogue_policy,
+                        natural_ending=natural_ending,
                         suggestions_only=suggestions_only,
                         transition_suggestions_only=transition_suggestions_only,
                         suggestion_diagnostics=suggestion_diagnostics,
                         fact_candidates_expected=fact_candidates_expected,
                         fact_candidate_diagnostics=fact_candidate_diagnostics,
+                        reinvitation_only=reinvitation_only,
+                        combined_evaluation=combined_metric_ids is not None,
                     )
                     trace_event("actor.parsed", stage=request_stage,
                                 result=parsed, suggestion_diagnostics=suggestion_diagnostics,

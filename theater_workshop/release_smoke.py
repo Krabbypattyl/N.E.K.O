@@ -43,16 +43,42 @@ async def run(fixture):
     from utils.cloudsave_runtime import MaintenanceModeError
 
     calls = []
+    chapter_calls = []
     resuming = False
     def model(messages, **options):
         calls.append(options["operation"])
-        if options["operation"] == "numeric_v2_mainline_generation":
+        context = json.loads(messages[1]["content"])
+        if options["operation"] == "numeric_v2_opening_state_extraction":
+            index = next((i for i, chapter in enumerate(fixture["outline"]["mainline_chapters"])
+                          if chapter["opening_scene"] == context["opening_scene"]), None)
+            stage = (fixture["outline"]["character_state_arc"]["ending_stage"] if index is None else
+                     fixture["outline"]["character_state_arc"]["stages"][index])
+            result = {key: stage[key] for key in ("catgirl_state", "player_state", "environment_state")}
+            if "catgirl_situation" in context["output_contract"]:
+                result["catgirl_situation"] = fixture["outline"]["mainline_chapters"][index]["catgirl_situation"]
+            return json.dumps(result, ensure_ascii=False)
+        if options["operation"] == "numeric_v2_story_frame":
             candidate = deepcopy(fixture["outline"])
-            candidate["ending"]["title"] = ""
+            candidate.pop("character_state_arc")
+            candidate["relationship_arc"].pop("stages")
+            candidate["mainline_chapters"] = [
+                {key: chapter[key] for key in ("title", "narrative")}
+                for chapter in candidate["mainline_chapters"]
+            ]
+            candidate["ending"] = {key: candidate["ending"][key] for key in ("type", "title", "summary")}
             return json.dumps(candidate, ensure_ascii=False)
-        if not resuming:
+        if options["operation"] == "numeric_v2_chapter_generation":
+            index = context["chapter_index"] - 1
+            chapter_calls.append(index)
+            if index == 1 and not resuming:
+                return LLMCallFailure("injected timeout", error_code="model_timeout", exception_type="TimeoutError")
+            return json.dumps({"chapter": fixture["outline"]["mainline_chapters"][index],
+                "relationship_stage": fixture["outline"]["relationship_arc"]["stages"][index],
+                "character_state_stage": fixture["outline"]["character_state_arc"]["stages"][index]}, ensure_ascii=False)
+        if options["operation"] != "numeric_v2_ending_generation":
             return LLMCallFailure("injected timeout", error_code="model_timeout", exception_type="TimeoutError")
-        return json.dumps({"replacements": {"ending.title": fixture["outline"]["ending"]["title"]}}, ensure_ascii=False)
+        return json.dumps({"ending": fixture["outline"]["ending"],
+            "ending_stage": fixture["outline"]["character_state_arc"]["ending_stage"]}, ensure_ascii=False)
 
     with tempfile.TemporaryDirectory(prefix="neko-workshop-smoke-") as temporary:
         config = _IsolatedConfig(Path(temporary), fixture["names"])
@@ -76,7 +102,8 @@ async def run(fixture):
             host = await asyncio.to_thread(open_workshop, config, model_call=model)
             result = await host.call("generate", project["project_id"], base_revision=project["revision"])
             generated = result["project"]
-            _require(calls.count("numeric_v2_mainline_generation") == 1, "resume_restarted_outline")
+            _require(calls.count("numeric_v2_story_frame") == 1, "resume_restarted_outline")
+            _require(chapter_calls.count(0) == 1, "resume_restarted_completed_chapter")
             compiled = await host.call("compile", project["project_id"], base_revision=generated["revision"])
             await host.call("validate", project["project_id"], base_revision=generated["revision"])
             exported = await host.call("export", project["project_id"], base_revision=generated["revision"])

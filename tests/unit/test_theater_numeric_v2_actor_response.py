@@ -12,6 +12,71 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['dialogue', 'long', 'action', 'narration', 'offer', 'fact'])
+@pytest.mark.parametrize('defer', [False, True])
+async def test_only_plain_dialogue_repetition_can_defer_to_the_next_turn(monkeypatch, kind, defer):
+    from services.theater.numeric_v2_actor import NumericV2Actor, NumericV2ActorOutputError
+    from services.theater.numeric_v2_runtime import NumericV2Engine
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    text = '我会在这里等你，你可以慢慢考虑自己的决定。'
+    if kind == 'long':
+        text *= 8
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(session_id='soft_repeat', catgirl_binding=_binding(),
+        opening_performance={'performance': text, 'suggested_inputs': []})
+    request = TurnRequestV2('reply', 0, '我还想再想想。')
+    outcome = engine.resolve_turn(session, request, ())
+    candidate = {'performance': text, 'suggested_inputs': ['谢谢你。'], 'transition_offered': False}
+    if kind == 'action':
+        candidate['performance'] = '（拿起钥匙）' + text
+    elif kind == 'narration':
+        candidate['scene_narration'] = '窗边的灯忽然熄灭了。'
+    elif kind == 'offer':
+        candidate['transition_offered'] = True
+    elif kind == 'fact':
+        candidate['fact_candidates'] = [{'key': 'scene:start:ready', 'value': True, 'evidence_quote': text}]
+    calls = []
+
+    async def invoke(self, messages, **kwargs):
+        calls.append(messages)
+        return dict(candidate)
+
+    monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
+    call = NumericV2Actor(object()).generate_turn(engine=engine, session=session, outcome=outcome,
+        player_input=request.message, character_profile='温和。', allow_suggestion_fill=False,
+        defer_dialogue_repetition=defer)
+    if defer and kind == 'dialogue':
+        assert (await call)['performance'] == text
+    else:
+        with pytest.raises(NumericV2ActorOutputError, match='repeated_output'):
+            await call
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_next_turn_rephrases_committed_dialogue_without_replaying_actions(tmp_path):
+    from services.theater.numeric_v2_runtime import NumericV2Engine
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    text = '我会在这里等你，你可以慢慢考虑自己的决定。'
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='soft_repeat_hint', catgirl_binding=_binding(),
+        opening_performance={'performance': '先看看这些花。', 'suggested_inputs': []})
+    for index in range(2):
+        prepared = runtime.prepare_turn(current, TurnRequestV2('old'+str(index), index, '我想再考虑一下。'), ())
+        current = await runtime.commit_turn(prepared, {'performance': text, 'suggested_inputs': []})
+    session = (await runtime.restore_session('soft_repeat_hint')).session
+    records = session.performance_history
+    outcome = engine.resolve_turn(session, TurnRequestV2('next', 2, '我决定了，先留在这里。'), ())
+    messages = _turn_messages(engine, session, outcome, '我决定了，先留在这里。', '温和。', 'Lan', '哥哥')
+    assert '上一轮有重复措辞' in messages[0].content
+    assert '不重演动作、不撤销事实' in messages[0].content
+    assert session.performance_history == records
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('invitation', ['我们去长街找旧信，好吗？', '我们去轨道站核对星图，好吗？'])
 @pytest.mark.parametrize('withdrawn', [False, True])
 async def test_transition_binds_original_invitation_beyond_recent_window(tmp_path, invitation, withdrawn):
@@ -81,6 +146,29 @@ async def test_transition_preserves_runtime_names_in_committed_invitation(tmp_pa
     assert '哥哥抬眼' not in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
 
 
+@pytest.mark.asyncio
+async def test_explicit_acceptance_control_binds_invitation_without_inventing_player_words(tmp_path):
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+
+    runtime = NumericV2Runtime(_engine(ordinary=True), tmp_path)
+    stored = await runtime.start_session(session_id='authorization_control', catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+    invitation = '我们按刚才说定的分工去走廊，好吗？'
+    stored = await _commit(runtime, stored, invitation, offer=True)
+    # 复用已经合法的来源/目标结果；控制输入只改变解释方式，不能合成玩家台词。
+    outcome = runtime.prepare_turn(stored, TurnRequestV2('accept_control', stored.session.revision, '好。'),
+                                   (), transition_intent='accept')
+    messages = _turn_messages(runtime.engine, stored.session, outcome, '', '克制。', '小岚', '你',
+                             input_source='accept_invitation', recent_ledger_events=stored.ledger_events)
+    data = json.loads(messages[1].content.split('\n', 1)[1])
+    assert data['player_input'] == ''
+    assert invitation in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+    assert '程序已确认玩家接受刚展示的邀请' in messages[0].content
+    assert '不是玩家台词' in messages[0].content
+    assert '不新增玩家动作、分工或重要操作的授权' in messages[0].content
+    assert 'player_input 是玩家刚结束的发言' not in messages[1].content
+
+
 def test_formal_authorization_does_not_invent_a_pending_invitation():
     engine = _engine(ordinary=True)
     session = engine.create_session(session_id='authorization_missing', catgirl_binding=_binding(),
@@ -129,7 +217,10 @@ def test_transition_keeps_source_direction_separate_from_history_and_target():
     assert data['transition']['source_scene']['story_direction'] == direction
     assert direction not in json.dumps(data['recent_context'], ensure_ascii=False)
     assert data['transition']['target_scene']['story_direction'] == ending_direction
-    assert data['acting_context']['core_persona'] == '克制，重视具体事实。'
+    # Unlabelled legacy prose remains expressive; only explicitly labelled traits
+    # acquire the wider, bounded personality role.
+    assert data['acting_context']['core_persona'].endswith('：克制，重视具体事实。')
+    assert '语言氛围参考（只影响措辞' in data['acting_context']['core_persona']
 
 
 @pytest.mark.asyncio
@@ -153,7 +244,8 @@ async def test_interactive_target_direction_waits_until_after_its_opening(tmp_pa
     assert 'story_direction' not in data['transition']['target_scene']
     assert data['transition']['target_scene']['opening_situation'] == target['opening_scene']
     assert '开场时星图尚未修复。' in messages[0].content
-    assert '猫娘站在阅览室入口，双手空着。' in json.dumps(data['acting_context'], ensure_ascii=False)
+    assert data['transition']['target_scene']['author_entry_plan']['catgirl_state'] == '猫娘站在阅览室入口，双手空着。'
+    assert 'target_character_state' not in data['acting_context']
     assert data['transition']['bridge_scene_narration'] == '两人沿左侧走廊来到阅览室。'
     assert data['transition']['must_preserve'] == ['后续操作尚未开始。']
 
@@ -188,3 +280,114 @@ def test_extra_suggestions_are_trimmed_instead_of_discarded():
     parsed = _parse_actor_suggestions(payload, diagnostics=counts)
     assert parsed == payload[:3]
     assert counts.get('too_many_items') == 1
+
+
+def test_ordinary_actor_puts_actual_continuity_before_planned_direction():
+    engine = _engine()
+    session = engine.create_session(session_id='actual_start', catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    message = '我已按眼前安排完成操作，现在等对方回应。'
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, message), ())
+    messages = _turn_messages(engine, session, outcome, message, '温和。', '小岚', '你')
+    prefix, body = messages[1].content.split('\n', 1)
+    assert '最新已提交原文和本轮独立预审证据确定当前起点' in prefix
+    assert '承接 player_input 的实际原话，再交付尚缺的回应' in prefix
+    assert '作者禁令不证明当前未发生，也不撤销实际历史' in prefix
+    data = json.loads(body)
+    assert list(data) == ['role', 'current_scene', 'story_so_far', 'pacing', 'next_scene', 'player_input']
+    assert data['player_input'] == message
+
+
+def _repair_material():
+    return {
+        'draft': {'performance': '尚未交付的旧答复。', 'scene_narration': '尚未提交的外部回应。',
+                  'suggested_inputs': ['尚未选择的旧推荐。'], 'transition_offered': False},
+        'issues': [{'field': 'performance', 'quote': '旧答复', 'violations': ['actor_boundary'],
+                    'code': 'actor_issue'}],
+        'body_violations': ['actor_boundary'],
+    }
+
+
+@pytest.mark.asyncio
+async def test_draft_repair_uses_only_remaining_budget_and_never_replaces_history(monkeypatch, tmp_path):
+    from copy import deepcopy
+    from services.theater import numeric_v2_actor as actor
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+
+    engine = _engine()
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id='repair_capacity', catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+    stored = await _commit(runtime, stored, '管事已经把原件交还给你，后续手续仍待答复。')
+    stored = await _commit(runtime, stored, '我记得原件还在你手里，先听眼前的答复。')
+    session = stored.session
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', session.revision, '请按实际情况接着说。'), ())
+    material = _repair_material()
+    original = deepcopy((session, outcome, material))
+    diagnostics = []
+    monkeypatch.setattr(actor, '_log_prompt_diagnostics', lambda _session, values: diagnostics.append(dict(values)))
+    def messages(context=None):
+        return _turn_messages(engine, session, outcome, '请按实际情况接着说。', '温和。', '小岚', '你',
+                              retry_hint='修正未提交答复，全部内容仍须复核。', draft_repair_context=context)
+
+    base = messages()
+    admitted = messages(material)
+    data = json.loads(admitted[1].content.split('\n', 1)[1])
+    base_data = json.loads(base[1].content.split('\n', 1)[1])
+    assert '管事已经把原件交还给你' in base_data['story_so_far']
+    assert '原件还在你手里' in base_data['story_so_far']
+    assert data.pop('draft_repair') == material
+    assert data == base_data and list(data)[-1] == 'player_input'
+    assert '未提交编辑材料' in admitted[1].content and '不是历史或批准' in admitted[1].content
+    assert '全部重审' in admitted[1].content
+    assert diagnostics[-1]['draft_repair'] == 'admitted'
+    admitted_tokens = actor._messages_tokens(admitted)
+    budget = actor.numeric_v2_actor_budget(session.actor_budget_profile)
+    monkeypatch.setattr(actor, 'numeric_v2_actor_budget', lambda _: {**budget, 'input_max_tokens': admitted_tokens})
+    assert messages(material) == admitted
+    assert diagnostics[-1]['final_tokens'] == admitted_tokens
+    # 只差一个 token 时整体撤回编辑附件；不能挤掉一轮原文以装下旧稿。
+    monkeypatch.setattr(actor, 'numeric_v2_actor_budget', lambda _: {**budget, 'input_max_tokens': admitted_tokens - 1})
+    omitted = messages(material)
+    assert [item.content for item in omitted] == [item.content for item in messages()]
+    assert diagnostics[-2]['draft_repair'] == 'omitted_budget'
+    assert (session, outcome, material) == original
+
+
+@pytest.mark.parametrize('mode', ['initial', 'reinvite', 'transition'])
+def test_draft_repair_cannot_enter_other_actor_phases(mode):
+    engine = _engine()
+    session = engine.create_session(session_id='repair_scope', catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '好。'), (),
+        scene_complete=mode == 'transition', natural_ending_ready=mode == 'transition')
+    messages = _turn_messages(engine, session, outcome, '好。', '温和。', '小岚', '你',
+        retry_hint='' if mode == 'initial' else '修正未提交答复。',
+        input_source='reinvite' if mode == 'reinvite' else 'freeform',
+        draft_repair_context=_repair_material())
+    assert '尚未交付的旧答复' not in ''.join(item.content for item in messages)
+    assert 'draft_repair' not in json.loads(messages[1].content.split('\n', 1)[1])
+
+
+@pytest.mark.asyncio
+async def test_generate_turn_forwards_draft_repair_without_committing_it(monkeypatch):
+    from copy import deepcopy
+    from services.theater import numeric_v2_actor as actor
+
+    engine = _engine()
+    session = engine.create_session(session_id='repair_forward', catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '请继续。'), ())
+    original = deepcopy((session, outcome))
+    generator = actor.NumericV2Actor(object())
+    captured = []
+    async def invoke(messages, **kwargs):
+        captured.extend(messages)
+        return {'performance': '我明白你的安排了。', 'suggested_inputs': ['那就按这个安排来。'],
+                'transition_offered': False}
+    monkeypatch.setattr(generator, '_invoke', invoke)
+    result = await generator.generate_turn(engine=engine, session=session, outcome=outcome,
+        player_input='请继续。', character_profile='温和。', allow_suggestion_fill=False,
+        retry_hint='按编辑材料修正，全部重审。', draft_repair_context=_repair_material())
+    assert json.loads(captured[1].content.split('\n', 1)[1])['draft_repair'] == _repair_material()
+    assert 'draft_repair' not in result and (session, outcome) == original

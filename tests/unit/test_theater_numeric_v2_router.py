@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from main_routers import numeric_theater_router
+from services.theater import numeric_v2_registry
 from services.theater.numeric_v2_actor import NumericV2ActorError
 from services.theater.numeric_v2_archive import (
     NumericV2ArchiveError,
@@ -356,7 +357,11 @@ def _client(
     *,
     opening_text="你回来了。",
     player_address_known=True,
+    bundled_packages=False,
 ) -> TestClient:
+    if not bundled_packages:
+        # These HTTP fixtures exercise only their own package; real seeds have a separate integration test.
+        monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", tmp_path / "empty-bundled")
     packages = tmp_path / "theater" / "numeric_v2" / "packages"
     packages.mkdir(parents=True)
     (packages / "numeric_v2_contract.json").write_text(
@@ -380,7 +385,10 @@ def _client(
         return NumericV2EvaluationResult(metric_changes=(), scene_complete=False)
 
     async def review(*args, **kwargs):
-        return NumericV2TransitionOfferReview(False, False, (), ())
+        # The generic HTTP stub represents a complete modern review. Tests for
+        # rejection/legacy output replace it explicitly instead of inheriting approval.
+        return NumericV2TransitionOfferReview(False, False, (), (),
+            approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or ()))
 
     monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_opening", opening)
     monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
@@ -406,6 +414,20 @@ def _client(
             return super().post(url, *args, **kwargs)
 
     return _NumericV2TestClient(app)
+
+
+def test_story_list_installs_real_builtins_beside_user_package(tmp_path, monkeypatch):
+    sources = list(numeric_v2_registry._DEFAULT_PACKAGE_ROOT.glob("*.json"))
+    builtin_ids = {json.loads(path.read_text(encoding="utf-8"))["meta"]["story_id"] for path in sources}
+    assert len(builtin_ids) == 3
+    with _client(tmp_path, monkeypatch, bundled_packages=True) as client:
+        user_package = tmp_path / "theater/numeric_v2/packages/numeric_v2_contract.json"
+        user_bytes = user_package.read_bytes()
+        for _ in range(2):
+            response = client.get("/api/theater-numeric/stories")
+            assert response.status_code == 200
+            assert {story["story_id"] for story in response.json()["stories"]} == builtin_ids | {"numeric_v2_contract"}
+            assert user_package.read_bytes() == user_bytes
 
 
 def test_archive_binding_failure_returns_structured_json(tmp_path, monkeypatch):
@@ -589,25 +611,21 @@ def test_numeric_v2_router_projects_unknown_player_as_second_person(tmp_path, mo
         assert started.status_code == 200
         assert started.json()["session"]["lifecycle_revision"] == 0
         assert body["story_intro"]["player_identity"].startswith("你，")
-        # Prose keeps the second-person projection; the speaker label is left
-        # empty so the page shows its localized "Player" fallback.
-        assert body["participants"] == {"player_name": "", "catgirl_name": "测试猫娘"}
+        # The normal chat nickname labels the player without disclosing it to the story.
+        assert body["session"]["player_address_known"] is False
+        assert body["participants"] == {"player_name": "哥哥", "catgirl_name": "测试猫娘"}
 
 
 def test_numeric_v2_participant_labels_never_use_chinese_placeholders():
     """Participant labels are the real names or empty, never the Chinese placeholders."""
 
     participants = numeric_theater_router._participants
-    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=True) == {
+    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}) == {
         "player_name": "哥哥",
         "catgirl_name": "小岚",
     }
-    assert participants({"player_address": "哥哥", "catgirl_name": "小岚"}, known=False) == {
-        "player_name": "",
-        "catgirl_name": "小岚",
-    }
     # No nickname configured: the binding default "你" is not a name either.
-    assert participants({"player_address": "你", "catgirl_name": ""}, known=True) == {
+    assert participants({"player_address": "你", "catgirl_name": ""}) == {
         "player_name": "",
         "catgirl_name": "",
     }
@@ -893,6 +911,7 @@ def test_numeric_v2_overdue_turns_do_not_trigger_second_actor_call(
             body_violations=(),
             unsafe_suggestion_indexes=(),
             failure_reason=failure_reason,
+            approved_suggestion_texts=tuple(candidate.get("suggested_inputs") or ()),
         )
 
     monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
@@ -1759,8 +1778,8 @@ def test_numeric_v2_filters_only_unsafe_suggestions_after_body_retry(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
-    assert review_calls == 3
+    # Review the rewrite before spending the optional dispute on any remaining rejection.
+    assert review_calls == 2
     assert submitted.json()["performance"]["performance"] == "（收好照片）目前只能确认这是一处模糊痕迹。"
     assert submitted.json()["performance"]["suggested_inputs"] == []
 
@@ -1845,8 +1864,8 @@ def test_numeric_v2_body_violation_with_unsafe_suggestion_requires_rewrite(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
-    assert review_calls == 3
+    # Review the rewrite before spending the optional dispute on any remaining rejection.
+    assert review_calls == 2
     assert unsafe_body_only_reviews == 0
     assert submitted.json()["performance"]["performance"] == safe_performance
 
@@ -1960,8 +1979,8 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
         )
 
     assert actor_calls == 2
-    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
-    assert review_calls == 3
+    # Review the rewrite before spending the optional dispute on any remaining rejection.
+    assert review_calls == (2 if remaining_violation is None else 3)
     assert unsafe_body_only_reviews == 0
     if remaining_violation == "scene_boundary":
         assert submitted.status_code == 502
@@ -2133,9 +2152,13 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
             },
         )
     assert actor_calls == 2
-    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
-    assert review_calls == 3
+    # Review the rewrite before spending the optional dispute on any remaining rejection.
+    assert review_calls == (2 if remove_conflict else 3)
     after = json.loads(session_path.read_bytes())
+    if not remove_conflict:
+        assert submitted.status_code == 502
+        assert after == before
+        return
     assert submitted.status_code == 200
     assert after["session"]["revision"] == before["session"]["revision"] + 1
     assert after["session"]["metrics"]["trust"] == before["session"]["metrics"]["trust"] + 1
@@ -2147,11 +2170,6 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
         assert after["session"]["revision"] == before["session"]["revision"] + 1
         assert after["session"]["metrics"]["trust"] == before["session"]["metrics"]["trust"] + 1
         assert len(after["ledger_events"]) == len(before["ledger_events"]) + 1
-        assert rejected_update not in session_path.read_text(encoding="utf-8")
-    else:
-        last_update = "手机屏幕上已出现刚拍好的照片。"
-        assert submitted.json()["performance"]["scene_narration"] == last_update
-        assert after["session"]["performance_history"][-1]["scene_narration"] == last_update
         assert rejected_update not in session_path.read_text(encoding="utf-8")
 
 
@@ -2204,6 +2222,7 @@ def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
                 valid=False,
                 body_violations=(),
                 unsafe_suggestion_indexes=(),
+                approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or ()),
             )
         return NumericV2TransitionOfferReview(
             offer_present=True,
@@ -2285,6 +2304,7 @@ def test_numeric_v2_clears_phantom_transition_flag_without_actor_retry(
             valid=False,
             body_violations=(),
             unsafe_suggestion_indexes=(),
+            approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or ()),
         )
 
     monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
@@ -2452,7 +2472,7 @@ def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
         review_calls += 1
         candidate = kwargs["actor_performance"]
         # Initial-draft recheck retains original narration; do not delete violating fields before requesting approval.
-        assert review_calls == (actor_calls + 1 if review_calls > 1 else 1)
+        assert review_calls == actor_calls
         if actor_calls == 1:
             assert candidate["scene_narration"] == "时间已经推进到第二天清晨。"
         return NumericV2TransitionOfferReview(
@@ -2490,7 +2510,7 @@ def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
     assert submitted.status_code == 200
     assert actor_calls == 2
     # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
-    assert review_calls == 3
+    assert review_calls == 2
     assert submitted.json()["performance"]["performance"].startswith("（把毛毯递给你）")
     assert "scene_narration" not in submitted.json()["performance"]
     assert submitted.json()["performance"]["transition_offered"] is True
@@ -2567,8 +2587,8 @@ def test_numeric_v2_rewrites_fact_boundary_without_structured_field_scope(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
-    assert review_calls == 3
+    # Review the rewrite before spending the optional dispute on any remaining rejection.
+    assert review_calls == 2
     assert "scene_narration" not in submitted.json()["performance"]
     assert "只能确认外面仍有不明嗡鸣" in submitted.json()["performance"]["performance"]
 
@@ -6361,7 +6381,10 @@ def test_numeric_turn_only_retries_for_actor_visible_persona_changes(
             "client_turn_id": "persona_mid_turn_1", "base_revision": 0, "message": "继续说吧。",
         })
 
-    assert "主人会给她带点心。" in captured["character_profile"]
+    # Real relationship history is excluded at reading time, not merely hidden
+    # by the later prompt projection; eligible style supplements still invalidate.
+    assert "主人会给她带点心。" not in captured["character_profile"]
+    assert "性格: 安静而认真" in captured["character_profile"]
     assert submitted.status_code == expected_status
     if expected_status == 409:
         assert submitted.json()["reason"] == "catgirl_profile_changed_requires_retry"

@@ -11,9 +11,8 @@ from typing import Any, Mapping
 
 from ..model import ModelAgent, LLMCallFailure
 
-from .numeric_v2 import _SCENE_PROCESS_AUTHORING_RULE
-from .runtime_rules import SCORING_RUNTIME_RULES
-from .facts import FACT_REVIEW_PROMPT, OPENING_STATE_COMPARISON_RULE, build_fact_sources, validate_fact_review
+from .runtime_rules import PUBLIC_TEXT_RULE, SCORING_RUNTIME_RULES
+from .facts import FACT_REVIEW_PROMPT, OPENING_STATE_COMPARISON_RULE, build_fact_sources, validate_fact_review, node_fact_context
 from .evidence import (EVIDENCE_REVIEW_PROMPT, review_targets, validate_evidence_review,
                        effective_targets, protected_targets, fields_overlap)
 from .repair import (
@@ -34,6 +33,10 @@ QUALITY_DIMENSIONS = {
     "emotional_resonance": {"label": "情感共鸣", "weight": 0.15},
 }
 QUALITY_PASS_SCORE = 75.0
+_ENTRY_PLAYER_INPUTS_RULE = (
+    "\nentry_player_inputs 是入幕后供玩家点击、尚未选择的推荐输入，不是已发生事实；"
+    "按将显示的推荐检查作者边界，不据此认定玩家已行动、承诺或完成目标。"
+)
 
 # Literary review preserves author boundaries and links only verified facts; drafting/node revision still use the complete shared generation contract.
 _ASSESSMENT_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O 互动剧情质量评估编辑
@@ -116,8 +119,7 @@ target_node_ids 和 repair_targets.node_id 只能从 allowed_target_node_ids 选
     "若本维度唯一缺陷是事实报告已有问题，低于75也允许issues=[]，由fact_issue_ids及summary说明依据；不得把同一根因或修法再写成新问题。"
 )
 
-# Restate shared delivery rules after structural examples so long field descriptions do not obscure reaction causality and ending boundaries.
-# Revision uses the same runtime contract, preventing correct scoring conclusions from inspiring invented branches or ending tasks.
+# 单节点只修获准文本；保留运行规则与公开文案边界，不再附加整包创作指令。
 _NODE_OPTIMIZATION_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O 单节点质量优化编辑
 
 用户已在故事地图中点击并确认优化一个高亮节点。请结合 story_outline、target_node 和 accepted_suggestions，只优化 target_node。若同一节点有多条六维评分问题或人物关系建议，必须在一次修改中统筹解决。
@@ -125,6 +127,8 @@ _NODE_OPTIMIZATION_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O �
 先按路线指向核对相邻节点的目标、状态和开场，再修改当前节点文本。入边桥段属于来源节点，出边桥段属于当前节点；不得通过改写当前开场掩盖其他节点仍存在的抢演。结局摘要同时存在于 story_beat.summary 与 ending.summary，涉及同一收束内容时须同步给出两处替换值；保留原始 author_intent 与未获授权修改的目标、状态、演绎合同。
 
 不得修改其他节点，不得修改 ID、节点类型、路线指向、路线条件、数值、阈值、priority、回合预算或未被用户确认的结构。可以修改目标节点已有出口的 transition_contract 文本；不得新增、删除或改指路线。必须保留 global_strengths_to_preserve 和每条建议中的 preserve 内容。
+
+must_deliver 可显式为 []；这不会删除原有 bridge_scene_narration，已有非空桥段仍须交付。
 
 依据建议里的原文逐项核对目标字段。开场正确而状态写错时，直接修正已有 character_state.catgirl_state/player_state/environment_state，只返回实际需要改的子字段；不要重写正确开场迁就错误状态。同一错误若在 catgirl_situation 中复述，同步修该段处境，保留其中仍有效的认知、关系与事实。状态文字只替换冲突的事实，其余仍相容的描述沿用原文；无需补造新的手势、视线、心理或物件位置来填补删去的错误。不得改 character_state 的其它字段，不得改 goals 或 acting_contract；说明动作已经发生不等于要求再演一次。修改后再对照原稿与建议：错误是否消失、正常字段是否保留、相邻节点是否仍相容，不新增行动、任务或玩家承诺作为修复手段。
 
@@ -146,7 +150,7 @@ _NODE_OPTIMIZATION_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O �
       "transition_contract": {
         "reason": "可选的完整替换值",
         "bridge_scene_narration": "可选的完整替换值；不得复制目标幕开场或替玩家执行自主行动",
-        "must_deliver": ["可选的完整替换数组；只写转场独有的剧情事实"],
+        "must_deliver": ["可选的完整替换数组；只写转场独有的剧情事实，无独立事项时可填空数组"],
         "must_preserve": ["可选的完整替换数组"],
         "tone": "可选的完整替换值"
       }
@@ -158,7 +162,7 @@ _NODE_OPTIMIZATION_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O �
 目标节点必须恰好返回一次；只返回确实需要变更的允许字段。
 事实建议附evidence_review，逐字段requires_change=false及protected_repair_targets中的字段必须保持原文；原方案若要求修改它们，以复核的保留要求为准。仅消除受支持的错误，不必重写所有允许字段。
 本次还必须遵守accepted_suggestions中的repair_targets，只改这些字段在target_node中的对应原字段。它们使用story_outline的投影路径：relationship_state对应catgirl_situation，character_state.catgirl/player/environment对应三方_state，普通幕summary对应story_beat.summary，结局summary对应ending.summary而scene_summary对应story_beat.summary。outgoing_routes按输入索引找到route_id，再返回routes补丁。不要同步重写未列入方案的正确字段。related_impacts是共用该修法的其它影响与保留项，须一并照顾。
-""" + "\n\n" + _SCENE_PROCESS_AUTHORING_RULE
+""" + "\n\n" + PUBLIC_TEXT_RULE
 
 
 class QualityAssessmentError(RuntimeError):
@@ -186,6 +190,18 @@ def _content_hash(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _story_direction_rule(context: Mapping[str, Any]) -> str:
+    """Explain Runtime's optional direction field only when present, keeping legacy requests unchanged."""
+    if not any("narrative_summary" in node for node in context_nodes(context).values()):
+        return ""
+    return (
+        "\nnarrative_summary非空时是Runtime优先于story_beat.summary采用的整幕待演方向；"
+        "为空或缺失时沿用原有回退。它不替代opening_scene，也不证明行动已发生。"
+        "该字段在本次节点文本优化中只读，问题可引用其原文并提出手动调整建议；"
+        "不能用改写summary掩盖该方向中仍存在的问题，摘要及结局摘要保留各自原义。"
+    )
+
+
 class NumericV2QualityAssessor(ModelAgent):
     """Explicitly assess the full story and optimize one selected node after user confirmation."""
 
@@ -208,54 +224,87 @@ class NumericV2QualityAssessor(ModelAgent):
         authoring: Mapping[str, Any],
     ) -> dict[str, Any]:
         context = self._assessment_context(story, setup, authoring)
+        entry_rule = (_ENTRY_PLAYER_INPUTS_RULE if any(
+            "entry_player_inputs" in node for node in context_nodes(context).values()) else "")
         # The evidence catalog exists only for this scoring run; restored reports retain the existing path/quote protocol.
         fact_outline, fact_sources = build_fact_sources(context)
-        node_ids = self._context_node_ids(context)
-        # Present same-time comparisons together at the end of the fact request, covering mainline, branches, and endings.
-        # Reuse original ref/text and state fields without changing author text, citation paths, or later literary/revision inputs.
-        opening_comparisons = [
-            {"node_id": node["id"],
-             "opening_performance": node.get("opening_scene"),
-             "declared_picture_after_performance": node.get("character_state"),
-             "same_moment_context": node.get("relationship_state")}
-            for node in [*fact_outline.get("mainline", []),
-                         *(node for branch in fact_outline.get("branches", []) for node in branch.get("nodes", [])),
-                         *fact_outline.get("endings", [])]
-        ]
-        # Explicit author-requested scoring runs sequentially; factual failure skips literary review, and any failure returns no savable report.
-        try:
-            facts_response = self.call_llm(
-                [{"role": "system", "content": FACT_REVIEW_PROMPT + "\n\n" + REPAIR_PLAN_RULE + "\n" + OPENING_STATE_COMPARISON_RULE},
-                 {"role": "user", "content": json.dumps(
-                     {"story_outline": fact_outline, "checked_node_ids": sorted(node_ids),
-                      "opening_end_state_comparisons": opening_comparisons},
-                     # Serialize facts in build_fact_sources reading order; alphabetical sorting would place endings first.
-                     ensure_ascii=False)}],
-                temperature=0.1, max_tokens=6000, max_retries=1,
-                response_format={"type": "json_object"}, thinking={"type": "disabled"},
-                operation="numeric_v2_fact_review",
-            )
-            facts_payload = self._parse_response(facts_response, "invalid_fact_review")
-            facts = validate_fact_review(context, facts_payload, node_ids, evidence_sources=fact_sources)
-        except QualityAssessmentError as error:
-            error.phase = "facts"
-            raise
-        except ValueError as error:
-            raise QualityAssessmentError("invalid_fact_review", phase="facts") from error
-        # Review once only when issues exist; failure skips literature, saves no partial report, and triggers no automatic retry.
+        terminal_ids = sorted({node["id"] for node in context.get("endings", [])} | {
+            node["id"] for node in story.get("nodes", [])
+            if node.get("type") == "ending" or node.get("terminal") is True})
+        facts = {"checked_node_ids": [], "issues": []}
+
+        def source_refs(value):
+            if isinstance(value, Mapping):
+                if set(value) == {"ref", "text"} and isinstance(value["ref"], str) and isinstance(value["text"], str):
+                    return {value["ref"]}
+                return set().union(*(source_refs(item) for item in value.values()))
+            if isinstance(value, list):
+                return set().union(*(source_refs(item) for item in value))
+            return set()
+
+        # One bounded request per node, with all direct incoming/outgoing neighbors.
+        # Keep original citation IDs/paths; no partial assessment is saved if any node fails.
+        for node_id in context_nodes(fact_outline):
+            scoped = node_fact_context(fact_outline, node_id)
+            scoped_ids = self._context_node_ids(scoped)
+            messages = [
+                {"role": "system", "content": REPAIR_PLAN_RULE + "\n" + OPENING_STATE_COMPARISON_RULE + entry_rule + _story_direction_rule(scoped) + "\n\n" + FACT_REVIEW_PROMPT},
+                {"role": "user", "content": json.dumps({"story_outline": scoped, "checked_node_ids": [node_id],
+                    "terminal_node_ids": terminal_ids}, ensure_ascii=False)}]
+            try:
+                for attempt in range(2):
+                    response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
+                        response_format={"type": "json_object"},
+                        thinking={"type": "disabled"}, operation=(
+                            "numeric_v2_fact_review" if attempt == 0 else "numeric_v2_fact_review_format_repair"))
+                    try:
+                        review = validate_fact_review(context, self._parse_response(response, "invalid_fact_review"), scoped_ids,
+                            evidence_sources={ref: fact_sources[ref] for ref in source_refs(scoped)},
+                            checked_node_ids={node_id})
+                        break
+                    except (QualityAssessmentError, ValueError) as error:
+                        if attempt or isinstance(error, QualityAssessmentError) and error.code != "invalid_fact_review":
+                            raise
+                        # One visible format correction for this node, not a semantic retry or provider retry.
+                        messages.extend([{"role": "assistant", "content": response}, {"role": "user", "content": json.dumps({
+                            "validation_error": str(error.__cause__ or error), "instruction": "只纠正上一份事实报告的JSON及字段合同，返回完整报告。字符串正文的引文用中文引号“”，不要内嵌未转义的英文双引号；JSON键和字符串边界仍用英文双引号。保留确有证据的问题及原引用；已自我否定、仅观察或并无冲突的条目应移出issues，不为凑字段编造修法。所有保留问题须填完整problem、modification_plan、expected_result；仅使用本次提供的证据ref和节点字段。无问题返回issues=[]，不改剧本，不增加新问题。"}, ensure_ascii=False)}])
+                facts["checked_node_ids"].extend(review["checked_node_ids"])
+                facts["issues"].extend(review["issues"])
+            except QualityAssessmentError as error:
+                error.phase = "facts"
+                error.provider_details["node_id"] = node_id
+                raise
+            except ValueError as error:
+                raise QualityAssessmentError("invalid_fact_review", phase="facts",
+                                             provider_details={"node_id": node_id}) from error
+        for index, issue in enumerate(facts["issues"], 1):
+            issue["issue_id"] = f"fact_issue_{index:02d}"
+        # Review only reported issues; one format correction cannot resample a semantic verdict.
         if facts["issues"]:
             try:
-                # Review sees only original issues/evidence; calculate repair eligibility afterward instead of feeding predetermined conclusions back to the judge.
-                proposed = [{**{key: value for key, value in issue.items() if key != "repairable"},
-                             "repair_targets": review_targets(issue)} for issue in facts["issues"]]
-                response = self.call_llm(
-                    [{"role": "system", "content": EVIDENCE_REVIEW_PROMPT},
-                     {"role": "user", "content": json.dumps({"story_outline": context, "proposed_issues": proposed}, ensure_ascii=False, sort_keys=True)}],
-                    temperature=0.1, max_tokens=6000, max_retries=1,
-                    response_format={"type": "json_object"}, thinking={"type": "disabled"},
-                    operation="numeric_v2_fact_evidence_review",
-                )
-                facts["issues"] = validate_evidence_review(facts["issues"], self._parse_response(response, "invalid_fact_evidence_review"))
+                # Verify the allegation against source text before considering its suggested rewrite.
+                # Keep the complete original report below; repair plans must not bias this evidence check.
+                proposed = [{**{key: issue[key] for key in (
+                    "issue_id", "problem", "evidence", "target_node_ids")},
+                    "repair_targets": review_targets(issue)} for issue in facts["issues"]]
+                messages = [
+                    {"role": "system", "content": EVIDENCE_REVIEW_PROMPT + _story_direction_rule(context)},
+                    {"role": "user", "content": json.dumps({"story_outline": context, "proposed_issues": proposed,
+                                                           "terminal_node_ids": terminal_ids}, ensure_ascii=False)}]
+                for attempt in range(2):
+                    response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
+                        response_format={"type": "json_object"}, thinking={"type": "disabled"},
+                        operation=("numeric_v2_fact_evidence_review" if attempt == 0
+                                   else "numeric_v2_fact_evidence_review_format_repair"))
+                    try:
+                        reviewed = validate_evidence_review(facts["issues"], self._parse_response(response, "invalid_fact_evidence_review"))
+                        break
+                    except (QualityAssessmentError, ValueError) as error:
+                        if attempt or isinstance(error, QualityAssessmentError) and error.code != "invalid_fact_evidence_review":
+                            raise
+                        messages.extend([{"role": "assistant", "content": response}, {"role": "user", "content": json.dumps({
+                            "validation_error": str(error.__cause__ or error), "instruction": "只纠正上一份证据复核的JSON及checks/target_checks字段合同，不新增问题，不改变原判断。所有原issue_id及其原repair_targets必须各覆盖一次，requires_change须为布尔值。字符串内引用用中文引号“”，不要写未转义的英文双引号；保留完整原文判断理由，只返回完整JSON。"}, ensure_ascii=False)}])
+                facts["issues"] = reviewed
             except QualityAssessmentError as error:
                 error.phase = "evidence"
                 raise
@@ -300,13 +349,12 @@ class NumericV2QualityAssessor(ModelAgent):
                 "target_node_ids", "repair_targets", "evidence_review") if key in row}
                 for row in candidates]
             # Explicitly supply distinct plan pairs; an empty list checks a plan internally, avoiding fabricated cross-plan conflict from self-contradiction.
-            # Compare whether one final draft can satisfy both requirements, not imaginary concurrent patch writes; list each pair once.
-            pairs = [{"issue_ids": [first["issue_id"], second["issue_id"]],
-                      "question": "同一份成稿有没有可能同时满足这两条修改要求？可同时满足就不列为冲突；不要判断并发写入或资源竞争。"}
+            # 比较规则已由System及comparison_scope统一说明，每对只传原方案身份，避免重复指令。
+            pairs = [{"issue_ids": [first["issue_id"], second["issue_id"]]}
                      for index, first in enumerate(plans) for second in plans[index + 1:]]
             try:
                 response = self.call_llm(
-                    [{"role": "system", "content": PLAN_REVIEW_PROMPT},
+                    [{"role": "system", "content": PLAN_REVIEW_PROMPT + _story_direction_rule(context)},
                      {"role": "user", "content": json.dumps({"plans": plans, "story_outline": context,
                          "global_strengths_to_preserve": result.get("strengths") or [],
                          "protected_repair_targets": protected, "pairs_to_compare": pairs,
@@ -331,9 +379,11 @@ class NumericV2QualityAssessor(ModelAgent):
 
     def _assess_literature(self, context: Mapping[str, Any], facts: Mapping[str, Any]) -> dict[str, Any]:
         """Use the same author draft and validated factual report for literary assessment, retaining all literary findings and existing score validation."""
+        entry_rule = (_ENTRY_PLAYER_INPUTS_RULE if any(
+            "entry_player_inputs" in node for node in context_nodes(context).values()) else "")
         response = self.call_llm(
             [
-                {"role": "system", "content": _ASSESSMENT_PROMPT},
+                {"role": "system", "content": _ASSESSMENT_PROMPT + entry_rule + _story_direction_rule(context)},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -453,7 +503,7 @@ class NumericV2QualityAssessor(ModelAgent):
 
         response = self.call_llm(
             [
-                {"role": "system", "content": _NODE_OPTIMIZATION_PROMPT},
+                {"role": "system", "content": _NODE_OPTIMIZATION_PROMPT + _story_direction_rule(context)},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -551,10 +601,17 @@ class NumericV2QualityAssessor(ModelAgent):
                 "text_repair_fields": text_repair_fields(node),
                 "title": str(node.get("chapter") or "").strip(),
                 "summary": str(beat.get("summary") or "").strip(),
+                # Runtime prefers this optional full direction to summary. Keep its raw value citable,
+                # including empty fallbacks, without granting revision rights or merging ending summaries.
+                **({"narrative_summary": deepcopy(beat["narrative_summary"])}
+                   if "narrative_summary" in beat else {}),
                 "opening_scene": str(beat.get("opening_scene") or "").strip(),
+                **({"entry_player_inputs": deepcopy(beat["entry_player_inputs"])}
+                   if "entry_player_inputs" in beat else {}),
                 "narrative_focus": str(beat.get("narrative_focus") or "").strip(),
                 "must_not_happen": deepcopy(beat.get("must_not_happen") or []),
                 "acting_contract": deepcopy(beat.get("acting_contract") or {}),
+                "completion_contract": deepcopy(node.get("completion_contract") or {}),
                 **({"fixed_narrations": deepcopy(beat["fixed_narrations"])}
                    if "fixed_narrations" in beat else {}),
                 "goals": [
@@ -589,6 +646,8 @@ class NumericV2QualityAssessor(ModelAgent):
                                 field: deepcopy((route.get("transition_contract") or {}).get(field))
                                 for field in (*_TRANSITION_CONTRACT_FIELDS, "fallback_offer", "accept_input", "silent_choice")
                             },
+                            **({"accept_input_confirmation_only": deepcopy(route["transition_contract"]["accept_input_confirmation_only"])}
+                               if "accept_input_confirmation_only" in (route.get("transition_contract") or {}) else {}),
                             # Bridge checks require source/target information, but read-only input cannot expand text-revision allowlists.
                             "source_ids": deepcopy((route.get("transition_contract") or {}).get("source_ids") or []),
                         },
@@ -597,6 +656,8 @@ class NumericV2QualityAssessor(ModelAgent):
                     if isinstance(route, Mapping)
                 ],
                 "character_state": {
+                    **({"temporal_context": deepcopy(state_stage["temporal_context"])}
+                       if "temporal_context" in state_stage else {}),
                     "catgirl": str(state_stage.get("catgirl_state") or "").strip(),
                     "player": str(state_stage.get("player_state") or "").strip(),
                     "environment": str(state_stage.get("environment_state") or "").strip(),
@@ -617,6 +678,8 @@ class NumericV2QualityAssessor(ModelAgent):
                 "detail": str(semantic.get("detail") or "").strip(),
                 "mode": mode,
                 "rules": [
+                    {"type": "fact_equals", "key": row.get("key"), "value": row.get("value")}
+                    if row.get("type") == "fact_equals" else
                     {
                         "metric": str(row.get("metric") or ""),
                         "op": str(row.get("op") or ""),
@@ -726,6 +789,7 @@ class NumericV2QualityAssessor(ModelAgent):
                 },
             },
             "metrics": metrics,
+            "fact_contract": deepcopy(story.get("fact_contract") or {}),
             "key_props": deepcopy(authoring.get("key_props") or []),
             "mainline": [compact_node(node_id) for node_id in mainline_ids],
             "branches": branches,
@@ -777,10 +841,16 @@ class NumericV2QualityAssessor(ModelAgent):
             raise QualityAssessmentError(response.error_code, provider_details=response.diagnostic())
         if not isinstance(response, str):
             raise QualityAssessmentError(invalid_code)
+        # Accept one complete Markdown wrapper, never extract a JSON fragment
+        # from commentary or reconstruct truncated/ambiguous string values.
+        text = response.strip()
+        header, separator, body = text.partition("\n")
+        if header in {"```json", "```"} and separator and body.endswith("\n```"):
+            text = body[:-4]
         try:
-            payload = json.loads(response)
-        except json.JSONDecodeError:
-            raise QualityAssessmentError(invalid_code) from None
+            payload = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise QualityAssessmentError(invalid_code) from error
         if not isinstance(payload, dict):
             raise QualityAssessmentError(invalid_code)
         return payload
@@ -1092,7 +1162,6 @@ class NumericV2QualityAssessor(ModelAgent):
                         if field in {"must_deliver", "must_preserve"}:
                             if (
                                 not isinstance(value, list)
-                                or (field == "must_deliver" and not value)
                                 or any(
                                     not isinstance(item, str) or not item.strip()
                                     for item in value

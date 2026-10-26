@@ -381,9 +381,9 @@ describe('App', () => {
     expect(input).toHaveValue('等待剧场宿主就绪');
   });
 
-  it('only shows theater Galgame options while the selection callback is available', () => {
+  it.each(['awaiting_player', 'performing'] as const)('only shows ready theater options with a selection callback during %s', (phase) => {
     const props = {
-      theaterPresentation: { active: true, phase: 'awaiting_player' as const, suggestedInputs: ['推开教室门'] },
+      theaterPresentation: { active: true, phase, suggestedInputs: ['推开教室门'] },
     };
     const { container, rerender } = render(<App {...props} />);
     expect(document.querySelector('.composer-galgame-option')).toBeNull();
@@ -396,7 +396,36 @@ describe('App', () => {
     expect(document.querySelector('.composer-galgame-option')).toBeNull();
   });
 
-  it.each(['evaluating', 'performing', 'ended'] as const)(
+  it('lets the player draft and send during theater playback without entering ordinary chat', () => {
+    const onTheaterSubmit = vi.fn(), onComposerSubmit = vi.fn();
+    renderInputApp({
+      theaterPresentation: { active: true, phase: 'performing' },
+      onTheaterSubmit, onComposerSubmit,
+    });
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).not.toHaveAttribute('readonly');
+    fireEvent.change(input, { target: { value: '我已经看完了，继续。' } });
+    pressEnter(input);
+    expect(onTheaterSubmit).toHaveBeenCalledExactlyOnceWith('我已经看完了，继续。');
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows a dedicated playback skip control including the final scene', () => {
+    const onTheaterSkipPlayback = vi.fn();
+    const props = { chatSurfaceMode: 'compact' as const, compactChatState: 'input' as const,
+      onTheaterSkipPlayback };
+    const { rerender } = render(<App {...props}
+      theaterPresentation={{ active: true, phase: 'performing', sessionEnded: true }} />);
+    const skip = screen.getByRole('button', {name: 'Show full reply'});
+    expect(skip).toHaveAttribute('data-compact-hit-region', 'true');
+    fireEvent.click(skip);
+    expect(onTheaterSkipPlayback).toHaveBeenCalledOnce();
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveAttribute('readonly');
+    rerender(<App {...props} theaterPresentation={{active: true, phase: 'awaiting_player'}} />);
+    expect(screen.queryByRole('button', {name: 'Show full reply'})).toBeNull();
+  });
+
+  it.each(['evaluating', 'ended'] as const)(
     'locks the open theater composer during %s and preserves its draft', (phase) => {
       const onTheaterSubmit = vi.fn();
       const onComposerSubmit = vi.fn();

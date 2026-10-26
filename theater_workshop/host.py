@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import json
 from pathlib import Path
+from typing import Mapping
 
 from .sdk import TheaterWorkshop, WorkshopError, PackageError, ModelReply, LLMCallFailure
 from .sdk.workshop import canonical_root
@@ -58,6 +59,7 @@ class NekoWorkshopModel:
             _anthropic_usage_with_openai_aliases,
         )
         from utils.tokenize import count_tokens
+        from services.theater.numeric_v2_structured_output import response_format_for
 
         if max_retries != 1:
             raise WorkshopError("workshop_attempt_budget_invalid")
@@ -72,8 +74,18 @@ class NekoWorkshopModel:
         input_max_tokens = settings.get("max_input_tokens")
         if type(input_max_tokens) is not int or input_max_tokens <= 0:
             raise WorkshopError("workshop_model_input_budget_required")
-        # Count the complete messages, including role/JSON overhead. The caller
-        # chooses the cap for its provider; never trim author facts to make it fit.
+        quality_options = {}
+        if (model == "qwen3.8-flash" and operation in {
+                "numeric_v2_fact_review", "numeric_v2_fact_evidence_review"}
+                and response_format_for(settings, "workshop_quality", {}) is not None):
+            from config.providers import focus_extra_body
+
+            # These author checks need complete conclusions, not provider JSON-mode
+            # strings cut at embedded quotes. Local validation remains authoritative.
+            response_format = None
+            quality_options["extra_body"] = {**focus_extra_body(model), "thinking_budget": 2048}
+        # Count the complete messages, including any original response supplied
+        # for one format correction. Never trim author facts to make them fit.
         if count_tokens(json.dumps(messages, ensure_ascii=False)) > input_max_tokens:
             raise WorkshopError("workshop_model_input_budget_exceeded")
         client = None
@@ -86,7 +98,7 @@ class NekoWorkshopModel:
                 # Explicit keyless endpoints must not inherit a process-wide key.
                 api_key=settings.get("api_key") or "", provider_type=settings.get("provider_type"),
                 timeout=self.request_timeout(max_tokens), max_retries=0,
-                max_completion_tokens=max_tokens)
+                max_completion_tokens=max_tokens, **quality_options)
             # User-selected providers use the host's token/thinking/temperature
             # policy; preserve the operation budget and do not add retries.
             response = client.invoke(messages, response_format=response_format)  # noqa: LLM_INPUT_BUDGET # Complete messages are counted and rejected above against the caller's max_input_tokens.
@@ -184,7 +196,7 @@ class WorkshopHost:
         "update_project", "delete_project", "import_story", "generate",
         "assess_quality", "optimize_node", "enhance_node", "set_mainline_order",
         "branch_options", "get_branch_draft", "draft_branch_ending", "draft_branch_path",
-        "apply_branch", "compile", "validate", "export",
+        "apply_branch", "compile", "validate", "export", "assess_runtime_readiness",
     })
 
     def __init__(self, sdk, app_root):
@@ -194,6 +206,17 @@ class WorkshopHost:
     async def call(self, operation, *args, **kwargs):
         if operation not in self.OPERATIONS:
             raise WorkshopError("workshop_operation_invalid")
+        if operation == "assess_runtime_readiness":
+            from services.theater.numeric_v2_options import default_options, option_keys
+
+            options = kwargs.get("runtime_options", {})
+            if (not isinstance(options, Mapping)
+                    or any(key not in option_keys() or type(value) is not bool
+                           for key, value in options.items())):
+                raise WorkshopError("runtime_options_invalid")
+            # Target the product defaults unless the caller explicitly supplies
+            # overrides; never read or change the player's current preferences.
+            kwargs["runtime_options"] = {**default_options(), **options}
         return await _worker(getattr(self.sdk, operation), *args, **kwargs)
 
     async def install(self, project_id, *, base_revision, recover_receipt=False):

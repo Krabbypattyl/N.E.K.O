@@ -386,6 +386,10 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  onTheaterSkipPlayback: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
   visitBar: visitBarSchema.optional(),
   onVisitBarAction: z.function()
     .args(z.string())

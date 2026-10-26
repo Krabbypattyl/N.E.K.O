@@ -341,7 +341,7 @@ async def test_workflow_uses_final_review_and_rollback_keeps_piece_pending(tmp_p
     assert (('start', 'log') in displayed_ids(committed.stored.session)) is not rewrite
     assert committed.stored.session.revision == len(committed.stored.ledger_events) == 1
     assert calls['actor'] == (2 if rewrite else 1)
-    assert calls['review'] == (3 if rewrite else 1)
+    assert calls['review'] == (2 if rewrite else 1)
 
     # A different uncommitted session exercises the same storage-failure boundary.
     second = await runtime.start_session(session_id='failure', catgirl_binding=_binding(), opening_performance=OPENING)
@@ -436,7 +436,7 @@ async def test_review_output_fits_all_refs_and_restores_literal_ids(monkeypatch,
     assert [item['id'] for item in result.fixed_narration_triggers] == ids
     assert budget >= len(output)
     if not ids or disputed:
-        assert budget == (4096 if disputed else 190)
+        assert budget == (4096 if disputed else 320)
     else:
         assert 512 <= budget < 4096
 
@@ -509,17 +509,16 @@ async def test_disabled_review_does_not_let_condition_piece_lock_the_exit(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_default_module_options_leave_conditional_required_scene(tmp_path, monkeypatch):
-    """Shipped defaults turn review off; a conditional required piece must not soft-lock the scene."""
+async def test_without_review_leaves_conditional_required_scene(tmp_path, monkeypatch):
+    """The no-review path must not soft-lock a scene on conditional required pieces."""
     from services.theater.numeric_v2_options import default_options
 
-    assert default_options()['review'] is False
     runtime = NumericV2Runtime(_engine(), tmp_path)
     current = await runtime.start_session(session_id='defaults', catgirl_binding=_binding(),
                                           opening_performance=OPENING)
 
     async def options():
-        return default_options()
+        return {key: key == 'evaluator' for key in default_options()}
 
     async def evaluate(self, **kwargs):
         return NumericV2EvaluationResult((), True, natural_ending_ready=True)

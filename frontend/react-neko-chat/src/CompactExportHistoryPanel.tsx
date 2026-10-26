@@ -70,6 +70,7 @@ type CompactExportHistoryPanelProps = {
   theaterEnded?: boolean;
   theaterError?: string;
   onTheaterEnd?: () => void;
+  onTheaterSkipPlayback?: () => void;
   selectedIds: Set<string>;
   selectedCount: number;
   selectableCount: number;
@@ -230,6 +231,7 @@ export default function CompactExportHistoryPanel({
   theaterEnded = false,
   theaterError = '',
   onTheaterEnd,
+  onTheaterSkipPlayback,
   selectedIds,
   selectedCount,
   selectableCount,
@@ -987,6 +989,19 @@ export default function CompactExportHistoryPanel({
         <div className="compact-theater-history-header">
           <div className="compact-theater-history-header-row">
             <span>{i18n('theater.inProgress', 'In theater')} · {theaterTitle}</span>
+            {onTheaterSkipPlayback ? (
+              <button
+                type="button"
+                data-compact-hit-region={historyInteractive ? 'true' : undefined}
+                data-compact-hit-region-id={historyInteractive ? 'history:theater-skip-playback' : undefined}
+                data-compact-hit-region-kind={historyInteractive ? 'theater-skip-playback' : undefined}
+                data-compact-no-drag="true"
+                disabled={!historyInteractive}
+                onClick={() => { if (historyInteractive) onTheaterSkipPlayback(); }}
+              >
+                {i18n('theater.showFullReply', 'Show full reply')}
+              </button>
+            ) : null}
             {/* 历史面板只允许声明过的子元素接收鼠标事件；结束按钮必须单独登记，
                 否则透明桌面窗口会把点击穿透到下层窗口。 */}
             <button

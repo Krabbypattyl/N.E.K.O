@@ -60,7 +60,7 @@ def test_action_language_rule_reaches_actor_evaluator_and_guard():
     ]
     assert all(group[0].content.count(PLAYER_ACTION_LANGUAGE_RULE) == 1 for group in groups)
     # Actor, evaluator, and reviewer share the same state instant while distinguishing future target scenes from committed history.
-    assert all("作者角色状态记录开场演完后的起点" in group[0].content for group in groups)
+    assert all("作者角色状态是作者预期的入幕起点" in group[0].content for group in groups)
     assert all("目标幕尚未播放时" in group[0].content for group in groups)
     # Splitting nodes must not invalidate continuous actions; all three consumers must preserve the public acceptance flow for ordinary scene changes.
     assert all("不能仅因作者把该动作安排在下一节点" in group[0].content for group in groups)
@@ -94,9 +94,17 @@ def test_post_opening_state_rule_reaches_formal_transition_actor_and_guard():
             actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0],
     ]
     assert all(group[0].content.count(SCENE_ENTRY_STATE_RULE) == 1 for group in groups)
+    role_review = evaluator._build_player_action_review_messages(
+        engine, session, player_input="谢谢。", actor_performance=candidate,
+        transition_outcome=outcome, public_destination_quote="",
+        confirmed_acceptance=False, confirmed_silent_acceptance="",
+    )
     # Completed continuous actions carry their results into the next scene and must not revert to the author's default unfinished state.
-    assert all("不再次要求执行，也不把物件退回操作前" in group[0].content for group in groups)
-    assert all("角色自然提醒实际情况" in group[0].content for group in groups)
+    for messages in (groups[0], role_review):
+        assert "不再次要求执行，也不把物件退回操作前" in messages[0].content
+        assert "角色自然提醒实际情况" in messages[0].content
+    assert "后段承接它，不再重做" in groups[1][0].content
+    assert "最新同对象状态优先" in groups[1][0].content
     assert session.revision == 0
 
 

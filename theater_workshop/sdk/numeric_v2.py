@@ -296,6 +296,7 @@ def character_state_to_package(value: Mapping[str, Any]) -> dict[str, Any]:
     """Project author state arcs into N.E.K.O entrance states without copying the acting contract."""
 
     return {
+        **({"temporal_context": deepcopy(value["temporal_context"])} if "temporal_context" in value else {}),
         "catgirl_state": str(value.get("catgirl_state") or "").strip(),
         "player_state": str(value.get("player_state") or "").strip(),
         "environment_state": str(value.get("environment_state") or "").strip(),

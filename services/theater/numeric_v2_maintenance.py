@@ -889,7 +889,7 @@ def maintain_numeric_v2_storage_once(
         if callable(character_ids_by_name):
             character_ids_by_name = character_ids_by_name()
         with write_transaction():
-            # Cold-start recovery, default-package installation, and index rebuilding write to disk and must obey the same write fence as cloud saves.
+            # Cold-start recovery and index rebuilding write to disk and must obey the same write fence as cloud saves.
             if assert_writable is not None:
                 assert_writable()
             blocked_stories = frozenset(recover_numeric_v2_delete_transactions(theater_root))
@@ -899,7 +899,6 @@ def maintain_numeric_v2_storage_once(
             purge_result = recover_character_purge_intents(
                 theater_root, character_ids_by_name,
             )
-            registry.ensure_default_packages()
             result = audit_numeric_v2_storage(
                 theater_root,
                 registry,

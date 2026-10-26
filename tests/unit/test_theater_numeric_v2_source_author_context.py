@@ -85,13 +85,19 @@ def test_transition_names_source_author_state_without_changing_payload(source_co
     assert list(actual['acting_context']) == [
         'story_identity', 'story_role_context', 'source_author_entry_situation', 'capability_state',
         'core_persona', 'dialogue_policy', 'source_author_entry_state', 'acting_contract',
-        'relationship_control', 'target_acting_contract', 'target_character_state',
+        'relationship_control', 'target_acting_contract',
         'target_dialogue_policy', 'target_relationship_control',
     ]
-    # After checking every output key, restore only its original label by position.
-    # Comparing the whole ordered payload also catches lost or changed nested values and history.
+    # Reconstruct the pre-projection shadow, including the target plan's move;
+    # the complete comparison still detects any changed text, condition or history.
     restored = deepcopy(actual)
-    restored['acting_context'] = dict(zip(expected['acting_context'], actual['acting_context'].values()))
+    target_plan = restored['transition']['target_scene'].pop('author_entry_plan')
+    original_labels = {'source_author_entry_situation': 'current_scene_state',
+                       'source_author_entry_state': 'character_state'}
+    context = {original_labels.get(key, key): value
+               for key, value in restored['acting_context'].items()}
+    context['target_character_state'] = target_plan
+    restored['acting_context'] = {key: context[key] for key in expected['acting_context']}
     assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected, ensure_ascii=False)
 
 
