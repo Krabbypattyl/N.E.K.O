@@ -66,6 +66,24 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-25-pr3496-main-merge",
+        "2026-10-25-recent-memory-sync-main-merge",
+        "2026-10-22-recent-memory-sync",
+        "2026-10-23-pr3482-feedback-devices",
+        "2026-10-22-memory-browser-local-only",
+        "2026-10-22-pr3477-visit-main-merge",
+        "2026-10-22-pr3467-rebase-main",
+        "2026-10-21-pr3467-music-countdown",
+        "2026-10-19-screen-observation-card",
+        "2026-10-21-visit-v1-initial",
+        "2026-10-21-pr3467-invite-options-label",
+        "2026-10-21-pr3467-recommendation-card-main-merge",
+        "2026-10-21-pr3461-import-chooser-main-merge",
+        "2026-10-21-pr3462-cat-settings-main-merge",
+        "2026-10-19-pr-import-note-molili-zip",
+        "2026-10-20-all-chat-text",
+        "2026-10-19-cat-settings-panel",
+        "2026-10-18-pr3447-partial-day-notes",
         "2026-10-18-pr3447-owned-items",
         "2026-10-18-pr3447-name-length",
         "2026-10-18-pr3447-resume-import",
@@ -75,6 +93,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-17-pr3447-molili-import",
         "2026-10-17-pr3447-molili-chats-note",
         "2026-10-17-pr3447-molili-origin-badge",
+        "2026-10-18-pr-molili-import-type-chooser",
+        "2026-10-19-pr-import-note-molili",
         "2026-10-17-pr3441-main-rebase",
         "2026-10-16-voice-activation-feedback",
         "2026-10-17-chat-sync-quota-split-oversized",
@@ -457,7 +477,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "3fee7a029e3db7e790d7d9872bc8ee19105cd3b9a7e73b6227b6c8bdea6d8d69"
+LOCALE_KEY_SIGNATURE = "204164c6e77e9da900890f98c1726304f8c0b9817c7d6b811ad67ff7dd94c2d7"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

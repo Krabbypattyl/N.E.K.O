@@ -113,7 +113,7 @@ def _parse_references(engine, session, candidates, originals, references):
 
 
 def _assert_bound_sources(data, bank):
-    """按最终引用读取原文，避免测试错误地假定证据只能来自近期历史。"""
+    """Read originals through final references instead of assuming all evidence is recent history."""
     binding = data["committed_fact_evidence"]
     assert set(binding) == {"source", "content_refs", "allowed_keys"}
     assert binding["source"] == "actor_performance" and binding["allowed_keys"] == [KEY]

@@ -1,4 +1,4 @@
-"""结局标签只显示标题；已提交终幕及旧归档正文仍走原播放、恢复链路。"""
+"""Ending labels show titles while committed terminal and archived bodies keep their playback paths."""
 
 import json
 from copy import deepcopy
@@ -113,7 +113,7 @@ def test_ending_title_runtime(_name, scenario):
 @pytest.mark.parametrize("legacy", [False, True], ids=["structured_parts", "legacy_performance"])
 @pytest.mark.parametrize("title", ["天亮以后", ""])
 def test_archive_view_keeps_actual_body_and_hides_only_ending_summary(legacy, title):
-    """通过真实查看按钮和归档响应检查弹窗，不替换生产格式化函数。"""
+    """Exercise the real archive button and response without replacing production formatters."""
     archive = {
         "session_id": "old_session", "story_title": "测试剧本",
         "player_name": "玩家", "catgirl_name": "猫娘",

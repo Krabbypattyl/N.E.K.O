@@ -416,3 +416,118 @@ def test_conversation_busy_truth_table_equals_the_old_inline_expression():
         assert session_state.conversation_busy(manager) is expected, manager
         outcomes.append(expected)
     assert True in outcomes and False in outcomes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selection", ["other", "current", "last", "last-same-name"])
+async def test_remote_deletion_reuses_crud_and_recovers_a_valid_local_selection(monkeypatch, selection):
+    crud = importlib.import_module("main_routers.characters_router.crud")
+    config = Config()
+    config.asave_characters = AsyncMock(side_effect=config.save_characters)
+    config.get_default_characters = lambda: {"猫娘": {"Default": {"设定": "default only", "_reserved": {}}}}
+    if selection == "last-same-name":
+        config.data["猫娘"]["Default"] = config.data["猫娘"].pop("Synthetic")
+        config.data["当前猫娘"] = "Default"
+    if selection in {"other", "current"}:
+        config.data["猫娘"]["Other"] = {"_reserved": {"character_uid": "b" * 32}}
+    if selection == "other":
+        config.data["当前猫娘"] = "Other"
+    old_name = "Default" if selection == "last-same-name" else "Synthetic"
+    monkeypatch.setattr(crud, "get_config_manager", lambda: config)
+    socket = SimpleNamespace(send_text=AsyncMock())
+    managers = {old_name: SimpleNamespace(websocket=socket)}
+    monkeypatch.setattr(crud, "get_session_manager", lambda: managers)
+    monkeypatch.setattr(host, "_conversation_busy", lambda _manager: False)
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _name: False)
+    switch, init = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: switch)
+    monkeypatch.setattr(crud, "get_init_one_catgirl", lambda: init)
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    deleted = []
+    async def delete(name):
+        assert config.data["当前猫娘"] != name
+        deleted.append(name)
+        managers.pop(name)
+        config.data["猫娘"].pop(name)
+        return {"success": True}
+    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", delete)
+    guard = AsyncMock()
+    assert await DesktopProfileAdapter(config).delete(UID, guard) is True
+    assert deleted == [old_name]
+    assert config.data["当前猫娘"] in config.data["猫娘"]
+    assert len(config.data["猫娘"]) == 1
+    if selection != "other":
+        socket.send_text.assert_awaited_once()
+        assert json.loads(socket.send_text.call_args.args[0]) == {"type": "catgirl_switched",
+            "old_catgirl": old_name, "new_catgirl": config.data["当前猫娘"]}
+    else:
+        socket.send_text.assert_not_awaited()
+    assert guard.await_count >= 2
+    if selection.startswith("last"):
+        raw = config.data["猫娘"][config.data["当前猫娘"]]
+        from utils.config_manager import get_character_uid
+        assert get_character_uid(raw) != UID
+        assert get_character_uid(raw) is not None
+        assert raw["设定"] == "default only"
+        init.assert_awaited_once_with(config.data["当前猫娘"], is_new=False)
+    else:
+        init.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remote_deletion_waits_for_busy_role_and_rechecks_authority_inside_lifecycle_lock(monkeypatch):
+    crud = importlib.import_module("main_routers.characters_router.crud")
+    config = Config()
+    monkeypatch.setattr(crud, "get_config_manager", lambda: config)
+    monkeypatch.setattr(crud, "get_session_manager", dict)
+    monkeypatch.setattr(host, "_conversation_busy", lambda _manager: True)
+    delete = AsyncMock()
+    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", delete)
+    assert await host.delete_character(UID, AsyncMock()) is False
+    delete.assert_not_awaited()
+    assert config.saves == []
+    with pytest.raises(ValueError, match="session_changed"):
+        await host.delete_character(UID, AsyncMock(side_effect=ValueError("session_changed")))
+    delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["result", "error", "cancel", "cleanup"])
+async def test_remote_deletion_failure_restores_current_role_and_discards_only_its_new_default(monkeypatch, failure):
+    crud = importlib.import_module("main_routers.characters_router.crud")
+    config = Config()
+    original = copy.deepcopy(config.data)
+    restoring, release = asyncio.Event(), asyncio.Event()
+    async def save(data):
+        if failure == "cancel" and data.get("当前猫娘") == "Synthetic":
+            restoring.set()
+            await release.wait()
+        config.save_characters(data)
+    config.asave_characters = AsyncMock(side_effect=save)
+    config.get_default_characters = lambda: {"猫娘": {"Default": {"_reserved": {}}}}
+    monkeypatch.setattr(crud, "get_config_manager", lambda: config)
+    monkeypatch.setattr(crud, "get_session_manager", dict)
+    monkeypatch.setattr(host, "_conversation_busy", lambda _manager: False)
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _name: False)
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_init_one_catgirl", lambda: AsyncMock())
+    remove = AsyncMock(side_effect=RuntimeError("secondary cleanup failure") if failure == "cleanup" else None)
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: remove)
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    error = asyncio.CancelledError() if failure == "cancel" else RuntimeError("original deletion failure")
+    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", AsyncMock(
+        return_value={"success": False}, side_effect=None if failure == "result" else error))
+    task = asyncio.create_task(host.delete_character(UID, AsyncMock()))
+    if failure == "cancel":
+        await asyncio.wait_for(restoring.wait(), timeout=2)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+        release.set()
+    if failure == "result":
+        assert await task is False
+    else:
+        with pytest.raises(type(error), match=None if failure == "cancel" else "original deletion failure"):
+            await task
+    assert config.data == original
+    remove.assert_awaited_once_with("Default")

@@ -2357,7 +2357,7 @@ def test_reinvitation_actor_control_keeps_persona_history_and_readonly_facts(
 async def test_reinvitation_final_wire_uses_control_schema_without_changing_ordinary_turns(
     monkeypatch, reinvitation_actor_context, schema_supported, input_source,
 ):
-    """实际经过 generate_turn/_invoke/Client，避免只在 prompt helper 中自证字段一致。"""
+    """Exercise generate_turn, invocation and client wiring rather than only prompt helpers."""
 
     from jsonschema import Draft202012Validator
 

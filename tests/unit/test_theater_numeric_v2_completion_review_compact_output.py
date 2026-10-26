@@ -1,4 +1,4 @@
-"""窄完成复核只返回会被当前调用链消费的判定，不让诊断长文挤掉审批。"""
+"""Narrow completion checks return consumed decisions without verbose diagnostics crowding approvals."""
 
 from dataclasses import replace
 import json

@@ -9,8 +9,8 @@
  *
  * 管的事：
  * - 串门状态（visit_state_change / visit_invite）→ compact 输入框上方的串门工具条
- *   （React 的 visitBar 属性）、输入框禁用与占位文字；开关打开且没在串门时，工具条是一枚
- *   「串门」小芯片，点开是「邀请客人 / 去别人家」两个发起入口；
+ *   （React 的 visitBar 属性）、输入框禁用与占位文字；开关打开且没在串门时，直接显示
+ *   「邀请客人 / 去别人家」两个发起入口；
  * - 亲人打字：按阶段先拦（邀请等待 / 接待确认 / 收尾 / guest 侧不发、文字留在输入框），
  *   发出去的句子先出一个本地气泡，后端拒绝（status 带回 request_id）时标「未送达」，文字只在
  *   输入框自提交后没再编辑时恢复；收件人开关决定 source（对方猫娘 / 自家猫娘）；
@@ -51,6 +51,33 @@
     var OWNED_PHASES = WAITING_PHASES.concat(['active', 'wrap_up']);
 
     // ── 小工具 ──────────────────────────────────────────────────────
+
+    function acquireForceInteractiveLease() {
+        if (typeof window.__nekoAcquireForceInteractiveLease !== 'function') {
+            window.__nekoAcquireForceInteractiveLease = function () {
+                var state = window.__nekoForceInteractiveLeaseState;
+                if (!state || typeof state.count !== 'number') {
+                    state = { count: 0, restore: false };
+                    window.__nekoForceInteractiveLeaseState = state;
+                }
+                if (state.count === 0) {
+                    state.restore = window.__nekoForceInteractive === true;
+                    try { window.__nekoForceInteractive = true; } catch (_) { /* 普通浏览器无需处理 */ }
+                }
+                state.count += 1;
+                var released = false;
+                return function () {
+                    if (released) return;
+                    released = true;
+                    state.count = Math.max(0, state.count - 1);
+                    if (state.count === 0) {
+                        try { window.__nekoForceInteractive = state.restore; } catch (_) { /* noop */ }
+                    }
+                };
+            };
+        }
+        return window.__nekoAcquireForceInteractiveLease();
+    }
 
     function t(key, fallback, params) {
         var text = '';
@@ -94,8 +121,16 @@
         if (typeof window.showStatusToast === 'function') window.showStatusToast(message, duration || 4000);
     }
 
+    var compactGeometryRefreshTimer = 0;
+
     function render() {
         if (typeof I.renderWindow === 'function') I.renderWindow();
+        // visitBar is rendered by React into the compact choice portal. Its
+        // visual state can change without resizing the base composer, so the
+        // transparent Electron window may otherwise keep the previous native
+        // mouse island and let these visible buttons click through to the app
+        // behind it. Refresh once now and once after React commits the portal.
+        refreshCompactGeometry();
     }
 
     function sendSocketFrame(frame) {
@@ -195,9 +230,17 @@
      */
     // Electron compact 窗口的命中区按 DOM 收集：裸 DOM 对话框开 / 关后要通知它重算，否则新按钮点不到、关掉后留一块透明命中区
     function refreshCompactGeometry() {
-        try {
-            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
-        } catch (_) { /* 非 compact 窗口没有几何桥 */ }
+        function dispatch() {
+            try {
+                window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+            } catch (_) { /* 非 compact 窗口没有几何桥 */ }
+        }
+        dispatch();
+        if (compactGeometryRefreshTimer) return;
+        compactGeometryRefreshTimer = setTimeout(function () {
+            compactGeometryRefreshTimer = 0;
+            dispatch();
+        }, 0);
     }
 
     function openDialog(spec) {
@@ -234,6 +277,7 @@
                 handle.closed = true;
                 if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                releaseInteractive();
                 refreshCompactGeometry();
                 var index = openDialogs.indexOf(handle);
                 if (index >= 0) openDialogs.splice(index, 1);
@@ -281,6 +325,11 @@
         }
         if (typeof document.addEventListener === 'function') document.addEventListener('keydown', onKeydown, true);
         (document.body || document.documentElement).appendChild(overlay);
+        // macOS / Windows 的 Electron compact 窗口会把命中区之外的鼠标透传给桌面。
+        // 对话框虽然已经画出来，但 native hit region 的异步重排存在一个空窗期；这时
+        // 输入框仍能拿到键盘焦点，按钮点击却会落到后面的应用。对话框存活期间接管整窗
+        // 输入，关闭后恢复打开前的状态（和串门人设面板使用同一条桌面桥）。
+        var releaseInteractive = acquireForceInteractiveLease();
         refreshCompactGeometry();
         openDialogs.push(handle);
         // 焦点移进对话框（有输入框的由调用方再聚焦到输入框）
@@ -308,7 +357,6 @@
     var visit = blankVisit();
     var lastEnded = null;
     var releaseEnabled = false;
-    var entryMenuOpen = false;
     var starting = false;
     var typing = null;           // {name, until}
     var typingTimer = 0;
@@ -420,15 +468,11 @@
 
     function idleBar() {
         if (!releaseEnabled || !userSwitchOn()) return null;
-        if (!entryMenuOpen) {
-            return { tone: 'idle', actions: [barAction('entry', t('visit.bar.entry', '串门'))] };
-        }
         return {
             tone: 'idle',
             actions: [
                 barAction('invite', t('visit.bar.invite', '邀请客人'), 'primary', { disabled: starting }),
-                barAction('go', t('visit.bar.goVisit', '去别人家'), 'primary', { disabled: starting }),
-                barAction('entry_close', t('visit.bar.close', '收起'))
+                barAction('go', t('visit.bar.goVisit', '去别人家'), 'primary', { disabled: starting })
             ]
         };
     }
@@ -756,6 +800,9 @@
 
     function renderLine(entry) {
         if (!isUiWindow()) return;
+        // 协议偶尔会在上游模型失败时收到空的 delta / final。空内容不是一条可见消息，
+        // 不应占出一个只有作者和时间的气泡；带“被打断”提示的空行仍保留提示。
+        if (relayCleanIsEmpty(entry.text) && !entry.truncated) return;
         var adapter = window.appChat;
         if (!adapter || typeof adapter.renderVisitLine !== 'function') return;
         var notice = entry.truncated ? t('visit.stream.truncated', '（被打断）') : '';
@@ -779,6 +826,13 @@
             replace: !!claimed
         });
         entry.rendered = true;
+    }
+
+    function removeRenderedLine(entry) {
+        if (!entry || !entry.rendered) return;
+        var host = getHost();
+        if (host && typeof host.removeMessage === 'function') host.removeMessage(entry.messageId);
+        entry.rendered = false;
     }
 
     function armStall(entry) {
@@ -826,6 +880,11 @@
         entry.text = String(frame.text || '');
         entry.truncated = frame.truncated === true;
         if (typing && frame.speaker && frame.speaker.name === typing.name) typing = null;
+        // authoritative final 为空时，撤掉此前 delta 形成的半截气泡；否则会留下“空回复”。
+        if (relayCleanIsEmpty(entry.text) && !entry.truncated) {
+            removeRenderedLine(entry);
+            return;
+        }
         renderLine(entry);
     }
 
@@ -945,7 +1004,14 @@
         if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending' && action !== 'invite_ready') return;
         if (visit.visitId !== visitId) {
             // 漏收了上一场的 ended、新一场的 pending 先到：上一场照样留下结束消息、标掉还在等回显的本地气泡
-            if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            if (visit.visitId && inVisit()) {
+                var previousVisit = visit.visitId;
+                var previousSide = visit.side;
+                onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
+                // invite_ready 也可作为新场次的权威起点；先让显示端回收旧 iframe，
+                // 否则它会按旧 visit_id 丢掉稍后转发的新 invite_ready。
+                relayEndedToDisplay(previousVisit, previousSide);
+            }
             startNewVisit(visitId);
         }
         if (frame.side === 'host' || frame.side === 'guest') {
@@ -958,7 +1024,9 @@
         if (typeof frame.cross_region === 'boolean') visit.crossRegion = frame.cross_region;
         visit.ownName = currentCatgirl();
         applyPreviewedPeer();
-        entryMenuOpen = false;
+        // 后端只给已激活的场次推 ending（额度不足、登录失效等激活前失败走状态横幅 + ended）：
+        // 漏收 started 时 ending 本身就是开始过的证据，结束后照样留下带查看详情的结束消息。
+        if (action === 'ending') visit.everStarted = true;
         switch (action) {
         case 'invite_ready':
             visit.phase = 'invite_ready';
@@ -985,6 +1053,9 @@
         case 'ended':
             onEnded(frame);
             render();
+            if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+                window.nekoRelayVisitStateToDisplay(frame);
+            }
             return;
         case 'pending':
         case 'joining':
@@ -1011,6 +1082,11 @@
             clearReconnectPoll();
         }
         render();
+        // Electron 多窗口里 /chat 往往是最新的主 WebSocket，而媒体 iframe
+        // 必须由 Pet 窗创建；把已经校验并应用的生命周期状态同步过去。
+        if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+            window.nekoRelayVisitStateToDisplay(frame);
+        }
     }
 
     function onEnded(frame) {
@@ -1487,7 +1563,7 @@
             var value = localStorage.getItem('nekoVisitCrop');
             if (value === 'upper' || value === 'full') return value;
         } catch (_) { /* noop */ }
-        return 'upper';
+        return 'full';
     }
 
     // 建房 / 入房请求在途时换了角色：后端照样收下了那位，这一页却已不管她——立刻把那一场硬结束，免得空占角色与邀请码
@@ -1498,19 +1574,123 @@
         return true;
     }
 
+    function currentHostRoomUrl(catgirl) {
+        return '/api/visit/rooms/current?catgirl=' + encodeURIComponent(catgirl);
+    }
+
+    /** 把恢复接口 / 建房响应变成本页的权威阶段；返回恢复到的场次，格式不对则 null。 */
+    function applyHostRoomResponse(result, catgirl, seqAtSend) {
+        if (!result || (result.status !== 200 && result.status !== 202) || currentCatgirl() !== catgirl) return null;
+        // HTTP 恢复/建房响应没有服务端帧序号；请求期间只要收到过更新帧，页面状态就比它新，绝不能倒退。
+        if (typeof seqAtSend === 'number' && stateFrameSeq !== seqAtSend) return null;
+        var body = result.body || {};
+        var visitId = typeof body.visit_id === 'string' ? body.visit_id : '';
+        var phase = body.phase === 'invite_ready' ? 'invite_ready' : (body.phase === 'pending' ? 'pending' : '');
+        if (!VISIT_ID_RE.test(visitId) || !phase) return null;
+        var frame = { type: 'visit_state_change', action: phase, side: 'host', visit_id: visitId };
+        if (phase === 'invite_ready' && typeof body.invite_code === 'string') frame.invite_code = body.invite_code;
+        if (typeof body.invite_expires_at === 'number') frame.invite_expires_at = body.invite_expires_at;
+        onStateChange(frame);
+        return { visitId: visitId, phase: phase, hasCode: INVITE_CODE_RE.test(String(body.invite_code || '')) };
+    }
+
+    /** 建房是异步的；即使 invite_ready 的 WS 帧丢了，也从受保护的本机接口把原邀请码补回来。 */
+    function scheduleInviteRecovery(catgirl, visitId, attempt) {
+        var delays = [300, 700, 1200, 2000, 3000, 3000];
+        var index = Number.isInteger(attempt) ? attempt : 0;
+        if (index >= delays.length) return;
+        setTimeout(async function () {
+            if (currentCatgirl() !== catgirl || visit.visitId !== visitId
+                    || (visit.phase !== 'pending' && visit.phase !== 'invite_ready') || visit.inviteCode) return;
+            var seqAtSend = stateFrameSeq;
+            var current = await api('GET', currentHostRoomUrl(catgirl));
+            if (currentCatgirl() !== catgirl || visit.visitId !== visitId) return;
+            if (stateFrameSeq !== seqAtSend) {
+                if (visit.phase === 'pending' && !visit.inviteCode) {
+                    scheduleInviteRecovery(catgirl, visitId, index + 1);
+                }
+                return;
+            }
+            if (current.status === 404) {
+                // /rooms/current only covers pending host invitations.  A 404
+                // may mean the visit ended or advanced, so reconcile against
+                // the authoritative state instead of leaving stale controls.
+                var stateResult = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
+                if (currentCatgirl() !== catgirl || visit.visitId !== visitId || stateFrameSeq !== seqAtSend) return;
+                if (stateResult.status === 200 && stateResult.body && typeof stateResult.body === 'object') {
+                    applyState(stateResult.body, false);
+                    if (visit.visitId !== visitId || visit.phase !== 'pending' || visit.inviteCode) return;
+                }
+            }
+            var restored = applyHostRoomResponse(current, catgirl, seqAtSend);
+            if (restored && restored.hasCode) return;
+            if (visit.visitId === visitId && visit.phase === 'pending') {
+                scheduleInviteRecovery(catgirl, visitId, index + 1);
+            }
+        }, delays[index]);
+    }
+
+    function recoverCurrentHostInviteIfWaiting(catgirl) {
+        if (currentCatgirl() !== catgirl || visit.side !== 'host' || !VISIT_ID_RE.test(String(visit.visitId || ''))) return;
+        if ((visit.phase === 'pending' || visit.phase === 'invite_ready') && !visit.inviteCode) {
+            scheduleInviteRecovery(catgirl, visit.visitId, 0);
+        }
+    }
+
     async function startInvite() {
         var catgirl = currentCatgirl();
         if (!catgirl || starting) return;
         starting = true;
-        entryMenuOpen = false;
         render();
         try {
+            // 页面错过 invite_ready 或重新载入时，先恢复仍有效的原房间；绝不为同一场再建一个。
+            var currentSeq = stateFrameSeq;
+            var current = await api('GET', currentHostRoomUrl(catgirl));
+            if (currentCatgirl() !== catgirl) return;
+            if (stateFrameSeq !== currentSeq) {
+                recoverCurrentHostInviteIfWaiting(catgirl);
+                return;
+            }
+            var restored = applyHostRoomResponse(current, catgirl, currentSeq);
+            if (restored) {
+                if (!restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
+                return;
+            }
+            // 只有明确不存在待客邀请码时才新建。读取失败不能被当成“不存在”，否则可能重复建房。
+            if (current.status !== 404) {
+                toast(startErrorText(current), 6000);
+                return;
+            }
             var crop = readCrop();
+            var createSeq = stateFrameSeq;
             var result = await withPersonaRetry(function () {
                 return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
             }, catgirl);
             if (await abandonIfCharacterSwitched(result, catgirl)) return;
-            if (result.status !== 202) toast(startErrorText(result), 6000);
+            if (stateFrameSeq !== createSeq) {
+                recoverCurrentHostInviteIfWaiting(catgirl);
+                return;
+            }
+            var created = applyHostRoomResponse(result, catgirl, createSeq);
+            if (created) {
+                if (!created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
+                return;
+            }
+            // GET 与 POST 之间另一窗口可能刚建好房间：再恢复一次，而不是停在 already_visiting。
+            if (result.status === 409 && ((result.body || {}).reason === 'already_visiting')) {
+                var raceSeq = stateFrameSeq;
+                var raced = await api('GET', currentHostRoomUrl(catgirl));
+                if (stateFrameSeq !== raceSeq) {
+                    recoverCurrentHostInviteIfWaiting(catgirl);
+                    return;
+                }
+                var recovered = applyHostRoomResponse(raced, catgirl, raceSeq);
+                if (recovered) {
+                    if (!recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
+                    return;
+                }
+            }
+            toast(startErrorText(result), 6000);
         } finally {
             starting = false;
             render();
@@ -1526,6 +1706,8 @@
         if (result.status === 404 || code === 'invite_invalid') return t('visit.preview.invalid', '邀请码无效');
         if (result.status === 410 || code === 'invite_expired') return t('visit.preview.expired', '邀请码已过期');
         if (result.status === 403 && code === 'VISIT_BANNED') return t('visit.preview.banned', '你的串门功能暂时受限');
+        if (code === 'VISIT_QUOTA_EXCEEDED') return t('visit.status.VISIT_QUOTA_EXCEEDED', '今天的串门时间用完了');
+        if (code === 'VISIT_CONCURRENCY_LIMIT') return t('visit.status.VISIT_CONCURRENCY_LIMIT', '同时进行的串门或邀请太多了，请先结束一个再试');
         if (result.status === 429) return t('visit.preview.rateLimited', '试得太频繁了，过一会儿再试');
         if (result.status === 503) return t('visit.preview.unreachable', '暂时连不上串门服务，稍后再试');
         if (code === 'VISIT_LOGIN_REQUIRED') return t('visit.status.VISIT_LOGIN_REQUIRED', '请先登录');
@@ -1573,7 +1755,7 @@
         };
         var result = await withPersonaRetry(function () {
             return api('POST', '/api/visit/rooms/' + encodeURIComponent(visitId) + '/join', {
-                catgirl: catgirl, invite_code: inviteCode, confirm: true
+                catgirl: catgirl, invite_code: inviteCode, confirm: true, crop: readCrop()
             });
         }, catgirl);
         if (await abandonIfCharacterSwitched(result, catgirl)) return null;
@@ -1583,7 +1765,6 @@
 
     async function startJoin() {
         if (starting) return;
-        entryMenuOpen = false;
         render();
         var body = document.createElement('div');
         body.className = 'visit-join';
@@ -1759,14 +1940,6 @@
 
     I.handleVisitBarAction = function handleVisitBarAction(actionId) {
         switch (actionId) {
-        case 'entry':
-            entryMenuOpen = true;
-            render();
-            return;
-        case 'entry_close':
-            entryMenuOpen = false;
-            render();
-            return;
         case 'invite':
             startInvite();
             return;
@@ -2182,6 +2355,45 @@
             ? phase : null;
     }
 
+    function relayEndedToDisplay(visitId, side) {
+        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
+        window.nekoRelayVisitStateToDisplay({
+            type: 'visit_state_change', action: 'ended', visit_id: visitId, side: side || ''
+        });
+    }
+
+    function relayStateSnapshotToDisplay(state, visitId) {
+        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
+        var phase = phaseFromState(state.phase);
+        if (!phase) return;
+        var frame = {
+            type: 'visit_state_change',
+            action: phase === 'active' ? 'started' : phase,
+            side: state.side || state.role || '',
+            visit_id: visitId
+        };
+        // GET /api/visit/state keeps the media layout on room.peer_crop.  Older
+        // snapshots used peer.crop, so retain that as a compatibility fallback.
+        var peerCrop = state.room && (state.room.peer_crop === 'upper' || state.room.peer_crop === 'full')
+            ? state.room.peer_crop
+            : (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full') ? state.peer.crop : '');
+        if (peerCrop) frame.peer_crop = peerCrop;
+        window.nekoRelayVisitStateToDisplay(frame);
+        // 这一帧可能先于 Pet 窗自己的重载恢复建出 iframe，恢复随即作废，它本该套上的出门样式 / 对端显隐
+        // 也就没了：按后端 started → departed 的顺序补上出门，再按快照同步对端显隐（建 iframe 会清掉这两样，必须排在阶段帧之后）
+        if (frame.side === 'guest' && (phase === 'active' || phase === 'wrap_up')) {
+            window.nekoRelayVisitStateToDisplay({
+                type: 'visit_state_change', action: 'departed', side: frame.side, visit_id: visitId
+            });
+        }
+        if (state.peer && typeof state.peer.hidden === 'boolean') {
+            window.nekoRelayVisitStateToDisplay({
+                type: 'visit_state_change', action: state.peer.hidden ? 'peer_hidden' : 'peer_visible',
+                side: frame.side, visit_id: visitId
+            });
+        }
+    }
+
     // 快照里的对端信息与重载前的台词并进这一场；onlyFill：只填空缺字段（帧带来的更新不覆盖）
     function mergeSnapshotDetails(state, onlyFill) {
         var peer = state.peer;
@@ -2211,6 +2423,27 @@
         releaseEnabled = state.enabled === true;
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
+        // 断线或页面重载时可能只读到激活前失败的 ending 快照；
+        // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
+        var sameVisitEnding = visit.visitId === snapshotVisit;
+        if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)
+            && (!stale || sameVisitEnding)) {
+            if (visit.visitId && visit.visitId !== snapshotVisit && inVisit()) {
+                var previousEndingVisit = visit.visitId;
+                var previousEndingSide = visit.side;
+                onEnded({ visit_id: previousEndingVisit, side: previousEndingSide, reason: '' });
+                relayEndedToDisplay(previousEndingVisit, previousEndingSide);
+            }
+            if (visit.visitId === snapshotVisit) {
+                onEnded({ visit_id: snapshotVisit, side: state.side || state.role, reason: '' });
+            } else {
+                markEnded(snapshotVisit);
+            }
+            // 不先转发 ending：显示端会为它补建一个永远收不到 ended 的 iframe。
+            relayEndedToDisplay(snapshotVisit, state.side || state.role);
+            render();
+            return;
+        }
         if (state.active === true && endedVisitIds.indexOf(state.visit_id) !== -1 && snapshotStarted(state)) {
             // ended 帧先到时本页还不知道这场开始过（没留结束消息）：按快照补上，不复活这一场
             ensureEndedMessage({ visitId: state.visit_id, side: state.side || state.role || null,
@@ -2236,7 +2469,13 @@
         if (snapshotVisit) {
             if (visit.visitId !== snapshotVisit) {
                 // 断线期间别的窗口结束了这一场、又开了新一场：上一场照样留下结束消息、标掉还在等回显的本地气泡
-                if (inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+                if (inVisit()) {
+                    var previousVisit = visit.visitId;
+                    var previousSide = visit.side;
+                    onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
+                    // 显示端必须先退掉旧 iframe，之后才会接受没有 pending 的新场次快照。
+                    relayEndedToDisplay(previousVisit, previousSide);
+                }
                 startNewVisit(snapshotVisit);
             }
             visit.side = state.side || state.role || visit.side;
@@ -2249,9 +2488,18 @@
             visit.ownName = currentCatgirl();
             mergeSnapshotDetails(state, false);
             if (visit.reconnecting) pollReconnect();
+            // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；本地场次完成
+            // 收口 / 切换后再同步权威快照，确保显示端不会因旧 visit_id 而丢弃它。
+            relayStateSnapshotToDisplay(state, snapshotVisit);
         } else if (inVisit() && (state.active !== true || state.visit_id !== visit.visitId)) {
             // 断线期间那一场已经结束、ended 帧没收到：走与 ended 帧同一个收尾（留下查看详情 / 导出 / 举报）
-            onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            var endedVisit = visit.visitId;
+            var endedSide = visit.side;
+            onEnded({ visit_id: endedVisit, side: endedSide, reason: '' });
+            relayEndedToDisplay(endedVisit, endedSide);
+        } else if (state.active !== true && typeof state.visit_id === 'string' && state.visit_id) {
+            // 页面本地状态已经空了，Pet 窗仍可能留着重载前的 iframe；权威空闲快照照样负责回收。
+            relayEndedToDisplay(state.visit_id, state.side || state.role);
         }
         render();
     }
@@ -2390,7 +2638,6 @@
         var on = userSwitchOn();
         if (on !== lastSwitch) {
             lastSwitch = on;
-            if (!on) entryMenuOpen = false;
             render();
         }
     }, 1500);

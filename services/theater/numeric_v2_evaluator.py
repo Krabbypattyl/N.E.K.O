@@ -311,7 +311,7 @@ def _completion_body_issue_diagnostics(
     actor_performance: Mapping[str, Any], actor_fact_candidates: Sequence[Mapping[str, Any]], *,
     completion_fact_review_only: bool, route_changed: bool, transition_outcome: Any,
 ) -> bool:
-    """窄审只为实际正文中的候选定位；前置来源审批、纯邀请和正式转场不扩任务。"""
+    """Locate actual body candidates without expanding narrow checks to invitations or transitions."""
 
     return bool(
         completion_fact_review_only and actor_fact_candidates and not route_changed
@@ -417,7 +417,7 @@ def _committed_completion_evidence(
     scene_context: list[dict[str, Any]] | None = None,
     history_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
-    """仅绑定本次请求保留的当前访问原文，让首次漏记的结果以后仍可补记。"""
+    """Bind retained originals from the current visit so previously missed results can be registered."""
 
     if session is None:
         return {}, ()
@@ -474,7 +474,7 @@ def _committed_completion_evidence(
 def _bind_committed_completion_evidence(
     engine: NumericV2Engine, session: ScriptSessionV2, data: dict[str, Any],
 ) -> tuple[str, ...]:
-    """每次裁剪或试装后更新实际出处；元数据只引用当前请求还保留的完整原文。"""
+    """Rebind provenance after packing to reference only complete originals retained in this request."""
 
     metadata, texts = _committed_completion_evidence(
         engine, session, data.get("scene_context", []), data.get("history_evidence", ()),
@@ -487,7 +487,7 @@ def _bind_committed_completion_evidence(
 
 
 def _committed_quotes_visible(candidate: Mapping[str, Any], texts: Sequence[str]) -> bool:
-    """每条历史引文须命中一份完整来源，不能拼接不同记录制造不存在的原句。"""
+    """Require each historical quote to match one complete source without concatenating records."""
 
     evidence = candidate.get("evidence")
     if not isinstance(evidence, (list, tuple)):
@@ -501,7 +501,7 @@ def _committed_quotes_visible(candidate: Mapping[str, Any], texts: Sequence[str]
 
 
 def _fact_evidence_units(text: str) -> list[str]:
-    """给连续原句编号；不拆逗号或分号，也不删去限定词和紧随句末的引号。"""
+    """Number contiguous original sentences without dropping qualifiers or trailing quotation marks."""
 
     units: list[str] = []
     start = index = 0
@@ -524,7 +524,7 @@ def _pack_fact_evidence_refs(
     data: dict[str, Any], texts: Sequence[str], *, human_prefix: str,
     system_tokens: int, max_tokens: int,
 ) -> dict[str, dict[str, str]]:
-    """只借最终装箱的剩余额度附加编号；不挤掉原文，也不增加历史来源权限。"""
+    """Add reference IDs within the remaining budget without evicting originals or widening authority."""
 
     data.pop("fact_evidence_refs", None)
     bank: dict[str, dict[str, str]] = {}
@@ -558,7 +558,7 @@ def _pack_fact_evidence_refs(
 def _decode_fact_evidence_refs(
     candidate: Any, references: Mapping[str, Mapping[str, str]],
 ) -> Any:
-    """仅展开本请求发布的编号，随后仍走原出处、typed值及独立审批。"""
+    """Expand only references issued in this request before normal provenance and typed-value checks."""
 
     if not isinstance(candidate, Mapping) or not isinstance(candidate.get("evidence"), list):
         return candidate

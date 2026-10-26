@@ -97,6 +97,7 @@ function createHarness(opts) {
   const rollbacks = [];
   const toasts = [];
   const sendCalls = [];
+  const relayFrames = [];
   const socket = { readyState: 1, send(m) { sent.push(JSON.parse(m)); } };
   const body = new Node('body');
   const docListeners = [];
@@ -138,6 +139,7 @@ function createHarness(opts) {
     appState: { socket: socket, audioPlayerContext: { currentTime: 0 } },
     location: { pathname: '/' },
     showStatusToast(text) { toasts.push(text); },
+    nekoRelayVisitStateToDisplay(frame) { relayFrames.push(JSON.parse(JSON.stringify(frame))); },
     visitEnabled: true,
     nekoLocalMutationSecurity: { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'tok' }) },
     appChat: {
@@ -213,7 +215,7 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
 }
 
 const report = {};
@@ -327,6 +329,8 @@ const report = {};
   // ── 输入：后端拒绝 → 按 request_id 标那一个气泡「未送达」并恢复文字 ──
   {
     const h = createHarness();
+    let geometryRefreshes = 0;
+    h.win.addEventListener('neko:compact-interaction-geometry-refresh', () => { geometryRefreshes += 1; });
     h.state('started');
     h.I.submitVisitChatText({ text: '第一句', requestId: 'r1' });
     h.I.submitVisitChatText({ text: '第二句', requestId: 'r2' });
@@ -345,7 +349,9 @@ const report = {};
     report.echo_claimed = h.messages.find((m) => m.id === 'visit-local-r1').blocks[0].text;
     report.echo_no_dup = h.lineMessage('H1') ? 1 : 0;
     // 收件人切到自家猫娘
+    const refreshesBeforeRecipientSwitch = geometryRefreshes;
     h.I.handleVisitBarAction('to_own');
+    report.recipient_switch_refreshed_hit_geometry = geometryRefreshes > refreshesBeforeRecipientSwitch;
     h.I.submitVisitChatText({ text: '给她的', requestId: 'r3' });
     report.recipient_own = h.sendCalls[h.sendCalls.length - 1].options.source;
   }
@@ -367,11 +373,12 @@ const report = {};
   {
     const routes = {};
     let previewStatus = 200;
+    let previewCode = '';
     let blocked = false;
     let joinReplies = [];
     routes['/api/visit/invites/*'] = async () => previewStatus === 200
       ? { status: 200, body: { visit_id: VID2, host_display_name: '邻居', host_short_code: 'ABCDEF', cross_region: true, expires_at: 9e9, locally_blocked: blocked } }
-      : { status: previewStatus, body: { code: previewStatus === 410 ? 'invite_expired' : 'invite_invalid' } };
+      : { status: previewStatus, body: { code: previewCode || (previewStatus === 410 ? 'invite_expired' : 'invite_invalid') } };
     routes['/api/visit/rooms/' + VID2 + '/join'] = async () => joinReplies.shift() || { status: 202, body: { ok: true } };
     const h = createHarness({ routes });
     let personaCalls = 0;
@@ -386,8 +393,18 @@ const report = {};
     await h.chat._test.joinWithCode('ABCDEFGH23');
     report.preview_fail_joins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length;
     report.preview_fail_dialogs = h.dialogs().length;
+    // 额度预检失败：下一步后直接用全局横幅提示，不弹确认、不发 join。
+    previewStatus = 429;
+    previewCode = 'VISIT_QUOTA_EXCEEDED';
+    const quotaPreviewJoins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length;
+    const quotaPreviewToasts = h.toasts.length;
+    await h.chat._test.joinWithCode('ABCDEFGH23');
+    report.quota_preview_joins = h.fetches.filter((f) => f.url.indexOf('/join') !== -1).length - quotaPreviewJoins;
+    report.quota_preview_dialogs = h.dialogs().length;
+    report.quota_preview_toasts = h.toasts.slice(quotaPreviewToasts);
     // 屏蔽：确认框没有「出门」按钮
     previewStatus = 200;
+    previewCode = '';
     blocked = true;
     const pending = h.chat._test.joinWithCode('ABCDEFGH23');
     await h.settle();
@@ -412,6 +429,16 @@ const report = {};
     report.persona_joins_before = personaJoinsBefore;
     const order = h.fetches.map((f) => f.url.indexOf('/preview') !== -1 ? 'preview' : (f.url.indexOf('/join') !== -1 ? 'join' : 'other'));
     report.order_after_confirm = order.slice(-3);
+    // 额度用完：复用全局状态横幅，不另造串门弹窗
+    joinReplies = [{ status: 429, body: { code: 'VISIT_QUOTA_EXCEEDED' } }];
+    const toastsBeforeQuota = h.toasts.length;
+    const p3 = h.chat._test.joinWithCode('ABCDEFGH23');
+    await h.settle();
+    const d3 = h.dialogs()[0];
+    h.buttonsOf(d3).find((b) => b.attrs['data-visit-dialog-button'] === 'go').click();
+    await p3;
+    report.quota_failure_dialogs = h.dialogs().length;
+    report.quota_failure_toasts = h.toasts.length - toastsBeforeQuota;
   }
   // ── 叫她回来：route/end 请求体逐字段 ──
   {
@@ -513,10 +540,11 @@ const report = {};
     report.race_detail_active = (bound[0] || {}).active;
     report.race_pacer_armed = h.win.nekoVisitPacer.isArmed();
     report.race_chat_phase = h.chat._test.state().visit.phase;
+    report.race_relay_actions = h.relayFrames.map((frame) => frame.action);
   }
   // ── 页面在串门进行中重载 → active:true；没有串门 → active:false ──
   {
-    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true, peer: { cat_name: '小白' }, transcript: [] } }) };
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true, peer: { cat_name: '小白' }, room: { peer_crop: 'full' }, transcript: [] } }) };
     const h = createHarness({ routes, withPacer: true });
     const bound = [];
     h.win.addEventListener('neko-visit-bound', (ev) => bound.push(ev.detail));
@@ -525,6 +553,7 @@ const report = {};
     report.reload_visit = bound[0].visit_id === VID;
     report.reload_pacer_armed = h.win.nekoVisitPacer.isArmed();
     report.reload_chat_phase = h.chat._test.state().visit.phase;
+    report.reload_relay_crop = h.relayFrames.length ? h.relayFrames[0].peer_crop : null;
     const routes2 = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
     const h2 = createHarness({ routes: routes2, withPacer: true });
     const bound2 = [];
@@ -532,6 +561,54 @@ const report = {};
     await h2.chat.afterBind(h2.socket, '咪咪');
     report.idle_active = bound2[0].active;
     report.idle_bar_entry = h2.I.getVisitChatView().bar.actions.map((a) => a.id);
+  }
+  // ── 重载快照中继给 Pet 窗：阶段帧之后带上出门样式与对端显隐（中继可能抢在 Pet 自己的恢复之前建 iframe） ──
+  {
+    const snapRelay = async (body) => {
+      const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body }) };
+      const h = createHarness({ routes });
+      await h.chat.afterBind(h.socket, '咪咪');
+      return h.relayFrames.map((frame) => frame.action + ':' + frame.side + ':' + frame.visit_id);
+    };
+    report.reload_relay_guest_hidden = await snapRelay({ active: true, visit_id: VID, phase: 'active', side: 'guest', enabled: true,
+      peer: { cat_name: '小白', hidden: true }, room: { peer_crop: 'upper' }, transcript: [] });
+    report.reload_relay_host_visible = await snapRelay({ active: true, visit_id: VID, phase: 'wrap_up', side: 'host', enabled: true,
+      peer: { cat_name: '小白', hidden: false }, room: { peer_crop: 'full' }, transcript: [] });
+    report.reload_relay_guest_waiting = await snapRelay({ active: true, visit_id: VID, phase: 'joining', side: 'guest', enabled: true,
+      transcript: [] });
+  }
+  // ── 旧的未开始 ending 快照迟到：不能结束读 state 期间已经打开的新场次 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true, room: null, transcript: [],
+    } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 4 });
+    release();
+    await probe;
+    report.stale_unstarted_ending_visit = h.chat._test.state().visit.visitId;
+    report.stale_unstarted_ending_phase = h.chat._test.state().visit.phase;
+    report.stale_unstarted_ending_relay = h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id);
+  }
+  // ── 同场 pending 后读到未开始 ending 快照：即使读取期间有帧，也必须完成收尾 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true, room: null, transcript: [],
+    } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID, side: 'guest', ts: 4 });
+    release();
+    await probe;
+    report.stale_same_visit_ending_phase = h.chat._test.state().visit.phase;
+    report.stale_same_visit_ending_relay = h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id);
   }
   // ── 被拒那句之后又提交过：不把旧文字塞回输入框，气泡照样标「未送达」 ──
   {
@@ -730,6 +807,7 @@ const report = {};
     await h.chat.afterBind(h.socket, '咪咪');
     report.snapshot_switch_line = [...h.chat._test.state().lines.values()].find((e) => e.lineId === 'L1' && e.visitId === VID2).text;
     report.snapshot_switch_avatar = h.win.__lastAvatar || '';
+    report.snapshot_switch_relay = h.relayFrames.slice(-2).map((frame) => frame.action + ':' + frame.visit_id);
   }
   // ── 重连轮询发现已结束：照样留下该场的结束消息（查看详情 / 导出 / 举报） ──
   {
@@ -740,6 +818,7 @@ const report = {};
     h.advance(5100);
     await h.settle();
     report.recover_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.recover_ended_relay = h.relayFrames[h.relayFrames.length - 1].action;
   }
   // ── abort 的 i_done 比收到的片多：补占位，迟片还能落位 ──
   {
@@ -1027,18 +1106,28 @@ const report = {};
     report.snapshot_then_live_lines = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).length;
     report.snapshot_then_live_pending = h.chat._test.state().pending.length;
   }
-  // ── 等客时取消（pending → ending → ended）：不留查看详情 / 导出 / 举报 ──
+  // ── 等客时取消（后端不推 ending：pending → ended）：不留查看详情 / 导出 / 举报 ──
   {
     const h = createHarness();
     h.state('pending');
-    h.state('ending');
     h.state('ended');
+    report.cancel_before_start_phase_after_ended = h.chat._test.state().visit.phase;
     report.cancel_before_start_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    // 漏收 started：ending 只推给已激活的场次，本身就算开始过
+    const h4 = createHarness();
+    h4.state('pending');
+    h4.state('ending');
+    h4.state('ended');
+    report.missed_started_ending_ended_message = h4.messages.some((m) => m.id === 'visit-ended-' + VID);
     const h2 = createHarness();
     h2.state('started');
     h2.state('ending');
     h2.state('ended');
     report.started_then_ended_message = h2.messages.some((m) => m.id === 'visit-ended-' + VID);
+    const h3 = createHarness();
+    h3.chat.applyState({ active: true, visit_id: VID, phase: 'ending', side: 'guest', room: null, transcript: [], enabled: true }, false);
+    report.unstarted_ending_snapshot_phase = h3.chat._test.state().visit.phase;
+    report.unstarted_ending_snapshot_relay = h3.relayFrames.map((frame) => frame.action);
   }
   // ── ending 起输入框交还普通聊天：串门 ack 的会话标记在 ending 撤掉，之后起的真会话 ended 时不动 ──
   {
@@ -1123,6 +1212,18 @@ const report = {};
     h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:8', i: 0, lp: 8, text: '被打断的', speaker: peerCat });
     h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'g:8', i_done: 1, reason: 'interrupted' });
     report.interrupted_kept = h.lineText('g:8');
+  }
+  // ── 空的模型结果不是消息：不新建气泡，也撤掉此前 delta 留下的半截气泡 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const peerCat = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:empty', lp: 10, text: '', final: true, truncated: false, speaker: peerCat });
+    report.empty_final_never_rendered = !!h.lineMessage('g:empty');
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:emptied', i: 0, lp: 11, text: '半句', speaker: peerCat });
+    report.empty_final_before = !!h.lineMessage('g:emptied');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:emptied', lp: 11, text: '', final: true, truncated: false, speaker: peerCat });
+    report.empty_final_after = !!h.lineMessage('g:emptied');
   }
   // ── 漏了 started、/state 也读不到：收到过这一场的台词，结束时照样留结束消息 ──
   {
@@ -1244,6 +1345,7 @@ const report = {};
     report.replay_invite_switched = h.chat._test.state().visit.visitId === VID2;
     report.replay_invite_phase = h.chat._test.state().visit.phase;
     report.replay_invite_old_ended = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.replay_invite_relay = h.relayFrames.slice(-2).map((frame) => frame.action + ':' + frame.visit_id);
   }
   // ── 旧一场还挂着、bind 重放来了新一场的邀请：换到新一场（旧一场先收尾），之后 started 对得上 ──
   {
@@ -1289,6 +1391,106 @@ const report = {};
     await pending;
     const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
     report.switched_join_end = end && end.body;
+  }
+  // ── 页面漏了邀请帧：再次点击直接恢复原邀请码，不再 POST 新房间 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    const routes = {
+      [currentUrl]: async () => ({ status: 200, body: { visit_id: VID2, phase: 'invite_ready', invite_code: 'ABCDEFGH23', invite_expires_at: 9e9 } }),
+    };
+    const h = createHarness({ routes });
+    await h.chat._test.startInvite();
+    const state = h.chat._test.state().visit;
+    report.existing_invite_phase = state.phase;
+    report.existing_invite_code = state.inviteCode;
+    report.existing_invite_creates = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
+  }
+  // ── 恢复 GET 在途时收到更晚的 started 帧：旧响应不能让页面倒退 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      [currentUrl]: async () => {
+        await gate;
+        return { status: 200, body: { visit_id: VID, phase: 'invite_ready', invite_code: 'ABCDEFGH23', invite_expires_at: 9e9 } };
+      },
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.startInvite();
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'started', visit_id: VID, side: 'host', ts: 1 });
+    release();
+    await pending;
+    const state = h.chat._test.state().visit;
+    report.stale_host_recovery_phase = state.phase;
+    report.stale_host_recovery_code = state.inviteCode;
+    report.stale_host_recovery_creates = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
+  }
+  // ── 新房间的 invite_ready 帧丢失：本机恢复接口轮询出原邀请码，不重复建房 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    let probes = 0;
+    const routes = {
+      [currentUrl]: async () => {
+        probes += 1;
+        if (probes === 1) return { status: 404, body: { error: 'no_pending_invite' } };
+        return { status: 200, body: { visit_id: VID2, phase: 'invite_ready', invite_code: 'QWERTYUI23', invite_expires_at: 9e9 } };
+      },
+      '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID2, phase: 'pending' } }),
+    };
+    const h = createHarness({ routes });
+    await h.chat._test.startInvite();
+    report.created_invite_initial_phase = h.chat._test.state().visit.phase;
+    h.advance(300);
+    await h.settle();
+    const state = h.chat._test.state().visit;
+    report.created_invite_recovered_phase = state.phase;
+    report.created_invite_recovered_code = state.inviteCode;
+    report.created_invite_creates = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
+  }
+  // ── POST 在途先到 pending 帧：仍要安排邀请码恢复，不能因响应已旧而永久等候 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    let probes = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = {
+      [currentUrl]: async () => {
+        probes += 1;
+        if (probes === 1) return { status: 404, body: { error: 'no_pending_invite' } };
+        return { status: 200, body: { visit_id: VID2, phase: 'invite_ready', invite_code: 'ZXCVBNMA23', invite_expires_at: 9e9 } };
+      },
+      '/api/visit/rooms': async () => { await gate; return { status: 202, body: { visit_id: VID2, phase: 'pending' } }; },
+    };
+    const h = createHarness({ routes });
+    const pending = h.chat._test.startInvite();
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 1 });
+    release();
+    await pending;
+    h.advance(300);
+    await h.settle();
+    const state = h.chat._test.state().visit;
+    report.pending_before_create_recovered_phase = state.phase;
+    report.pending_before_create_recovered_code = state.inviteCode;
+    report.pending_before_create_count = h.fetches.filter((f) => f.url === '/api/visit/rooms' && f.method === 'POST').length;
+  }
+  // ── 恢复接口 404：用权威 state 收掉已结束场次，不能永远停在等待邀请码 ──
+  {
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    const stateUrl = '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA';
+    const routes = {
+      [currentUrl]: async () => ({ status: 404, body: { error: 'no_pending_invite' } }),
+      [stateUrl]: async () => ({ status: 200, body: { enabled: true, active: false } }),
+      '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID2, phase: 'pending' } }),
+    };
+    const h = createHarness({ routes });
+    await h.chat._test.startInvite();
+    h.advance(300);
+    await h.settle();
+    report.missing_current_reconciled_visit = h.chat._test.state().visit.visitId;
+    report.missing_current_state_probes = h.fetches.filter((f) => f.url === stateUrl).length;
   }
   // ── 建房在途时换了角色：后端收下的那一场同样立刻硬结束 ──
   {
@@ -1479,6 +1681,7 @@ def test_backend_refusal_marks_that_bubble_and_restores_the_text(report):
     assert report["echo_claimed"] == "第一句（清洗后）"
     assert report["echo_no_dup"] == 0
     assert report["recipient_own"] == "neko_visit:own_cat"
+    assert report["recipient_switch_refreshed_hit_geometry"] is True
 
 
 def test_guest_side_and_wrap_up_refuse_but_ending_does_not_take_input(report):
@@ -1489,6 +1692,8 @@ def test_guest_side_and_wrap_up_refuse_but_ending_does_not_take_input(report):
 
 def test_preview_comes_first_and_failures_never_join(report):
     assert report["preview_fail_joins"] == 0 and report["preview_fail_dialogs"] == 0
+    assert report["quota_preview_joins"] == 0 and report["quota_preview_dialogs"] == 0
+    assert report["quota_preview_toasts"] == ["今天的串门时间用完了"]
     assert report["blocked_buttons"] == ["cancel"]
     assert "你已屏蔽此人" in report["blocked_text"]
     # The confirmation contains only a display name, short code, and cross-region notice, without technical numbers.
@@ -1501,7 +1706,13 @@ def test_persona_409_is_confirmed_before_the_single_retry(report):
     assert report["persona_calls"] == 1
     assert report["persona_joins_before"] == 1       # After the first join returns 409, before retry.
     assert report["join_count"] == 2
-    assert report["join_body"] == {"catgirl": "咪咪", "invite_code": "ABCDEFGH23", "confirm": True}
+    assert report["join_body"] == {"catgirl": "咪咪", "invite_code": "ABCDEFGH23", "confirm": True,
+                                   "crop": "full"}
+
+
+def test_guest_quota_exhaustion_reuses_the_global_status_banner(report):
+    assert report["quota_failure_dialogs"] == 0
+    assert report["quota_failure_toasts"] == 1
 
 
 def test_recall_posts_the_route_end_body_and_toasts_recall_already(report):
@@ -1538,14 +1749,45 @@ def test_state_probe_racing_a_started_frame_keeps_the_visit_active(report):
     assert report["race_detail_active"] is True
     assert report["race_pacer_armed"] is True
     assert report["race_chat_phase"] == "active"
+    assert report["race_relay_actions"] == ["started"]
 
 
 def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):
     assert report["reload_active"] is True and report["reload_visit"] is True
     assert report["reload_pacer_armed"] is True
     assert report["reload_chat_phase"] == "active"
+    assert report["reload_relay_crop"] == "full"
     assert report["idle_active"] is False
-    assert report["idle_bar_entry"] == ["entry"]
+    assert report["idle_bar_entry"] == ["invite", "go"]
+
+
+def test_reload_snapshot_relay_carries_away_and_peer_visibility_after_the_phase(report):
+    # The relayed phase frame can create the Pet iframe before Pet's own reload recovery,
+    # which then bails out; the relay itself must restore what that recovery would have.
+    assert report["reload_relay_guest_hidden"] == [
+        "started:guest:AAAAAAAAAAAAAAAAAAAAAA",
+        "departed:guest:AAAAAAAAAAAAAAAAAAAAAA",
+        "peer_hidden:guest:AAAAAAAAAAAAAAAAAAAAAA",
+    ]
+    assert report["reload_relay_host_visible"] == [
+        "wrap_up:host:AAAAAAAAAAAAAAAAAAAAAA",
+        "peer_visible:host:AAAAAAAAAAAAAAAAAAAAAA",
+    ]
+    assert report["reload_relay_guest_waiting"] == ["joining:guest:AAAAAAAAAAAAAAAAAAAAAA"]
+
+
+def test_stale_unstarted_ending_snapshot_does_not_close_the_newer_visit(report):
+    assert report["stale_unstarted_ending_visit"] == "BBBBBBBBBBBBBBBBBBBBBB"
+    assert report["stale_unstarted_ending_phase"] == "pending"
+    assert report["stale_unstarted_ending_relay"] == ["pending:BBBBBBBBBBBBBBBBBBBBBB"]
+
+
+def test_stale_unstarted_ending_snapshot_closes_the_same_visit(report):
+    assert report["stale_same_visit_ending_phase"] is None
+    assert report["stale_same_visit_ending_relay"] == [
+        "pending:AAAAAAAAAAAAAAAAAAAAAA",
+        "ended:AAAAAAAAAAAAAAAAAAAAAA",
+    ]
 
 
 def test_a_later_submission_keeps_an_old_refused_text_out_of_the_composer(report):
@@ -1617,10 +1859,14 @@ def test_stale_snapshot_still_merges_peer_and_history(report):
 def test_snapshot_visit_switch_resets_line_and_avatar_caches(report):
     assert report["snapshot_switch_line"] == "新一场的第一句"
     assert report["snapshot_switch_avatar"] == ""
+    assert report["snapshot_switch_relay"] == [
+        "ended:AAAAAAAAAAAAAAAAAAAAAA", "started:BBBBBBBBBBBBBBBBBBBBBB",
+    ]
 
 
 def test_snapshot_recovery_of_an_ended_visit_keeps_its_ended_message(report):
     assert report["recover_ended_message"] is True
+    assert report["recover_ended_relay"] == "ended"
 
 
 def test_abort_extends_to_i_done_with_placeholders(report):
@@ -1734,6 +1980,10 @@ def test_live_final_after_snapshot_claims_and_removes_the_local_bubble(report):
 
 
 def test_cancel_before_start_leaves_no_ended_message(report):
+    assert report["cancel_before_start_phase_after_ended"] is None
+    assert report["missed_started_ending_ended_message"] is True
+    assert report["unstarted_ending_snapshot_phase"] is None
+    assert report["unstarted_ending_snapshot_relay"] == ["ended"]
     assert report["cancel_before_start_ended_message"] is False
     assert report["started_then_ended_message"] is True
 
@@ -1773,6 +2023,12 @@ def test_rejected_line_bubble_is_withdrawn(report):
     assert report["rejected_after"] is False
     assert report["rejected_entry"] is False
     assert report["interrupted_kept"] == "被打断的|（被打断）"
+
+
+def test_empty_visit_lines_never_leave_blank_bubbles(report):
+    assert report["empty_final_never_rendered"] is False
+    assert report["empty_final_before"] is True
+    assert report["empty_final_after"] is False
 
 
 def test_a_received_line_proves_the_visit_started(report):
@@ -1816,6 +2072,9 @@ def test_replayed_invite_ready_switches_to_the_new_visit(report):
     assert report["replay_invite_switched"] is True
     assert report["replay_invite_phase"] == "invite_ready"
     assert report["replay_invite_old_ended"] is True
+    assert report["replay_invite_relay"] == [
+        "ended:AAAAAAAAAAAAAAAAAAAAAA", "invite_ready:BBBBBBBBBBBBBBBBBBBBBB",
+    ]
 
 
 def test_replayed_invite_switches_from_a_retained_visit(report):
@@ -1848,6 +2107,36 @@ def test_room_created_after_a_character_switch_is_ended(report):
     end = report["switched_create_end"]
     assert end is not None
     assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
+
+
+def test_clicking_invite_restores_the_existing_code_without_creating_another_room(report):
+    assert report["existing_invite_phase"] == "invite_ready"
+    assert report["existing_invite_code"] == "ABCDEFGH23"
+    assert report["existing_invite_creates"] == 0
+
+
+def test_late_host_recovery_reply_does_not_overwrite_a_newer_socket_phase(report):
+    assert report["stale_host_recovery_phase"] == "active"
+    assert report["stale_host_recovery_code"] in (None, "")
+    assert report["stale_host_recovery_creates"] == 0
+
+
+def test_a_new_room_recovers_its_code_when_the_ready_frame_is_missed(report):
+    assert report["created_invite_initial_phase"] == "pending"
+    assert report["created_invite_recovered_phase"] == "invite_ready"
+    assert report["created_invite_recovered_code"] == "QWERTYUI23"
+    assert report["created_invite_creates"] == 1
+
+
+def test_pending_frame_before_create_reply_still_recovers_the_invite_code(report):
+    assert report["pending_before_create_recovered_phase"] == "invite_ready"
+    assert report["pending_before_create_recovered_code"] == "ZXCVBNMA23"
+    assert report["pending_before_create_count"] == 1
+
+
+def test_missing_current_invite_reconciles_authoritative_visit_state(report):
+    assert report["missing_current_reconciled_visit"] in (None, "")
+    assert report["missing_current_state_probes"] == 1
 
 
 def test_self_line_recipient_uses_the_lines_own_side(report):

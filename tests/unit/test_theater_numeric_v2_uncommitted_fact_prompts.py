@@ -1,4 +1,4 @@
-"""当前模型候选不冒充已提交结果，真实动作、路由和历史投影仍保留。"""
+"""Draft candidates cannot impersonate committed facts or erase real actions, routes and history."""
 
 from copy import deepcopy
 import json
@@ -137,7 +137,7 @@ def test_evaluator_current_input_copy_does_not_promote_a_model_result():
 
 @pytest.mark.parametrize("visibility,target", [("public", True), ("story", True), ("public", False), ("story", False)])
 def test_approved_completion_preserves_visibility_and_boolean_target(visibility, target):
-    """本轮获批值沿既有可见范围生效，story 不新增引文泄露，也不伪称磁盘已提交。"""
+    """Apply approved values within existing visibility without leaking quotes or claiming premature persistence."""
     engine = _engine()
     engine.fact_contract[KEY]["visibility"] = visibility
     engine.nodes["start"]["completion_contract"]["all"][0]["equals"] = target

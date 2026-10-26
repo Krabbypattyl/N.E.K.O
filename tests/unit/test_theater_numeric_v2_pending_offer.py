@@ -530,7 +530,7 @@ async def test_invalid_fallback_offer_without_prior_invitation_is_not_latched(tm
 
 @pytest.mark.asyncio
 async def test_shared_completion_words_cannot_clear_an_invalid_exit(tmp_path, monkeypatch):
-    """共同词语不能证明目的地或授权相同；否决仍走既有一次修稿，完成事实正常保存。"""
+    """Shared words cannot prove matching exits or authority; preserve repair and completion settlement."""
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
     from services.theater.numeric_v2_options import default_options
 

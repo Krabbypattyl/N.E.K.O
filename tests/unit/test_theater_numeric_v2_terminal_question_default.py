@@ -1,4 +1,4 @@
-"""终局问号按实际交互需求核对，默认关闭完整复核也不误拦重逢招呼。"""
+"""Terminal question checks preserve legitimate greetings when full review is disabled."""
 
 import json
 
@@ -23,7 +23,7 @@ CLOSING = "（微笑）好久不见。这一路辛苦了。"
 
 async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
                  field="target_performance", failure="", route="ending"):
-    """只替换模型边界，保留真实选路、三段组装、改稿及原子提交。"""
+    """Replace only the model boundary while retaining routing, segment assembly, repair and atomic commit."""
     case = initiation_case(public=True, message="带我去阅览室吧。") if route == "transition" else None
     if mode == "all_off":
         # 使用真正签发并提交的邀请回执，关闭 Evaluator 后仍由原程序接受路径换幕。

@@ -24,7 +24,7 @@
             "storageChanged": "El directorio de datos del servidor cambió. Vuelve a abrir el editor de avatar antes de guardar."
         }
     },
-    "chatSync": {"oversizedLocalOnly":"Demasiado grandes para sincronizar, guardados solo en este dispositivo: {{count}}.","setupNeedsSave":"Revisa la sincronización de {{name}}. Guarda el personaje otra vez o abre Más ajustes.","title":"Sincronizar chats","serviceUrl":"Dirección HTTPS del servicio","saveService":"Guardar dirección","enable":"Activar sincronización (con historial)","pause":"Pausar en este dispositivo","syncNow":"Sincronizar ahora","clearKnown":"Vaciar chats conocidos","close":"Cerrar","notConfigured":"Configura primero la dirección del servicio.","notBound":"Este personaje aún no está vinculado.","enabled":"Activado en este dispositivo.","paused":"Pausado en este dispositivo. Los chats en la nube se conservan.","pending":"Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.","working":"Procesando…","more":"Queda historial por descargar; sincroniza de nuevo.","passFinished":"Esta pasada ha terminado. Otros dispositivos aún pueden tener chats pendientes.","loginRequired":"Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.","failed":"La sincronización no ha terminado. Se conservan los chats locales y las tareas pendientes.","deleteOriginal":"Borrar en ambos dispositivos","deleteConfirm":"¿Borrar este chat original en ambos dispositivos?","clearConfirm":"¿Vaciar todos los chats originales conocidos de este personaje en ambos dispositivos? Se excluyen los mensajes añadidos después desde otro dispositivo. Las respuestas guardadas solo en este dispositivo también se borrarán localmente.","unknownTime":"Hora original desconocida","userLabel":"Tú","unfinishedChat":"Espera a que termine la respuesta actual antes de borrar el chat.","profileConflict":"Elige la versión del personaje","profileRenamePending":"Confirmar cambio de nombre","profileLocal":"Versión local","profileRemote":"Versión en la nube","profileUseLocal":"Subir esta versión local","profileUseRemote":"Usar esta versión de la nube","profileRenameConfirm":"¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?","profileChanged":"El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.","profileInitialUpload":"¿Subir el perfil actual de {{name}}?","profileUploadConfirm":"¿Subir el perfil guardado de {{name}}?","profileUnsupported":"Este perfil contiene campos aún no compatibles. Se conserva el guardado local.","profileSaveFailed":"No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.","profileReview":"Revisar perfil del personaje","profileName":"Nombre","profileNickname":"Apodo","profileSetting":"Descripción original","profileStyle":"Estilo de habla","cloudImport":"Crear personaje desde la nube","cloudEmpty":"No hay personajes en la nube.","cloudProfileEmpty":"Este personaje aún no tiene un perfil publicado.","cloudCreate":"Crear este personaje en este dispositivo","cloudExisting":"{{name}} ya existe aquí. Se conserva su configuración de sincronización.","cloudCreated":"Se creó y vinculó {{name}}.","cloudNameConflict":"Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.","profileNeedsBinding":"Vincula este personaje en Más ajustes del editor de personajes.","previewHistory":"Ver chats anteriores","historyPreview":"Vista previa de chats anteriores","historyLocalRole":"Personaje local: {{name}}","historyCloudRole":"Personaje en la nube: {{name}}","historyCount":"Mensajes verificados en esta vista: {{count}}","historyUnverifiedCount":"{{count}} registros antiguos tienen un origen no verificable y permanecen en este dispositivo.","historyHint":"Solo se incluyen los mensajes verificados de esta vista fija. La aprobación inicia el registro y envío en segundo plano; los chats nuevos usan su propia cola.","historyEmpty":"No hay chats anteriores verificados en esta vista. Los registros no verificados permanecen en este dispositivo.","historyApprove":"Aprobar estos chats","historyCancel":"Cancelar","historyQueued":"Aprobados para registrarse y enviarse en segundo plano. Puede haber mensajes pendientes.","historyChanged":"El personaje, la cuenta o el estado de sincronización cambió. Revisa otra vista previa antes de aprobar.","historyAwaitingRegistration":"{{count}} mensajes anteriores aprobados aún esperan su registro local.","historyUnverifiedUnknown":"No se examinaron los registros antiguos. El contenido de origen no verificable permanece en este dispositivo.","writerRecoveryRequired":"La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.","recoverWriter":"Verificar y recuperar sincronización","recoveryChecked":"Verificación completada. Activa la sincronización con historial en la ficha del personaje o confirma esta subida de chats. Los borrados pendientes en ambos dispositivos requieren una confirmación aparte.","recoveryDeleteConfirm":"¿Eliminar estos {{count}} mensajes pendientes en ambos dispositivos? Personaje local: {{localName}}. Personaje en la nube: {{cloudName}}. Si cancelas, seguirán ocultos localmente.","includeHistory":"Incluir chats existentes","initialHistoryFailed":"La sincronización de chats anteriores no terminó. El personaje sigue vinculado; consulta el progreso o reintenta en Más ajustes del editor de personajes.","moreOptions":"Más ajustes","enableHint":"Sincronizar «{{name}}» y sus chats (incluido el historial).","newRoleSync":"Sincronizar personaje y chats (incluido el historial)","newSyncPending":"Personaje guardado localmente. Se sincronizará cuando inicies sesión y tengas conexión.","newSyncFailed":"Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.","syncChoiceSaved":"Personaje guardado. Sincronización actualizada."},
+    "chatSync": {"oversizedLocalOnly":"Demasiado grandes para sincronizar, guardados solo en este dispositivo: {{count}}.","setupNeedsSave":"Revisa la sincronización de {{name}} y vuelve a guardar el personaje.","title":"Sincronizar chats","serviceUrl":"Dirección HTTPS del servicio","saveService":"Guardar dirección","enable":"Perfil del personaje y memoria reciente","pause":"Pausar en este dispositivo","syncNow":"Sincronizar ahora","clearKnown":"Vaciar chats conocidos","close":"Cerrar","notConfigured":"Configura primero la dirección del servicio.","notBound":"Este personaje aún no está vinculado.","enabled":"Activado en este dispositivo.","paused":"Pausado en este dispositivo. Los chats en la nube se conservan.","pending":"Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.","working":"Procesando…","more":"Queda historial por descargar; sincroniza de nuevo.","passFinished":"Esta pasada ha terminado. Otros dispositivos aún pueden tener chats pendientes.","loginRequired":"Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.","failed":"La sincronización no ha terminado. Se conservan los chats locales y las tareas pendientes.","deleteOriginal":"Borrar en ambos dispositivos","deleteConfirm":"¿Borrar este chat original en ambos dispositivos?","clearConfirm":"¿Vaciar todos los chats originales conocidos de este personaje en ambos dispositivos? Se excluyen los mensajes añadidos después desde otro dispositivo. Las respuestas guardadas solo en este dispositivo también se borrarán localmente.","unknownTime":"Hora original desconocida","userLabel":"Tú","unfinishedChat":"Espera a que termine la respuesta actual antes de borrar el chat.","profileConflict":"Elige la versión del personaje","profileRenamePending":"Confirmar cambio de nombre","profileLocal":"Versión local","profileRemote":"Versión en la nube","profileUseLocal":"Subir esta versión local","profileUseRemote":"Usar esta versión de la nube","profileRenameConfirm":"¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?","profileChanged":"El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.","profileInitialUpload":"¿Subir el perfil actual de {{name}}?","profileUploadConfirm":"¿Subir el perfil guardado de {{name}}?","profileUnsupported":"Este perfil contiene campos aún no compatibles. Se conserva el guardado local.","profileSaveFailed":"No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.","profileReview":"Revisar perfil del personaje","profileName":"Nombre","profileNickname":"Apodo","profileSetting":"Descripción original","profileStyle":"Estilo de habla","cloudImport":"Crear personaje desde la nube","cloudEmpty":"No hay personajes en la nube.","cloudProfileEmpty":"Este personaje aún no tiene un perfil publicado.","cloudCreate":"Crear este personaje en este dispositivo","cloudExisting":"{{name}} ya existe aquí. Se conserva su configuración de sincronización.","cloudCreated":"Se creó y vinculó {{name}}.","cloudNameConflict":"Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.","profileNeedsBinding":"Activa la sincronización en el editor de personajes y guarda para vincular este personaje.","previewHistory":"Ver chats anteriores","historyPreview":"Vista previa de chats anteriores","historyLocalRole":"Personaje local: {{name}}","historyCloudRole":"Personaje en la nube: {{name}}","historyCount":"Memoria reciente de esta vista: {{count}} elementos","historyUnverifiedCount":"{{count}} registros antiguos tienen un origen no verificable y permanecen en este dispositivo.","historyHint":"Sincroniza solo los chats mostrados en el explorador de memoria y la nota de conversaciones anteriores. Al quitar recuerdos recientes, también se quitan del otro dispositivo; ambos archivos originales se conservan.","historyEmpty":"No hay chats recientes ni notas para sincronizar.","historyApprove":"Aprobar estos chats","historyCancel":"Cancelar","historyQueued":"Se aprobó la sincronización de estos recuerdos recientes en segundo plano.","historyChanged":"El personaje, la cuenta o el estado de sincronización cambió. Revisa otra vista previa antes de aprobar.","historyAwaitingRegistration":"{{count}} mensajes anteriores aprobados aún esperan su registro local.","historyUnverifiedUnknown":"No se examinaron los registros antiguos. El contenido de origen no verificable permanece en este dispositivo.","writerRecoveryRequired":"La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.","recoverWriter":"Verificar y recuperar sincronización","recoveryChecked":"Verificación completada. Activa el interruptor de sincronización en el editor de personajes y guarda para continuar sincronizando el personaje y sus chats anteriores.","recoveryDeleteConfirm":"¿Eliminar estos {{count}} mensajes pendientes en ambos dispositivos? Personaje local: {{localName}}. Personaje en la nube: {{cloudName}}. Si cancelas, seguirán ocultos localmente.","includeHistory":"Chats recientes y nota","initialHistoryFailed":"La sincronización de chats anteriores no terminó. El personaje sigue vinculado. Vuelve a guardar la sincronización en el editor de personajes para reintentar.","moreOptions":"Más ajustes","enableHint":"{{name}} — Perfil del personaje y memoria reciente","newRoleSync":"Perfil del personaje y memoria reciente","newSyncPending":"Personaje guardado localmente. Se sincronizará cuando inicies sesión y tengas conexión.","newSyncFailed":"Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.","syncChoiceSaved":"Personaje guardado. Sincronización actualizada.","recoverWriterHelp":"Acerca de verificar y recuperar la sincronización","recoverWriterTooltip":"Úsalo si una copia restaurada, datos copiados o una escritura interrumpida dejan registros de sincronización sin verificar. Comprueba la cuenta, el personaje y los registros de la nube para evitar envíos duplicados o recuperar chats borrados. No se necesita en el uso normal; los borrados entre dispositivos se confirman aparte.","recoveryNotRequired":"Ahora no es necesario verificar.","errorDetail":"{{message}} Código de error: {{code}}.","errorAccountMismatch":"La identidad actual en la nube no coincide con el propietario guardado del personaje. Comprueba tu cuenta de la comunidad. Si siempre fue la misma, hay que investigar y reparar el vínculo anterior; repetir el intento no lo resuelve. Los chats locales se conservan.","errorWriterRecovery":"Los registros de sincronización anteriores necesitan verificación. Abre Más ajustes y pulsa Verificar y recuperar sincronización. Después, guarda de nuevo el personaje con la sincronización activada.","errorSessionChanged":"La sesión cambió durante la operación. Confirma tu cuenta de la comunidad y vuelve a intentarlo.","errorSessionUnavailable":"No se pudo verificar temporalmente la sesión guardada. Comprueba la conexión y reintenta. Si persiste, inicia sesión de nuevo desde la página de cuenta.","errorNetwork":"No se pudo conectar con el servicio o la solicitud agotó el tiempo. Comprueba la conexión y reintenta. Se conservan los chats locales y las tareas pendientes.","errorRetryLater":"El servicio está limitando solicitudes o esperando antes de reintentar. Inténtalo más tarde; pulsar repetidamente no reduce la espera.","errorServiceRejected":"El servicio rechazó la solicitud. Inténtalo más tarde. Si persiste, comunica este código para revisar el servicio.","errorBindingChanged":"El personaje o su vínculo cambió. Reabre el editor, comprueba el personaje y el interruptor de sincronización, y guarda.","errorProfileChanged":"El perfil guardado cambió. Reabre el editor, revisa el perfil y guarda otra vez los ajustes de sincronización.","errorUnknown":"No se pudo completar la sincronización. Comprueba la conexión, reabre Más ajustes y reintenta. Si persiste, comunica los pasos que fallaron. Se conservan los chats locales y las tareas pendientes."},
     "instanceAccess": {"title":"Conectar a NEKO","description":"Introduce la clave de acceso proporcionada por el propietario del servidor. Este dispositivo recordará la conexión durante 30 días.","key":"Clave de acceso a la instancia","connect":"Conectar","failed":"Acceso denegado. Revisa la clave e inténtalo de nuevo.","httpsRequired":"Usa HTTPS o un túnel HTTPS de confianza para conectar de forma segura.","insecureWarning":"Esta conexión no está cifrada (HTTP). Cualquiera en la misma ruta de red podría ver la clave y la sesión. Usa HTTPS cuando puedas."},
     "common": {
         "load": "Cargar",
@@ -719,7 +719,52 @@
         "notDetected": "No se detectó ningún dispositivo de cámara",
         "occupied": "¿La cámara está ocupada por otra aplicación? Cierra las aplicaciones de códigos QR/fotos e inténtalo de nuevo."
     },
+    "proactiveCard": {
+        "memeTitle": "Quería compartir este meme contigo",
+        "interested": "Me interesa",
+        "interestSaved": "Interés guardado",
+        "view": "Ver",
+        "reveal": "Mostrar",
+        "acknowledge": "Entendido",
+        "skip": "Omitir",
+        "saving": "Guardando tu elección…",
+        "accepted": "Elección registrada",
+        "skipped": "Omitido esta vez",
+        "unavailable": "Esta recomendación ya no está disponible",
+        "saveFailed": "No se pudo guardar. Inténtalo de nuevo",
+        "openFailed": "No se pudo abrir. Usa el enlace del contenido",
+        "dismiss": "Cerrar vista previa",
+        "categories": {
+            "news": "Noticias destacadas",
+            "community": "Comunidad Neko",
+            "video": "Vídeo recomendado",
+            "personal": "Tu feed",
+            "meme": "Un meme para ti",
+            "vision": "Sobre tu pantalla",
+            "window": "Ventana actual",
+            "chat": "Un tema para ti",
+            "web": "Contenido interesante",
+            "work_break": "Hora de descansar",
+            "anti_slack": "Recordatorio de atención"
+        },
+        "hints": {
+            "news": "Tengo un tema para compartir.",
+            "community": "Tengo un tema para compartir.",
+            "video": "Tengo un tema para compartir.",
+            "personal": "Tengo un tema para compartir.",
+            "meme": "Tengo un tema para compartir.",
+            "vision": "Tengo un tema para compartir.",
+            "window": "Tengo un tema para compartir.",
+            "chat": "Tengo un tema para compartir.",
+            "web": "Tengo un tema para compartir.",
+            "work_break": "Bebe agua y descansa un poco.",
+            "anti_slack": "Vamos a concentrarnos un rato."
+        }
+    },
     "chat": {
+        "miniGameInviteTitle": "Invitación a minijuego",
+        "miniGameInviteHint": "¿Jugamos juntos?",
+        "miniGameInviteOptionsAriaLabel": "Opciones de invitación al minijuego",
         "visitBarAriaLabel": "Visita",
         "messageReaction": "{{author}} reaccionó con {{emoji}}",
         "cardActionFailed": "Error en la acción del plugin",
@@ -2179,7 +2224,7 @@
             "confirmTrimmed": "Utilice audio recortado inteligente"
         }
     },
-    "memory": {"chatDeleteConfirm":"¿Eliminar permanentemente {{count}} chats originales de todos los dispositivos sincronizados?","chatSyncUnavailable":"La sincronización no está disponible. Puedes editar la memoria local.",
+    "memory": {
         "recent": "Recuerdos recientes",
         "title": "Explorador de memoria",
         "summary": "Resumen",
@@ -2270,7 +2315,7 @@
         "roleSourceTooltip": "Origen: {{source}}",
         "loading": "Cargando...",
         "externalImportTitle": "Importar memoria externa",
-        "externalImportNote": "Importa USER.md, SOUL.md, MEMORY.md, notas diarias o un ZIP de OpenClaw o Hermes al personaje seleccionado.",
+        "externalImportNote": "Importa USER.md, SOUL.md, MEMORY.md, notas diarias o un ZIP de OpenClaw o Hermes, o un ZIP de exportación de Molili, al personaje seleccionado.",
         "externalImportFormat": "Formato de origen",
         "externalImportAuto": "Detectar automáticamente",
         "externalImportPick": "Elegir Markdown o ZIP",
@@ -2299,12 +2344,7 @@
         "save": "Guardar",
         "clear": "Claro",
         "tip1": "Las conversaciones finalizadas recientemente tardarán un momento en cargarse. Puedes hacer clic en el nombre del neko nuevamente para actualizar.",
-        "tip2": "Muestra mensajes originales y recuerdos recientes; los recuerdos a largo plazo están integrados en el núcleo de la neko y no se pueden consultar.",
-        "chatDeletionHint": "Pulsa Guardar tras eliminar o vaciar: los mensajes originales se eliminan en todos los dispositivos; los recuerdos recientes y las respuestas de herramientas solo en este dispositivo.",
-        "chatOriginalsSection": "Mensajes originales entre dispositivos",
-        "recentMemorySection": "Recuerdos recientes de este dispositivo",
-        "localRepliesSection": "Respuestas de herramientas solo locales",
-        "chatDeletionPartial": "Se registró la eliminación de mensajes, pero falló el guardado de recuerdos locales. Conserva los cambios y vuelve a guardar.",
+        "tip2": "Solo se muestran recuerdos recientes; los recuerdos a largo plazo están integrados en el núcleo de la neko y no se pueden consultar.",
         "noFiles": "Sin archivos",
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
@@ -2983,6 +3023,11 @@
         "exportNoModelFound": "Archivos de modelo no encontrados",
         "exportModelNotUserImported": "Sólo se pueden exportar modelos importados por el usuario.",
         "importCard": "Importar tarjeta de personaje",
+        "importTypeTitle": "Elegir tipo de importación",
+        "importTypeCard": "Importar tarjeta de personaje de N.E.K.O",
+        "importTypeCardDesc": "Archivo de tarjeta de personaje PNG o .nekocfg",
+        "importTypeMolili": "Importar datos de Molili",
+        "importTypeMoliliDesc": "Archivo de datos de usuario de Molili (.zip)",
         "importingCard": "Importando tarjeta de personaje...",
         "importCardSuccess": "Tarjeta de personaje \"{{name}}\" importada exitosamente",
         "importCardFailed": "No se pudo importar la tarjeta de personaje: {{error}}",
@@ -3811,11 +3856,12 @@
             "autoMemoryRecallTooltip": "Si está activado, antes de responder en el chat de texto (incluida la voz transcrita) se recuerdan automáticamente momentos pasados relacionados; si está desactivado, solo se recuerda cuando hace falta.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
+            "catSettings": "Configuración de gata",
             "autoCat": "Modo gato automático",
+            "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "gravityCat": "Gato gravitatorio",
             "gravityCatTooltip": "Usa el modo de gravedad de Playground al entrar en el modo gatito",
             "catAudio": "Sonidos de gato",
-            "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
@@ -5205,6 +5251,24 @@
         }
     },
     "music": {
+        "recommendation": {
+            "title": "Recomendación musical",
+            "pending": "¿Quieres escuchar esta canción?",
+            "autoPlayCountdown": "Reproducción automática en {{seconds}} s",
+            "autoPlayProgress": "Tiempo hasta la reproducción automática",
+            "saving": "Guardando tu elección…",
+            "accepted": "Preparando la reproducción…",
+            "skipped": "Omitida esta vez",
+            "playing": "Reproduciendo",
+            "paused": "En pausa",
+            "ended": "Escuchada hasta el final",
+            "stopped": "Reproducción detenida",
+            "failed": "Error de reproducción",
+            "unavailable": "Esta recomendación ya no está disponible",
+            "saveFailed": "No se pudo guardar tu elección. Inténtalo de nuevo.",
+            "accept": "Escuchar",
+            "skip": "Ahora no"
+        },
         "unknownTrack": "Pista desconocida",
         "unknownArtist": "Artista desconocido",
         "unknownSource": "Fuente desconocida",
@@ -6849,6 +6913,7 @@
         },
         "persona": {
             "title": "Presentación para visitas",
+            "windowTitle": "Presentación para visitas - Project N.E.K.O.",
             "intro": "Es la presentación que lleva cuando va de visita. No incluye nada sobre ti. La otra chica gato puede verla y repetir su contenido.",
             "editHint": "Unas líneas sobre ella: personalidad, aficiones, forma de hablar",
             "loading": "Cargando…",
@@ -6869,7 +6934,7 @@
             "unavailable": "No se pudo cargar la presentación. Inténtalo más tarde",
             "unknownCatgirl": "No se encontró este personaje",
             "unreviewed": "Revisa primero su presentación; podrá ir de visita cuando la confirmes",
-            "sectionsOutdated": "Esta lista de partes privadas es de la ficha anterior al cambio; lo añadido después no aparece. Revísala tú"
+            "sectionsOutdated": "La ficha del personaje cambió después de la última revisión automática. Es posible que el contenido nuevo no se haya revisado; compruébalo tú"
         },
         "preview": {
             "invalid": "El código de invitación no es válido",
@@ -6918,6 +6983,7 @@
             "VISIT_LOGIN_REQUIRED": "Inicia sesión en tu cuenta de la comunidad para visitar",
             "VISIT_BANNED": "Las visitas están restringidas en tu cuenta por ahora",
             "VISIT_QUOTA_EXCEEDED": "Ya usaste el tiempo de visitas de hoy",
+            "VISIT_CONCURRENCY_LIMIT": "Hay demasiadas visitas o invitaciones activas. Finaliza una y vuelve a intentarlo",
             "VISIT_TIER_NOT_ENTITLED": "Este nivel de calidad no está disponible",
             "VISIT_FORGET_IN_PROGRESS": "Se están borrando los recuerdos de visitas. Inténtalo en un rato",
             "VISIT_UPLOAD_BACKLOG": "Hay registros de visitas sin subir. Conéctate y vuelve a intentarlo",
@@ -6942,5 +7008,25 @@
     "visitFrame": {
         "peerAway": "Se ausentó un momento",
         "visitingAway": "De visita"
+    },
+    "feedbackDevices": {
+        "title": "Dispositivos del historial de recomendaciones",
+        "description": "Administra el envío del historial. La música y las recomendaciones siguen funcionando.",
+        "name": "Nombre del dispositivo (opcional)",
+        "chooseReplacement": "Hay 5 dispositivos activados. Elige el dispositivo antiguo que quieres sustituir.",
+        "selectDevice": "Elige un dispositivo",
+        "enable": "Activar este dispositivo",
+        "refresh": "Actualizar",
+        "removalNote": "Al eliminar un dispositivo se detienen sus envíos y se conservan sus ajustes actuales. Para volver, debe activarse manualmente desde ese dispositivo.",
+        "thisDevice": "Este dispositivo",
+        "enabled": "Activado",
+        "removed": "Eliminado",
+        "remove": "Eliminar",
+        "ready": "Lista de dispositivos actualizada.",
+        "upgrade": "Actualiza la aplicación para reanudar el envío del historial. El uso normal no se ve afectado.",
+        "update": "Obtener actualización",
+        "conflict": "El estado de los dispositivos cambió. Actualiza la lista y vuelve a elegir.",
+        "notEnabled": "La gestión de dispositivos del historial de recomendaciones no está activada. El uso normal no se ve afectado.",
+        "unavailable": "No se pudieron cargar los dispositivos. Revisa el inicio de sesión en la comunidad y la conexión y actualiza la lista."
     }
 }

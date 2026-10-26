@@ -1707,7 +1707,7 @@ async def _execute_numeric_v2_turn(
     approved_completion_facts: tuple[Mapping[str, Any], ...] = ()
 
     async def approve_evaluator_completion(evaluation: NumericV2EvaluationResult) -> NumericV2EvaluationResult:
-        """在 Runtime 准备前核验新推进条件，避免假完成或假许可先改变路线及演员所见状态。"""
+        """Verify proposed completion conditions before preparing routes and Actor-visible state."""
 
         nonlocal approved_completion_facts
 

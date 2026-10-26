@@ -354,7 +354,7 @@ def normalize_player_action_projection(value: Any) -> dict[str, Any]:
 
 
 def player_action_projection_for_prompt(value: Any) -> dict[str, Any]:
-    """当前稿只投影输入动作与获准转场，不将本轮拟写事实冒充独立确认。"""
+    """Project input actions and authorized transitions without treating draft facts as confirmation."""
 
     projection = normalize_player_action_projection(value)
     # 这些结果行来自本轮 fact_operations，尚未提交；不能再成为 Actor 或复核自己的证据。

@@ -6,9 +6,6 @@
     let currentMemoryFingerprint = null;
     let currentMemoryIdentityToken = null;
     let chatData = [];
-    let chatSyncSnapshot = null;
-    const deletedOriginalIds = new Set();
-    const deletedLocalReplyIds = new Set();
     let currentCatName = '';
     let memoryFileRequestId = 0;
     let memorySaveRequestId = 0;
@@ -28,6 +25,24 @@
     let memorySaveStatusTimer = 0;
     let memorySaveStatusHideTimer = 0;
     let memoryHasUnsavedChanges = false;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const recentMemoryChannel = new BroadcastChannel('neko_page_channel');
+            recentMemoryChannel.onmessage = function (event) {
+                const data = event.data;
+                if (data && data.action === 'recent_memory_changed' && data.catgirl_name === currentCatName
+                        && !memoryHasUnsavedChanges && !memorySaveInFlight && !memoryRowExitInProgress
+                        && !window._memoryImportInProgress) {
+                    refreshImportedMemoryView(currentCatName).catch(function () {});
+                }
+            };
+            window.addEventListener('pagehide', function (event) {
+                if (!event.persisted) recentMemoryChannel.close();
+            });
+        }
+    } catch (error) {
+        console.warn('[MemoryBrowser] Recent-memory refresh channel unavailable', error);
+    }
     let pendingMemorySelection = null;
     let pendingMemoryClose = false;
     let memoryUnsavedSwitchRestoreFocus = null;
@@ -3992,9 +4007,6 @@
         currentCatName = '';
         repetitionInsightsCharacterOverride = '';
         chatData = [];
-        chatSyncSnapshot = null;
-        deletedOriginalIds.clear();
-        deletedLocalReplyIds.clear();
         memoryFileRequestId++;
         resetRepetitionInsightsState();
 
@@ -4540,7 +4552,7 @@
         if (valueEl) {
             valueEl.textContent = selectedValue === 'auto'
                 ? translate('memory.externalImportAuto', 'Auto detect')
-                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : selectedValue === 'molili' ? 'Molili' : 'Hermes');
         }
         cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
             const selected = option.dataset.externalMemoryFormat === selectedValue;
@@ -4603,7 +4615,13 @@
             if (selected.length !== 1) {
                 throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
             }
-            if (zipFiles[0].size > 8 * 1024 * 1024) {
+            // 上限与后端 _decode_external_archive 的 archive_cap 对齐：auto/molili
+            // 放行到 MAX_ZIP_BYTES（64 MiB，Molili 导出本体就带几 MB 图片附件），
+            // 其余格式仍按 Markdown 预算 8 MiB。
+            const formatValue = format ? String(format.value || 'auto') : 'auto';
+            const zipCapBytes = (formatValue === 'molili' || formatValue === 'auto')
+                ? 64 * 1024 * 1024 : 8 * 1024 * 1024;
+            if (zipFiles[0].size > zipCapBytes) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
             const payload = {
@@ -4674,6 +4692,7 @@
     async function refreshImportedMemoryView(characterName) {
         if (!characterName || characterName !== currentCatName) return;
         await loadMemoryFileList();
+        if (characterName !== currentCatName) return;
         const button = Array.from(document.querySelectorAll('#memory-file-list .cat-btn')).find(
             item => item.dataset.catname === characterName
         );
@@ -4998,25 +5017,12 @@
             return;
         }
         let conversationPosition = 0;
-        let lastSection = null;
         chatData.forEach((msg, i) => {
-            const section = msg.chat_sync_kind || 'memory';
-            if (chatSyncSnapshot && section !== lastSection) {
-                const heading = document.createElement('div');
-                heading.className = 'memory-chat-section-label';
-                heading.title = translate('memory.chatDeletionHint', '');
-                heading.textContent = translate(section === 'original'
-                    ? 'memory.chatOriginalsSection' : section === 'local'
-                        ? 'memory.localRepliesSection' : 'memory.recentMemorySection', '');
-                div.appendChild(heading);
-                lastSection = section;
-            }
             const container = document.createElement('div');
             container.className = 'chat-item';
             container.setAttribute('data-chat-index', String(i));
             container.setAttribute('data-chat-row-key', getMemoryChatRowKey(msg));
             container.setAttribute('data-role', msg.theater ? 'theater' : (msg.role || ''));
-            if (msg.chat_sync_kind) container.dataset.chatSyncKind = msg.chat_sync_kind;
 
             if (msg.theater) {
                 // 剧场胶囊只读：不可编辑、不可删除，清空对话时也保留。
@@ -5114,7 +5120,7 @@
             } else if (msg.role === 'ai') {
                 conversationPosition += 1;
                 // 提取时间戳和正文，健壮处理
-                const m = !msg.chat_sync_kind && msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
+                const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
                 const timeStr = m ? m[1] : '';
                 const content = (m && m[2]) ? (m[2] || '').trim() : msg.text;
 
@@ -5176,18 +5182,9 @@
         if (memoryRowExitInProgress) return;
         const item = document.querySelector(`#memory-chat-edit .chat-item[data-chat-index="${idx}"]`);
         if (!item || idx < 0 || idx >= chatData.length) return;
-        stageChatDeletion(chatData[idx]);
         chatData.splice(idx, 1);
         setMemoryDirty(true);
         exitChatItems([item], renderChatEdit);
-    }
-
-    function stageChatDeletion(msg) {
-        // Draft intent only. Source IDs come from the canonical local snapshot,
-        // never from projection indexes/text. Tool replies remain local-only;
-        // future tool sync must explicitly define its own identity/consent rules.
-        if (msg.chat_sync_kind === 'original') deletedOriginalIds.add(msg.messageId);
-        if (msg.chat_sync_kind === 'local') deletedLocalReplyIds.add(msg.messageId);
     }
     // 新增：AI输入框内容变更时，自动拼接时间戳
     function updateAIContent(idx, value) {
@@ -5549,9 +5546,6 @@
         currentMemoryFile = filename;
         currentMemoryFingerprint = null;
         currentMemoryIdentityToken = null;
-        chatSyncSnapshot = null;
-        deletedOriginalIds.clear();
-        deletedLocalReplyIds.clear();
         const previousTarget = repetitionInsightsTarget();
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         // Opening a file re-couples the panel to the editor: an override set by
@@ -5590,23 +5584,11 @@
         }
         try {
             // 直接获取原始JSON内容
-            const memoryUrl = '/api/memory/recent_file?filename=' + encodeURIComponent(filename);
-            let resp = await fetch(memoryUrl + '&include_chat_sync=true');
-            let data;
-            try { data = await resp.json(); } catch (_) { data = null; }
-            const syncUnavailable = !resp.ok || !data;
-            if (syncUnavailable) {
-                // Remote/proxied deployments retain the existing memory editor.
-                // The optional original-chat API keeps its loopback/origin gate.
-                resp = await fetch(memoryUrl);
-                data = await resp.json();
-            }
+            const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename));
+            const data = await resp.json();
             if (requestId !== memoryFileRequestId) {
                 return;
             }
-            if (!resp.ok) throw new Error('memory_load_failed');
-            chatSyncSnapshot = data.chat_sync || null;
-            if (syncUnavailable) showSaveStatus(translate('memory.chatSyncUnavailable', ''), 'info', 5000);
             currentMemoryFingerprint = typeof data.fingerprint === 'string'
                 ? data.fingerprint
                 : null;
@@ -5646,19 +5628,6 @@
                     chatItem.theater = isTheaterMemoryItem(item);
                     return chatItem;
                 }).filter(Boolean);
-                // Keep raw chats outside the editable recent-memory payload.
-                // Identical projection text is not evidence of shared identity.
-                if (chatSyncSnapshot) {
-                    ['originals', 'localReplies'].forEach(function (field) {
-                        const records = (chatSyncSnapshot[field] || []).slice();
-                        records.sort((a, b) => Number(a.originalTime || 0) - Number(b.originalTime || 0));
-                        records.forEach(function (record) {
-                            chatData.push({ role: record.role === 'assistant' ? 'ai' : 'human',
-                                text: record.text, messageId: record.messageId,
-                                chat_sync_kind: field === 'originals' ? 'original' : 'local' });
-                        });
-                    });
-                }
                 renderChatEdit();
             } else {
                 if (requestId !== memoryFileRequestId) {
@@ -5744,19 +5713,8 @@
             stillTargetsSavedSelection()
             && memoryEditRevision === saveContentRevision
         );
-        const savedRows = chatData.filter(msg => !msg.chat_sync_kind);
-        const saveChat = savedRows.map(msg => ({ ...msg }));
-        const syncEdit = chatSyncSnapshot && (deletedOriginalIds.size || deletedLocalReplyIds.size) ? {
-            characterSyncId: chatSyncSnapshot.characterSyncId,
-            binding: chatSyncSnapshot.binding,
-            messageIds: Array.from(deletedOriginalIds),
-            localMessageIds: Array.from(deletedLocalReplyIds)
-        } : null;
-        // Permanent cross-device deletion must remain explicit even before i18n has loaded.
-        if (syncEdit && syncEdit.messageIds.length && !window.confirm(translate('memory.chatDeleteConfirm',
-            'Permanently delete {{count}} original chats from all synced devices?', {
-            count: syncEdit.messageIds.length
-        }))) return false;
+        const savedRows = chatData.slice();
+        const saveChat = chatData.map(msg => ({ ...msg }));
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -5779,18 +5737,12 @@
                     filename: saveFile,
                     chat: saveChat,
                     fingerprint: saveFingerprint,
-                    identity_token: saveIdentityToken,
-                    ...(syncEdit ? { chat_sync: syncEdit } : {})
+                    identity_token: saveIdentityToken
                 })
             });
             const data = await resp.json();
-            if (data.chat_deletion) announceChatDeletion(data);
             if (data.success) {
                 if (stillTargetsSavedSelection()) {
-                    if (syncEdit) {
-                        syncEdit.messageIds.forEach(id => deletedOriginalIds.delete(id));
-                        syncEdit.localMessageIds.forEach(id => deletedLocalReplyIds.delete(id));
-                    }
                     // 保存后的文件与本次提交逐条对应；把 source_index 对齐到新快照，
                     // 否则删除过条目后再次保存会让下标指向错误的原始条目。
                     savedRows.forEach((row, index) => {
@@ -5843,11 +5795,7 @@
                 }
                 return true;
             } else {
-                const errorMsg = data.code === 'CHAT_DELETION_SAVED_MEMORY_FAILED'
-                    ? translate('memory.chatDeletionPartial', '')
-                    : data.detail === 'chat_sync_binding_changed' ? translate('chatSync.historyChanged', '')
-                    : data.detail === 'chat_sync_reply_in_progress' ? translate('chatSync.unfinishedChat', '')
-                    : data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 if (stillTargetsSavedSelection()) {
                     showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
                 }
@@ -5859,20 +5807,6 @@
             }
             return false;
         }
-    }
-
-    function announceChatDeletion(data) {
-        const message = { action: 'chat_sync_deleted', characterSyncId: data.characterSyncId,
-            receipt: data.chat_deletion };
-        try {
-            if (typeof BroadcastChannel !== 'undefined') {
-                const channel = new BroadcastChannel('neko_page_channel');
-                channel.postMessage(message);
-                channel.close();
-            } else if (window.parent && window.parent !== window) {
-                window.parent.postMessage(message, PARENT_ORIGIN);
-            }
-        } catch (_) { /* Passive history polling also observes durable tombstones. */ }
     }
     document.getElementById('save-memory-btn').onclick = saveCurrentMemory;
     document.getElementById('clear-memory-btn').onclick = function () {
@@ -5889,11 +5823,7 @@
             return;
         }
         // 只清空对话轮次（用户 / AI）；system＝先前对话的备忘录，一律保留
-        chatData = chatData.filter(msg => {
-            const keep = msg && (msg.theater || (msg.role !== 'human' && msg.role !== 'ai'));
-            if (!keep && msg) stageChatDeletion(msg);
-            return keep;
-        });
+        chatData = chatData.filter(msg => msg && (msg.theater || (msg.role !== 'human' && msg.role !== 'ai')));
         setMemoryDirty(true);
         exitChatItems(itemsToDissolve, function () {
             renderChatEdit();

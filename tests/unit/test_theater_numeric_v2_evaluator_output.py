@@ -440,7 +440,7 @@ def _offer_acceptance_payload(**changes):
 
 @pytest.mark.parametrize("repetitions", [8, 16, 32])
 def test_offer_quote_keeps_complete_current_invitation_beyond_diagnostic_budget(repetitions):
-    """完整引文受实际稿件约束，不受面向 Actor 的短诊断预算限制。"""
+    """Preserve complete invitation quotes independently of the short Actor diagnostic budget."""
     quote = "走廊的灯已经亮起，通往阅览室的门也已经打开。" * repetitions + "我们一起过去，好吗？"
     assert evaluator.count_tokens(quote) > evaluator.NUMERIC_V2_TRANSITION_FAILURE_REASON_MAX_TOKENS
     result = evaluator._parse_transition_judge_output(
@@ -454,7 +454,7 @@ def test_offer_quote_keeps_complete_current_invitation_beyond_diagnostic_budget(
 
 @pytest.mark.parametrize("current_source", [True, False])
 def test_long_offer_quote_preserves_source_checks_and_independent_body_veto(current_source):
-    """取消隐藏长度拒绝不能让旧稿引文或正文违规获得签发权限。"""
+    """Removing hidden quote limits must not authorize stale quotes or invalid bodies."""
     quote = "走廊的灯已经亮起，通往阅览室的门也已经打开。" * 8 + "我们一起过去，好吗？"
     result = evaluator._parse_transition_judge_output(
         json.dumps(_offer_acceptance_payload(
@@ -493,7 +493,7 @@ def test_long_offer_quote_preserves_source_checks_and_independent_body_veto(curr
     ({"offer_quote": ""}, ("好，现在去阅览室。",), False),
 ])
 def test_offer_acceptance_requires_independent_acceptance_and_matching_safe_invitation(changes, choices, expected):
-    """按钮合法不等于接受邀请；只有本次显式核验及其全部安全前提才能签发回执。"""
+    """Valid buttons alone cannot authorize acceptance without independent checks and safe invitations."""
     payload = _offer_acceptance_payload(**changes)
     if choices is None:
         payload.pop("suggestion_checks")

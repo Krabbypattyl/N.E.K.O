@@ -266,7 +266,7 @@ async def test_both_values_of_one_route_key_receive_only_native_index_approval(m
 
 
 def _handoff_choice_engine():
-    """同一出口同时要求玩家决定和独立签收，避免把选择事实当作交接完成。"""
+    """Require both a player decision and independent receipt before a handoff can complete."""
     story = _story(values=("交还图书角", "交给值班老师"))
     story["fact_contract"]["facts"][KEY]["description"] = "玩家明确确定本次借书交接方式。"
     receipt_key = "scene:start:receipt"

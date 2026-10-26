@@ -155,6 +155,17 @@
     }
   }
 
+  /** 开发机上的 LiveKit：双开客户端可能掉解码帧，但本地链路没有网络拥塞。 */
+  function isLoopbackLivekit(creds) {
+    if (!creds || creds.transport !== 'livekit') return false;
+    var livekit = creds.vendor && creds.vendor.livekit;
+    var url = livekit && typeof livekit.url === 'string' ? livekit.url : '';
+    var match = /^wss?:\/\/(\[[^\]]+\]|[^\/:?#]+)/i.exec(url);
+    if (!match) return false;
+    var host = match[1].toLowerCase();
+    return host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  }
+
   function finiteOr(value, fallback) {
     return typeof value === 'number' && isFinite(value) && value >= 0 ? value : fallback;
   }
@@ -201,6 +212,7 @@
     this.statsSeq = 0;
     this.statsEmittedSeq = 0;
     this.codecOverride = null;
+    this.lockHighestQuality = false;
     this.publishRetries = 0;
     this.publishRetryTimer = null;
     this.profileRetries = 0;
@@ -286,11 +298,13 @@
     }
     this.codecOverride = null;
     this.creds = msg;
+    this.lockHighestQuality = isLoopbackLivekit(msg);
     if (typeof msg.peer_vid === 'string' && msg.peer_vid) this.core.setPeerVid(msg.peer_vid);
     if (this.packer) {
       var crop = msg.crop === 'full' ? 'full' : 'upper';
       // 同一构图下沿用已降的级别（传输 WS 重连 / 页面重载）；换了构图从 0 级开始
-      var level = this.keptLevel(crop);
+      this.ladder.setLockHighest(this.lockHighestQuality);
+      var level = this.lockHighestQuality ? 0 : this.keptLevel(crop);
       this.media.crop = crop;
       this.media.ladder = level;
       this.ladder.reset(crop, level);
@@ -692,8 +706,10 @@
     if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') this.media.peerCrop = msg.peer_crop;
     if (this.side === 'guest') {
       var crop = msg.crop === 'full' || msg.crop === 'upper' ? msg.crop : this.media.crop;
-      // 后端快照里的 ladder 只当下限：级别由本页的拥塞阶梯决定，快照不能把已降的级别抬回去
-      var level = Math.max(Number.isInteger(msg.ladder) ? msg.ladder : 0, crop === this.media.crop ? this.media.ladder : 0);
+      // 后端快照里的 ladder 只当下限：级别由本页的拥塞阶梯决定，快照不能把已降的级别抬回去。
+      // 本机 LiveKit 锁最高画质时级别固定 0（同入房时）：锁定的阶梯停在 0 级、feed() 不会再把打包级别纠正回来
+      var level = this.lockHighestQuality ? 0
+        : Math.max(Number.isInteger(msg.ladder) ? msg.ladder : 0, crop === this.media.crop ? this.media.ladder : 0);
       if (crop !== this.media.crop || level !== this.media.ladder) this.ladder.reset(crop, level);
       this.setGeometry(crop, level);
       if (msg.publish === true) {
@@ -1020,6 +1036,7 @@
   NVT.loader = {
     runPreflight: runPreflight,
     queryIsClean: queryIsClean,
+    isLoopbackLivekit: isLoopbackLivekit,
     SDK_INTEGRITY: SDK_INTEGRITY,
     VisitTransportController: VisitTransportController,
     boot: boot,
