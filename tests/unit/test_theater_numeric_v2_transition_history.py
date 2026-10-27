@@ -86,7 +86,7 @@ def test_ending_preview_keeps_active_boundaries_and_target_direction():
     assert context['ending_direction'] == target['narrative_summary']
     assert '不替玩家确认新的安排。' in context['source_boundaries']
     assert '玩家尚未提出方案。' not in context['source_boundaries']
-    assert {'已有双方明确的约定。', '猫娘禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
+    assert {'已有双方明确的约定。', '你禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
 
 
 @pytest.mark.parametrize('reason', [None, '双方已达成约定。', '依据' * 1000])
@@ -265,7 +265,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     assert context['acting_contract']['allowed_behaviors'] == target['acting_contract']['allowed_behaviors']
     assert context['acting_contract']['assertable_self_facts'] == target['acting_contract']['assertable_self_facts']
     assert {'入幕时后续操作尚未开始。', '不得改变玩家登记卡的持有者。',
-            '猫娘禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
+            '你禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
     assert data['player_input'] == message
     assert data['transition_contract'] == outcome.transition_contract
     assert data['transition_authorization']['transition_intent'] == intent
@@ -414,7 +414,7 @@ def test_runtime_optional_bridge_matches_legacy_array_permission():
 
 
 # 已展示的来源固定原文进入有限尾声，顺序、姓名及容量边界保持不变。
-TAIL_MARKER = "上一幕尾声（只承接猫娘当时可见的情绪和姿态，不作为当前任务）："
+TAIL_MARKER = "上一幕尾声（只承接你当时可见的情绪和姿态，不作为当前任务）："
 SOURCE_BEFORE = "旧绑定猫娘眼角尚湿。"
 SOURCE_AFTER = "她的肩膀仍微微发抖。"
 TARGET_TEXT = "目标幕窗帘已经拉开。"

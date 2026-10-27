@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from services.theater.numeric_v2_options import aload_theater_module_options, default_options
-from theater_workshop.sdk import NumericV2RevisionConflictError, WorkshopError
+from services.theater_workshop.sdk import NumericV2RevisionConflictError, WorkshopError
 
 from .numeric_v2_fixture import numeric_v2_story
 from .test_sdk_lifecycle import opened
@@ -118,7 +118,7 @@ def test_readiness_binds_options_and_rejects_outdated_project(opened):
 
 
 def test_edit_during_diagnostics_rejects_old_report(opened, monkeypatch):
-    from theater_workshop.sdk import workshop as workshop_module
+    from services.theater_workshop.sdk import workshop as workshop_module
 
     sdk = opened[0].sdk
     project = _publishable(sdk)

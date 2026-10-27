@@ -4,9 +4,9 @@ from copy import deepcopy
 
 import pytest
 
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
-from theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
+from services.theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
 from tests.unit.test_theater_numeric_v2_fact_conditions import fact_route_story
 
 

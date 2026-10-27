@@ -16,7 +16,7 @@ from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.theater_workshop.test_numeric_v2_generation import _generation_setup, _idea_outline
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
 
 
 CONTINUITY = [

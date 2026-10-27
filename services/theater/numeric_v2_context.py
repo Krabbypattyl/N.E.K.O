@@ -59,7 +59,7 @@ SCENE_ENTRY_STATE_RULE = (
     "状态描述不授权新增玩家行动；认知、能力、关系和明确阶段边界仍有效。"
     "temporal_context是作者入幕时序规划，anchor为时间原文，relation_to_previous仅说明相对安排，"
     "不是Runtime已推进日期的回执；当前时间须承接实际演出，未来约定或回忆不改变现在，同幕自然经过不自动算跨日。"
-    "关系上限不是已达关系；待发生的关系契机只在实际互动满足时产生有限回应，玩家拒绝或条件未成立时保留原有距离和分歧，表达仍服从猫娘本人人设。"
+    "关系上限不是已达关系；待发生的关系契机只在实际互动满足时产生有限回应，玩家拒绝或条件未成立时保留原有距离和分歧，表达仍服从你本人人设。"
 )
 
 
@@ -618,7 +618,7 @@ def project_contract_boundaries(
     if explicit_prohibitions and not fact_only:
         # Preserve prohibition provenance even when the raw text first appears in an earlier scene/opening field.
         for items, label in (
-            (forbidden_behaviors, "猫娘禁止行为"),
+            (forbidden_behaviors, "你禁止行为"),
             (must_not_happen, "禁止发生的剧情"),
         ):
             for item in items:

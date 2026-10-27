@@ -122,8 +122,8 @@ async def test_delivery_is_atomic_and_recovery_and_fork_preserve_completion(tmp_
 
 
 def test_sdk_round_trip_preserves_display_completion():
-    from theater_workshop.host import InProcessPackageGateway
-    from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+    from services.theater_workshop.host import InProcessPackageGateway
+    from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
 
     source = _story(mixed=True)
     compiled = NumericV2Compiler(InProcessPackageGateway()).compile(source)

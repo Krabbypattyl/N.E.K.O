@@ -215,7 +215,7 @@ def test_entity_reference_catalog_exposes_only_projected_identities_and_public_p
     assert data["entity_refs"] == {"player": "player", "character": "character",
                                   "e0": "environment:旧雨势", "e1": "item:画板", "e2": "person:管理员"}
     assert data["protagonists"] == {"player": {"role": "用户"},
-                                   "character": {"role": "当前猫娘", "name": "新演员"}}
+                                   "character": {"role": "当前你", "name": "新演员"}}
     assert "未告知称呼" not in messages[1].content
     assert "不在投影的姓名" not in data["entity_refs"].values()
     assert data["narrative_state"] == projection

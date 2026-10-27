@@ -20,7 +20,7 @@ from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup
 from tests.unit.theater_workshop.test_numeric_v2_generation import _idea_outline
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
 
 
 MOTIVATION = "女主想核实男主当年的决定，但不要求男主留下；她还不知道旧信的真相。"

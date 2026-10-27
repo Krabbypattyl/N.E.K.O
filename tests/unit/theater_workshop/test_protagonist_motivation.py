@@ -7,8 +7,8 @@ import pytest
 
 from services.theater.numeric_v2 import NumericV2CompileError, NumericV2Compiler
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
 from utils.tokenize import count_tokens
 
 from .test_numeric_v2_generation import _generation_setup, _idea_outline

@@ -11,7 +11,7 @@ from services.theater.numeric_v2 import NumericV2CompileError
 from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_author_entry_plan import _case, _payload
-from theater_workshop.sdk.generation.numeric_v2 import _validate_idea_outline
+from services.theater_workshop.sdk.generation.numeric_v2 import _validate_idea_outline
 from tests.unit.theater_workshop.test_numeric_v2_generation import _idea_outline
 
 

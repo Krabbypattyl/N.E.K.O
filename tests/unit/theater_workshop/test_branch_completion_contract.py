@@ -7,12 +7,12 @@ import pytest
 
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
-from theater_workshop.host import InProcessPackageGateway
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2GenerationError, NumericV2Generator,
 )
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
 from .test_numeric_v2_branch import branchable_project, _ordered_goal, _path_result
 from .test_sdk_lifecycle import opened
 

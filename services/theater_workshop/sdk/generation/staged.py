@@ -33,27 +33,27 @@ narrative须把本幕框架展开为可演的具体因果，不照抄提纲。�
 前幕没有安排等候或改日时，entry_bridge不自行跨日；同日的自然经过仍须与开场时段相容。
 前幕narrative和目标是计划，不证明配角已经答复或同意。entry_bridge只承接来源出口与接受输入共同保证的移动，不扩大行动范围。出口只决定接触或尝试时，开场停在结果尚未发生的边界，所需配角接待、许可及结果后的姿态留在本幕turn中实际交付，不能凭本幕规划预先跨过。保留未决状态，不用“无论选择哪种”混合互斥结果。
 opening_scene 与 entry_bridge 不新增玩家行动、心理、台词或承诺；第一幕 entry_bridge 为空。桥段不重复开场。
-开场在需要玩家回应或操作的位置停笔：猫娘提出请求后，不能接着写玩家已经照做，也不能替玩家接话；这些内容留在 turn 目标。先写开场，再摘录收笔时的三方状态，不能第二遍设计场面；只保留开场或合法入路明确支持的姿态、视线、位置与持物，未明确的细节省略，不为填满状态补出动作或新道具，也不补玩家的心理、期待或决定。递出待接不等于已交付，已完成交接不仍写原持有人持物；开场确有后续动作时按最后状态摘录。
+开场在需要玩家回应或操作的位置停笔：你提出请求后，不能接着写玩家已经照做，也不能替玩家接话；这些内容留在 turn 目标。先写开场，再摘录收笔时的三方状态，不能第二遍设计场面；只保留开场或合法入路明确支持的姿态、视线、位置与持物，未明确的细节省略，不为填满状态补出动作或新道具，也不补玩家的心理、期待或决定。递出待接不等于已交付，已完成交接不仍写原持有人持物；开场确有后续动作时按最后状态摘录。
 每幕给出1—6项 ordered_goals，完整使用合同枚举。sources 只允许 opening、player_input、previous_goal；previous_goal 只指本幕前一个目标，不是前幕，首个目标不能引用它。player 目标 sources 包含 player_input；opening 最多一项。
 owner与delivery_type必须配对：catgirl对应catgirl_dialogue/catgirl_action，environment对应environment_fact，player对应player_action，shared对应shared_agreement；semantic_state可对应catgirl/player/shared。玩家与shared目标的timing均为turn。
 dialogue_policy_after通常为unchanged；只有睡眠、昏迷、禁言或恢复发声等真实权限变化才填写其它值，不用它表示暂时倾听或下一句想说话。
 completion_facts 是本幕独立可观察的结果；Runtime的completion_contract只由exit_plan.trigger_fact_ids引用的事实组成，目标列表和preserve_facts不会保证结果发生。下一幕确实依赖的本幕交付或配角答复须在本幕可见演出中完成，并由trigger_fact_ids引用；决定去商量不等于已获对方同意。只纳入必要结果，不把可选准备、接受换幕或下一幕结果当本幕完成。
 非最后主线幕的 fallback_offer 和 accept_input 必须是对应同一具体安排的完整邀请与接受输入；最后主线幕两项为空，自然进入结局。最后一幕也完整返回 exit_plan；preserve_facts、carry_props 等数组没有条目时返回[]，不省略字段或用空对象代替。
 只有按本幕目标顺序最终仍 forbidden 时才可省略口头邀请，并填写 silent_choice 的具体去向和待接受安排。
-关系与三方状态使用已有合同，不因换幕重置；沿用已知名字、持物和未决分歧，关系上限相邻最多变化一级。known_player_facts、allowed_behaviors、forbidden_behaviors各最多4项；known_player_facts 每条以玩家全名开头。catgirl_situation只写开场时猫娘已有的顾虑或立场，不重复位置、持物，不提前认定本幕目标已发生。progress_opportunity以猫娘全名或“环境”开头，写清什么实际互动可引起怎样的有限态度变化；玩家拒绝或条件未成立时保留分歧，不预写回应或自动升温。第一幕address_state不能使用known_from_prior_scene。scene_boundaries 每条按当前NEKO合同以“不得”“禁止”或“不能”开头，正向状态写入三方state，不转成禁令。
+关系与三方状态使用已有合同，不因换幕重置；沿用已知名字、持物和未决分歧，关系上限相邻最多变化一级。known_player_facts、allowed_behaviors、forbidden_behaviors各最多4项；known_player_facts 每条以玩家全名开头。catgirl_situation只写开场时你已有的顾虑或立场，不重复位置、持物，不提前认定本幕目标已发生。progress_opportunity以你全名或“环境”开头，写清什么实际互动可引起怎样的有限态度变化；玩家拒绝或条件未成立时保留分歧，不预写回应或自动升温。第一幕address_state不能使用known_from_prior_scene。scene_boundaries 每条按当前NEKO合同以“不得”“禁止”或“不能”开头，正向状态写入三方state，不转成禁令。
 短篇 expected_turns 不超过8，合并重复事件，不删核心选择。未要求固定原文时省略 fixed_narrations，不凭例子新增资产。
 文字要简洁：三方状态、本幕处境、关系与道具会共同组装到384-token字段，不能每项各写成长段。
 issues.path 是当前输出中的修订位置，source_path 是整稿定位。native_validation_issues 是本幕正式编译错误；只修当前返回对象，保留其它正文与事件，不修改已完成前幕、后幕或故事框架。只返回 JSON object。"""
 _ENDING_PROMPT = _AUTHORING_RUNTIME_RULES + """
 本轮只生成结局 ending 与 ending_stage，使用 output_contract。previous_scene.chapter.completion_facts只含末幕离幕合同保证的结果，据此收束，不补做后续计划。
-previous_scene.character_state_stage只保留权限与边界，不是出幕状态。结局聚焦已保证结果的猫娘反应，不从前幕入幕推定地点、陈设、姿态或持物，也不另安排换场。
+previous_scene.character_state_stage只保留权限与边界，不是出幕状态。结局聚焦已保证结果的你反应，不从前幕入幕推定地点、陈设、姿态或持物，也不另安排换场。
 交付、许可或活动尚未实际完成时，结局保留当前准备状态，不安排新互动、玩家动作或跨时段后果。
 同场自然收束不需要换场旁白，ending.entry_bridge返回空字符串，不为填满字段写编写说明。
 结局没有普通回合，不留待玩家回答的新问题或新决定，不借收束替玩家承诺、离开或执行附加动作。
 结局开场、摘要与三方状态是同一时点；状态摘录开场收笔时已有依据的姿态与持物，未明确的细节省略，不另设计画面或新道具。承接人物改变的原因，保留合法分歧，不复制最后一幕全文。
 只固定各合法选择共同保证的结果；处置方式、道具归属或去向取决于玩家选择时，不在静态结局擅自选定一种。
 ending_stage 不带 chapter_index，continuity_from_previous 不能为空。各项简洁，组合字段上限384 tokens。
-catgirl_state、player_state分别以cast_names中猫娘和玩家的完整姓名开头，environment_state以“环境”开头；没有姓名时才用“女主”“男主”。
+catgirl_state、player_state分别以cast_names中你和玩家的完整姓名开头，environment_state以“环境”开头；没有姓名时才用“女主”“男主”。
 scene_boundaries 只放以“不得”“禁止”或“不能”开头的负向边界，正向描述放在对应状态字段。
 output_contract中的字符串是字段说明，返回时须换成实际正文；entry_bridge写可直接展示的旁白，不返回编写规则。
 若有 issues，修正当前结局，已完成主线与框架保持。只返回 JSON object。"""
@@ -218,7 +218,7 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             "catgirl_state": f"以{(names or {}).get('catgirl_name', '女主')}开头的开场收笔状态",
             "player_state": f"以{(names or {}).get('player_name', '男主')}开头的开场收笔状态",
             "environment_state": "以环境开头的开场收笔状态",
-            **({"catgirl_situation": "开场明确的猫娘当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
+            **({"catgirl_situation": "开场明确的你当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
             "temporal_context": {"anchor": "有依据时逐字摘录当前时间短语，未交代则省略整个temporal_context",
                                  "relation_to_previous": "unspecified | same_day | next_day | after_interval"},
         }, {"opening_scene": draft[scene_key]["opening_scene"],
@@ -284,7 +284,7 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
         assigned = deepcopy(frame["mainline_chapters"][index])
         prior_issues = outline_issues(candidate) if repairing else []
         contract = {"chapter": {**_CONTRACT["mainline_chapters"][0],
-                        "opening_scene": "首幕可使用作者初始设定；后续幕只写环境、NPC与猫娘，并承接已选出口的直接结果，不新增玩家手势、视线、站坐或持物变化，待玩家实施的动作留在turn"},
+                        "opening_scene": "首幕可使用作者初始设定；后续幕只写环境、NPC与你，并承接已选出口的直接结果，不新增玩家手势、视线、站坐或持物变化，待玩家实施的动作留在turn"},
                     # The example is part of the model's input contract, so make its required subject explicit too.
                     "relationship_stage": {**_CONTRACT["relationship_arc"]["stages"][0],
                         "known_player_facts": [f"以{(names or {}).get('player_name', '男主')}开头，只列开场前已知或入路保证的事实，不把本幕turn目标中的玩家决定提前写成已知"],
@@ -384,12 +384,12 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             if key not in ("catgirl_state", "player_state", "environment_state", "continuity_from_previous", "temporal_context")}
         draft = deepcopy(state["written_scene"]) if "written_scene" in state else phase(_ENDING_PROMPT,
             {"ending": {**_CONTRACT["ending"],
-                "summary": "只概括completion_facts已明确的结果和猫娘对此的回应；不替泛指共识补出具体方案、许可或物品去向",
-                "opening_scene": "在当前位置以猫娘的简短反应收束；完成事实未明确的物品归属、交接和答复省略，不写玩家新行动",
+                "summary": "只概括completion_facts已明确的结果和你对此的回应；不替泛指共识补出具体方案、许可或物品去向",
+                "opening_scene": "在当前位置以你的简短反应收束；完成事实未明确的物品归属、交接和答复省略，不写玩家新行动",
                 "entry_bridge": "",
             }, "ending_stage": {
                 **_CONTRACT["character_state_arc"]["ending_stage"],
-                "catgirl_state": "摘录本次ending.opening_scene收笔时猫娘的明确状态，不复制前幕初始姿态或持物",
+                "catgirl_state": "摘录本次ending.opening_scene收笔时你的明确状态，不复制前幕初始姿态或持物",
                 "player_state": "摘录本次结局开场已明确的玩家状态，不补心理、期待或新动作",
                 "environment_state": "摘录本次结局开场的地点、时段和物件位置；物品不在场就不再描写触碰或注视它",
                 "continuity_from_previous": ["用自然语言重述本次completion_facts保证的结果，不填写ID，不新增处置、物品归属或许可"],

@@ -97,7 +97,7 @@ def test_review_keeps_full_cast_background_separate_from_actions_and_future_plan
     assert system.count("作者初始玩家身份/背景") == 1
     assert "不是本轮行动、完成证据或角色知情许可" in system
     assert "问句、引文与否定按原意核对" in system
-    assert "猫娘及NPC仍须遵守各自认知限制和实际公开范围" in system
+    assert "你及NPC仍须遵守各自认知限制和实际公开范围" in system
     assert "字段缺省不证明背景不存在" in system
     assert (engine.story, session.to_dict()) == before
 

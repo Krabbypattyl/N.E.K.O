@@ -45,7 +45,7 @@ def test_proposal_and_ledger_review_bind_named_character_without_disclosing_unkn
                                  session, False, source_refs=source_refs)
     data = json.loads(messages[1].content)
     assert data["protagonists"] == {
-        "player": {"role": "用户"}, "character": {"role": "当前猫娘", "name": "同步验收1023"}}
+        "player": {"role": "用户"}, "character": {"role": "当前你", "name": "同步验收1023"}}
     assert "老谢" not in messages[1].content
     assert session.__dict__ == before
 

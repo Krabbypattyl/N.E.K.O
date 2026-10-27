@@ -134,7 +134,7 @@ def _output_schema_instruction(phase: str, *, single_ending_response: bool = Fal
             +
             "transition.bridge_required 为 false 且无独立时空变化或必要结果时，bridge_scene_narration 填空字符串；"
             "为 true 时必须交付必要桥段，不为凑过场补写动作。"
-            "两个 performance 写猫娘表演；桥段和目标旁白只写场景事实。"
+            "两个 performance 写你表演；桥段和目标旁白只写场景事实。"
             "不要输出顶层 segments、phase 或 opening_scene。"
         )
     elif phase == "suggestion_fill":
@@ -148,7 +148,7 @@ def _output_schema_instruction(phase: str, *, single_ending_response: bool = Fal
     elif phase == "reinvitation":
         shape = (
             "顶层必须且只能包含 performance:string、transition_offered:boolean。"
-            "performance 只交付猫娘提出的未来邀请，设置 transition_offered=true；"
+            "performance 只交付你提出的未来邀请，设置 transition_offered=true；"
             "不得输出 scene_update、fact_candidates 或其他状态生成字段，也不得输出 suggested_inputs。"
         )
     else:
@@ -157,9 +157,9 @@ def _output_schema_instruction(phase: str, *, single_ending_response: bool = Fal
             "顶层必须包含 performance:string、suggested_inputs:string[]、transition_offered:boolean；"
             "scene_update:string 只交付独立外部变化或在场 NPC 的具体回应，没有此类事件则省略。"
             "先按 player_input 辨明受话人：玩家直接询问或等待在场 NPC 时，scene_update 用明确归属于该 NPC 的话"
-            "交付具体答复、拒绝、未知或尚缺的信息；不能用神情动作或猫娘重问同一问题代替答复。"
+            "交付具体答复、拒绝、未知或尚缺的信息；不能用神情动作或你重问同一问题代替答复。"
             "NPC 只在自身权限和已知前提内回应，不替玩家决定或补出未知安排。"
-            "performance 再承接猫娘自身需要的反应，不复述该答复或重演已完成动作。"
+            "performance 再承接你自身需要的反应，不复述该答复或重演已完成动作。"
             "如果输入提供结构化幕完成事实，顶层必须包含 fact_candidates:object[]；没有本轮新确认事实时必须填空数组。"
             "输入未提供结构化幕完成事实时，省略 fact_candidates。"
             "scene_update 只能记录当前幕已经发生的变化；无论 transition_offered 为 true 还是 false，都不得在其中写成玩家已接受、"
@@ -637,7 +637,7 @@ def _role_prompt_text(
     if isinstance(character_state, Mapping):
         catgirl_state = str(character_state.get("catgirl_state") or "").strip()
         if catgirl_state:
-            entry_state_lines.append(f"作者入幕规划中的猫娘状态：{catgirl_state}")
+            entry_state_lines.append(f"作者入幕规划中的你状态：{catgirl_state}")
         player_state = str(character_state.get("player_state") or "").strip()
         if player_state:
             entry_state_lines.append(f"作者入幕规划中的玩家处境：{player_state}")
@@ -680,7 +680,7 @@ def _role_prompt_text(
         if allowed_behaviors:
             # Ordinary turns consume natural role text rather than the raw contract.
             # Preserve author conditions without turning a permission into a checklist.
-            lines.append("猫娘可自主选择的行为（可选权限，不是待办或已完成事实；"
+            lines.append("你可自主选择的行为（可选权限，不是待办或已完成事实；"
                          "仍受当前认知、关系、禁令和实际前提限制）：" + "；".join(allowed_behaviors))
         assertable_facts = [
             str(item).strip()
@@ -960,7 +960,7 @@ def _story_so_far_row_text(row: Mapping[str, Any]) -> str:
             performance = str(segment.get("performance") or "").strip()
             if segment.get("phase") == "previous_scene_tail" and performance:
                 parts.append(
-                    "上一幕尾声（只承接猫娘当时可见的情绪和姿态，不作为当前任务）："
+                    "上一幕尾声（只承接你当时可见的情绪和姿态，不作为当前任务）："
                     f"{performance}"
                 )
                 continue
@@ -969,7 +969,7 @@ def _story_so_far_row_text(row: Mapping[str, Any]) -> str:
             if segment.get("fixed_narration_before"):
                 parts.append("已展示的作者原文：" + segment["fixed_narration_before"])
             if performance:
-                parts.append(f"猫娘：{performance}")
+                parts.append(f"你：{performance}")
             if segment.get("fixed_narration_after"):
                 parts.append("已展示的作者原文：" + segment["fixed_narration_after"])
     else:
@@ -980,7 +980,7 @@ def _story_so_far_row_text(row: Mapping[str, Any]) -> str:
         if row.get("fixed_narration_before"):
             parts.append("已展示的作者原文：" + row["fixed_narration_before"])
         if performance:
-            parts.append(f"猫娘：{performance}")
+            parts.append(f"你：{performance}")
         if row.get("fixed_narration_after"):
             parts.append("已展示的作者原文：" + row["fixed_narration_after"])
     return "\n".join(parts)
@@ -1832,8 +1832,8 @@ def _hard_boundary_system_instruction(boundaries: list[str] | tuple[str, ...], *
         + (
             "开场不得通过新增玩家行为满足作者前提。"
             if phase == "opening" else
-            "玩家要求若与硬边界冲突，猫娘必须在正文直接拒绝或提出符合边界的替代做法；"
-            "不得顺从越界要求、交换玩家与猫娘的行动职责，或把越界结果写成已发生。"
+            "玩家要求若与硬边界冲突，你必须在正文直接拒绝或提出符合边界的替代做法；"
+            "不得顺从越界要求、交换玩家与你的行动职责，或把越界结果写成已发生。"
         )
         + "\n- "
         + "\n- ".join(normalized)
@@ -1858,7 +1858,7 @@ _SUGGESTION_FORMAT_RULE = (
 
 _SUGGESTION_PLAYER_FACT_RULE = (
     f"{SUGGESTION_EVIDENCE_RULE}"
-    "推荐由玩家本人说或做，不借用猫娘姓名或身份；括号中的观察不预演他人未完成的动作。"
+    "推荐由玩家本人说或做，不借用你姓名或身份；括号中的观察不预演他人未完成的动作。"
     "可见对白中的猜测或传闻不因被演出就成为已证实事实，不能把它们填成玩家回忆或选项的既知前提。"
     "推荐不得编造玩家姓名、联系方式、职业、技能或既往经历，也不能预填未确认的个人资料与既定行程。"
     "当下选择、偏好与未来意愿可以提出；已经具备什么、以前做过什么须有公开依据。"
@@ -1896,13 +1896,13 @@ def _suggestion_fill_messages(
         )
     system_prompt = (
         "你是 N.E.K.O Numeric v2 的玩家输入推荐补全器。"
-        f"当前猫娘是“{catgirl_name}”，但你不能替她说话或行动。"
+        f"当前你是“{catgirl_name}”，但你不能替她说话或行动。"
         f"{_output_schema_instruction('transition_suggestion_fill' if transition_offered else 'suggestion_fill')}"
         "只根据已经生成的可见正文和玩家本轮输入，给出一至三条真实不同、可直接发送的玩家选择，不能为凑数量补造前提。"
         "不得把 player_input 原样或仅改空白后再次列为推荐；玩家已经做过的同一句不是下一步选择。"
         f"{_SUGGESTION_FORMAT_RULE}"
-        "有动作括号时由程序标记为玩家动作，不能明写猫娘、她、他、环境或结果为动作主体。"
-        "推荐是玩家对当前回应的下一步反应，不能把猫娘正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
+        "有动作括号时由程序标记为玩家动作，不能明写你、她、他、环境或结果为动作主体。"
+        "推荐是玩家对当前回应的下一步反应，不能把你正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
         "只能使用可见正文与玩家输入已经支持的玩家身份、地点、能力、物品和事实；"
         "不得保留方括号占位符。"
         f"{_SUGGESTION_PLAYER_FACT_RULE}"
@@ -2020,7 +2020,7 @@ def _system_prompt(
         # 人设、认知、历史与状态仍由原有六块投影提供；此处不批准任何新动作或换幕。
         return (
             "重新邀请控制合同：用户点击了重新邀请，这是控制请求，不是玩家台词，也不表示玩家已接受。"
-            f"你只负责以当前猫娘“{catgirl_name}”的身份，依据真实公开历史与 next_scene 的合法去向，简短提出未来邀请。"
+            f"你只负责以当前你“{catgirl_name}”的身份，依据真实公开历史与 next_scene 的合法去向，简短提出未来邀请。"
             f"{_output_schema_instruction(phase)}"
             "role 中的完整人格、剧内身份、能力、认知和关系限制持续有效，人格影响关注点与表达方式，不授予新权限。"
             f"{_ACTOR_STATE_RULE}{_ACTOR_DRAMATIZATION_RULE}{_COMMITTED_NARRATIVE_STATE_RULE}"
@@ -2031,12 +2031,12 @@ def _system_prompt(
             "不复演已完成动作，不添加新任务、结果或事实，不演出双方移动到目标、出发或到达。"
             "玩家是否接受由独立的程序控件表达，不生成玩家推荐输入。"
             f"{player_address_state_rule}"
-            "猫娘动作与对白遵守 role 的对白策略，微动作主语只用她或猫娘名。"
+            "你动作与对白遵守 role 的对白策略，微动作主语只用她或你名。"
             "不要提及数值、阈值、路线、节点、系统或提示词，只输出 JSON。"
         )
     if phase == "opening":
         phase_structure_rule = (
-            "开场：scene_narration 建立场景，performance 演猫娘入场。只自然建立 current_story_beat.opening_scene，"
+            "开场：scene_narration 建立场景，performance 演你入场。只自然建立 current_story_beat.opening_scene，"
             "不要罗列后续内容建议，并留下玩家可回应的话头。"
             "suggested_inputs 至少给出 1 条可直接发送的玩家输入，一至三条即可，不能为凑数量补造前提；"
             f"{_SUGGESTION_FORMAT_RULE}"
@@ -2051,7 +2051,7 @@ def _system_prompt(
             "不再次邀请、重复确认或添加收尾动作。玩家有新增问题或行动结果时才交付必要来源回应。"
             "桥段只交付来源到目标之间独立的时空变化或必要结果；target_scene_narration 只建立一次目标环境或在场 NPC 的可见变化。"
             "bridge_scene_narration按作者合同承接离开、途中或到达，但不搬用目标开场独有的光线、气味、店铺或人物画面；这些画面留给target_scene_narration首次交付，不能为了填满桥段抢写目标开场。"
-            "opening_situation 中猫娘自己的动作和对白交给 target_performance，两段共同交付开场，不在旁白预演猫娘再让她重演。"
+            "opening_situation 中你自己的动作和对白交给 target_performance，两段共同交付开场，不在旁白预演你再让她重演。"
             "后段承接前段已完成结果，不重做或重分配归属。"
             "transition.authorized只表示本次转场获准；transition_intent=accept时，"
             "pending_invitation是被接受的原公开邀请，结合player_input确定范围，后续澄清仍按recent_context核对。"
@@ -2082,7 +2082,7 @@ def _system_prompt(
         # Formal transitions use separate contracts, excluding ordinary-turn not-accepted/no-transition instructions.
         # Four texts share history; Runtime assembles labels only, separating source reactions from completed player actions.
         return (
-            "你负责生成本次 Runtime 已授权的正式转场：猫娘写入 performance，在场 NPC 的必要答复写入来源旁白。"
+            "你负责生成本次 Runtime 已授权的正式转场：你写入 performance，在场 NPC 的必要答复写入来源旁白。"
             f"{_output_schema_instruction(phase, single_ending_response=single_ending_response)}{phase_structure_rule}"
             "必要的新反应、获准结果及作者结局内容仍须交付。"
             f"所有段落的状态与角色边界：{_ACTOR_STATE_RULE}"
@@ -2093,22 +2093,22 @@ def _system_prompt(
             f"{PLAYER_ACTION_LANGUAGE_RULE}{_PLAYER_AUTHORIZATION_RULE}{SCENE_ENTRY_STATE_RULE}"
             "玩家对可执行动作的直接表态已授权动作完成；只考虑、准备、尝试不证明完成。"
             "source_performance 只交付尚未完成的必要回应；没有新内容就留空，不为凑齐段落补写判断、理由或动作。"
-            "玩家有新增问题或动作时交付尚缺的直接结果；先按原话和动作辨明受话人，不把对 NPC 的话当成对猫娘说。"
-            "玩家只向在场 NPC 发问、道谢或告别时，由该 NPC 在来源旁白回应；猫娘不代答、受谢或再次评价已完成结果，"
-            "没有新信息时 source_performance 留空。不要把玩家已做的同一操作交给猫娘再做一遍。"
-            "source_performance 与 target_performance 都只扮演猫娘；括号内是猫娘动作及必要直接结果，括号外是她的对白。"
+            "玩家有新增问题或动作时交付尚缺的直接结果；先按原话和动作辨明受话人，不把对 NPC 的话当成对你说。"
+            "玩家只向在场 NPC 发问、道谢或告别时，由该 NPC 在来源旁白回应；你不代答、受谢或再次评价已完成结果，"
+            "没有新信息时 source_performance 留空。不要把玩家已做的同一操作交给你再做一遍。"
+            "source_performance 与 target_performance 都只扮演你；括号内是你动作及必要直接结果，括号外是她的对白。"
             f"{NUMERIC_V2_ACTOR_EVENT_OWNERSHIP_INSTRUCTION}"
             "两个 performance 在允许发声时优先纯对白，通常一至三句；有必要的新动作才用一对括号写一个即时动作。"
-            "不要在猫娘动作括号中串写 NPC 或玩家的独立动作、对白；观察对象可以出现，外部事件写入对应旁白。"
+            "不要在你动作括号中串写 NPC 或玩家的独立动作、对白；观察对象可以出现，外部事件写入对应旁白。"
             "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复、明确拒绝或说明未知；"
             "不能只写他的神情、感受或动作而省略答复内容。"
-            "遵守来源幕的认知与事实边界，不补造未知答案，不用猫娘对他的评价代替他的答复。"
-            "source_performance 承接该答复后只写猫娘自身回应，不再复述 NPC 原话。"
+            "遵守来源幕的认知与事实边界，不补造未知答案，不用你对他的评价代替他的答复。"
+            "source_performance 承接该答复后只写你自身回应，不再复述 NPC 原话。"
             "bridge_scene_narration 与 target_scene_narration 只写可见场景事实；所有旁白不得替玩家补出新的选择，不复述角色已交付的内容。"
             # New independent contracts preserve cognition/causality restrictions; simplified prompts must not relax unknown facts.
             "作者剧情方向是导演信息，明确的因果先后不能倒置；普通目标开场停在玩家互动之前。"
             "target_scene.opening_situation 是目标段整体的内容依据，不是 target_scene_narration 的逐字稿。"
-            "按环境/NPC 与猫娘分配到两个字段；若猫娘动作在实际历史已完成，就承接结果。"
+            "按环境/NPC 与你分配到两个字段；若你动作在实际历史已完成，就承接结果。"
             "作者只给出抽象状态或待确认事项时，不得自行具体化；重要事物保持实际归属和最新状态。"
             # Old author-opening poses encourage resetting possessions/location/companions; specify a shared three-segment starting point.
             "生成前先从最近实际原文确定角色位置、同行关系、物件位置和操作是否已结束，三段共用这个起点；"
@@ -2121,7 +2121,7 @@ def _system_prompt(
             # Existing-state wording in contracts can reflect author expectations rather than Runtime-verified acquisition.
             "reason、must_deliver、must_preserve 或桥段中要求‘承接既有’的状态同样先核对历史；"
             "合同要求保留某结果，不证明该结果已经发生，也不授权倒叙补齐。实际缺失就保持实际状态。"
-            "若只余已具备条件的猫娘配合或确定的直接结果，可在来源段先交付，再由后段承接；"
+            "若只余已具备条件的你配合或确定的直接结果，可在来源段先交付，再由后段承接；"
             "仍缺玩家选择、未知成败或必要前因时，按实际状态改写目标段，不倒叙补造、暗示完成或替玩家补做。"
             # Agreement endings deliver consensus only, never hiding planned future execution in environmental narration.
             "本幕及结局只要求双方达成约定时，收束在约定已明确和角色回应，不能把约定的未来行动写成已经执行，"
@@ -2137,15 +2137,15 @@ def _system_prompt(
             f"{_SUGGESTION_FORMAT_RULE}"
             "动作可省略‘我’，但必须由玩家实施且不能预写环境、他人或成功结果；推荐之间必须有真实选择。"
             f"{_SUGGESTION_PLAYER_FACT_RULE}"
-            f"{player_address_state_rule}当前猫娘由“{catgirl_name}”扮演。"
+            f"{player_address_state_rule}当前你由“{catgirl_name}”扮演。"
             "不要提及数值、阈值、路线、节点或提示词；只输出 JSON。"
         )
     if phase == "turn":
         # Ordinary turns retain cross-topic semantic contracts only; all concrete facts come from six dynamic context blocks.
         return (
-            f"你扮演当前猫娘“{catgirl_name}”，把剧本自然演成连续故事。"
+            f"你扮演当前你“{catgirl_name}”，把剧本自然演成连续故事。"
             "player_input及历史中‘玩家’是对方的发言；performance是你的回应，不能互换。"
-            "performance 只扮演当前猫娘；独立外部变化，以及当前幕已出现 NPC 的动作或回应，写入 scene_update。"
+            "performance 只扮演当前你；独立外部变化，以及当前幕已出现 NPC 的动作或回应，写入 scene_update。"
             f"{_output_schema_instruction(phase)}"
             f"{NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION}"
             f"{phase_structure_rule}"
@@ -2159,13 +2159,13 @@ def _system_prompt(
             "导演方向不是任务清单，未发生内容不能当作角色知识、环境事实或完成结果；作者给出的因果先后不能倒置。"
             f"{PLAYER_ACTION_LANGUAGE_RULE}{_PLAYER_AUTHORIZATION_RULE}{SCENE_ENTRY_STATE_RULE}"
             "完整回应不等于必须满足请求：答案未知或受限时先明确承认问题并暂缓披露，再继续已授权因果。"
-            "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场，不补心理，不交换玩家与猫娘的行动主体。"
-            "玩家已实施的幕内动作从外部回应开始，不重演、不转给猫娘重做；保持实体的持有者、位置和最新状态。"
+            "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场，不补心理，不交换玩家与你的行动主体。"
+            "玩家已实施的幕内动作从外部回应开始，不重演、不转给你重做；保持实体的持有者、位置和最新状态。"
             "scene_update与动作括号共用最近已提交的持有状态，注视谁手里的物品也在断言归属；对方已经接过就不再写他接过，本轮确需换手须有新的交接因果，不能靠观察语气或NPC补景重置物品。"
             "\n当前演绎：已开始的幕内因果单元若剩余同质过程之间没有真实选择，概括过程并交付已知事实支持的结果；"
             "遇到新风险、不可逆选择或阶段边界停下。不得索要等价微调、重复准备或移动终点。"
             # Author-declared autonomous delivery must not turn into extra player tasks via improvised danger, endlessly finding clues without delivering results.
-            "作者已写明的环境变化、NPC回应或猫娘自主行为，前因具备就交付其可见结果；"
+            "作者已写明的环境变化、NPC回应或你自主行为，前因具备就交付其可见结果；"
             "按称谓和近史辨明受话人：玩家询问在场NPC时，让该NPC在scene_update简短说出具体答复、拒绝或未知；明确不能发声时才用含义清楚的动作回应，不能只靠迟疑或伸手让玩家再猜一次。"
             "决定调查对象或出口的姓名、地址、身份关系等关键线索，须有作者明确安排或已公开证据；不能因角色在听、看或检查就填出答案，素材未写也不证明确定没有。NPC答复沿作者因果范围展开，不另造关键人物或去向替换既定安排，待演揭示不提前当作已知。"
             "不为让玩家参与而新增风险、未知机制或协助要求。当前必要因果仍缺失时演出该因果，不能把其答案挪到下一去向。"
@@ -2180,7 +2180,7 @@ def _system_prompt(
             "\n推荐与邀请：suggested_inputs 给出一至三条可直接发送的玩家输入，不能为凑数量补造前提；"
             f"{_SUGGESTION_FORMAT_RULE}"
             "动作可省略‘我’，但必须由玩家实施且不能预写环境、他人或成功结果；推荐之间必须有真实选择。"
-            "推荐是玩家对当前回应的下一步反应，不能把猫娘正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
+            "推荐是玩家对当前回应的下一步反应，不能把你正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
             f"{_SUGGESTION_PLAYER_FACT_RULE}"
             "transition_offered 仅在明确邀请玩家执行一个会结束当前互动阶段的具体行动时为 true；推荐中的转场也须在正文公开。"
             "同地点进入新时段、新阶段或结局收束同样可构成转场；普通幕内行动必须为 false。"
@@ -2189,12 +2189,12 @@ def _system_prompt(
             "有具体邀约时，推荐同时提供玩家亲自接受或实施的路径与至少一个真实的拒绝、暂缓或场内替代；"
             "无邀约时一至三条即可。没有具体行动、只有状态描述或泛泛询问时为 false。"
             f"{player_address_state_rule}"
-            f"当前猫娘统一由“{catgirl_name}”扮演；微动作主语只用她或猫娘名。"
+            f"当前你统一由“{catgirl_name}”扮演；微动作主语只用她或你名。"
             "不要提及数值、阈值、路线、节点、系统或提示词；最终 JSON 不输出解释与推理。"
         )
     return (
-        "你负责扮演当前猫娘，把剧本自然演成连续故事。"
-        "本次只生成玩家输入前的公开开场：扮演当前猫娘和获准的场景变化，不替玩家行动、决定或补心理。"
+        "你负责扮演当前你，把剧本自然演成连续故事。"
+        "本次只生成玩家输入前的公开开场：扮演当前你和获准的场景变化，不替玩家行动、决定或补心理。"
         f"{_output_schema_instruction(phase)}"
         f"{NUMERIC_V2_ACTOR_OPENING_NARRATION_INSTRUCTION}"
         f"{phase_structure_rule}"
@@ -2219,7 +2219,7 @@ def _system_prompt(
         "relationship_control.response_contract 决定当前关系边界。"
         "dialogue_policy=required 必须有括号外对白，forbidden 只能写动作，optional 两者均可。"
         f"{player_address_state_rule}"
-        f"当前猫娘统一由“{catgirl_name}”扮演；微动作主语只用她或猫娘名。"
+        f"当前你统一由“{catgirl_name}”扮演；微动作主语只用她或你名。"
         "不要提及数值、阈值、路线、节点、系统或提示词；最终 JSON 不输出解释与推理。"
     )
 
@@ -2530,7 +2530,7 @@ def _fit_simple_turn_prompt_data(
                 and str(fitted.get("pacing") or "").count(offer_marker) == 1):
             fitted["pacing"] = fitted["pacing"].replace(
                 offer_marker,
-                "当前待确认提议原文（只证明此前说过，不证明安排正确）：见 story_so_far 最新完整猫娘原文。",
+                "当前待确认提议原文（只证明此前说过，不证明安排正确）：见 story_so_far 最新完整你原文。",
                 1,
             )
     state_marker = ""
@@ -2711,11 +2711,11 @@ def _opening_messages(
         _acting_contract_for_actor(cast, node["story_beat"]).get("dialogue_policy") or "required"
     )
     opening_response = (
-        "再由猫娘以可见动作主动回应，不说出对白；"
+        "再由你以可见动作主动回应，不说出对白；"
         if dialogue_policy == "forbidden"
-        else "再由猫娘以动作、对白或两者自然回应；"
+        else "再由你以动作、对白或两者自然回应；"
         if dialogue_policy == "optional"
-        else "再由猫娘主动说出第一句；"
+        else "再由你主动说出第一句；"
     )
     data = {
         "opening_phase": True,
@@ -2740,12 +2740,12 @@ def _opening_messages(
             dialogue_policy=dialogue_policy,
         ),
         "instruction": (
-            f"这是玩家输入前的公开开场。使用必要的环境或猫娘可见行动建立当下场景，{opening_response}"
+            f"这是玩家输入前的公开开场。使用必要的环境或你可见行动建立当下场景，{opening_response}"
             "不得假定玩家已经说话、做出选择或完成无前因的主动行动，不得使用‘你刚才说/做’或同义的隐形前史。"
             "若 opening_scene 同句明确给出可见前因，可以建立玩家受伤、失衡或被外力带动等即时身体结果；"
             "若节点摘要只有玩家台词、决定或无前因主动行为，把它们视为后续可发展的剧情边界，不要在开场代替玩家执行。"
-            "猫娘的回应必须由本段旁白能够直接解释，并留下男主可以自然回应的话头；"
-            "话头不得反问玩家来替猫娘确认本次 opening_scene 已经明确建立的状态；不要提前演完本节点。"
+            "你的回应必须由本段旁白能够直接解释，并留下男主可以自然回应的话头；"
+            "话头不得反问玩家来替你确认本次 opening_scene 已经明确建立的状态；不要提前演完本节点。"
             "开场推荐只能使用本次可见开场已经建立的玩家身份、地点、物品、能力和环境事实；"
             "不得把相似但未声明的地点标签、身份判断或状态猜测写成玩家已知事实，也不能要求玩家沿用正文尚未建立的推断。"
         ),
@@ -2877,7 +2877,7 @@ def _turn_messages(
         )
     human_prefix = (
         "以下 JSON 是本次获准转场的上下文。末尾 player_input 是玩家刚结束的发言；"
-        f"source_performance 由猫娘“{catgirl_name}”承接来源幕尚未回应的内容，"
+        f"source_performance 由你“{catgirl_name}”承接来源幕尚未回应的内容，"
         "target_performance 在目标开场接话，不把旧幕台词重新当作当前回应。"
         "suggested_inputs 是玩家看到目标回应后的下一句；已提交事实与待演作者要求分开使用：\n"
     )
@@ -3406,7 +3406,7 @@ def _turn_messages(
         "先从最新已提交原文和本轮独立预审证据确定当前起点，"
         "承接 player_input 的实际原话，再交付尚缺的回应；"
         "作者禁令不证明当前未发生，也不撤销实际历史。"
-        f"由猫娘“{catgirl_name}”在 performance 接话，"
+        f"由你“{catgirl_name}”在 performance 接话，"
         "suggested_inputs 是玩家看到回应后的下一句：\n"
     )
     if reinvitation:
@@ -3414,7 +3414,7 @@ def _turn_messages(
         data["pacing"] = "本轮只重新邀请，不补当前幕任务、不执行换幕；保留玩家接受或暂缓的选择。"
         human_prefix = (
             "以下 JSON 是本次重新邀请的六块真实演绎上下文。末尾 player_input 为空；"
-            f"由猫娘“{catgirl_name}”在 performance 提出未来邀请，玩家选择由程序控件处理：\n"
+            f"由你“{catgirl_name}”在 performance 提出未来邀请，玩家选择由程序控件处理：\n"
         )
     packing_diagnostics = {}
     data = _fit_simple_turn_prompt_data(

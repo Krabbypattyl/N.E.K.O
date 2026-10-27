@@ -7,9 +7,9 @@ import json
 import pytest
 
 from services.theater.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk import WorkshopError
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
-from theater_workshop.sdk.generation.repair import changed_fields
+from services.theater_workshop.sdk import WorkshopError
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.repair import changed_fields
 
 from .test_numeric_v2_generation import (
     _generation_setup, _quality_payload, _quality_reply, _quality_story_context, _reviewed_fixture,

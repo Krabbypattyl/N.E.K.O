@@ -2,9 +2,9 @@
 
 无界面的 Numeric v2.2 创作能力，与插件 SDK、小游戏 SDK 独立。主线、续写、节点完善、支线、事实检查、证据复核、文学评分和修订规则来自迁移基线；正式包由 `services/theater/` 的唯一编译器校验。
 
-实现状态：公开SDK（`theater_workshop.sdk.__version__ = "0.1.0"`）与本体宿主可用，真实模型生成、安装与演绎已有局部证据；不进入桌面冻结构建（见文末）。共享创作与评改规则按用户要求继续与原独立工作台（InkAI）同步，但SDK运行时不依赖它。设计取舍见[小剧场设计决策记录](../docs/design/neko-theater-decisions.md) D-30—D-32。
+实现状态：公开SDK（`services.theater_workshop.sdk.__version__ = "0.1.0"`）与本体宿主可用，真实模型生成、安装与演绎已有局部证据；不进入桌面冻结构建（见文末）。共享创作与评改规则按用户要求继续与原独立工作台（InkAI）同步，但SDK运行时不依赖它。设计取舍见[小剧场设计决策记录](../../docs/design/neko-theater-decisions.md) D-30—D-32。
 
-模块职责以[小剧场架构第2节](../docs/design/neko-theater-architecture.md#2-模块与权限)为准：`host.py`负责本体适配和写入保护，`sdk/workshop.py`负责作者工作流，`sdk/contracts.py`负责输入合同，`sdk/generation/`负责生成与评改，`sdk/numeric_v2*.py`负责作者字段投影、静态分析、支线和项目存储，`sdk/packages.py`负责不可变发布候选。工坊只产出作者项目和 Story Package，不读取玩家 Session，也不参与运行时选路。
+模块职责以[小剧场架构第2节](../../docs/design/neko-theater-architecture.md#2-模块与权限)为准：`host.py`负责本体适配和写入保护，`sdk/workshop.py`负责作者工作流，`sdk/contracts.py`负责输入合同，`sdk/generation/`负责生成与评改，`sdk/numeric_v2*.py`负责作者字段投影、静态分析、支线和项目存储，`sdk/packages.py`负责不可变发布候选。工坊只产出作者项目和 Story Package，不读取玩家 Session，也不参与运行时选路。
 
 SDK 不启动网页或 HTTP 服务，不读取相邻 InkAI 仓库，不修改正常聊天模型。导入模块不打开项目、不取得写者锁、不调用模型。
 
@@ -18,7 +18,7 @@ N.E.K.O 服务进程在需要工坊时显式打开，持有并复用返回实例
 
 ```python
 import asyncio
-from theater_workshop.host import open_workshop
+from services.theater_workshop.host import open_workshop
 
 async def open_authoring(config_manager, selected_model_config, input_budget):
     return await asyncio.to_thread(
@@ -186,7 +186,7 @@ await host.close()
 
 运行时依据实际演出触发后原样显示，不交给演员改写或朗读。需要确定在入幕公开的重要原文用 `{"type":"entry"}`，不要只依赖目标描述或模型选说；开场及正式换幕由程序插入，关闭 `review` 或设置 `required_before_exit=false` 也会显示，不增加模型调用。终止输入的结局仅支持入幕片段。每幕最多8项、原文合计2000 tokens；超限报错。姓名仅替换两个显式占位符，昵称未披露时使用“你”。`required_before_exit=true` 会在未展示时阻止离幕，普通文案建议保持 `false`。修改后仍需 `compile → validate → export/install`，不能复用旧 revision 的发布凭据。
 
-完整触发、恢复和姓名合同见[架构说明](../docs/design/neko-theater-architecture.md#34-作者固定旁白)。
+完整触发、恢复和姓名合同见[架构说明](../../docs/design/neko-theater-architecture.md#34-作者固定旁白)。
 
 若完成条件仅表示这段原文已经展示，可通过 `changes["story"]` 将本幕 `completion_contract.all` 中的对应布尔事实项替换为 `{"fixed_narration_id":"read_letter"}`。运行端直接读取已提交展示记录，模型不再判断此条件；可以与其他 `key/equals` 完成事实混用。确认无其他引用后同步移除冗余事实定义和路线元数据，再重新编译、复验。此字段不改变旁白触发方式，离幕前必显仍用 `required_before_exit`；只表示内容已提交展示，不代表玩家已经阅读。旧包和存档不自动迁移；需使用支持该扩展的本体编译器与运行端。
 
@@ -269,7 +269,7 @@ project = await host.call("import_project", snapshot)
 
 - 根目录只在显式打开工坊时由宿主按 `ConfigManager.app_docs_dir` 当前存储策略解析，并与写者所有权绑定；存储根变化后停止旧根提交并重新打开，不缓存为永久地址。安装是复制编译产物，编辑器不直接修改正在演绎的包。
 - 模型：`open_workshop(config_manager, model_config=...)` 的配置作为实例快照；调用方必须提供 `max_input_tokens`。宿主通过本体统一客户端发请求，单次网络请求客户端重试为 0，保留输出预算与 JSON 校验；不透传旧工坊固定温度或 `thinking` 参数。主线生成最多三次模型调用，额度耗尽保留候选等待显式续写。小剧场运行端的输入上限与模型分工不受工坊配置影响。
-- 维护分工：`theater_workshop/` 是本体创作能力的维护入口；原独立工作台（InkAI）的网页、Flask API、模型设置与跨仓 CLI 在原仓库维护。两端共享创作、事实、证据、文学、方案复核与修订规则须同步：改动时核对两端 `generation/numeric_v2.py`、`generation/runtime_rules.py` 及实际消费者并各自运行测试。两端使用独立作者目录，SDK 不从相邻仓库动态导入，也不修改 `sys.path`。
+- 维护分工：`services/theater_workshop/` 是本体创作能力的维护入口；原独立工作台（InkAI）的网页、Flask API、模型设置与跨仓 CLI 在原仓库维护。两端共享创作、事实、证据、文学、方案复核与修订规则须同步：改动时核对两端 `generation/numeric_v2.py`、`generation/runtime_rules.py` 及实际消费者并各自运行测试。两端使用独立作者目录，SDK 不从相邻仓库动态导入，也不修改 `sys.path`。
 
 ## 错误与验证
 
@@ -281,4 +281,4 @@ SDK 可单独注入 `model_call` 返回 `ModelReply`／文本／`LLMCallFailure`
 .venv/bin/python -m pytest -q tests/unit/theater_workshop
 ```
 
-SDK 目前没有界面或 HTTP 调用方，暂不进入 Nuitka 冻结发行物：两个桌面构建工作流不包含 `theater_workshop`，`launcher.py` 也不引用它（Nuitka 会跟随静态 import，入口保留就等于打包）。`theater_workshop.release_smoke.run` 仍可在源码环境运行固定模型的失败续写、编译、复验、导出、安装、引擎加载、重开和维护态拒写检查；待工坊有正式入口时再恢复冻结包含与发行检查。
+SDK 目前没有界面或 HTTP 调用方，暂不进入 Nuitka 冻结发行物：两个桌面构建工作流在包含 `services` 时显式排除 `services.theater_workshop`，wheel／sdist 也排除 `services/theater_workshop`，`launcher.py` 也不引用它。`services.theater_workshop.release_smoke.run` 仍可在源码环境运行固定模型的失败续写、编译、复验、导出、安装、引擎加载、重开和维护态拒写检查；待工坊有正式入口时再恢复冻结包含与发行检查。

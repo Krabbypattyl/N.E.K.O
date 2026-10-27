@@ -12,7 +12,7 @@ from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
 
 from .numeric_v2_fixture import numeric_v2_story
 from .test_numeric_v2_generation import (

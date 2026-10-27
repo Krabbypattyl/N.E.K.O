@@ -1496,7 +1496,7 @@
         var preOpenedWindow = null;
         if (option.choice === 'accept') {
             try {
-                preOpenedWindow = window.open('', '_blank');
+                preOpenedWindow = window.open('', prompt.gameType === 'theater' ? 'neko_theater_market' : '_blank');
                 if (preOpenedWindow) {
                     // 给个临时占位文本免得用户看到 about:blank 一闪
                     try {

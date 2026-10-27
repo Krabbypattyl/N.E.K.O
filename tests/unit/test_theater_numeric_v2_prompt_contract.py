@@ -75,7 +75,7 @@ def test_transition_source_may_be_empty_without_weakening_target_or_npc_delivery
     assert "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复" in prompt
     assert "所有段落的状态与角色边界：" + numeric_v2_actor._ACTOR_STATE_RULE in prompt
     assert numeric_v2_actor._ACTOR_EXPRESSION_RULE not in prompt
-    assert "opening_situation 中猫娘自己的动作和对白交给 target_performance" in prompt
+    assert "opening_situation 中你自己的动作和对白交给 target_performance" in prompt
 
 
 @pytest.mark.parametrize("phase", ["turn", "opening"])
@@ -281,7 +281,7 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
     # Declare the general contract only in System; pacing no longer duplicates all fact/action rules.
     assert "幕内因果单元" in messages[0].content
     assert "玩家直接询问或等待在场 NPC 时" in messages[0].content
-    assert "不能用神情动作或猫娘重问同一问题代替答复" in messages[0].content
+    assert "不能用神情动作或你重问同一问题代替答复" in messages[0].content
     assert "具体答复、拒绝、未知或尚缺的信息" in messages[0].content
     assert "不以问句、猜测或模糊措辞补成部分发生" in messages[0].content
     assert "同地点进入新时段、新阶段或结局收束" in messages[0].content
@@ -292,13 +292,13 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
     assert "scene_horizon" not in payload
     assert "current_story_beat" not in payload
     assert "先完整回应 player_input" in messages[0].content
-    assert "performance 只扮演当前猫娘" in messages[0].content
+    assert "performance 只扮演当前你" in messages[0].content
     assert "当前幕已出现 NPC 的动作或回应，写入 scene_update" in messages[0].content
     assert "提问、准备、假设与尝试不证明完成" in messages[0].content
     assert "完整回应不等于必须满足请求" in messages[0].content
     assert "先明确承认问题并暂缓披露" in messages[0].content
     assert "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场" in messages[0].content
-    assert "不补心理，不交换玩家与猫娘的行动主体" in messages[0].content
+    assert "不补心理，不交换玩家与你的行动主体" in messages[0].content
     assert "不扩展到其他对象、额外操作或后续承诺" in messages[0].content
     assert "剩余同质过程之间没有" in messages[0].content
     assert "真实选择" in messages[0].content
@@ -489,10 +489,10 @@ def test_numeric_v2_prompts_match_boundaries_by_actor_object_action_and_stage():
     )[0][0].content
 
     assert "玩家已实施的幕内动作从外部回应开始" in actor_prompt
-    assert "不重演、不转给猫娘重做" in actor_prompt
+    assert "不重演、不转给你重做" in actor_prompt
     assert "先确定本次是谁对哪个对象实施了什么" in judge_prompt
     assert "只约束同一主体、对象、动作和阶段" in judge_prompt
-    assert "猫娘或 NPC 自主执行各自行为均不属代做" in judge_prompt
+    assert "你或 NPC 自主执行各自行为均不属代做" in judge_prompt
     assert "当前幕明确授权的行为与结果仍属当前幕" in judge_prompt
 
 
@@ -656,8 +656,8 @@ def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions
         )
         assert "保持实体的持有者、位置和最新状态" in system_prompt
 
-    assert "不能把猫娘正在做的动作误写成玩家已在做" in system_prompt
-    assert "不能接管猫娘正在做的动作" not in system_prompt
+    assert "不能把你正在做的动作误写成玩家已在做" in system_prompt
+    assert "不能接管你正在做的动作" not in system_prompt
 
 
 def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
@@ -989,7 +989,7 @@ def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_bounda
     assert "作者剧情方向是导演信息" in system
     assert "明确的因果先后不能倒置" in system
     assert "target_scene.opening_situation 是目标段整体的内容依据" in system
-    assert "按环境/NPC 与猫娘分配到两个字段" in system
+    assert "按环境/NPC 与你分配到两个字段" in system
     assert "作者只给出抽象状态或待确认事项时，不得自行具体化" in system
 
 
@@ -1120,7 +1120,7 @@ def test_numeric_v2_turn_prompt_distinguishes_entry_state_from_committed_changes
 
     # The author baseline explicitly follows the opening; retain checks of committed letter-opening facts below rather than resetting history through relabeling.
     assert "作者入幕规划中的处境：她在门边等待。" in payload["role"]
-    assert "作者入幕规划中的猫娘状态：她站在门边，手中没有物品。" in payload["role"]
+    assert "作者入幕规划中的你状态：她站在门边，手中没有物品。" in payload["role"]
     assert "作者入幕规划中的玩家处境：玩家站在柜台旁。" in payload["role"]
     assert "作者入幕规划中的环境：旧信仍未拆开。" in payload["role"]
     assert "动态变化承接 story_so_far 已提交事实" in payload["role"]
@@ -1369,7 +1369,7 @@ def test_numeric_v2_turn_prompt_keeps_real_current_scene_history():
     ))
 
     assert "玩家：我愿意先留下来听你解释。" in payload["story_so_far"]
-    assert "猫娘：（抬眼）那就先坐下。" in payload["story_so_far"]
+    assert "你：（抬眼）那就先坐下。" in payload["story_so_far"]
     assert payload["player_input"] == "我坐到了窗边。"
 
 
@@ -1492,7 +1492,7 @@ def test_numeric_v2_previous_scene_tail_disappears_after_first_current_scene_tur
     assert "抹去眼泪" not in payload["story_so_far"]
     assert "我答应替你继续追查旧信" not in payload["story_so_far"]
     assert "玩家：我把窗帘拉开了。" in payload["story_so_far"]
-    assert "猫娘：（眯起眼）晨光有点亮。" in payload["story_so_far"]
+    assert "你：（眯起眼）晨光有点亮。" in payload["story_so_far"]
 
 
 def test_numeric_v2_turn_prompt_separates_opening_facts_from_scene_direction():
@@ -2974,12 +2974,12 @@ def test_numeric_v2_suggestion_fill_boundaries_come_from_authored_scene():
     assert boundaries == [
         "不要主动发起肢体接触。",
         "不得在玩家选择前离开花店。",
-        "猫娘禁止行为：不得主动拥抱。",
+        "你禁止行为：不得主动拥抱。",
         "禁止发生的剧情：不得把旧信交给猫娘。",
     ]
     assert numeric_v2_actor._beat_for_actor(cast, beat)["boundaries"] == [
         "不得在玩家选择前离开花店。",
-        "猫娘禁止行为：不得主动拥抱。",
+        "你禁止行为：不得主动拥抱。",
         "禁止发生的剧情：不得把旧信交给猫娘。",
     ]
     assert "围绕仍未拆开的旧信" in numeric_v2_actor._beat_for_actor(
@@ -3149,8 +3149,8 @@ def test_numeric_v2_hard_boundary_prompt_requires_refusal_or_safe_alternative():
         "玩家进入医疗站救人，猫娘留在门口接应。",
     ])
 
-    assert "猫娘必须在正文直接拒绝或提出符合边界的替代做法" in instruction
-    assert "不得顺从越界要求、交换玩家与猫娘的行动职责" in instruction
+    assert "你必须在正文直接拒绝或提出符合边界的替代做法" in instruction
+    assert "不得顺从越界要求、交换玩家与你的行动职责" in instruction
 
 
 def test_numeric_v2_transition_suggestion_fill_keeps_acceptance_first():
@@ -3556,11 +3556,11 @@ def test_numeric_v2_transition_judge_uses_route_reason_and_actual_nonending_entr
     assert "边界前准备、提议与未来邀请不属已越界" in messages[0].content
     assert "当前幕明确授权的行为与结果仍属当前幕，即使也导向下一幕" in messages[0].content
     assert "当前幕未授权的新地点、新时段或新互动阶段结果" in messages[0].content
-    assert "猫娘或 NPC 自主执行各自行为均不属代做" in messages[0].content
+    assert "你或 NPC 自主执行各自行为均不属代做" in messages[0].content
     assert "证据支持的外部结果" in messages[0].content
     assert "句尾的‘请检查／请清点’不会把前面第一人称陈述降为计划" in messages[0].content
     assert "不得在 failure_reason 中自我辩论" in messages[0].content
-    assert "主体仍是猫娘" in messages[0].content
+    assert "主体仍是你" in messages[0].content
 
 
 def test_numeric_v2_transition_judge_receives_positive_author_fact_authority():

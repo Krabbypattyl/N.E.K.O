@@ -6,7 +6,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 
 MARKER = '当前待确认提议原文（只证明此前说过，不证明安排正确）：'
-REFERENCE = MARKER + '见 story_so_far 最新完整猫娘原文。'
+REFERENCE = MARKER + '见 story_so_far 最新完整你原文。'
 WARNING = '若原提议与 next_scene 不符，承认错误并保留玩家选择。'
 
 @pytest.fixture(params=['science_fiction', 'fantasy'])

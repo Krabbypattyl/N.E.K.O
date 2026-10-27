@@ -7,8 +7,8 @@ import pytest
 
 from services.theater.numeric_v2 import NumericV2CompileError, NumericV2Compiler
 from services.theater.numeric_v2_actor_output import _parse_actor_suggestions
-from theater_workshop.sdk.generation.facts import build_fact_sources
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
+from services.theater_workshop.sdk.generation.facts import build_fact_sources
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
 
 from .numeric_v2_fixture import numeric_v2_story
 from .test_numeric_v2_generation import _quality_story_context
@@ -127,8 +127,8 @@ def test_quality_context_preserves_declared_entry_text_and_citation_paths():
 
 
 def test_quality_entry_inputs_are_counted_before_provider_call(monkeypatch):
-    from theater_workshop.host import NekoWorkshopModel
-    from theater_workshop.sdk import WorkshopError
+    from services.theater_workshop.host import NekoWorkshopModel
+    from services.theater_workshop.sdk import WorkshopError
     from utils import llm_client
     from utils.tokenize import count_tokens
 

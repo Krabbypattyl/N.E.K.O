@@ -285,9 +285,9 @@ async def test_empty_body_exception_requires_exact_program_control_receipt(tmp_p
 
 
 def test_workshop_prompts_make_silent_button_self_contained():
-    from theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
-    from theater_workshop.sdk.generation import numeric_v2
-    from theater_workshop.sdk.generation import runtime_rules
+    from services.theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
+    from services.theater_workshop.sdk.generation import numeric_v2
+    from services.theater_workshop.sdk.generation import runtime_rules
     assert "Runtime 据此生成完整按钮、不补台词" in _BRANCH_PATH_PROMPT
     assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_PROMPT
     assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
@@ -436,7 +436,7 @@ def test_invalid_structured_silent_choices_fail_compilation(choice):
 
 @pytest.mark.parametrize("destination", ["观测舱", "山间石桥"])
 def test_branch_export_preserves_structured_silent_choice(destination):
-    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
     choice = {"destination": destination, "arrangement": "查看封存记录"}
     transition = {"reason": "完成交接", "bridge_scene_narration": "来到下一处。",
         "must_preserve": [], "tone": "平静", "silent_choice": choice}
@@ -461,7 +461,7 @@ def test_compiler_and_runtime_reject_carriage_returns_in_silent_choice(tmp_path,
 
 @pytest.mark.parametrize("fallback,accept", [("一起去下一处？", "好，我们去。"), (None, None)])
 def test_branch_export_drops_unused_silent_choice(fallback, accept):
-    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
     transition = {"reason": "完成交接", "bridge_scene_narration": "来到下一处。",
         "must_preserve": [], "tone": "平静", "silent_choice": {"destination": "unused"}}
     contract = NumericV2BranchService._transition_contract(transition,

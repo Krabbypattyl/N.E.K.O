@@ -130,8 +130,8 @@ def test_npc_farewell_keeps_completed_history_without_requiring_catgirl_to_summa
     assert previous["performance"] in row["committed_text"]
     assert data["transition"]["natural_ending"] is True
     system = messages[0].content
-    assert "先按原话和动作辨明受话人，不把对 NPC 的话当成对猫娘说" in system
-    assert "由该 NPC 在来源旁白回应；猫娘不代答、受谢或再次评价已完成结果" in system
+    assert "先按原话和动作辨明受话人，不把对 NPC 的话当成对你说" in system
+    assert "由该 NPC 在来源旁白回应；你不代答、受谢或再次评价已完成结果" in system
     assert "没有新信息时 source_performance 留空" in system
     assert actor._PLAYER_AUTHORIZATION_RULE in system
 
@@ -149,7 +149,7 @@ def test_formal_brevity_and_action_ownership_keep_each_scene_speech_policy(sourc
         assert data["acting_context"][field]["memory_state"] == "available"
     system = messages[0].content
     assert "在允许发声时优先纯对白，通常一至三句；有必要的新动作才用一对括号写一个即时动作" in system
-    assert "不要在猫娘动作括号中串写 NPC 或玩家的独立动作、对白；观察对象可以出现" in system
+    assert "不要在你动作括号中串写 NPC 或玩家的独立动作、对白；观察对象可以出现" in system
     assert "source_performance 遵守 acting_context.dialogue_policy；target_performance 遵守 acting_context.target_dialogue_policy" in system
     candidate = _candidate()
     candidate["target_performance"] = "（抬手挥别）" if target_policy == "forbidden" else "一路顺风。"
@@ -165,8 +165,8 @@ def test_npc_answer_with_empty_catgirl_source_stays_narration_in_playback():
     assert data["player_input"] == question
     system = messages[0].content
     assert "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复、明确拒绝或说明未知" in system
-    assert "不补造未知答案，不用猫娘对他的评价代替他的答复" in system
-    assert "由该 NPC 在来源旁白回应；猫娘不代答、受谢" in system
+    assert "不补造未知答案，不用你对他的评价代替他的答复" in system
+    assert "由该 NPC 在来源旁白回应；你不代答、受谢" in system
     candidate = {**_candidate(), "source_scene_narration": answer}
     parsed = _parse_output(json.dumps(candidate), transition_required=True,
         source_dialogue_policy="optional", bridge_required=False)

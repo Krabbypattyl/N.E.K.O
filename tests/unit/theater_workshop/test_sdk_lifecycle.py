@@ -13,9 +13,9 @@ from threading import Barrier, Event
 
 import pytest
 
-from theater_workshop.host import open_workshop, InProcessPackageGateway, NekoWorkshopModel
-from theater_workshop.sdk import WorkshopError, NumericV2RevisionConflictError, ModelReply
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2GenerationError
+from services.theater_workshop.host import open_workshop, InProcessPackageGateway, NekoWorkshopModel
+from services.theater_workshop.sdk import WorkshopError, NumericV2RevisionConflictError, ModelReply
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2GenerationError
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageExistsError
 from services.theater.numeric_v2_store import numeric_v2_story_session_guard
 from utils.cloudsave_runtime import MaintenanceModeError
@@ -69,7 +69,7 @@ def setup_project(sdk):
 
 
 def test_native_generation_failure_preserves_story_and_repairs_only_rejected_scene(opened, monkeypatch):
-    from theater_workshop.sdk import PackageError
+    from services.theater_workshop.sdk import PackageError
 
     host, _ = opened
     sdk = host.sdk
@@ -113,7 +113,7 @@ def test_native_generation_failure_preserves_story_and_repairs_only_rejected_sce
 
 @pytest.mark.parametrize("legacy_checkpoint", [False, True])
 def test_native_frame_failure_resumes_frame_without_rewriting_completed_scenes(opened, monkeypatch, legacy_checkpoint):
-    from theater_workshop.sdk import PackageError
+    from services.theater_workshop.sdk import PackageError
 
     host, _ = opened
     sdk = host.sdk
@@ -212,7 +212,7 @@ async def test_generated_projects_with_identical_content_have_separate_stable_st
 
 
 def test_enhancement_rebuilds_outgoing_goal_references(opened, monkeypatch):
-    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
     from .test_numeric_v2_branch import _ordered_goal
 
     host, _ = opened
@@ -232,7 +232,7 @@ def test_enhancement_rebuilds_outgoing_goal_references(opened, monkeypatch):
 
 @pytest.mark.parametrize('refs', [[0], [0, 1], [2], [0, 2]])
 def test_enhancement_preserves_valid_nonfinal_goal_references(opened, monkeypatch, refs):
-    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
     from .test_numeric_v2_branch import _ordered_goal
 
     host, _ = opened
@@ -258,7 +258,7 @@ def test_enhancement_preserves_valid_nonfinal_goal_references(opened, monkeypatc
 # 节点完善：目标重排只重绑旧的最后目标来源，并保留公开 SDK 的持久化与编译行为。
 
 def _enhancement_reordered_goal_case(order):
-    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
     from .test_numeric_v2_branch import _ordered_goal
     from .test_numeric_v2_generation import _ending_enhancement_case
 
@@ -345,7 +345,7 @@ def test_unchanged_or_omitted_goals_keep_existing_source_order(opened, monkeypat
 
 
 def test_unknown_total_usage_uses_reported_components_without_fabricating_counts():
-    from theater_workshop.sdk.model import ModelAgent, capture_usage
+    from services.theater_workshop.sdk.model import ModelAgent, capture_usage
     agent = ModelAgent('test', lambda *a, **kw: ModelReply('{}', 'test',
                        {'prompt_tokens': 5, 'completion_tokens': 7, 'total_tokens': None}))
     with capture_usage() as usage:
@@ -368,13 +368,17 @@ def test_import_has_no_host_config_server_io_or_model_side_effects(tmp_path):
 import builtins, sys
 old_import = builtins.__import__
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
-    if level == 0 and name.split('.')[0] in {'flask','flask_cors','config','base_agent','services','utils','theater_generator'}:
+    if level == 0 and (
+        name.split('.')[0] in {'flask','flask_cors','config','base_agent','utils','theater_generator'}
+        or (name.startswith('services.') and name != 'services.theater_workshop'
+            and not name.startswith('services.theater_workshop.'))
+    ):
         raise AssertionError(name)
     return old_import(name, globals, locals, fromlist, level)
 builtins.__import__ = guarded
-import theater_workshop.sdk
-assert theater_workshop.sdk.TheaterWorkshop._instances == {}
-from theater_workshop.sdk.numeric_v2 import valid_silent_choice
+import services.theater_workshop.sdk
+assert services.theater_workshop.sdk.TheaterWorkshop._instances == {}
+from services.theater_workshop.sdk.numeric_v2 import valid_silent_choice
 choice = {'destination': 'observatory', 'arrangement': 'read the records'}
 assert valid_silent_choice(choice, token_counter=lambda text: 30)
 assert not valid_silent_choice(choice, token_counter=lambda text: 31)
@@ -540,8 +544,8 @@ def test_second_process_rejected_before_data_or_model_and_can_reopen(opened):
     script = """
 import sys
 from tests.unit.theater_workshop.test_sdk_lifecycle import TestConfig, fixed_model
-from theater_workshop.host import open_workshop
-from theater_workshop.sdk import WorkshopError
+from services.theater_workshop.host import open_workshop
+from services.theater_workshop.sdk import WorkshopError
 try:
     h = open_workshop(TestConfig(sys.argv[1]), model_call=fixed_model)
 except WorkshopError as e:
@@ -806,7 +810,7 @@ def test_over_budget_generation_and_quality_preserve_author_content(tmp_path, mo
 
 
 def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
-    from theater_workshop.sdk.generation.quality import QualityAssessmentError
+    from services.theater_workshop.sdk.generation.quality import QualityAssessmentError
     operations = []
     broken = False
     replacement = "小岚把旧信放到桌面，说明日期与当年的误会有关。"
@@ -968,21 +972,25 @@ async def test_cancelled_install_keeps_story_lock_until_worker_settles(opened, m
 
 
 def test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds(tmp_path):
-    from theater_workshop.release_smoke import run
+    from services.theater_workshop.release_smoke import run
     fixture = dict(title="旧信", setup=_generation_setup(), outline=named_outline(), names=NAMES)
     result = asyncio.run(run(fixture))
     assert result["success"] is True
     assert {"resume", "reopen", "maintenance", "load_engine"}.issubset(result["checks"])
     # The SDK has no UI or HTTP caller yet, so it must not ship in the frozen
     # backend. Nuitka follows static imports, so launcher.py must not import it
-    # either, or dropping --include-package would not keep it out.
+    # either. The parent services package is included, so each platform must
+    # explicitly exclude the workshop subtree.
     repo = Path(__file__).resolve().parents[3]
     for filename in ("build-desktop.yml", "build-desktop-linux.yml"):
         workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
-        assert "theater_workshop" not in workflow
+        include_lines = [line for line in workflow.splitlines() if "--include-package=services" in line]
+        assert include_lines
+        assert workflow.count("--nofollow-import-to=services.theater_workshop") == len(include_lines)
+        assert "--include-package=services.theater_workshop" not in workflow
     assert "theater_workshop" not in (repo / "launcher.py").read_text(encoding="utf-8")
     # With no frozen entry point, a frozen-only gate in the smoke would be dead code.
-    smoke_source = (repo / "theater_workshop/release_smoke.py").read_text(encoding="utf-8")
+    smoke_source = (repo / "services/theater_workshop/release_smoke.py").read_text(encoding="utf-8")
     assert "__compiled__" not in smoke_source
     assert "NEKO_THEATER_WORKSHOP_REQUIRE_FROZEN" not in smoke_source
 
@@ -1027,7 +1035,7 @@ def test_process_exit_releases_writer_without_clean_close(tmp_path):
     script = """
 import json, os, sys
 from tests.unit.theater_workshop.test_sdk_lifecycle import TestConfig, fixed_model, setup_project
-from theater_workshop.host import open_workshop
+from services.theater_workshop.host import open_workshop
 h = open_workshop(TestConfig(sys.argv[1]), model_call=fixed_model)
 p = setup_project(h.sdk)
 h.sdk._store.begin_generation(p['project_id'], base_revision=p['revision'])
@@ -1047,14 +1055,14 @@ os._exit(0)
 
 @pytest.mark.parametrize("project_id", ["project_../../outside", "project_/../outside", "project_..\\outside"])
 def test_project_ids_cannot_escape_author_root(opened, project_id):
-    from theater_workshop.sdk import NumericV2ProjectNotFoundError
+    from services.theater_workshop.sdk import NumericV2ProjectNotFoundError
     with pytest.raises(NumericV2ProjectNotFoundError):
         opened[0].sdk.get_project(project_id)
 
 
 def test_failed_model_usage_is_available_on_error(opened):
     host, config = opened
-    from theater_workshop.sdk import LLMCallFailure
+    from services.theater_workshop.sdk import LLMCallFailure
     host.sdk._generator._model_call = lambda *args, **kwargs: ModelReply(
         LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError"), "test-model")
     project = setup_project(host.sdk)

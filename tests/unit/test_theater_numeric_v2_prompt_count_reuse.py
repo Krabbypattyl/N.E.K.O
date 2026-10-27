@@ -144,7 +144,7 @@ def test_capacity_rewrites_recount_full_human_without_losing_contracts(monkeypat
         data["pacing"] += marker + offer + warning
         expected = deepcopy(data)
         expected["pacing"] = expected["pacing"].replace(
-            marker + offer, marker + "见 story_so_far 最新完整猫娘原文。", 1,
+            marker + offer, marker + "见 story_so_far 最新完整你原文。", 1,
         )
         kwargs["pending_offer_text"] = offer
     untouched = deepcopy((data, rows, kwargs))

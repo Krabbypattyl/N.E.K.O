@@ -2,18 +2,18 @@
 from copy import deepcopy
 import json
 import pytest
-from theater_workshop.sdk.generation.evidence import validate_evidence_review, review_targets
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.evidence import validate_evidence_review, review_targets
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
 from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _quality_wire_payload, _plan_review_reply
 
 
 def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples():
     # All five entry points must use the same semantics so literary/revision stages cannot reinterpret the framework after factual review corrects it.
-    from theater_workshop.sdk.generation.runtime_rules import SCORING_RUNTIME_RULES
-    from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
+    from services.theater_workshop.sdk.generation.runtime_rules import SCORING_RUNTIME_RULES
+    from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
     for prompt in (FACT_REVIEW_PROMPT, EVIDENCE_REVIEW_PROMPT, _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT, PLAN_REVIEW_PROMPT):
         assert prompt.count(SCORING_RUNTIME_RULES) == 1
         # Fact checking must not promote creative preferences into runtime prohibitions; revisions must preserve existing causality.
@@ -36,15 +36,15 @@ def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples(
 
 
 def test_exit_execution_rule_is_shared_by_generation_review_and_revision():
-    from theater_workshop.sdk.generation.runtime_rules import EXIT_EXECUTION_RULE
-    from theater_workshop.sdk.generation.numeric_v2 import (
+    from services.theater_workshop.sdk.generation.runtime_rules import EXIT_EXECUTION_RULE
+    from services.theater_workshop.sdk.generation.numeric_v2 import (
         _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
         _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT,
     )
-    from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
+    from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
 
     for prompt in (
         _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
@@ -156,7 +156,7 @@ def test_rejected_fact_id_cannot_supply_literary_deduction():
 
 
 def test_protected_field_blocks_literary_parent_and_unnecessary_node():
-    from theater_workshop.sdk.generation.repair import classify_repair
+    from services.theater_workshop.sdk.generation.repair import classify_repair
     # When an array item is preserved, literary plans cannot bypass that by replacing the whole array; nodes requiring no change within the same issue remain non-executable.
     story, authoring = _quality_story_context();assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)

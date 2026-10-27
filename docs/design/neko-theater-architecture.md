@@ -6,7 +6,7 @@
 | --- | --- |
 | 当前运行、数据、前端合同 | 本文 |
 | 为什么这样设计、否决过什么、仍未验证什么 | [小剧场设计决策记录](./neko-theater-decisions.md) |
-| 剧本工坊 SDK 的调用、宿主与发布合同 | 仓库 `theater_workshop/README.md` |
+| 剧本工坊 SDK 的调用、宿主与发布合同 | 仓库 `services/theater_workshop/README.md` |
 | 各阶段 Token 上限的汇总 | [LLM Prompt 预算](./llm-prompt-budget.md) |
 | 本轮职责拆分方案、调用与交付边界 | [Actor 与叙事提案职责拆分](./neko-theater-actor-responsibility-split.md) |
 
@@ -74,8 +74,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Caller["本体调用程序：显式选择模型和操作"] --> Host["theater_workshop/host.py：配置、姓名、写栅栏、安装锁"]
-    Host --> SDK["theater_workshop/sdk：无界面作者流程"]
+    Caller["本体调用程序：显式选择模型和操作"] --> Host["services/theater_workshop/host.py：配置、姓名、写栅栏、安装锁"]
+    Host --> SDK["services/theater_workshop/sdk：无界面作者流程"]
     SDK --> Project["作者项目：theater/workshop/projects"]
     Project -. "显式编译与复验" .-> Compiler["services/theater/numeric_v2.py 唯一正式编译器"]
     Compiler --> Candidate["同 revision/hash 的不可变发布字节"]
@@ -84,7 +84,7 @@ flowchart TD
     Package --> Theater["小剧场读取、演绎与存档"]
 ```
 
-工坊只产出作者项目和 Story Package，不读取玩家 Session，也不参与运行时选路；调用合同见 `theater_workshop/README.md`。
+工坊只产出作者项目和 Story Package，不读取玩家 Session，也不参与运行时选路；调用合同见 `services/theater_workshop/README.md`。
 
 新建逐幕生成在每幕及结局写稿后，另用一次短调用从本次开场摘录三方状态，普通幕同时摘录猫娘当前顾虑或未决问题，替换写稿时的场景处境，不再由两次创作独立认定位置、持物和已完成动作。配角不能因主角状态缺项而被改成玩家，未知保持未知。关系、认知和发声权限仍保留原规划；已写正文先存检查点，摘录失败不重写正文，旧三字段摘录候选可继续当前阶段。调用次数及600-token摘录上限不增加，完整字段校验与正式编译仍执行。模型摘录不构成语义正确性的程序证明。
 
@@ -163,7 +163,7 @@ character_state可含temporal_context={anchor, relation_to_previous}作者入幕
 | `app/memory_server/routes.py`、`memory/recent.py`、`memory/timeindex.py`、`main_routers/memory_router.py` | 接收剧场单集归档、维护有界周目记忆与时间索引，隔离普通 Prompt；记忆浏览器保存时原样保留剧场胶囊。 |
 | `utils/llm_client/messages.py` | 消息来源元数据与剧场记忆识别（`is_theater_memory_message`）；发送给供应商前剥离元数据。 |
 
-### 2.3 剧本工坊 SDK（`theater_workshop/`）
+### 2.3 剧本工坊 SDK（`services/theater_workshop/`）
 
 | 模块 | 职责与边界 |
 | --- | --- |
@@ -186,7 +186,7 @@ character_state可含temporal_context={anchor, relation_to_previous}作者入幕
 
 工坊事实审核按节点执行（D-148）：每次仅检查当前幕，保留全部直接来源、目标和原分支条件作衔接对照；引证仍绑定完整稿件的原路径与原文。主线、支线及结局全部完成后，合并为原报告并沿用统一证据复核、文学评分与方案复核。任一幕失败不保存部分评分，错误附失败节点；仅格式失败有一次当前幕纠正，统一证据复核格式也至多纠正一次，准确解析错误随原响应交回模型；技术错误及语义否决不自动重抽。无评分检查点、模型切换或包／存档格式变化。
 
-原事实／证据 JSON 合同保持。本体宿主对已验证阿里云端点的 `qwen3.8-flash` 工坊首次事实／证据调用使用 2048-token 有界思考、省略接口 JSON 模式，格式纠正沿用非思考的 `json_object`，总输出仍含思考至多 6000 tokens；仅整份 JSON 外的单层完整围栏可解包，本地完整校验不变。其他模型和端点沿用原 `json_object` 及默认思考配置，不新增 Schema 或端点探测。生成、文学评分与小剧场模型策略不变。格式通过不替代语义审核；角色状态相容不等于玩家授权，女主合同不能替玩家的新台词免责，道具生命周期规划也不统一对应开场时点。未采用分栏输出，完整合同见 `theater_workshop/README.md`。
+原事实／证据 JSON 合同保持。本体宿主对已验证阿里云端点的 `qwen3.8-flash` 工坊首次事实／证据调用使用 2048-token 有界思考、省略接口 JSON 模式，格式纠正沿用非思考的 `json_object`，总输出仍含思考至多 6000 tokens；仅整份 JSON 外的单层完整围栏可解包，本地完整校验不变。其他模型和端点沿用原 `json_object` 及默认思考配置，不新增 Schema 或端点探测。生成、文学评分与小剧场模型策略不变。格式通过不替代语义审核；角色状态相容不等于玩家授权，女主合同不能替玩家的新台词免责，道具生命周期规划也不统一对应开场时点。未采用分栏输出，完整合同见 `services/theater_workshop/README.md`。
 
 ### 2.4 压测与固定评测入口
 
@@ -790,7 +790,7 @@ stateDiagram-v2
 - 单节点修订的字段比较仅在字符串列表纯删除且保留项能唯一对应原位置时，报告被删条目的旧索引；所有删除仍须通过原获准字段及原位置的保护校验。正确条目移位不算改写，父范围保护仍优先。重复歧义、插入、混改和结构列表保持父路径比较，不扩大子项权限；原有等长比较与整表授权规则保持。SDK 保存成功后沿原机制使旧评分失效，禁止继续使用移动前的索引方案。无新增调用或运行端检查，见优化方案 §15.45。
 - `assess_runtime_readiness` 只读检查已编译、复验的当前候选，绑定 revision、包 hash 和目标配置 hash。默认关闭 Review 时不可交付的必需条件固定旁白及其依赖返回 `blocked`；没有该阻断只返回 `rehearsal_required`，仍须真实压测。调用方法和范围见工坊 README；不改变安装规则、不自动调整玩家选项。
 - 共享创作与评改规则（`sdk/generation/numeric_v2.py`、`runtime_rules.py`）只描述通用概念，不写入具体剧本的地点、道具或角色；有静态测试扫描禁止专名回流。
-- 工坊目前不进入桌面冻结构建（见 `theater_workshop/README.md`）。
+- 工坊目前不进入桌面冻结构建（见 `services/theater_workshop/README.md`）。
 
 ## 10. 验证入口
 

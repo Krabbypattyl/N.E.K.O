@@ -2,18 +2,18 @@
 from copy import deepcopy
 import json
 import pytest
-from theater_workshop.sdk.generation.facts import build_fact_sources, validate_fact_review, node_fact_context
+from services.theater_workshop.sdk.generation.facts import build_fact_sources, validate_fact_review, node_fact_context
 
 
 def test_fact_request_preserves_chronological_reading_order_and_all_original_fields():
     # The original request sorted JSON keys, mixing endings and future targets before opening state; preserve chronological reading order at the real entry point.
     # Opening targets are already delivered; concise review instructions must distinguish them from ordinary-turn pending targets.
-    from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
     assert "opening对应开场已交付，turn对应普通回合待演" in FACT_REVIEW_PROMPT
     from copy import deepcopy
     import json
     from .test_numeric_v2_generation import _quality_story_context, _generation_setup
-    from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
+    from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
     story, authoring = _quality_story_context()
     before = deepcopy(story)
     assessor = NumericV2QualityAssessor()
@@ -38,7 +38,7 @@ def test_fact_request_preserves_chronological_reading_order_and_all_original_fie
         return value
     assert restore(outline) == node_fact_context(assessor._assessment_context(story, _generation_setup(), authoring), "mainline_01")
     assert story == before
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
 from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _quality_wire_payload, _reviewed_fixture
 
 
@@ -96,8 +96,8 @@ def test_node_fact_context_retains_all_direct_neighbors_without_expanding_to_dis
 
 def test_literary_prompt_does_not_repeat_generation_fact_review_tasks():
     # Drafting entry points retain the complete generation contract; literary stages retain only review duties and user-approved relational-evidence rules.
-    from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT
-    from theater_workshop.sdk.generation.numeric_v2 import _SCENE_PROCESS_AUTHORING_RULE
+    from services.theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT
+    from services.theater_workshop.sdk.generation.numeric_v2 import _SCENE_PROCESS_AUTHORING_RULE
     assert _SCENE_PROCESS_AUTHORING_RULE not in _ASSESSMENT_PROMPT
     assert "先写issues和fact_issue_ids，再写summary和score" in _ASSESSMENT_PROMPT
     # After user approval of shared literary/relational evidence, low scores may cite it explicitly, but still cannot approve without grounds.
@@ -387,7 +387,7 @@ def test_failed_stage_stops_assessment_and_preserves_story(phase):
 @pytest.mark.parametrize("technical", [False, True])
 @pytest.mark.parametrize("invalid_json", [False, True])
 def test_only_failed_node_gets_one_format_correction_and_technical_errors_do_not_retry(technical, invalid_json):
-    from theater_workshop.sdk.model import LLMCallFailure
+    from services.theater_workshop.sdk.model import LLMCallFailure
     from .test_numeric_v2_generation import _quality_reply
 
     story, authoring = _quality_story_context()

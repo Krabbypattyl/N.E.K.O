@@ -13,10 +13,10 @@ from tests.unit.test_theater_numeric_v2_fixed_narration import _engine, OPENING
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 from tests.unit.test_theater_numeric_v2_prompt_permissions import _contract
-from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, NumericV2ProjectError
+from services.theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, NumericV2ProjectError
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.host import InProcessPackageGateway
 
 
 @pytest.mark.parametrize('evidence,player', [('递给你', '我把纸条递给你'),

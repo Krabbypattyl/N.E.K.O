@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
 from .test_numeric_v2_generation import _ending_enhancement_case
 
 

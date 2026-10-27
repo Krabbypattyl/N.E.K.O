@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from theater_workshop.host import NekoWorkshopModel
-from theater_workshop.sdk import WorkshopError
-from theater_workshop.sdk.generation.facts import build_fact_sources, validate_fact_review
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
-from theater_workshop.sdk.generation.repair import classify_repair
+from services.theater_workshop.host import NekoWorkshopModel
+from services.theater_workshop.sdk import WorkshopError
+from services.theater_workshop.sdk.generation.facts import build_fact_sources, validate_fact_review
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
+from services.theater_workshop.sdk.generation.repair import classify_repair
 from .test_numeric_v2_generation import _generation_setup, _quality_story_context
 
 

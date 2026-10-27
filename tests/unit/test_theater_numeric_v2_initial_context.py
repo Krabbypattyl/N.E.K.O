@@ -99,7 +99,7 @@ def test_current_player_turn_stays_last_without_rewriting_quoted_speech(context,
     assert data["player_input"] == message
     prefix = messages[1].content.split("\n", 1)[0]
     assert "玩家刚结束的发言" in prefix
-    assert "猫娘“测试猫娘”" in prefix
+    assert "你“测试猫娘”" in prefix
     assert "suggested_inputs 是玩家看到" in prefix
     if formal:
         assert "source_performance" in prefix and "target_performance" in prefix

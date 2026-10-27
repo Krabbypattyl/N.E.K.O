@@ -5,8 +5,8 @@ import json
 import pytest
 
 from services.theater.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, NumericV2GenerationError
-from theater_workshop.sdk.model import LLMCallFailure
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, NumericV2GenerationError
+from services.theater_workshop.sdk.model import LLMCallFailure
 from .test_numeric_v2_generation import _idea_outline, _generation_setup
 
 

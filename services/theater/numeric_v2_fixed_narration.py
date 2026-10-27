@@ -132,7 +132,7 @@ def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any]
     if not rows:
         return ""
     lines = ["固定旁白由程序按原文插入，禁止在正文、旁白或推荐中复述其全文。"
-             "入幕原文在场景建立后、猫娘开口前展示，可承接反应；"
+             "入幕原文在场景建立后、你开口前展示，可承接反应；"
              "条件片段在本轮实际触发动作及复核后才展示，不得提前读到或演出阅读后的反应。"]
     for item in rows:
         if item["trigger"]["type"] == "entry":

@@ -49,7 +49,7 @@ def test_formal_request_does_not_present_previous_entry_as_target_output():
     entry = data["recent_context"][0]
     assert set(entry) == {"revision", "player_input", "committed_text"}
     assert entry["revision"] == 8 and entry["player_input"] == ""
-    assert entry["committed_text"] == f"场景：周末的下午，店里没什么人。\n场景：{narration}\n猫娘：{spoken}"
+    assert entry["committed_text"] == f"场景：周末的下午，店里没什么人。\n场景：{narration}\n你：{spoken}"
     assert data["recent_context"][1]["player_input"] == "我会先查清生活成本，再比较学校。"
     assert data["player_input"] == message
     assert "上幕收尾" not in entry["committed_text"]
@@ -72,7 +72,7 @@ def test_render_keeps_npc_fixed_text_actions_and_player_input_once_in_order():
     assert result["recent_context"] == [{"revision": 4, "player_input": player,
         "committed_text": "场景：管事回答：“许可还没下来。”\n场景：两人仍站在门外。\n场景：箱子没有打开。\n"
         "已展示的作者原文：告示原文：\n  未经许可，不得开启。  \n"
-        "猫娘：（收回伸向锁扣的手）那就等许可。\n已展示的作者原文：旧信：‘昨天门开过。’"}]
+        "你：（收回伸向锁扣的手）那就等许可。\n已展示的作者原文：旧信：‘昨天门开过。’"}]
     assert json.dumps(result, ensure_ascii=False).count(player) == 1
     assert data == original
 
@@ -91,7 +91,7 @@ def test_raw_history_dedup_runs_before_render_and_restores_evicted_evidence(trim
     ]
     data = {"recent_context": history, "history_evidence": evidence}
     original = deepcopy(data)
-    trimmed = {"recent_context": [{"revision": 2, "player_input": "暂时不动。", "committed_text": "猫娘：我也不碰锁扣。"}],
+    trimmed = {"recent_context": [{"revision": 2, "player_input": "暂时不动。", "committed_text": "你：我也不碰锁扣。"}],
                "history_evidence": evidence}
     diagnostics = {}
     result = _fit(data, max_tokens=_tokens(trimmed) if trim else 10000, diagnostics=diagnostics)
@@ -104,7 +104,7 @@ def test_raw_history_dedup_runs_before_render_and_restores_evicted_evidence(trim
 
 def test_budget_counts_rendered_representation_and_preserves_latest_complete_turn():
     data = {"recent_context": [{"revision": 1, "performance": "好。"}]}
-    rendered = {"recent_context": [{"revision": 1, "player_input": "", "committed_text": "猫娘：好。"}]}
+    rendered = {"recent_context": [{"revision": 1, "player_input": "", "committed_text": "你：好。"}]}
     assert _tokens(rendered) > _tokens(data)
     exact = _tokens(rendered)
     diagnostics = {}

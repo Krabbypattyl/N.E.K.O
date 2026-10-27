@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from theater_workshop.sdk.generation.facts import build_fact_sources
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
-from theater_workshop.sdk.generation.repair import classify_repair
+from services.theater_workshop.sdk.generation.facts import build_fact_sources
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.repair import classify_repair
 from .test_numeric_v2_evidence import review_payload
 from .test_numeric_v2_generation import (
     _generation_setup, _quality_payload, _quality_reply, _quality_story_context, _quality_wire_payload,
@@ -192,7 +192,7 @@ def test_metric_advice_count_remains_strict_and_is_never_clamped(count, accepted
 
 @pytest.mark.parametrize("destination", ["观测舱", "山间石桥"])
 def test_silent_choice_is_visible_to_assessment_without_expanding_repair(destination):
-    from theater_workshop.sdk.generation.repair import TRANSITION_CONTRACT_FIELDS
+    from services.theater_workshop.sdk.generation.repair import TRANSITION_CONTRACT_FIELDS
     story, authoring = _quality_story_context()
     contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
     contract.update({"silent_choice": {"destination": destination, "arrangement": "查看记录"},

@@ -211,3 +211,29 @@ def test_more_scripts_does_not_interrupt_an_import(page, running_server):
     assert 'import_route' in pending
     pending['import_route'].fulfill(json={'ok': False, 'reason': 'invalid_test_package'})
     expect(selector.locator('#theater-market-btn')).to_be_enabled()
+
+
+@pytest.mark.frontend
+def test_theater_invitation_names_the_reserved_window_for_native_controls(mock_page, running_server):
+    pending = []
+    mock_page.route('**/api/mini_game/invite/respond', lambda route: pending.append(route))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(running_server + '/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.reactChatWindowHost.setMiniGameInvitePrompt')
+    mock_page.evaluate("""() => {
+        window.reactChatWindowHost.openWindow();
+        window.reactChatWindowHost.setMiniGameInvitePrompt({sessionId:'native-theater-test',gameType:'theater',
+            options:[{choice:'accept',label:'接下邀约'},{choice:'decline',label:'暂不参加'}]});
+    }""")
+    with mock_page.expect_popup() as opened:
+        mock_page.get_by_role('button', name='接下邀约', exact=True).click()
+    popup = opened.value
+    assert popup.evaluate('window.name') == 'neko_theater_market'
+    for _ in range(50):
+        if pending:
+            break
+        mock_page.wait_for_timeout(20)
+    assert pending
+    with popup.expect_event('close'):
+        pending[0].fulfill(json={'action': 'cooldown'})
+    assert not mock_page.is_closed()

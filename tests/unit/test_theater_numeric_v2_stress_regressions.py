@@ -13,7 +13,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 from tests.unit.theater_workshop.test_numeric_v2_generation import _generation_setup, _idea_outline
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
 
 
 @pytest.mark.asyncio

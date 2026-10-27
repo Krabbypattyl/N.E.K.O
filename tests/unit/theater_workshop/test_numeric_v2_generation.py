@@ -1,12 +1,12 @@
 from __future__ import annotations
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.host import InProcessPackageGateway
 
 from copy import deepcopy
 import json
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     _BRANCH_ENDING_PROMPT,
     _BRANCH_PATH_PROMPT,
     _SCENE_PROCESS_AUTHORING_RULE,
@@ -18,16 +18,16 @@ from theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2GenerationError,
     NumericV2Generator,
 )
-from theater_workshop.sdk.generation.quality import (
+from services.theater_workshop.sdk.generation.quality import (
     _ASSESSMENT_PROMPT,
     _NODE_OPTIMIZATION_PROMPT,
     QUALITY_DIMENSIONS,
     NumericV2QualityAssessor,
     QualityAssessmentError,
 )
-from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
-from theater_workshop.sdk.generation.runtime_rules import PUBLIC_TEXT_RULE, SCORING_RUNTIME_RULES
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler, scene_turn_budget
+from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+from services.theater_workshop.sdk.generation.runtime_rules import PUBLIC_TEXT_RULE, SCORING_RUNTIME_RULES
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler, scene_turn_budget
 from .numeric_v2_fixture import numeric_v2_setup
 
 
@@ -1265,7 +1265,7 @@ def test_mainline_parallel_capacity_keeps_existing_boundary(tokens):
     {"player_name": "长名字" * 100, "catgirl_name": "另一名字" * 100}],
     ids=["default", "none", "empty", "named", "long-names"])
 def test_independent_capacity_text_matches_full_projection_for_cast_names(names):
-    from theater_workshop.sdk.generation.numeric_v2 import _projected_prompt_field_issues
+    from services.theater_workshop.sdk.generation.numeric_v2 import _projected_prompt_field_issues
     from utils.tokenize import count_tokens
 
     candidate = _idea_outline()
@@ -1308,7 +1308,7 @@ def test_parallel_capacity_preserves_existing_stage_index_equality(chapter_index
 
 def test_mainline_repairs_independent_structure_and_capacity_in_same_continuation():
     from utils.tokenize import count_tokens
-    from theater_workshop.sdk.generation.numeric_v2 import _value_at_path
+    from services.theater_workshop.sdk.generation.numeric_v2 import _value_at_path
 
     repaired = _idea_outline()
     candidate = deepcopy(repaired)
@@ -2767,7 +2767,7 @@ def test_mainline_preserves_explicit_or_empty_state_boundaries(boundaries):
 @pytest.mark.parametrize("boundaries", [None, [""], ["不得越界"] * 5])
 def test_state_boundary_relaxation_still_rejects_malformed_arrays(boundaries):
     # Relax the count minimum only, not field shape, nonempty-entry requirements, or the four-entry maximum.
-    from theater_workshop.sdk.generation.numeric_v2 import _validate_character_state_stage
+    from services.theater_workshop.sdk.generation.numeric_v2 import _validate_character_state_stage
     state = _idea_outline()["character_state_arc"]["stages"][0]
     state["scene_boundaries"] = boundaries
     issues = []
@@ -3106,7 +3106,7 @@ def test_mainline_generation_repairs_invalid_fixed_narrations_before_success():
 
 
 def test_mainline_continuation_exception_keeps_candidate_in_checkpoint():
-    from theater_workshop.sdk import WorkshopError
+    from services.theater_workshop.sdk import WorkshopError
 
     candidate = _idea_outline()
     candidate["mainline_chapters"][0]["ordered_goals"][0]["owner"] = "player"

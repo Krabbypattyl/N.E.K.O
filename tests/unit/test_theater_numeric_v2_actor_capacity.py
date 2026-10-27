@@ -33,7 +33,7 @@ RENDERED_HISTORY = [{
     "committed_text": (
         "场景：管事说：“许可仍待确认。”\n"
         "已展示的作者原文：封存须知：未经签字不得开匣。\n"
-        f"猫娘：{REPLY}\n已展示的作者原文：封条编号：A-17。"
+        f"你：{REPLY}\n已展示的作者原文：封条编号：A-17。"
     ),
 }]
 LARGE = {"revision": 2, "source": "performance", "current_visit": False,

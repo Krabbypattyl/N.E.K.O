@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError, _content_hash
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError, _content_hash
 
 from .test_numeric_v2_generation import _plan_review_reply, _quality_payload, _quality_story_context, _quality_wire_payload
 
