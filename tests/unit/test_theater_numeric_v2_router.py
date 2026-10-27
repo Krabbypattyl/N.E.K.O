@@ -439,7 +439,7 @@ def test_first_theater_visit_installs_and_starts_the_three_bundled_stories(tmp_p
         tmp_path / 'theater', NumericV2PackageRegistry(packages),
         character_ids_by_name=numeric_theater_router.numeric_v2_character_ids(manager))
     sources = sorted((manager.project_root / 'assets/theater').glob('*.json'))
-    expected = {NumericV2Compiler().compile_v2_2(json.loads(p.read_text())).story_id for p in sources}
+    expected = {NumericV2Compiler().compile_v2_2(json.loads(p.read_text(encoding='utf-8'))).story_id for p in sources}
     assert expected == {'story_a400cd1c2783', 'story_ccc0763441e3', 'story_neon_rebuild_ea2e45dab7'}
     with client:
         listed = client.get('/api/theater-numeric/stories')
@@ -460,10 +460,10 @@ def test_bundled_install_keeps_same_id_imports_and_respects_deletion_after_resta
     manager.project_root = Path(__file__).resolve().parents[2]
     client = _client(tmp_path, monkeypatch, manager)
     packages = tmp_path / 'theater/numeric_v2/packages'
-    user = json.loads((manager.project_root / 'assets/theater/story_a400cd1c2783.json').read_text())
+    user = json.loads((manager.project_root / 'assets/theater/story_a400cd1c2783.json').read_text(encoding='utf-8'))
     user['meta']['revision'] = 'user-edited-copy'
     path = packages / 'story_a400cd1c2783.json'
-    path.write_text(json.dumps(user, ensure_ascii=False))
+    path.write_text(json.dumps(user, ensure_ascii=False), encoding='utf-8')
     original = path.read_bytes()
     with client:
         assert client.get('/api/theater-numeric/stories').status_code == 200
@@ -517,7 +517,7 @@ def test_speed_first_http_turn_does_not_schedule_or_wait_for_dynamic_ledger(tmp_
                 'message': '继续听你说。'})
             assert result.status_code == 200, result.text
     assert calls == []
-    saved = json.loads((tmp_path / 'theater/numeric_v2/sessions/ledger_disabled.json').read_text())
+    saved = json.loads((tmp_path / 'theater/numeric_v2/sessions/ledger_disabled.json').read_text(encoding='utf-8'))
     assert all('narrative_pending' not in event for event in saved['ledger_events'])
 
 def test_archive_binding_failure_returns_structured_json(tmp_path, monkeypatch):
