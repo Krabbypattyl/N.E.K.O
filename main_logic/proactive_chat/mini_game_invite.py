@@ -787,6 +787,9 @@ async def _run_mini_game_invite_short_circuit(
     )
 
 
+# 句末标点集合：中英日韩俄西葡的句末符号，用于判断摘要是否已自带结尾。
+_SYNOPSIS_TERMINATORS = "。！？…．.!?~、，,；;：:」』”\"')）】》"
+
 def _render_mini_game_invite_line(
     game_type: str, invite_lang: str, master_name: str,
     *, selected_story: dict[str, Any] | None = None, synopsis: str = "",
@@ -809,9 +812,17 @@ def _render_mini_game_invite_line(
     )
     safe_master = (master_name or '').strip()
     if game_type == "theater" and selected_story and selected_story.get("title"):
-        return _loc(THEATER_STORY_INVITE_LINES, normalize_mini_game_invite_locale(invite_lang)).format(
-            master_name=safe_master, story_title=selected_story["title"], synopsis=synopsis,
-        ).strip()
+        locale = normalize_mini_game_invite_locale(invite_lang)
+        # 中日韩模板把 synopsis 直接接在下一句前面，没有空格分隔；摘要是模型现生成的，
+        # 少写句末标点就会黏成「……的线索要不要陪我」。统一补一个句末标点再拼。
+        hook = (synopsis or "").strip()
+        if hook and hook[-1] not in _SYNOPSIS_TERMINATORS:
+            hook += "。" if locale in {"zh", "zh-TW", "ja"} else "."
+        rendered = _loc(THEATER_STORY_INVITE_LINES, locale).format(
+            master_name=safe_master, story_title=selected_story["title"], synopsis=hook,
+        )
+        # 空摘要会让带空格的模板留下两个连续空格；中日文模板本就无空格，压平无副作用。
+        return " ".join(rendered.split())
     try:
         return template.format(master_name=safe_master).strip()
     except Exception:
