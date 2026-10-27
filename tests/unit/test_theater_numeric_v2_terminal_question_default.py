@@ -174,6 +174,24 @@ async def test_all_auxiliary_modules_off_keeps_zero_call_conservative_terminal_g
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == current
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [GREETING, CHOICE])
+async def test_paused_model_reviews_do_not_reject_endings_by_punctuation(tmp_path, monkeypatch, text):
+    # Speed-first delivery deliberately accepts the risk of an unanswered
+    # question rather than misclassifying greetings or adding another draft.
+    from services.theater import numeric_v2_options
+
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+    runtime, current, calls, diagnostics, execute = await _setup(tmp_path, monkeypatch, drafts=(text,))
+    result = await execute()
+    assert calls["actor"] == 1 and calls["terminal"] == [] and calls["full"] == 0
+    assert diagnostics["terminal_question_review_calls"] == 0
+    assert result.stored.session.status == "ended"
+    assert result.stored.session.metrics == current.session.metrics
+    assert result.performance["suggested_inputs"] == []
+    assert await runtime.restore_session(current.session.session_id) == result.stored
+
+
 def test_terminal_check_changes_only_its_system_contract_and_preserves_all_input_segments():
     # 同一份完整可见演绎保留来源、桥段和目标；切换判定任务不裁剪用户原话或边界。
     candidate = json.dumps({"segments": [{"phase": phase, "performance": text} for phase, text in (

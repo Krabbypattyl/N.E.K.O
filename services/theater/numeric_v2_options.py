@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-# Temporary speed-first pause requested by the user. Restore True to run all
-# retained model audits; legacy preference entries no longer control execution.
+# Temporary speed-first pause for foreground audits; background ledger review is independent.
+# Restore True to run retained foreground audits; legacy preferences no longer control execution.
 MODEL_REVIEWS_ENABLED = False
 
 

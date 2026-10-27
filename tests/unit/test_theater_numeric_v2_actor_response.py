@@ -11,6 +11,100 @@ from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
+def test_role_keeps_author_extras_without_repeating_structured_entry_states():
+    from services.theater.numeric_v2_actor import _role_prompt_text
+
+    state = {'catgirl_state': '女主站在窗边。', 'player_state': '男主坐在桌旁。',
+             'environment_state': '环境为明亮的工作室。'}
+    text = _role_prompt_text(catgirl_name='小葵', acting_context={
+        'current_scene_state': ''.join(state.values()) + '信号灯只用于指路。', 'character_state': state})
+    assert all(text.count(value) == 1 for value in state.values())
+    assert '信号灯只用于指路。' in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['performance', 'scene_narration'])
+async def test_actor_rejects_copying_current_player_dialogue(monkeypatch, field):
+    from services.theater.numeric_v2_actor import NumericV2Actor, NumericV2ActorOutputError
+    from services.theater.numeric_v2_runtime import NumericV2Engine
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(session_id='player_echo', catgirl_binding=_binding(),
+        opening_performance={'performance': '灯光指向站旁的小屋。', 'suggested_inputs': []})
+    message = '（顺着灯光看去）信号小屋？那里会有什么？'
+    outcome = engine.resolve_turn(session, TurnRequestV2('ask', 0, message), ())
+    candidate = {'performance': '那里是旧车站的控制室。', 'suggested_inputs': [], 'transition_offered': False}
+    candidate[field] = message
+
+    async def invoke(self, messages, **kwargs):
+        return dict(candidate)
+
+    monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
+    with pytest.raises(NumericV2ActorOutputError, match='repeated_output') as caught:
+        await NumericV2Actor(object()).generate_turn(engine=engine, session=session, outcome=outcome,
+            player_input=message, character_profile='温和。', defer_dialogue_repetition=True)
+    assert caught.value.repetition_guard == 'player_input'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('message,reply', [
+    ('好。', '好。'),
+    ('（拿起信号灯，走向门口）', '（拿起信号灯，走向门口）'),
+    ('信号小屋？那里会有什么？', '你问那里有什么？那里是旧车站的控制室。'),
+])
+async def test_player_echo_guard_allows_short_confirmations_actions_and_answers(monkeypatch, message, reply):
+    from services.theater.numeric_v2_actor import NumericV2Actor
+    from services.theater.numeric_v2_runtime import NumericV2Engine
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = engine.create_session(session_id='player_echo_allowed', catgirl_binding=_binding(),
+        opening_performance={'performance': '灯光指向站旁的小屋。', 'suggested_inputs': []})
+    outcome = engine.resolve_turn(session, TurnRequestV2('reply', 0, message), ())
+
+    async def invoke(self, messages, **kwargs):
+        return {'performance': reply, 'suggested_inputs': [], 'transition_offered': False}
+
+    monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
+    result = await NumericV2Actor(object()).generate_turn(engine=engine, session=session, outcome=outcome,
+        player_input=message, character_profile='温和。')
+    assert result['performance'] == reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('repeated_input,metric_change', [(True, False), (False, False), (True, True)])
+async def test_stable_confirmation_is_checked_before_older_history_guard(tmp_path, monkeypatch, repeated_input, metric_change):
+    from services.theater.numeric_v2_actor import NumericV2Actor, NumericV2ActorOutputError
+    from services.theater.numeric_v2_runtime import NumericV2Engine, MetricChangeV2
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    message = '（保持沉睡，呼吸均匀）'
+    reply = '（维持原来的姿态，静静注视着床边）监测中。'
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='stable_older', catgirl_binding=_binding(), opening_performance=_opening())
+    for index, (text, body) in enumerate([(message, reply), ('（继续休息）', '我留在这里。')]):
+        previous = runtime.prepare_turn(current, TurnRequestV2(f'previous_{index}', current.session.revision, text), ())
+        current = await runtime.commit_turn(previous, {'performance': body, 'suggested_inputs': [], 'transition_offered': False})
+    session = current.session
+    current_input = message if repeated_input else '（睁开眼）现在几点了？'
+    changes = (MetricChangeV2('trust', 1, '新的进展', current_input),) if metric_change else ()
+    outcome = engine.resolve_turn(session, TurnRequestV2('stable', 2, current_input), changes)
+
+    async def invoke(self, messages, **kwargs):
+        return {'performance': reply, 'suggested_inputs': [], 'transition_offered': False}
+
+    monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
+    call = NumericV2Actor(object()).generate_turn(engine=engine, session=session, outcome=outcome,
+        player_input=current_input, character_profile='温和。')
+    if repeated_input and not metric_change:
+        assert (await call)['performance'] == reply
+    else:
+        with pytest.raises(NumericV2ActorOutputError, match='repeated_output'):
+            await call
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['dialogue', 'long', 'action', 'narration', 'offer', 'fact'])
 @pytest.mark.parametrize('defer', [False, True])

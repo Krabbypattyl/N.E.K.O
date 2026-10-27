@@ -17,6 +17,13 @@
         if (!popup && typeof window.showStatusToast === 'function') window.showStatusToast(label('marketConnectError'), 5000);
         return !!popup;
     }
+    function openSelector() {
+        var popup = typeof window.openOrFocusWindow === 'function'
+            ? window.openOrFocusWindow('/theater', 'neko_theater', 'width=1100,height=760,menubar=no,toolbar=no,location=no,status=no')
+            : window.open('/theater', 'neko_theater');
+        if (!popup && typeof window.showStatusToast === 'function') window.showStatusToast(label('storyListFailed'), 5000);
+        return !!popup;
+    }
     async function redirectSelector() {
         var query = new URLSearchParams(window.location.search);
         if (!query.has('market')) return;
@@ -50,5 +57,5 @@
             }
         }
     }
-    window.nekoTheaterMarket = Object.freeze({open: openMarket, redirectSelector: redirectSelector});
+    window.nekoTheaterMarket = Object.freeze({open: openSelector, browse: openMarket, redirectSelector: redirectSelector});
 })();

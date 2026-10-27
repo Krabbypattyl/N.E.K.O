@@ -599,6 +599,12 @@ def _output_retry_hint(
 ) -> str:
     """Give each body retry a distinct rewriting angle to avoid repeating the same sampling path."""
 
+    if repetition_guard == "player_input":
+        return (
+            "上一稿把玩家本轮台词原样写成了猫娘回复或旁白。玩家的话不是你的台词。"
+            "直接回答其问题或承接其选择，只演猫娘自己的反应；不复制玩家发言，不新增事实或行动。"
+        )
+
     if route_changed:
         if "repeated" in last_error_code:
             repeated_field = {
@@ -1486,6 +1492,11 @@ async def execute_numeric_v2_turn(
     if background_narrative:
         from .numeric_v2_background_narrative import settle_before_input
         current = await settle_before_input(runtime, current)
+    elif current.ledger_events and "narrative_pending" in current.ledger_events[-1]:
+        # An old save may still contain an unfinished ledger job. Seal only that
+        # derived marker before appending a turn; keep model extraction disabled.
+        from .numeric_v2_background_narrative import settle_before_input
+        current = await settle_before_input(runtime, current, wait_for_background=False)
     if turn.input_source == "reinvite":
         return await _execute_reinvitation(config_manager=config_manager, runtime=runtime, current=current, turn=turn,
             ensure_current_binding=ensure_current_binding, before_commit=before_commit)
@@ -2501,9 +2512,13 @@ async def _execute_numeric_v2_turn(
             raise NumericV2EvaluatorError("numeric_v2_contract_check_timeout") from exc
 
     async def review_terminal_question_markers(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+        # Without semantic review a question mark proves no pending task: even
+        # recognition greetings and rhetorical endings used to trigger retries.
+        if not numeric_v2_options.MODEL_REVIEWS_ENABLED:
+            return ()
         markers = _terminal_new_question_markers(
             engine=runtime.engine, outcome=outcome, performance=candidate)
-        if not numeric_v2_options.MODEL_REVIEWS_ENABLED or not markers or not (
+        if not markers or not (
             module_options.get("evaluator") or module_options.get("review") or module_options.get("review_contract")
         ):
             return markers
@@ -3689,8 +3704,9 @@ async def _execute_numeric_v2_turn(
     )
     performance.pop("narrative_events", None)
     outcome = replace(outcome, ledger_event={**outcome.ledger_event, "narrative_record": narrative_record})
-    if (background_narrative and module_options.get("review")
-            and final_fixed_review is not None and not final_fixed_review.body_violations):
+    # Ledger-only review runs after delivery even while foreground audits are paused.
+    if (background_narrative and (not module_options.get("review")
+            or (final_fixed_review is not None and not final_fixed_review.body_violations))):
         outcome = replace(outcome, ledger_event={**outcome.ledger_event, "narrative_pending": {
             "job_id": uuid4().hex,
             "body": narrative_body_fingerprint(performance),

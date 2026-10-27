@@ -338,6 +338,42 @@ describe('App', () => {
     expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['loading', 'evaluating'] as const)('shows three waiting dots only until theater generation finishes (%s)', (phase) => {
+    const { rerender } = renderInputApp({
+      theaterPresentation: { active: true, phase, history: [] },
+    });
+    const dots = screen.getByRole('status', { name: 'Preparing the next reply…' });
+    expect(dots.querySelectorAll('.focus-thinking-dot')).toHaveLength(3);
+    expect(screen.queryByPlaceholderText('No suggested options this time~')).toBeNull();
+    rerender(<App chatSurfaceMode="compact" compactChatState="input"
+      theaterPresentation={{ active: true, phase: 'performing', history: [] }} />);
+    expect(screen.queryByRole('status', { name: 'Preparing the next reply…' })).toBeNull();
+    rerender(<App chatSurfaceMode="compact" compactChatState="input"
+      theaterPresentation={{ active: false, phase: 'inactive' }} />);
+    expect(document.querySelector('.focus-thinking-history-row')).toBeNull();
+  });
+
+  it('shows the no-suggestions placeholder without filling the theater draft', () => {
+    const props = { chatSurfaceMode: 'compact' as const, compactChatState: 'input' as const };
+    const { rerender } = render(<App {...props}
+      theaterPresentation={{ active: true, phase: 'awaiting_player', suggestedInputs: [] }} />);
+    const input = screen.getByRole('textbox', { name: 'Type a message...' });
+    expect(input).toHaveAttribute('placeholder', 'No suggested options this time~');
+    expect(input).toHaveValue('');
+    fireEvent.change(input, { target: { value: '我想问一个问题。' } });
+    expect(input).toHaveValue('我想问一个问题。');
+    for (const presentation of [
+      { active: true, phase: 'performing' as const },
+      { active: true, phase: 'awaiting_player' as const, suggestedInputs: ['继续。'] },
+      { active: true, phase: 'awaiting_player' as const, errorMessage: 'Please retry' },
+      { active: true, phase: 'ended' as const, sessionEnded: true },
+      { active: false, phase: 'inactive' as const },
+    ]) {
+      rerender(<App {...props} theaterPresentation={presentation} />);
+      expect(screen.queryByPlaceholderText('No suggested options this time~')).toBeNull();
+    }
+  });
+
   it('routes theater drafts through the dedicated callback before cat-local chat', () => {
     const onComposerSubmit = vi.fn();
     const onTheaterSubmit = vi.fn();
@@ -353,7 +389,7 @@ describe('App', () => {
       onTheaterSubmit,
     });
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    const input = screen.getByRole('textbox', { name: 'Type a message...' });
     fireEvent.change(input, { target: { value: '  推开教室门  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
@@ -373,7 +409,7 @@ describe('App', () => {
       onComposerSubmit,
     });
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    const input = screen.getByRole('textbox', { name: 'Type a message...' });
     fireEvent.change(input, { target: { value: '等待剧场宿主就绪' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
@@ -410,19 +446,12 @@ describe('App', () => {
     expect(onComposerSubmit).not.toHaveBeenCalled();
   });
 
-  it('shows a dedicated playback skip control including the final scene', () => {
-    const onTheaterSkipPlayback = vi.fn();
-    const props = { chatSurfaceMode: 'compact' as const, compactChatState: 'input' as const,
-      onTheaterSkipPlayback };
-    const { rerender } = render(<App {...props}
-      theaterPresentation={{ active: true, phase: 'performing', sessionEnded: true }} />);
-    const skip = screen.getByRole('button', {name: 'Show full reply'});
-    expect(skip).toHaveAttribute('data-compact-hit-region', 'true');
-    fireEvent.click(skip);
-    expect(onTheaterSkipPlayback).toHaveBeenCalledOnce();
-    expect(screen.getByPlaceholderText('Type a message...')).toHaveAttribute('readonly');
-    rerender(<App {...props} theaterPresentation={{active: true, phase: 'awaiting_player'}} />);
-    expect(screen.queryByRole('button', {name: 'Show full reply'})).toBeNull();
+  it.each([false, true])('has no full-reply button during theater playback (ended=%s)', (sessionEnded) => {
+    renderInputApp({ theaterPresentation: { active: true, phase: 'performing', sessionEnded } });
+    expect(screen.queryByRole('button', { name: 'Show full reply' })).toBeNull();
+    expect(document.querySelectorAll('.compact-theater-history-header-row button')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: sessionEnded ? 'Return to stories' : 'End performance' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Type a message...' })).toHaveProperty('readOnly', sessionEnded);
   });
 
   it.each(['evaluating', 'ended'] as const)(
@@ -431,7 +460,7 @@ describe('App', () => {
       const onComposerSubmit = vi.fn();
       const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
       const { rerender } = render(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
-      const input = screen.getByPlaceholderText('Type a message...');
+      const input = screen.getByRole('textbox', { name: 'Type a message...' });
       fireEvent.change(input, { target: { value: '留在这里等她' } });
       rerender(<App {...props} theaterPresentation={{ active: true, phase }} />);
 
@@ -520,7 +549,7 @@ describe('App', () => {
       />,
     );
     // 演绎期间胶囊输入框属于剧场，不能提前消费普通草稿。
-    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'Type a message...' })).toHaveValue('');
 
     rerender(
       <App
@@ -528,7 +557,7 @@ describe('App', () => {
         theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
       />,
     );
-    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('明天去哪玩');
+    expect(screen.getByRole('textbox', { name: 'Type a message...' })).toHaveValue('明天去哪玩');
     rerender(
       <App
         chatSurfaceMode="compact"
@@ -536,7 +565,7 @@ describe('App', () => {
         theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
       />,
     );
-    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'Type a message...' })).toHaveValue('');
   });
 
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {

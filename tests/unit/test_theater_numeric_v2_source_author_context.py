@@ -72,8 +72,7 @@ def test_transition_names_source_author_state_without_changing_payload(source_co
     source, target = transition['source_scene'], transition['target_scene']
     inputs = dict(story_context=expected['story_context'], player_address=expected['player_address'],
         current_chapter_title=source['chapter_title'], source_story_direction=source['story_direction'],
-        target_chapter_title=target['chapter_title'], shared_boundaries=transition['shared_boundaries'],
-        source_boundaries=source['boundaries'], target_boundaries=target['boundaries'],
+        target_chapter_title=target['chapter_title'],
         runtime_target_opening=target['opening_situation'], transition_contract=transition,
         recent_context=expected['recent_context'], acting_context=expected['acting_context'],
         player_input=expected['player_input'])
@@ -98,7 +97,12 @@ def test_transition_names_source_author_state_without_changing_payload(source_co
                for key, value in restored['acting_context'].items()}
     context['target_character_state'] = target_plan
     restored['acting_context'] = {key: context[key] for key in expected['acting_context']}
-    assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected, ensure_ascii=False)
+    # Complete hard boundaries now live once in the phase-labelled System message.
+    expected_wire = deepcopy(expected)
+    expected_wire['transition'].pop('shared_boundaries')
+    expected_wire['transition']['source_scene'].pop('boundaries')
+    expected_wire['transition']['target_scene'].pop('boundaries')
+    assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected_wire, ensure_ascii=False)
 
 
 def test_source_labels_stay_unchanged_outside_transition(source_context):

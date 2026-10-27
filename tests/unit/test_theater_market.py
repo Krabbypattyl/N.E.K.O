@@ -177,3 +177,25 @@ def test_lan_market_entry_is_rejected_before_pairing(setup, monkeypatch):
     response = client.post("/api/theater-market/launch", json={"random": True})
     assert response.status_code == 400
     assert response.json()["reason"] == "theater_market_local_required"
+
+
+@pytest.mark.asyncio
+async def test_random_market_selection_includes_only_public_opening_for_synopsis(monkeypatch):
+    from services.theater.market_selection import market_story
+    seen = []
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def get(self, url):
+            seen.append(url)
+            return httpx.Response(200, request=httpx.Request('GET', url), json={
+                'id': 7, 'revision': 4, 'file_sha256': 'a' * 64, 'title': '猫灯', 'byte_size': 100,
+                'kind': 'theater', 'status': 'published', 'theater_compatible': True,
+                'description': 'Marketing text must not replace the public premise',
+                'preview': {'intro': {'background': '你在末班列车的月台遇见守灯人。'},
+                            'nodes': [{'ending': 'hidden ending'}]}})
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **_: Client())
+    selected = await market_story()
+    assert seen[0].endswith('/api/v1/shares/theater/random')
+    assert selected['background'] == '你在末班列车的月台遇见守灯人。'
+    assert set(selected) == {'id', 'revision', 'file_sha256', 'title', 'byte_size', 'background'}

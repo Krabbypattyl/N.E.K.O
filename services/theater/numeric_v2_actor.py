@@ -624,10 +624,16 @@ def _role_prompt_text(
     # committed result. Initial facts remain available; actual history wins.
     entry_state_lines: list[str] = []
     current_scene_state = str(acting_context.get("current_scene_state") or "").strip()
+    character_state = acting_context.get("character_state")
+    if isinstance(character_state, Mapping):
+        # The legacy situation often concatenates these same three states; retain only its extra author material here.
+        for key in ("catgirl_state", "player_state", "environment_state"):
+            text = str(character_state.get(key) or "").strip()
+            if text:
+                current_scene_state = current_scene_state.replace(text, "", 1).strip()
     if current_scene_state:
         entry_state_lines.append(f"作者入幕规划中的处境：{current_scene_state}")
 
-    character_state = acting_context.get("character_state")
     if isinstance(character_state, Mapping):
         catgirl_state = str(character_state.get("catgirl_state") or "").strip()
         if catgirl_state:
@@ -1025,6 +1031,25 @@ def _performance_text(performance: Mapping[str, Any]) -> str:
         "".join(str(block.get("text") or "").split())
         for block in performance_content_blocks(performance)
     )
+
+
+def _repeats_player_dialogue(performance: Mapping[str, Any], player_input: str) -> bool:
+    """Reject whole player utterances copied into speech or narration, not shared actions or brief acknowledgments."""
+    def dialogue(text: str) -> str:
+        return "".join(char for block in performance_content_blocks({"performance": text})
+                       if block["type"] == "dialogue" for char in block["text"] if char.isalnum())
+
+    spoken = dialogue(player_input)
+    if len(spoken) < 10:
+        return False
+    containers = performance.get("segments")
+    for part in containers if isinstance(containers, list) else [performance]:
+        if isinstance(part, Mapping) and any(
+            dialogue(str(part.get(field) or "")) == spoken
+            for field in ("performance", "scene_narration")
+        ):
+            return True
+    return False
 
 
 def _is_repeated_performance(
@@ -1833,7 +1858,7 @@ _SUGGESTION_FORMAT_RULE = (
 
 _SUGGESTION_PLAYER_FACT_RULE = (
     f"{SUGGESTION_EVIDENCE_RULE}"
-    "推荐创建的是点击后玩家本人要说或做的事；括号中的观察对象也不能预演他人尚未完成的动作。"
+    "推荐由玩家本人说或做，不借用猫娘姓名或身份；括号中的观察不预演他人未完成的动作。"
     "可见对白中的猜测或传闻不因被演出就成为已证实事实，不能把它们填成玩家回忆或选项的既知前提。"
     "推荐不得编造玩家姓名、联系方式、职业、技能或既往经历，也不能预填未确认的个人资料与既定行程。"
     "当下选择、偏好与未来意愿可以提出；已经具备什么、以前做过什么须有公开依据。"
@@ -1945,7 +1970,7 @@ _AUTHOR_BEHAVIOR_PERMISSION_RULE = (
 _PLAYER_AUTHORIZATION_RULE = (
     "玩家已授权事项只按本轮player_input、实际历史及原公开邀请确定；不因角色本稿的新请求扩大范围。"
     "允许顺着玩家已表达意图补足点头、抬眼、转身等轻微衔接，前提是不改变实际位置、持物、任务结果或关系立场；"
-    "不得补出未经授权的重要状态变化、选择或承诺。"
+    "不得补出未经授权的重要状态变化、选择或承诺，也不补写玩家未表达的发言或呼喊。"
     "角色本稿新提出的邀请、请求或建议只证明角色说过；没有玩家本轮对应授权，"
     "后段不能写成玩家已经回应或实施。玩家已授权动作、角色必要配合及获准桥段的直接结果照常交付。"
 ) + _AUTHOR_BEHAVIOR_PERMISSION_RULE
@@ -1962,7 +1987,7 @@ _COMMITTED_NARRATIVE_STATE_RULE = (
 # Expression detail applies to the active scene, not an already concluded transition source.
 _ACTOR_EXPRESSION_RULE = (
     "从玩家本轮的选择、提问或行动中抓住一个影响当前互动的具体细节，以自然对白或必要反应表达角色的态度；"
-    "针对具体对象回应，不必复述整句、每轮夸奖或说明自己的能力和做法。"
+    "针对具体对象回应，不复制玩家整句台词，也不每轮夸奖或说明自己的能力和做法。"
     "玩家已明确收束或转向时接住新话头，不再评价旧安排。事实有限时允许简短，不用无关风景或泛泛附和代替关键答复。"
 )
 _ACTOR_STATE_RULE = (
@@ -2059,8 +2084,6 @@ def _system_prompt(
         return (
             "你负责生成本次 Runtime 已授权的正式转场：猫娘写入 performance，在场 NPC 的必要答复写入来源旁白。"
             f"{_output_schema_instruction(phase, single_ending_response=single_ending_response)}{phase_structure_rule}"
-            "target_performance 演出目标开场中属于猫娘的动作与对白，以角色核心人格自然表达；"
-            "按实际历史改写目标开场，承接新局面，不另行回应来源幕已交付的玩家输入或评价已成立的旧安排。"
             "必要的新反应、获准结果及作者结局内容仍须交付。"
             f"所有段落的状态与角色边界：{_ACTOR_STATE_RULE}"
             f"{_ACTOR_DRAMATIZATION_RULE}"
@@ -2073,7 +2096,6 @@ def _system_prompt(
             "玩家有新增问题或动作时交付尚缺的直接结果；先按原话和动作辨明受话人，不把对 NPC 的话当成对猫娘说。"
             "玩家只向在场 NPC 发问、道谢或告别时，由该 NPC 在来源旁白回应；猫娘不代答、受谢或再次评价已完成结果，"
             "没有新信息时 source_performance 留空。不要把玩家已做的同一操作交给猫娘再做一遍。"
-            "猫娘确有尚未完成的必要配合才写自己的动作，不扩展玩家授权范围或补造外部未知结果。"
             "source_performance 与 target_performance 都只扮演猫娘；括号内是猫娘动作及必要直接结果，括号外是她的对白。"
             f"{NUMERIC_V2_ACTOR_EVENT_OWNERSHIP_INSTRUCTION}"
             "两个 performance 在允许发声时优先纯对白，通常一至三句；有必要的新动作才用一对括号写一个即时动作。"
@@ -2101,11 +2123,9 @@ def _system_prompt(
             "合同要求保留某结果，不证明该结果已经发生，也不授权倒叙补齐。实际缺失就保持实际状态。"
             "若只余已具备条件的猫娘配合或确定的直接结果，可在来源段先交付，再由后段承接；"
             "仍缺玩家选择、未知成败或必要前因时，按实际状态改写目标段，不倒叙补造、暗示完成或替玩家补做。"
-            "历史已成立的结果直接承接，不为交代来源重新领取、讲述或操作。"
             # Agreement endings deliver consensus only, never hiding planned future execution in environmental narration.
             "本幕及结局只要求双方达成约定时，收束在约定已明确和角色回应，不能把约定的未来行动写成已经执行，"
             "也不能借房间、道具或地点变化暗示额外操作已完成；只有历史或已授权的作者转场明确建立的结果才能承接。"
-            "作者入幕状态随实际历史更新；认知、记忆、能力、关系和明确硬边界持续有效。"
             "acting_context.core_persona 在 full 范围内影响关注、判断与自主反应，在 style_only 范围内只影响措辞；"
             "acting_contract 限定认知身份，relationship_control 限定关系，人格不授予额外权限。"
             # Segment policies may differ; map input/output fields explicitly so source optional cannot override target required.
@@ -2123,7 +2143,8 @@ def _system_prompt(
     if phase == "turn":
         # Ordinary turns retain cross-topic semantic contracts only; all concrete facts come from six dynamic context blocks.
         return (
-            "你负责扮演当前猫娘，把剧本自然演成连续故事。"
+            f"你扮演当前猫娘“{catgirl_name}”，把剧本自然演成连续故事。"
+            "player_input及历史中‘玩家’是对方的发言；performance是你的回应，不能互换。"
             "performance 只扮演当前猫娘；独立外部变化，以及当前幕已出现 NPC 的动作或回应，写入 scene_update。"
             f"{_output_schema_instruction(phase)}"
             f"{NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION}"
@@ -2265,6 +2286,14 @@ _HistoryEvidenceExpander = Callable[
 ]
 
 
+def _omit_narrative_projection_details(state: Mapping[str, Any]) -> dict[str, Any]:
+    # 仅撤下本次超限请求的派生附件；完整已提交账本不变，省略不代表实体不存在。
+    return {
+        **state, "current": {}, "last_known": {}, "recent_events": [],
+        "projection": {"over_budget": True, "details_omitted": True},
+    }
+
+
 def _fit_turn_prompt_data(
     *,
     system_prompt: str,
@@ -2364,6 +2393,13 @@ def _fit_turn_prompt_data(
             evidence = list(evidence_expander(evidence if fits else (), within_prompt))
             # 空选择也必须清掉旧附件，否则 tokens() 的非空判断会留下原超限副本。
             fitted["history_evidence"] = _remaining_history_evidence(history, evidence)
+    if tokens() > max_tokens:
+        story_context = fitted.get("story_context")
+        state = story_context.get("narrative_state") if isinstance(story_context, dict) else None
+        if isinstance(state, Mapping):
+            fitted["story_context"] = {
+                **story_context, "narrative_state": _omit_narrative_projection_details(state),
+            }
     if tokens() > max_tokens:
         # Never silently delete or sentence-truncate current player input, stable background, target contracts, or character context.
         raise NumericV2ActorError("numeric_v2_actor_fixed_context_budget_exceeded")
@@ -2497,8 +2533,9 @@ def _fit_simple_turn_prompt_data(
                 "当前待确认提议原文（只证明此前说过，不证明安排正确）：见 story_so_far 最新完整猫娘原文。",
                 1,
             )
+    state_marker = ""
     if tokens() > max_tokens and narrative_state is not None:
-        # Ordinary six-block and formal-transition contexts share capacity boundaries; retain ledger values, sources, and recent events fully.
+        # 先省重复引文；仅在附件位置唯一且原文精确匹配时替换投影。
         state = deepcopy(narrative_state)
         omitted_quotes = 0
         for view in ("current", "last_known"):
@@ -2510,11 +2547,12 @@ def _fit_simple_turn_prompt_data(
         marker = "\nnarrative_state（已提交动态叙事账本）："
         original = marker + json.dumps(narrative_state, ensure_ascii=False, separators=(",", ":"))
         current_scene = str(fitted.get("current_scene") or "")
-        if omitted_quotes and current_scene.count(original) == 1:
-            state["projection"]["quotes_omitted"] += omitted_quotes
-            fitted["current_scene"] = current_scene.replace(
-                original, marker + json.dumps(state, ensure_ascii=False, separators=(",", ":")), 1,
-            )
+        if current_scene.count(original) == 1:
+            state_marker = original
+            if omitted_quotes:
+                state["projection"]["quotes_omitted"] += omitted_quotes
+                state_marker = marker + json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+                fitted["current_scene"] = current_scene.replace(original, state_marker, 1)
     if evidence_expander is not None and evidence_records:
         def within_prompt(candidate: Sequence[Mapping[str, Any]]) -> bool:
             # 整份 Human JSON 计量自然包括 story_so_far 的二次转义；试装不改基线字段。
@@ -2531,6 +2569,14 @@ def _fit_simple_turn_prompt_data(
             # the fixed role, index, latest exchange and current input stay put.
             evidence_records = evidence_expander(evidence_records if fits else (), within_prompt)
             fitted["story_so_far"] = story_with_evidence(evidence_records)
+    if tokens() > max_tokens and state_marker:
+        fitted["current_scene"] = fitted["current_scene"].replace(
+            state_marker,
+            "\nnarrative_state（已提交动态叙事账本）：" + json.dumps(
+                _omit_narrative_projection_details(narrative_state),
+                ensure_ascii=False, separators=(",", ":"),
+            ), 1,
+        )
     if tokens() > max_tokens:
         # Recheck the exact final wire even if a selector ignored its predicate.
         # Fixed character data, scene contracts and player input are never truncated.
@@ -2585,9 +2631,6 @@ def _transition_prompt_data(
     current_chapter_title: str,
     source_story_direction: str,
     target_chapter_title: str,
-    shared_boundaries: list[Any],
-    source_boundaries: list[Any],
-    target_boundaries: list[Any],
     runtime_target_opening: str,
     transition_contract: Mapping[str, Any],
     recent_context: list[dict[str, Any]],
@@ -2602,14 +2645,11 @@ def _transition_prompt_data(
             "chapter_title": str(current_chapter_title or ""),
             # Source narrative guides response emphasis independently of recent_context's actual events.
             "story_direction": str(source_story_direction or ""),
-            "boundaries": list(source_boundaries),
         },
         "target_scene": {
             "chapter_title": str(target_chapter_title or ""),
             "opening_situation": str(runtime_target_opening or ""),
-            "boundaries": list(target_boundaries),
         },
-        "shared_boundaries": list(shared_boundaries),
         "reason": str(transition_contract.get("reason") or ""),
         "must_deliver": list(transition_contract.get("must_deliver") or []),
         # Share parsing/Runtime projections rather than letting models guess whether bridges may be omitted.
@@ -2945,6 +2985,8 @@ def _turn_messages(
             for boundary in target_boundaries
             if boundary not in shared_boundaries
         ]
+        # Keep complete phase-labelled limits once in System; a second Human copy
+        # crowded the ledger and latest input out of valid formal transitions.
         system_prompt += _hard_boundary_system_instruction([
             *(f"来源幕：{item}" for item in source_boundaries),
             *(f"目标幕：{item}" for item in target_boundaries),
@@ -2962,9 +3004,6 @@ def _turn_messages(
             current_chapter_title=_chapter_title_for_actor(cast, source),
             source_story_direction=str(source_beat.get("scene_direction") or ""),
             target_chapter_title=_chapter_title_for_actor(cast, target),
-            shared_boundaries=shared_boundaries,
-            source_boundaries=source_boundaries,
-            target_boundaries=target_boundaries,
             runtime_target_opening=target_opening,
             transition_contract=transition_contract,
             recent_context=recent_context,
@@ -3784,6 +3823,7 @@ class NumericV2Actor:
             # Persona contracts inspect catgirl text on both sides only; Workflow reviews dynamic narration's facts/stage boundaries holistically.
             source_output = {"performance": source_segment.get("performance", "")}
             target_output = {"performance": target_segment.get("performance", "")}
+            target_text = "".join(str(target_output["performance"]).split())
             _assert_acting_contract_output(
                 source_output,
                 character_profile=profile,
@@ -3855,6 +3895,10 @@ class NumericV2Actor:
             error.repetition_guard = guard
             raise error
 
+        # History guards compare Actor replies; player echoes need their own source check.
+        if not reinvitation and _repeats_player_dialogue(performance, player_input):
+            reject_repeated_output("player_input")
+
         if route_changed and _repeats_earlier_session_performance(
             target_output,
             session,
@@ -3875,6 +3919,26 @@ class NumericV2Actor:
             and not performance.get("fact_candidates")
             and _is_short_stable_dialogue(performance)
         )
+        # Apply the existing unchanged-input allowance before either history
+        # guard; the older-history guard used to reject it before the last-turn check.
+        stable_confirmation = (
+            not route_changed
+            and not outcome.metric_changes
+            and not outcome.ledger_event.get("fact_operations")
+            and not outcome.ledger_event.get("routing_fact_operations")
+            and "scene_narration" not in performance
+            and not performance.get("transition_offered")
+            and not performance.get("fact_candidates")
+            and count_tokens(_performance_text(performance)) <= 80
+            and _player_input_repeats_recent_context(
+                player_input,
+                _history(
+                    session,
+                    max_tokens=actor_budget["history_max_tokens"],
+                    max_turns=actor_budget["history_max_turns"],
+                ),
+            )
+        )
         # 仅有独立关键复核时，纯对白重复不消耗本轮重生成；下一轮从原文修正措辞。
         deferred_repetition = defer_dialogue_repetition and not route_changed and _can_defer_dialogue_repetition(performance)
         if deferred_repetition and (repeats_earlier or (
@@ -3882,7 +3946,7 @@ class NumericV2Actor:
         )):
             logger.info("Numeric v2 dialogue repetition deferred: session_id=%s revision=%s",
                         session.session_id, session.revision)
-        if repeats_earlier and not stable_short_dialogue and not deferred_repetition:
+        if repeats_earlier and not stable_short_dialogue and not stable_confirmation and not deferred_repetition:
             logger.warning(
                 "Numeric v2 Actor failed: reason=numeric_v2_actor_repeated_session_output session_id=%s revision=%s",
                 session.session_id,
@@ -3905,29 +3969,17 @@ class NumericV2Actor:
             reject_repeated_output("transition_source")
         if previous_visible_performance and route_changed and any(
             _is_repeated_performance(target_output, previous_variant)
+            or (len(target_text) >= 24 and target_text == "".join(
+                str(previous_variant.get("performance") or "").split()))
             for previous_variant in _performance_variants(previous_visible_performance)
         ):
-            # A fresh source response must not dilute a copied target/ending segment.
+            # Include long verbatim actions even when their accompanying dialogue is too short for the speech guard.
             reject_repeated_output("transition_target")
         if (
             previous_visible_performance
             and not reinvitation
             and _is_repeated_performance(performance, previous_visible_performance)
         ):
-            stable_confirmation = (
-                not route_changed
-                and not outcome.metric_changes
-                and "scene_narration" not in performance
-                and count_tokens(_performance_text(performance)) <= 80
-                and _player_input_repeats_recent_context(
-                    player_input,
-                    _history(
-                        session,
-                        max_tokens=actor_budget["history_max_tokens"],
-                        max_turns=actor_budget["history_max_turns"],
-                    ),
-                )
-            )
             if stable_confirmation or stable_short_dialogue or deferred_repetition:
                 # Repeated identical player input with unchanged state legitimately permits brief acknowledgment.
                 logger.debug(

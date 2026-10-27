@@ -79,7 +79,7 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
+        ['theater-market-btn', 'theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
@@ -991,6 +991,11 @@
         // 剧本列表通常先于 i18n 渲染完成；脚本写入的提示、徽章和记忆行没有 data-i18n，语言就绪后需重绘。
         window.addEventListener('localechange', function () { renderStories(); renderDetail(); });
         bindModalKeyboard();
+        $('theater-market-btn').addEventListener('click', function () {
+            if (state.busy || state.pendingEnd || state.memoryPromptActive) return;
+            // Reuse this window: closing an Electron opener also closes its market child.
+            window.location.assign('/theater?market=browse');
+        });
         $('theater-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-empty-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-import-input').addEventListener('change', function () { importStory(this.files && this.files[0]); });

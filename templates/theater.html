@@ -39,7 +39,10 @@
             <aside class="theater-story-library" aria-labelledby="theater-library-title">
                 <div class="theater-library-heading">
                     <div><p data-i18n="theater.selectorKicker">STORY LIBRARY</p><h1 id="theater-library-title" data-i18n="theater.selectorTitle">选择一个剧本</h1></div>
-                    <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                    <div class="theater-library-actions">
+                        <button type="button" class="theater-icon-action" id="theater-market-btn" data-i18n="theater.moreStories">更多剧本</button>
+                        <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                    </div>
                     <input id="theater-import-input" type="file" accept="application/json,.json" hidden>
                 </div>
                 <div class="theater-story-list" id="theater-story-list" role="listbox" aria-label="选择小剧场故事" data-i18n-aria="theater.storyListAria"></div>

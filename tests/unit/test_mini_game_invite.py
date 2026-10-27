@@ -11,6 +11,7 @@ Three contract layers:
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -1888,3 +1889,55 @@ def test_theater_toggle_payload_and_persistence_are_independent():
     assert not ProactiveChatCommand.from_payload({}).theater_invite_enabled
     settings = {'proactiveMiniGameInviteEnabled': False, 'proactiveTheaterInviteEnabled': True}
     assert _validate_conversation_settings(settings) == settings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('synopsis', ['你我在末班列车月台守住一盏将熄的猫灯，寻找失约旅人的线索。', ''])
+async def test_theater_invitation_uses_short_synopsis_and_freezes_same_market_story(monkeypatch, synopsis):
+    selected = {'id': 42, 'revision': 3, 'file_sha256': 'a' * 64,
+                'title': '月台尽头的猫灯', 'background': '很长的公开前情。' * 100}
+    monkeypatch.setattr(sr, '_select_theater_story', AsyncMock(return_value=selected))
+    summarizer = AsyncMock(return_value=synopsis)
+    monkeypatch.setattr(sr, '_summarize_theater_invite', summarizer)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr()
+    result = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=mgr, activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER, user_toggle_enabled=False, theater_toggle_enabled=True)
+    assert result is not None
+    text = mgr.feed_tts_chunk.call_args.args[0]
+    assert selected['title'] in text and '要不要' in text
+    assert not synopsis or synopsis in text
+    assert selected['background'] not in text
+    assert sr._mini_game_invite_get_state(LANLAN)['theater_selection'] == selected
+    summarizer.assert_awaited_once_with(selected, 'zh')
+    assert 'share_id=42' in sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='button')['game_url']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply,expected', [('你我在雨夜守护一盏灯，寻找失约旅人的线索。', True), ('长' * 81, False)])
+async def test_theater_synopsis_is_one_bounded_call_with_public_premise(monkeypatch, reply, expected):
+    from utils import config_manager, llm_client
+    from utils.tokenize import count_tokens
+    seen = []
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def ainvoke(self, messages):
+            seen.extend(messages)
+            return types.SimpleNamespace(content=reply)
+    config = types.SimpleNamespace(aget_model_api_config=AsyncMock(return_value={
+        'model': 'test', 'base_url': 'http://test.invalid', 'api_key': 'test'}))
+    monkeypatch.setattr(config_manager, 'get_config_manager', lambda: config)
+    factory = AsyncMock(return_value=Client())
+    monkeypatch.setattr(llm_client, 'create_chat_llm_async', factory)
+    result = await sr._summarize_theater_invite({'title': '猫灯' * 300, 'background': '公开前情。' * 1000}, 'zh-CN')
+    assert result == (reply if expected else '')
+    assert len(result) <= 80
+    factory.assert_awaited_once()
+    assert factory.call_args.kwargs['max_retries'] == 0
+    assert '公开前情' in seen[1].content
+    assert '50 Chinese characters' in seen[0].content
+    public = json.loads(seen[1].content)
+    assert count_tokens(public['title']) <= 256
+    assert count_tokens(public['background']) <= 2048

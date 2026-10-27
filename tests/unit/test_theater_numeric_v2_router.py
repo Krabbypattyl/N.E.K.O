@@ -306,6 +306,8 @@ def test_numeric_v2_story_list_reuses_compiled_summary_intro():
 class _ConfigManager:
     def __init__(self, root: Path):
         self.app_docs_dir = root
+        # Ordinary route fixtures contain only their explicit test package.
+        self.project_root = root / "application"
         self.config_dir = root / "config"
         self.local_state_dir = root.parent / (root.name + "-local-state")
 
@@ -421,6 +423,102 @@ def test_story_list_preserves_only_explicitly_imported_package(tmp_path, monkeyp
             assert {story["story_id"] for story in response.json()["stories"]} == {"numeric_v2_contract"}
             assert user_package.read_bytes() == user_bytes
 
+
+
+def test_first_theater_visit_installs_and_starts_the_three_bundled_stories(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_maintenance as maintenance
+    from services.theater.numeric_v2 import NumericV2Compiler
+
+    manager = _ConfigManager(tmp_path)
+    manager.project_root = Path(__file__).resolve().parents[2]
+    client = _client(tmp_path, monkeypatch, manager)
+    packages = tmp_path / 'theater/numeric_v2/packages'
+    (packages / 'numeric_v2_contract.json').unlink()
+    # A character rename may initialize maintenance before the first theater visit.
+    maintenance.maintain_numeric_v2_storage_once(
+        tmp_path / 'theater', NumericV2PackageRegistry(packages),
+        character_ids_by_name=numeric_theater_router.numeric_v2_character_ids(manager))
+    sources = sorted((manager.project_root / 'assets/theater').glob('*.json'))
+    expected = {NumericV2Compiler().compile_v2_2(json.loads(p.read_text())).story_id for p in sources}
+    assert expected == {'story_a400cd1c2783', 'story_ccc0763441e3', 'story_neon_rebuild_ea2e45dab7'}
+    with client:
+        listed = client.get('/api/theater-numeric/stories')
+        assert listed.status_code == 200, listed.text
+        assert {x['story_id'] for x in listed.json()['stories']} == expected
+        for story_id in sorted(expected):
+            started = client.post('/api/theater-numeric/session/start', json={
+                'story_id': story_id, 'session_id': 'builtin_' + story_id})
+            assert started.status_code == 200, started.text
+            assert started.json()['session']['status'] == 'active'
+            assert started.json()['session']['opening_performance']['performance']
+
+
+def test_bundled_install_keeps_same_id_imports_and_respects_deletion_after_restart(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_maintenance as maintenance
+
+    manager = _ConfigManager(tmp_path)
+    manager.project_root = Path(__file__).resolve().parents[2]
+    client = _client(tmp_path, monkeypatch, manager)
+    packages = tmp_path / 'theater/numeric_v2/packages'
+    user = json.loads((manager.project_root / 'assets/theater/story_a400cd1c2783.json').read_text())
+    user['meta']['revision'] = 'user-edited-copy'
+    path = packages / 'story_a400cd1c2783.json'
+    path.write_text(json.dumps(user, ensure_ascii=False))
+    original = path.read_bytes()
+    with client:
+        assert client.get('/api/theater-numeric/stories').status_code == 200
+        assert path.read_bytes() == original
+        assert client.delete('/api/theater-numeric/packages/story_ccc0763441e3').status_code == 200
+        # Clear only this test root's process cache to simulate a restart.
+        maintenance._MAINTAINED_ROOTS.discard(str((tmp_path / 'theater').resolve()))
+        listed = client.get('/api/theater-numeric/stories')
+        assert listed.status_code == 200
+        assert 'story_ccc0763441e3' not in {x['story_id'] for x in listed.json()['stories']}
+        assert path.read_bytes() == original
+
+
+
+def test_first_bundled_install_obeys_write_fence_after_maintenance_was_cached(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    manager = _ConfigManager(tmp_path)
+    with _client(tmp_path, monkeypatch, manager) as client:
+        assert client.get('/api/theater-numeric/stories').status_code == 200
+        manager.project_root = Path(__file__).resolve().parents[2]
+        @contextmanager
+        def blocked(*args, **kwargs):
+            raise MaintenanceModeError('applying_snapshot', operation='save', target='theater/numeric_v2')
+            yield
+        monkeypatch.setattr(numeric_theater_router, 'cloudsave_writable_transaction', blocked)
+        with pytest.raises(MaintenanceModeError):
+            client.get('/api/theater-numeric/stories')
+    assert sorted(p.name for p in (tmp_path / 'theater/numeric_v2/packages').glob('*.json')) == ['numeric_v2_contract.json']
+    assert not (tmp_path / 'theater/numeric_v2/bundled_stories.json').exists()
+
+
+def test_speed_first_http_turn_does_not_schedule_or_wait_for_dynamic_ledger(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_background_narrative as background, numeric_v2_options
+
+    monkeypatch.setattr(numeric_v2_options, 'MODEL_REVIEWS_ENABLED', False)
+    client = _client(tmp_path, monkeypatch)
+    calls = []
+    def unexpected(*args, **kwargs):
+        calls.append('ledger')
+        raise AssertionError('background ledger must stay disabled')
+    monkeypatch.setattr(background, 'schedule_narrative', unexpected)
+    monkeypatch.setattr(background, 'settle_before_input', unexpected)
+    with client:
+        assert client.post('/api/theater-numeric/session/start', json={
+            'story_id': 'numeric_v2_contract', 'session_id': 'ledger_disabled'}).status_code == 200
+        for revision in range(2):
+            result = client.post('/api/theater-numeric/session/input', json={
+                'story_id': 'numeric_v2_contract', 'session_id': 'ledger_disabled',
+                'client_turn_id': f'ledger_disabled_{revision}', 'base_revision': revision,
+                'message': '继续听你说。'})
+            assert result.status_code == 200, result.text
+    assert calls == []
+    saved = json.loads((tmp_path / 'theater/numeric_v2/sessions/ledger_disabled.json').read_text())
+    assert all('narrative_pending' not in event for event in saved['ledger_events'])
 
 def test_archive_binding_failure_returns_structured_json(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:

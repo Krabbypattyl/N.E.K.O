@@ -35,6 +35,21 @@ def _event(quote, changes, *, phase="player_input", source="player_input", subje
             **({"authorization_quote": quote} if phase == "player_input" else {})}
 
 
+@pytest.mark.parametrize("source_refs", [False, True])
+def test_proposal_and_ledger_review_bind_named_character_without_disclosing_unknown_player(source_refs):
+    session = _session()
+    session.catgirl_binding = {"catgirl_name": "同步验收1023", "player_address": "老谢"}
+    session.player_address_known = False
+    before = deepcopy(session.__dict__)
+    messages = proposer._messages({"performance": "同步验收1023停在桌前。"}, "我还在门口。",
+                                 session, False, source_refs=source_refs)
+    data = json.loads(messages[1].content)
+    assert data["protagonists"] == {
+        "player": {"role": "用户"}, "character": {"role": "当前猫娘", "name": "同步验收1023"}}
+    assert "老谢" not in messages[1].content
+    assert session.__dict__ == before
+
+
 def _wire_events(events, sources, references=None):
     """Encode canonical test fixtures as model-wire replies; malformed fixtures stay malformed."""
     if not isinstance(events, list):

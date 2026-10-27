@@ -38,6 +38,7 @@ from services.theater.numeric_v2_identity import (
 )
 from services.theater.numeric_v2_maintenance import (
     delete_numeric_v2_story_transactionally,
+    install_bundled_numeric_v2_packages,
     maintain_numeric_v2_storage_once,
     numeric_v2_story_recovery_pending,
 )
@@ -263,6 +264,16 @@ async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
             target="theater/numeric_v2",
         ),
     )
+    # Character maintenance may already have run; first-use story installation
+    # has its own durable marker and always shares the normal storage fence.
+    bundled_root = config_manager.project_root / "assets" / "theater"
+    if bundled_root.is_dir() and not (registry.root.parent / "bundled_stories.json").exists():
+        await run_storage_mutation(
+            _numeric_write_transaction(config_manager, numeric_root),
+            install_bundled_numeric_v2_packages,
+            registry,
+            bundled_root,
+        )
     return registry
 
 
@@ -1121,7 +1132,8 @@ async def _submit_numeric_input_once(
                 config_manager,
             ),
             before_commit=lambda: _assert_commit_allowed(config_manager, *forget_scope),
-            background_narrative=True,
+            # Speed-first release: no background extraction/review or next-turn ledger wait.
+            background_narrative=False,
         )
         outcome = workflow.outcome
         performance = workflow.performance

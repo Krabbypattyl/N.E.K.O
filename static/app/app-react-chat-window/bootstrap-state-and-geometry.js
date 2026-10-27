@@ -148,7 +148,6 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         onTheaterSubmit: null,
         onTheaterSuggestedInputSelect: null,
         onTheaterEnd: null,
-        onTheaterSkipPlayback: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingAvatarInteractions: [],

@@ -181,7 +181,9 @@ async def test_missing_trigger_or_approval_keeps_a_gap_without_fabricated_state(
     else:
         assert [item["text"] for item in result.performance["fixed_narrations"]] == list(ORIGINALS)
     if mode == "review_disabled":
-        assert not requests and not calls["body"]
+        # Ledger work may run without foreground approval, but cannot cite text never displayed.
+        assert [request["stage"] for request in requests] == ["proposal"]
+        assert not calls["body"] and not calls["ledger"]
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == settled
 
 

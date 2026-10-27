@@ -1105,6 +1105,7 @@ async def handle_proactive_chat(
                             game_type=chosen_game_type,
                             master_name=master_name_current,
                             lang=_break_lang,
+                            theater_story=selected_theater,
                         )
                         if gi_prompt is not None:
                             branch_game_invite = True

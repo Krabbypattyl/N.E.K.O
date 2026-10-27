@@ -111,8 +111,13 @@ def test_ordinary_formal_and_fill_prompts_preserve_explicit_prohibitions(formal)
     target_rule = "禁止发生的剧情：玩家帮助寻找新店面"
     assert source_rule in messages[0].content
     if formal:
-        assert source_rule in data["transition"]["source_scene"]["boundaries"]
-        assert target_rule in data["transition"]["target_scene"]["boundaries"]
+        # Both complete, phase-labelled prohibitions remain authoritative in System;
+        # a second full copy in Human used to crowd out a valid transition's ledger.
+        assert f"来源幕：{source_rule}" in messages[0].content
+        assert f"目标幕：{target_rule}" in messages[0].content
+        assert "boundaries" not in data["transition"]["source_scene"]
+        assert "boundaries" not in data["transition"]["target_scene"]
+        assert "shared_boundaries" not in data["transition"]
         assert "猫娘禁止行为：接受经济援助" in messages[0].content
         current_beat = target
     else:

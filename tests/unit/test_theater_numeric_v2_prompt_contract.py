@@ -75,7 +75,7 @@ def test_transition_source_may_be_empty_without_weakening_target_or_npc_delivery
     assert "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复" in prompt
     assert "所有段落的状态与角色边界：" + numeric_v2_actor._ACTOR_STATE_RULE in prompt
     assert numeric_v2_actor._ACTOR_EXPRESSION_RULE not in prompt
-    assert "target_performance 演出目标开场中属于猫娘的动作与对白" in prompt
+    assert "opening_situation 中猫娘自己的动作和对白交给 target_performance" in prompt
 
 
 @pytest.mark.parametrize("phase", ["turn", "opening"])
@@ -940,10 +940,13 @@ async def test_numeric_v2_actor_tags_previous_performance_repeat(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_actor_rejects_copied_transition_target_after_fresh_source(monkeypatch):
+@pytest.mark.parametrize('target_text', [
+    '（望着晚霞）你看这颜色，像是打翻了调色盘一样。',
+    '（意识在强光中彻底涣散，身体重量完全交由你支撑，电子眼的光芒熄灭成两点死灰）……好吵……安静了。',
+])
+async def test_actor_rejects_copied_transition_target_after_fresh_source(monkeypatch, target_text):
     """A new source reply cannot hide a copied closing segment behind a longer body."""
     engine = _ending_engine()
-    target_text = "（望着晚霞）你看这颜色，像是打翻了调色盘一样。"
     session = replace(
         _session(engine), revision=1,
         story_state=_story_state_at(_session(engine), 1), node_turn_count=1,

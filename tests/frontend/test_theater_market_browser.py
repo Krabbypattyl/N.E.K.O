@@ -44,6 +44,7 @@ def test_market_entry_is_independent_of_toggle_for_pointer_and_keyboard(mock_pag
         window.saveNEKOSettings = () => window.__marketSaved++;
         window.__marketOpened = [];
         window.open = url => { window.__marketOpened.push(url); return {}; };
+        window.openOrFocusWindow = (url) => window.open(url);
         const row = window.createChatModeToggle({checkboxId:'test-theater-entry',
             labelKey:'settings.toggles.proactiveTheaterInviteChat',
             tooltipKey:'settings.toggles.proactiveTheaterInviteChatTooltip',
@@ -59,7 +60,7 @@ def test_market_entry_is_independent_of_toggle_for_pointer_and_keyboard(mock_pag
     button.focus()
     button.press("Enter")
     button.press("Space")
-    assert mock_page.evaluate("window.__marketOpened") == ["/theater?market=browse"] * 3
+    assert mock_page.evaluate("window.__marketOpened") == ["/theater"] * 3
     assert mock_page.evaluate("window.proactiveTheaterInviteEnabled") is False
     assert mock_page.evaluate("window.__marketSaved") == 0
     row.locator(".chat-mode-indicator").click()
@@ -70,7 +71,8 @@ def test_market_entry_is_independent_of_toggle_for_pointer_and_keyboard(mock_pag
 def _market_host(page, running_server):
     """Real transport/adapter, with an isolated host and no model or user data."""
     page.route('**/__market_test_host', lambda route: route.fulfill(content_type='text/html', body='''
-        <button onclick="nekoTheaterMarket.open()">Market</button>
+        <button onclick="nekoTheaterMarket.browse()">Market</button>
+        <button onclick="nekoTheaterMarket.open()">Theater</button>
         <script src="/static/js/theater_transport.js"></script>
         <script>window.__starts = [];
         window.addEventListener('message', event => {
@@ -127,3 +129,85 @@ def test_market_entry_replaces_idle_library_without_starting(page, running_serve
     assert not calls
     assert page.evaluate('window.__starts') == []
     assert len(page.context.pages) == 2
+
+
+@pytest.mark.frontend
+def test_manual_entry_shows_three_bundled_scripts_before_more_scripts_opens_market(page, running_server):
+    from services.theater.numeric_v2_registry import NumericV2PackageRegistry
+    repo = Path(__file__).resolve().parents[2]
+    registry = NumericV2PackageRegistry(repo / 'assets/theater')
+    stories = registry.list_packages()
+    assert len(stories) == 3
+    _market_host(page, running_server)
+    page.context.route('**/api/theater-numeric/stories', lambda route: route.fulfill(json={
+        'ok': True, 'stories': stories, 'character_id': 'test-cat'}))
+    page.context.route('**/api/theater-numeric/memory/stories', lambda route: route.fulfill(json={
+        'ok': True, 'stories': [], 'character_id': 'test-cat'}))
+    page.context.route('**/api/theater-numeric/session/active**', lambda route: route.fulfill(
+        status=404, json={'ok': False, 'reason': 'numeric_session_not_found'}))
+    launches = []
+    page.context.route('**/api/theater-market/launch', lambda route: (
+        launches.append(route.request.post_data_json), route.fulfill(json={
+            'ok': True, 'request_id': 'more-scripts', 'url': 'http://market.test/theater'})))
+    page.context.route('http://market.test/**', lambda route: route.fulfill(body=(
+        '<h1>Script Market</h1><a href="' + running_server + '/theater?story_id='
+        + stories[0]['story_id'] + '">Imported</a>')))
+    page.context.route('**/api/theater-numeric/memory/archives**', lambda route: route.fulfill(
+        json={'ok': True, 'archives': []}))
+    page.evaluate("""() => window.addEventListener('message', event => {
+        if (event.data.action === 'theater:start-request')
+            event.source.postMessage({...event.data, action:'theater:start-ready'}, window.location.origin);
+    })""")
+    with page.expect_popup() as opened:
+        page.get_by_role('button', name='Theater', exact=True).click()
+    selector = opened.value
+    expect(selector.locator('.theater-story-card')).to_have_count(3)
+    for story in stories:
+        expect(selector.get_by_role('option', name=story['title'], exact=False)).to_be_visible()
+    expect(selector.locator('#theater-start-btn')).to_be_enabled()
+    assert launches == []
+    selector.locator('#theater-market-btn').click()
+    expect(selector.get_by_role('heading', name='Script Market')).to_be_visible()
+    assert not selector.is_closed()
+    assert len(page.context.pages) == 2  # Reuse the selector, avoiding an opener-owned market child.
+    assert launches == [{'random': False}]
+    selector.get_by_role('link', name='Imported', exact=True).click()
+    expect(selector.locator('#theater-start-btn')).to_be_enabled()
+    assert selector.evaluate('window.opener && !window.opener.closed')
+    with selector.expect_event('close'):
+        selector.locator('#theater-start-btn').click()
+    assert len(page.context.pages) == 1
+    assert page.evaluate('window.__starts.map(value => value.story_id)') == [stories[0]['story_id']]
+
+
+@pytest.mark.frontend
+def test_more_scripts_does_not_interrupt_an_import(page, running_server):
+    _market_host(page, running_server)
+    pending = {}
+    launches = []
+    page.context.route('**/api/theater-numeric/stories', lambda route: route.fulfill(
+        json={'ok': True, 'stories': [], 'character_id': 'test-cat'}))
+    page.context.route('**/api/theater-numeric/memory/stories', lambda route: route.fulfill(
+        json={'ok': True, 'stories': [], 'character_id': 'test-cat'}))
+    page.context.route('**/api/theater-numeric/packages/import', lambda route: pending.update(import_route=route))
+    page.context.route('**/api/theater-market/launch', lambda route: (
+        launches.append(route.request.url), route.fulfill(json={'ok': False})))
+    with page.expect_popup() as opened:
+        page.get_by_role('button', name='Theater', exact=True).click()
+    selector = opened.value
+    expect(selector.locator('#theater-market-btn')).to_be_enabled()
+    selector.locator('#theater-import-input').set_input_files({
+        'name': 'test.json', 'mimeType': 'application/json', 'buffer': b'{}'})
+    expect(selector.locator('#theater-market-btn')).to_be_disabled()
+    # A dispatched event must obey the same busy guard as an ordinary click.
+    selector.evaluate("document.getElementById('theater-market-btn').dispatchEvent(new Event('click'))")
+    assert selector.url == running_server + '/theater'
+    assert not launches
+    assert len(page.context.pages) == 2
+    for _ in range(50):
+        if 'import_route' in pending:
+            break
+        page.wait_for_timeout(20)
+    assert 'import_route' in pending
+    pending['import_route'].fulfill(json={'ok': False, 'reason': 'invalid_test_package'})
+    expect(selector.locator('#theater-market-btn')).to_be_enabled()

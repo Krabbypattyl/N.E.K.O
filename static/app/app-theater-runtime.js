@@ -680,7 +680,6 @@
             chatHost.setOnTheaterSuggestedInputSelect(submitSuggestedFromHost);
         }
         if (typeof chatHost.setOnTheaterEnd === 'function') chatHost.setOnTheaterEnd(function () { runtime.requestEnd(); });
-        if (typeof chatHost.setOnTheaterSkipPlayback === 'function') chatHost.setOnTheaterSkipPlayback(function () { skipPlayback(); });
         render();
         return true;
     }

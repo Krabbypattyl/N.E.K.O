@@ -94,12 +94,6 @@ describe('message-schema', () => {
     expect(onTheaterSubmit).toHaveBeenCalledWith('继续演绎');
   });
 
-  it('preserves the dedicated theater playback skip callback', () => {
-    const onTheaterSkipPlayback = vi.fn();
-    parseChatWindowProps({ onTheaterSkipPlayback }).onTheaterSkipPlayback?.();
-    expect(onTheaterSkipPlayback).toHaveBeenCalledOnce();
-  });
-
   it('accepts chat surface mode props', () => {
     const props = parseChatWindowProps({
       chatSurfaceMode: 'compact',

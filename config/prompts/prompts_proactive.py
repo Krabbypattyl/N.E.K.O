@@ -3920,6 +3920,17 @@ PROACTIVE_SOURCE_LABELS = {
 # Multigame contract: outer game_type keys match config.MINI_GAME_INVITE_AVAILABLE_GAMES,
 # inner keys hold supported-locale lines. New games require another outer
 # key only, without shortcut-dispatch changes.
+THEATER_STORY_INVITE_LINES: dict[str, str] = {
+    "zh": "{master_name}，我挑了{story_title}。{synopsis}要不要和我一起演绎这个故事？",
+    "zh-TW": "{master_name}，我挑了{story_title}。{synopsis}要不要和我一起演繹這個故事？",
+    "en": '{master_name}, I picked “{story_title}”. {synopsis} Want to act out this story with me?',
+    "ja": "{master_name}、『{story_title}』を選んだよ。{synopsis}一緒にこの物語を演じてみない？",
+    "ko": "{master_name}, ‘{story_title}’을 골랐어. {synopsis}나랑 이 이야기를 함께 연기해 볼래?",
+    "ru": 'Я выбрала «{story_title}», {master_name}. {synopsis} Разыграем эту историю вместе?',
+    "es": 'He elegido «{story_title}», {master_name}. {synopsis} ¿La interpretamos juntos?',
+    "pt": 'Escolhi “{story_title}”, {master_name}. {synopsis} Vamos encenar essa história juntos?',
+}
+
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     "theater": {
         "zh": "{master_name}，要不要挑个剧本，和我一起演一场小剧场？",

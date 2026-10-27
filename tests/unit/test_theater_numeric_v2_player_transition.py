@@ -41,6 +41,23 @@ def initiation_cases():
             yield dict(name=place+'_'+name, expected_intent=intent, **initiation_case(place,target,public=public,message=message))
 
 
+@pytest.mark.asyncio
+async def test_evaluator_distinguishes_current_choice_from_earlier_player_input(tmp_path):
+    case = initiation_case()
+    runtime = NumericV2Runtime(case['engine'], tmp_path)
+    current = await runtime.start_session(session_id='new_choice', catgirl_binding=_binding(),
+        opening_performance=case['session'].opening_performance)
+    old = '你先去，我留在这里。'
+    outcome = runtime.prepare_turn(current, TurnRequestV2('stay', 0, old), ())
+    current = await runtime.commit_turn(outcome, {'performance': '好，我先去，你留在这里。', 'suggested_inputs': []})
+    latest = '我改主意了，我们一起去阅览室。'
+    messages = _build_messages(case['engine'], current.session, latest)
+    data = json.loads(messages[1].content.split('\n', 1)[1])
+    assert old in json.dumps(data['scene_context'], ensure_ascii=False)
+    assert data['player_input'] == latest and list(data)[-1] == 'player_input'
+    assert data['player_input_revision'] == current.session.revision + 1
+
+
 @pytest.mark.parametrize('place,target,offer,entry,aftermath', [
     ('灯会渡口', '船到岸边', '现在点亮引路灯，等摆渡人靠岸吗？',
      '引路灯亮起，摆渡人看见灯光后划向岸边。', '摆渡人靠岸后等待玩家决定是否登船。'),

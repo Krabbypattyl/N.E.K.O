@@ -63,5 +63,5 @@ def test_actor_identity_instruction_does_not_use_framework_name(phase):
         assert '猫娘写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
         assert '当前猫娘由“测试猫娘”扮演。' in prompt
     else:
-        assert prompt.startswith('你负责扮演当前猫娘')
+        assert '扮演当前猫娘' in prompt.split('。', 1)[0]
     assert 'N.E.K.O Numeric v2 演绎 Actor' not in prompt

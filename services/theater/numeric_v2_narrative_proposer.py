@@ -247,18 +247,20 @@ def _messages(performance: Mapping[str, Any], player_input: str,
         "narrative_state": project_narrative_state(session, focus=message),
         "history_evidence": history_evidence(session, message, claims=body, max_tokens=1500),
     }
+    protagonists = {"player": {"role": "用户"}, "character": {"role": "当前猫娘"}}
+    binding = getattr(session, "catgirl_binding", {})
+    for role, name in (("character", binding.get("catgirl_name")),
+                       ("player", binding.get("player_address") if getattr(session, "player_address_known", False) else None)):
+        if isinstance(name, str) and name.strip():
+            protagonists[role]["name"] = name
     if source_refs:
         # 原文只发一次；编号、阶段、来源和正文一起计入原总预算，不能在旧装箱之后补发。
         data.update(source_texts=sources, entity_refs=_entity_catalog(data["narrative_state"]),
-                    protagonists={"player": {"role": "用户"}, "character": {"role": "当前猫娘"}})
-        binding = getattr(session, "catgirl_binding", {})
-        for role, name in (("character", binding.get("catgirl_name")),
-                           ("player", binding.get("player_address") if getattr(session, "player_address_known", False) else None)):
-            if isinstance(name, str) and name.strip():
-                data["protagonists"][role]["name"] = name
+                    protagonists=protagonists)
         system = SystemMessage(content=_SOURCE_SYSTEM)
     else:
-        data.update(player_input=message, phase_texts=phases)
+        # The independent reviewer must resolve the same named speaker as the proposer.
+        data.update(player_input=message, phase_texts=phases, protagonists=protagonists)
         # 裁剪只按实际发送的审核提示计量，不先借用已废弃的提案提示消耗历史额度。
         system = SystemMessage(content=_REVIEW_SYSTEM + (_ORDERED_SOURCE_RULE if has_ordered_sources else ""))
     while True:

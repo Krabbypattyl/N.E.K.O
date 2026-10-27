@@ -981,9 +981,6 @@
         setOnTheaterEnd: function (handler) {
             I.state.onTheaterEnd = typeof handler === 'function' ? handler : null;
         },
-        setOnTheaterSkipPlayback: function (handler) {
-            I.state.onTheaterSkipPlayback = typeof handler === 'function' ? handler : null;
-        },
         prepareCompactHistoryDropSubmit: I.prepareCompactHistoryDropSubmit,
         setOnAvatarInteraction: function (handler) {
             I.state.onAvatarInteraction = typeof handler === 'function' ? handler : null;

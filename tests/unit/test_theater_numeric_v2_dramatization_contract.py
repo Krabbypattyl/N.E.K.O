@@ -133,7 +133,7 @@ def test_npc_farewell_keeps_completed_history_without_requiring_catgirl_to_summa
     assert "先按原话和动作辨明受话人，不把对 NPC 的话当成对猫娘说" in system
     assert "由该 NPC 在来源旁白回应；猫娘不代答、受谢或再次评价已完成结果" in system
     assert "没有新信息时 source_performance 留空" in system
-    assert "不扩展玩家授权范围或补造外部未知结果" in system
+    assert actor._PLAYER_AUTHORIZATION_RULE in system
 
 
 @pytest.mark.parametrize('source_policy', ['required', 'forbidden'])

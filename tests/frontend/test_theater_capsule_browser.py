@@ -150,7 +150,7 @@ def _snapshot(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('page_path', ['/', '/chat'])
-def test_committed_playback_can_expand_or_yield_to_player_input(mock_page: Page, running_server: str, page_path):
+def test_playback_has_no_expand_button_and_still_yields_to_player_input(mock_page: Page, running_server: str, page_path):
     calls = []
     records = []
     text = '这段已经提交的对白可以立即完整显示。' * 12
@@ -199,11 +199,8 @@ def test_committed_playback_can_expand_or_yield_to_player_input(mock_page: Page,
     expect(composer).to_be_editable()
     composer.fill('边听边写的草稿。')
     skip = mock_page.locator('[data-compact-hit-region-id="history:theater-skip-playback"]')
-    expect(skip).to_be_visible()
-    skip.click()
-    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    expect(skip).to_have_count(0)
     expect(composer).to_have_value('边听边写的草稿。')
-    assert mock_page.evaluate('(text) => window.nekoTheaterRuntime.getState().history.some(row => row.text === text)', text)
     assert len(calls) == 1
 
     composer.press('Enter')
@@ -335,6 +332,7 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     mock_page.wait_for_function("() => window.__startReady.length === 1")
     state = mock_page.evaluate("window.nekoTheaterRuntime.getState()")
     assert state["active"] is True
+    expect(mock_page.locator(".focus-thinking-history-row .focus-thinking-dot")).to_have_count(3)
     assert state["storyTitle"] == "雨巷来信"
     assert state["history"][0]["id"] == "opening-loading-capsule-browser-session"
     for _ in range(50):
@@ -368,6 +366,7 @@ def test_runtime_enters_theater_loading_before_start_model_response(
         assert 'end' in pending
         assert json.loads(pending['end'].request.post_data)['session_id'] == 'capsule-browser-session'
         assert mock_page.evaluate('window.nekoTheaterRuntime.getState().active') is False
+        expect(mock_page.locator('.focus-thinking-history-row')).to_have_count(0)
         return
     mock_page.wait_for_function(
         "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
@@ -376,6 +375,84 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     assert mock_page.evaluate(
         "window.nekoTheaterRuntime.getState().history.some(entry => entry.id.startsWith('opening-loading-'))"
     ) is False
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('page_path', ['/', '/chat'])
+@pytest.mark.parametrize('fails', [False, True])
+def test_waiting_bubble_and_free_input_hint_follow_the_real_turn(
+    mock_page: Page, running_server: str, page_path, fails,
+):
+    pending = {}
+
+    def handler(route: Route):
+        path = route.request.url.split('?')[0]
+        if path.endswith('/session/input'):
+            pending['input'] = route
+            return
+        payload = (_snapshot(revision=1) if path.endswith('/session/capsule-browser-session')
+                   else {'ok': True, 'audio_queued': False})
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.route('**/api/seven-day-tutorial/state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'initialized': True, 'revision': 1,
+            'state': {'completedRounds': list(range(1, 8))}})))
+    mock_page.route('**/api/characters/persona-onboarding-state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'state': {'status': 'completed'}})))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate("""() => {
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'waiting-launch', story_id:'capsule-browser-story',
+            session_id:'capsule-browser-session', revision:1}, window.location.origin);
+    }""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    if mock_page.locator('.composer-input:visible').count() == 0:
+        mock_page.locator('.compact-chat-capsule-button').click()
+    text_input = mock_page.locator('.composer-input:visible')
+    text_input.fill('我想知道旧信的来历。')
+    text_input.press('Enter')
+    dots = mock_page.locator('.focus-thinking-history-row .focus-thinking-dot')
+    expect(dots).to_have_count(3)
+    expect(dots.first).to_be_visible()
+    assert dots.evaluate_all('(nodes) => nodes.map(n => getComputedStyle(n).animationDelay)') == ['0s', '0.18s', '0.36s']
+    assert dots.first.evaluate('(n) => getComputedStyle(n).animationName') == 'focus-thinking-dot-pulse'
+    expect(mock_page.locator('.compact-chat-capsule-button')).to_be_disabled()
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime.getState().phase === "evaluating"')
+    assert 'input' in pending
+    if fails:
+        payload = {'ok': False, 'reason': 'numeric_v2_actor_timeout'}
+    else:
+        record = {'revision': 2, 'input_text': '我想知道旧信的来历。',
+                  'performance': '是你母亲留下的。', 'suggested_inputs': []}
+        payload = _snapshot(revision=2, performance_history=[record])
+        payload.update(performance=record, suggested_inputs=[])
+    pending['input'].fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    expect(dots).to_have_count(0)
+    hint = mock_page.evaluate("() => window.i18next.t('theater.freeInputHint')")
+    if mock_page.locator('.composer-input:visible').count() == 0:
+        if not fails:
+            expect(mock_page.locator('.compact-chat-capsule-button')).to_have_text(hint)
+        mock_page.locator('.compact-chat-capsule-button').click()
+    if fails:
+        expect(text_input).not_to_have_attribute('placeholder', hint)
+        expect(text_input).to_have_value('我想知道旧信的来历。')
+    else:
+        expect(text_input).to_have_attribute('placeholder', hint)
+        expect(text_input).to_have_value('')
+        expect(mock_page.locator('.composer-galgame-option')).to_have_count(0)
+        text_input.fill('我愿意听。')
+        expect(text_input).to_have_value('我愿意听。')
+    mock_page.evaluate("() => window.nekoTheaterRuntime.clear('test-complete')")
+    expect(dots).to_have_count(0)
+    expect(mock_page.get_by_placeholder(hint, exact=True)).to_have_count(0)
 
 
 @pytest.mark.frontend
