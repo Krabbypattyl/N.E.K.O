@@ -1269,9 +1269,8 @@ async def _run_trace(
             "message": player_input,
             # Bypass free-chat classification only for real clicks on current Actor recommendations; simulator failure submits no fallback.
             "input_source": (
-                input_source if input_source in {"reinvite", "accept_invitation"} else "suggestion"
-                if input_source == "recommended"
-                else "freeform"
+                input_source if input_source in {"reinvite", "accept_invitation"}
+                else ("suggestion" if input_source == "recommended" else "freeform")
             ),
         })
         before_revision = current.session.revision
