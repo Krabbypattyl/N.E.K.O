@@ -6,8 +6,10 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '../..');
 
 class Element {
-    constructor() { this.children = []; this.listeners = {}; this.value = ''; this.hidden = false; this.disabled = false; this.style = {}; }
+    constructor(ownerDocument) { this.ownerDocument = ownerDocument; this.children = []; this.listeners = {}; this.value = ''; this.hidden = false; this.disabled = false; this.style = {}; }
     appendChild(child) { child.parent = this; this.children.push(child); }
+    contains(child) { return child === this || this.children.some(element => element.contains(child)); }
+    focus(options) { this.ownerDocument.activeElement = this; this.focusOptions = options; }
     replaceChildren(...children) { this.children = children; this.value = ''; }
     addEventListener(type, callback) { this.listeners[type] = callback; }
     click() { if (!this.disabled && this.listeners.click) this.listeners.click(); }
@@ -15,7 +17,21 @@ class Element {
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
 }
 async function fixture(options = {}) {
-    const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices'].map(id => [id, new Element()]));
+    const document = { getElementById: id => elements[id], createElement: () => new Element(document) };
+    document.body = new Element(document);
+    document.activeElement = document.body;
+    const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','coming-soon-title','management-content'].map(id => [id, new Element(document)]));
+    for (const id of ['status', 'upgrade', 'refresh', 'device-controls']) elements['management-content'].appendChild(elements[id]);
+    for (const id of ['device-name', 'replacement', 'activate', 'devices']) elements['device-controls'].appendChild(elements[id]);
+    elements.replacement.appendChild(elements['replacement-id']);
+    elements['coming-soon'].appendChild(elements['coming-soon-title']);
+    const headerControl = new Element(document);
+    const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
+    for (const id of ['coming-soon', 'management-content']) {
+        const tag = template.match(new RegExp('<[^>]*\\bid="' + id + '"[^>]*>'));
+        assert.ok(tag, `template must define ${id}`);
+        elements[id].hidden = /\shidden(?:\s|=|>)/.test(tag[0]);
+    }
     const events = {}, timeouts = [];
     const data = { owner: 'account-a', protocol: 2, upgrade: false, calls: [], devices: Array.from({ length: 5 }, (_, i) => ({
         registration_id: 'old-' + i, registration_version: 1, display_name: 'Laptop ' + i, active: true, is_current: false })) };
@@ -43,13 +59,119 @@ async function fixture(options = {}) {
     const window = { t: key => key, addEventListener(name, callback) { events[name] = callback; } };
     let intercept = options.intercept;
     vm.runInNewContext(fs.readFileSync(path.join(root, 'static/feedback-devices.js'), 'utf8'), {
-        window, document: { getElementById: id => elements[id], createElement: () => new Element() }, fetch,
+        window, document, fetch,
         AbortSignal: { timeout(ms) { const controller = new AbortController(); timeouts.push({ms,controller}); return controller.signal; } },
     });
     await settle();
-    return { elements, data, events, timeouts, setIntercept(value) { intercept = value; } };
+    return { elements, data, events, timeouts, document, headerControl, setIntercept(value) { intercept = value; } };
 }
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); }
+
+for (const outcome of ['notEnabled', 'ready', 'upgrade', 'unavailable']) {
+    test(`initial status read hides management controls, then renders ${outcome}`, async () => {
+        let releaseStatus, rejectStatus;
+        const statusRead = new Promise((resolve, reject) => { releaseStatus = resolve; rejectStatus = reject; });
+        const s = await fixture({ intercept: url => url.endsWith('/status') ? statusRead : undefined });
+        assert.ok(s.data.calls.some(row => row.url.endsWith('/status')));
+        assert.equal(s.elements['coming-soon'].hidden, true);
+        assert.equal(s.elements['management-content'].hidden, true, 'management controls must stay hidden while capability is unknown');
+        if (outcome === 'unavailable') rejectStatus(Error('offline'));
+        else releaseStatus({ ok: true, json: async () => ({ success: true, owner_key: s.data.owner,
+            protocol_version: outcome === 'notEnabled' ? 1 : 2, upgrade_required: outcome === 'upgrade' }) });
+        await settle();
+        assert.equal(s.elements['coming-soon'].hidden, outcome !== 'notEnabled');
+        assert.equal(s.elements['management-content'].hidden, outcome === 'notEnabled');
+        assert.equal(s.elements.status.textContent, 'feedbackDevices.' + outcome);
+        assert.equal(s.elements.refresh.disabled, false);
+        assert.equal(s.document.activeElement, s.document.body, 'initial status must not steal focus');
+        if (outcome === 'ready') assert.equal(s.elements.devices.children.length, 5);
+        if (outcome === 'upgrade') assert.equal(s.elements.upgrade.hidden, false);
+    });
+}
+
+for (const target of ['refresh', 'device-name', 'remove']) {
+    test(`coming-soon transition moves focus from ${target} to its visible heading`, async () => {
+        const s = await fixture();
+        const control = target === 'remove' ? s.elements.devices.children[0].children[1] : s.elements[target];
+        control.focus();
+        s.data.protocol = 1;
+        s.elements.refresh.click();
+        await settle();
+        assert.equal(s.elements['management-content'].hidden, true);
+        assert.equal(s.elements['coming-soon'].hidden, false);
+        assert.equal(s.document.activeElement, s.elements['coming-soon-title']);
+        assert.equal(s.elements['coming-soon-title'].focusOptions.preventScroll, true);
+        const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
+        assert.match(template, /<h1\b[^>]*id="coming-soon-title"[^>]*tabindex="-1"/);
+    });
+}
+
+test('focus moved to the header during a pending refresh is preserved, including locale changes', async () => {
+    const s = await fixture();
+    let releaseStatus;
+    s.setIntercept(url => url.endsWith('/status') ? new Promise(resolve => { releaseStatus = resolve; }) : undefined);
+    s.elements.refresh.focus();
+    s.elements.refresh.click();
+    await settle();
+    assert.equal(typeof releaseStatus, 'function');
+    s.headerControl.focus();
+    releaseStatus({ ok: true, json: async () => ({ success: true, protocol_version: 1 }) });
+    await settle();
+    assert.equal(s.elements['coming-soon'].hidden, false);
+    assert.equal(s.document.activeElement, s.headerControl);
+    s.events.localechange();
+    assert.equal(s.document.activeElement, s.headerControl);
+});
+
+for (const outcome of ['ready', 'upgrade', 'unavailable']) {
+    test(`${outcome} refresh keeps focus on the visible refresh button`, async () => {
+        const s = await fixture();
+        s.elements.refresh.focus();
+        if (outcome === 'upgrade') s.data.upgrade = true;
+        if (outcome === 'unavailable') s.setIntercept(() => { throw Error('offline'); });
+        s.elements.refresh.click();
+        await settle();
+        assert.equal(s.elements['management-content'].hidden, false);
+        assert.equal(s.document.activeElement, s.elements.refresh);
+    });
+}
+
+for (const outcome of ['ready', 'upgrade', 'unavailable', 'conflict', 'notEnabled']) {
+    for (const focus of ['notice', 'header', 'body']) {
+        test(`pageshow from coming-soon to ${outcome} preserves focus ownership: ${focus}`, async () => {
+            const s = await fixture();
+            s.elements.refresh.focus();
+            s.data.protocol = 1;
+            s.elements.refresh.click();
+            await settle();
+            assert.equal(s.document.activeElement, s.elements['coming-soon-title']);
+            s.events.pagehide();
+            let releaseStatus;
+            s.setIntercept(url => url.endsWith('/status') ? new Promise(resolve => { releaseStatus = resolve; }) : undefined);
+            s.events.pageshow();
+            await settle();
+            assert.equal(typeof releaseStatus, 'function');
+            if (focus === 'header') s.headerControl.focus();
+            if (focus === 'body') s.document.activeElement = s.document.body;
+            const failed = outcome === 'unavailable' || outcome === 'conflict';
+            releaseStatus({ ok: !failed, status: failed ? 503 : 200, json: async () => failed
+                ? { success: false, error_code: outcome === 'conflict' ? 'cloud_conflict' : 'offline' }
+                : { success: true, owner_key: s.data.owner, protocol_version: outcome === 'notEnabled' ? 1 : 2,
+                    upgrade_required: outcome === 'upgrade' } });
+            await settle();
+            const expected = focus === 'header' ? s.headerControl : focus === 'body' ? s.document.body
+                : outcome === 'notEnabled' ? s.elements['coming-soon-title'] : s.elements.refresh;
+            assert.equal(s.elements['coming-soon'].hidden, outcome !== 'notEnabled');
+            assert.equal(s.elements['management-content'].hidden, outcome === 'notEnabled');
+            assert.equal(s.elements.status.textContent, 'feedbackDevices.' + outcome);
+            assert.equal(s.document.activeElement, expected);
+            assert.equal(s.elements.refresh.disabled, false);
+            if (expected === s.elements.refresh) assert.equal(expected.focusOptions.preventScroll, true);
+            s.events.localechange();
+            assert.equal(s.document.activeElement, expected, 'retranslation must not move focus');
+        });
+    }
+}
 
 test('sixth device requires an explicit choice and a click; names are only user supplied', async () => {
     const { elements, data } = await fixture();
@@ -166,6 +288,42 @@ test('default v1 explains unavailable capability and does not request devices', 
     assert.equal(s.elements.status.textContent, 'feedbackDevices.notEnabled');
     assert.equal(s.elements.refresh.disabled, false);
     assert.equal(s.data.calls.filter(row => row.url.endsWith('/devices')).length, before);
+});
+
+test('unopened state shows Yui notice and hides management actions, then recovers on pageshow', async () => {
+    const s = await fixture();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    s.data.protocol = 1;
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, false);
+    assert.equal(s.elements['management-content'].hidden, true);
+    s.events.localechange();
+    assert.equal(s.elements['coming-soon'].hidden, false);
+    s.events.pagehide();
+    s.data.protocol = 2;
+    s.events.pageshow(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    assert.equal(s.elements.devices.children.length, 5);
+});
+
+test('upgrade and read errors remain actionable after an unopened notice', async () => {
+    const s = await fixture();
+    s.data.protocol = 1;
+    s.elements.refresh.click(); await settle();
+    s.data.upgrade = true;
+    s.events.pagehide(); s.events.pageshow(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    assert.equal(s.elements.upgrade.hidden, false);
+    assert.equal(s.elements.refresh.disabled, false);
+    s.setIntercept(() => { throw Error('offline'); });
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.unavailable');
+    assert.equal(s.elements.refresh.disabled, false);
 });
 
 test('failed mutation and failed follow-up read still leave a usable retry button', async () => {

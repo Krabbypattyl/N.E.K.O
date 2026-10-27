@@ -9445,6 +9445,49 @@ describe('App', () => {
     }
   });
 
+  it('starts a new yarn-ball drag when the previous release was lost outside the window', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const minimize = document.body.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement;
+    const grabs: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(minimize, {
+        pointerId: 1, clientX: 40, clientY: 36, screenX: 240, screenY: 360,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 1, clientX: 64, clientY: 48, screenX: 264, screenY: 372,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      // 在任务栏松手不会把 pointerup 送回窗口，鼠标 pointerId 保持为 1。
+      fireEvent.pointerDown(minimize, {
+        pointerId: 1, clientX: 48, clientY: 36, screenX: 248, screenY: 360,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 1, clientX: 80, clientY: 52, screenX: 280, screenY: 376,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(ends.map((detail) => detail.reason)).toEqual(['lost-pointerup']);
+      expect(grabs).toHaveLength(2);
+      expect(grabs[1]).toMatchObject({
+        pointerId: 1,
+        clientX: 48,
+        clientY: 36,
+        screenX: 248,
+        screenY: 360,
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
   it('finishes a replaced compact surface drag before priming the next pointer', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
     const inputFrame = document.body.querySelector('.compact-chat-surface-frame') as HTMLDivElement;

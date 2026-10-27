@@ -186,11 +186,11 @@
         if (ownerMatch) return ownerMatch[1].toLowerCase();
 
         const idSource = anchor && typeof anchor.id === 'string' ? anchor.id : '';
-        const idMatch = idSource.match(/^(live2d|vrm|mmd)-/i);
+        const idMatch = idSource.match(/^(live2d|vrm|mmd|pngtuber)-/i);
         if (idMatch) return idMatch[1].toLowerCase();
 
         const classSource = anchor && typeof anchor.className === 'string' ? anchor.className : '';
-        const classMatch = classSource.match(/\b(live2d|vrm|mmd)-/i);
+        const classMatch = classSource.match(/\b(live2d|vrm|mmd|pngtuber)-/i);
         return classMatch ? classMatch[1].toLowerCase() : '';
     }
 
@@ -570,7 +570,7 @@
         // 按系统前缀过滤按钮选择器
         const selector = ownerPrefix
             ? `[id^="${ownerPrefix}-btn-"]`
-            : '[id^="vrm-btn-"], [id^="live2d-btn-"], [id^="mmd-btn-"]';
+            : '[id^="vrm-btn-"], [id^="live2d-btn-"], [id^="mmd-btn-"], [id^="pngtuber-btn-"]';
 
         // 第一优先级：扫描所有单个按钮
         const allBtns = document.querySelectorAll(selector);
@@ -883,9 +883,8 @@
 
         // 从 popup ID 推断系统前缀，用于过滤 getButtonZone
         const popupId = popup ? popup.id : '';
-        const ownerPrefix = popupId.startsWith('vrm-') ? 'vrm'
-                          : popupId.startsWith('live2d-') ? 'live2d'
-                          : popupId.startsWith('mmd-') ? 'mmd' : '';
+        const ownerPrefixMatch = popupId.match(/^(live2d|vrm|mmd|pngtuber)-/);
+        const ownerPrefix = ownerPrefixMatch ? ownerPrefixMatch[1] : '';
 
         function positionStackedPanel(buttonZone) {
             let panelLeft = Math.max(edgeMargin, popupRect.left);
