@@ -788,6 +788,24 @@ async def _run_mini_game_invite_short_circuit(
 
 
 # 句末标点集合：中英日韩俄西葡的句末符号，用于判断摘要是否已自带结尾。
+# 作者可能自带定界符（内置三部的 meta.title 就都带《》），而各语言模板会再套一层自己的，
+# 不剥就会出现《《…》》或“《…》”。只剥首尾完全配对的一层；ASCII 引号不在表内，
+# 因为它在标题里既可能是定界符也可能是正文的一部分，剥错比不剥更糟。
+_TITLE_DELIMITER_PAIRS = (
+    ("《", "》"), ("『", "』"), ("「", "」"), ("〈", "〉"),
+    ("“", "”"), ("‘", "’"), ("«", "»"),
+)
+
+
+def _bare_story_title(title: str) -> str:
+    """Strip one matched pair of outer delimiters so each locale template adds its own."""
+    text = (title or "").strip()
+    for opening, closing in _TITLE_DELIMITER_PAIRS:
+        if len(text) > 2 and text.startswith(opening) and text.endswith(closing):
+            return text[1:-1].strip()
+    return text
+
+
 _SYNOPSIS_TERMINATORS = "。！？…．.!?~、，,；;：:」』”\"')）】》"
 
 def _render_mini_game_invite_line(
@@ -819,7 +837,7 @@ def _render_mini_game_invite_line(
         if hook and hook[-1] not in _SYNOPSIS_TERMINATORS:
             hook += "。" if locale in {"zh", "zh-TW", "ja"} else "."
         rendered = _loc(THEATER_STORY_INVITE_LINES, locale).format(
-            master_name=safe_master, story_title=selected_story["title"], synopsis=hook,
+            master_name=safe_master, story_title=_bare_story_title(selected_story["title"]), synopsis=hook,
         )
         # 空摘要会让带空格的模板留下两个连续空格；中日文模板本就无空格，压平无副作用。
         return " ".join(rendered.split())

@@ -1891,6 +1891,41 @@ def test_theater_toggle_payload_and_persistence_are_independent():
     assert _validate_conversation_settings(settings) == settings
 
 
+@pytest.mark.parametrize('title', ['《霓虹下的猫耳重构》', '霓虹下的猫耳重构'])
+@pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
+def test_theater_invite_renders_one_clean_title_in_every_locale(invite_lang, title):
+    """内置三部的 meta.title 自带《》，而八个模板各自又会套一层定界符。"""
+    from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
+
+    line = _render_mini_game_invite_line(
+        'theater', invite_lang, '阿八',
+        selected_story={'title': title}, synopsis='霓虹牌下少了一只猫耳',
+    )
+    # 标题正文出现且只出现一次，外层定界符不叠加。
+    assert line.count('霓虹下的猫耳重构') == 1, line
+    for opening, closing in ('《》', '『』', '「」', '“”', '‘’', '«»'):
+        assert opening * 2 not in line and closing * 2 not in line, line
+    # 摘要是模型现生成的、不保证句末标点，而中日韩模板把它直接接在下一句前面。
+    # 这里直接验「摘要正文后紧跟一个句末标点」，否则 zh 会读成「…一只猫耳要不要陪我…」。
+    after = line.split('霓虹牌下少了一只猫耳', 1)[1][:1]
+    assert after in '。.', (invite_lang, after, line)
+    # 带空格的模板遇到摘要时不应留下连续空格。
+    assert '  ' not in line, line
+
+
+@pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
+def test_theater_invite_without_synopsis_keeps_single_spaces(invite_lang):
+    """摘要那次模型调用会超时或超长，此时返回空串；带空格的模板会因此留下连续空格。"""
+    from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
+
+    line = _render_mini_game_invite_line(
+        'theater', invite_lang, '阿八',
+        selected_story={'title': '《月台尽头的猫灯》'}, synopsis='',
+    )
+    assert '  ' not in line, (invite_lang, line)
+    assert line.count('月台尽头的猫灯') == 1, line
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('synopsis', ['你我在末班列车月台守住一盏将熄的猫灯，寻找失约旅人的线索。', ''])
 async def test_theater_invitation_uses_short_synopsis_and_freezes_same_market_story(monkeypatch, synopsis):
