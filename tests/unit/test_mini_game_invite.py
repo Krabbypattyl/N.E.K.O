@@ -1894,7 +1894,7 @@ def test_theater_toggle_payload_and_persistence_are_independent():
 @pytest.mark.parametrize('title', ['《霓虹下的猫耳重构》', '霓虹下的猫耳重构'])
 @pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
 def test_theater_invite_renders_one_clean_title_in_every_locale(invite_lang, title):
-    """内置三部的 meta.title 自带《》，而八个模板各自又会套一层定界符。"""
+    """Bundled meta.title values carry their own brackets; every locale template adds more."""
     from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
 
     line = _render_mini_game_invite_line(
@@ -1915,7 +1915,7 @@ def test_theater_invite_renders_one_clean_title_in_every_locale(invite_lang, tit
 
 @pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
 def test_theater_invite_without_synopsis_keeps_single_spaces(invite_lang):
-    """摘要那次模型调用会超时或超长，此时返回空串；带空格的模板会因此留下连续空格。"""
+    """A timed-out or oversized summary returns an empty string, doubling a template space."""
     from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
 
     line = _render_mini_game_invite_line(
