@@ -237,3 +237,36 @@ def test_theater_invitation_names_the_reserved_window_for_native_controls(mock_p
     with popup.expect_event('close'):
         pending[0].fulfill(json={'action': 'cooldown'})
     assert not mock_page.is_closed()
+
+
+@pytest.mark.frontend
+def test_theater_invitation_keeps_an_existing_market_window_on_non_accept_outcome(mock_page, running_server):
+    pending = []
+    mock_page.route('**/api/mini_game/invite/respond', lambda route: pending.append(route))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(running_server + '/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.reactChatWindowHost.setMiniGameInvitePrompt')
+    # 用户上一次邀约或「更多剧本」留下的同名窗口：已经载入页面，不是 about:blank。
+    # 用 /chat 而不是选剧页，因为选剧页自己会跳到市场站，title 会随之变化。
+    with mock_page.expect_popup() as existing:
+        mock_page.evaluate("url => window.open(url, 'neko_theater_market')", running_server + '/chat')
+    existing_window = existing.value
+    existing_window.wait_for_load_state('domcontentloaded')
+    mock_page.evaluate("""() => {
+        window.reactChatWindowHost.openWindow();
+        window.reactChatWindowHost.setMiniGameInvitePrompt({sessionId:'existing-market-window',gameType:'theater',
+            options:[{choice:'accept',label:'接下邀约'},{choice:'decline',label:'暂不参加'}]});
+    }""")
+    mock_page.get_by_role('button', name='接下邀约', exact=True).click()
+    for _ in range(50):
+        if pending:
+            break
+        mock_page.wait_for_timeout(20)
+    assert pending
+    pending[0].fulfill(json={'action': 'cooldown'})
+    mock_page.wait_for_timeout(400)
+    # 旧窗口归用户：既不该被占位文本覆盖，也不该替他关掉。
+    # 页面自己会改 title（角色名），所以只锁「不是占位页」而不锁具体标题。
+    assert not existing_window.is_closed()
+    assert 'Loading' not in existing_window.title()
+    assert existing_window.url.startswith(running_server)
