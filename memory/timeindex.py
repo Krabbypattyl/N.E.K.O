@@ -1197,6 +1197,44 @@ class TimeIndexedMemory:
             self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
         )
 
+    def get_original_source_evidence(self, lanlan_name: str, source_ids: list[str]) -> dict[str, tuple[str, int | float]]:
+        """Read original role/time evidence by identity, without interpreting message text."""
+        from memory.long_term_sync import original_message_source
+        from memory.message_sources import is_theater_memory_message
+        import re
+        wanted = {value for value in source_ids if re.fullmatch(r'(?:sync:[0-9a-f]{32}|desktop:[0-9a-f]{64})', value)}
+        if not wanted:
+            return {}
+        table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        found = {}
+        ordered = sorted(wanted)
+        # Legacy hashes are derived from originals rather than embedded in them.
+        batches = [None] if any(value.startswith('desktop:') for value in wanted) else [
+            ordered[offset:offset + 32] for offset in range(0, len(ordered), 32)]
+        with self._get_engine_lock(lanlan_name):
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return {}
+            with self.engines[lanlan_name].connect() as connection:
+                for batch in batches:
+                    params = {f'source_{index}': f'%{value[5:]}%' for index, value in enumerate(batch or [])}
+                    condition = ' WHERE ' + ' OR '.join(f'message LIKE :{key}' for key in params) if params else ''
+                    rows = connection.execute(text(f'SELECT timestamp,session_id,message FROM {table}{condition}'), params)
+                    for original_time, session_id, serialized in rows:
+                        try:
+                            stored = json.loads(serialized)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if (not isinstance(stored, dict) or stored.get('type') not in ('human', 'ai')
+                                or is_theater_memory_message(stored)):
+                            continue
+                        identity, at = original_message_source(stored, session_id, original_time)
+                        if identity in wanted and at is not None:
+                            found.setdefault(identity, set()).add((stored['type'], at))
+        return {identity: next(iter(times)) for identity, times in found.items() if len(times) == 1}
+
+    async def aget_original_source_evidence(self, lanlan_name: str, source_ids: list[str]) -> dict[str, tuple[str, int | float]]:
+        return await asyncio.to_thread(self.get_original_source_evidence, lanlan_name, source_ids)
+
     def retrieve_latest_assistant_texts(
         self,
         lanlan_name: str,
@@ -1895,6 +1933,30 @@ class TimeIndexedMemory:
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 回填 FTS 索引失败: {e}")
             return None
+
+    def replace_fact_index(self, lanlan_name: str, rows: list[tuple[object, str]]) -> None:
+        """Replace only derived fact-search rows after an authoritative snapshot.
+
+        Failures propagate to the memory owner's file rollback and event replay.
+        Conversation/archive tables and their ordering remain untouched.
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            raise OSError('fact_search_index_unavailable')
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        seen = set()
+        payload = []
+        for fact_id, content in rows:
+            key = (type(fact_id).__name__, fact_id)
+            if key not in seen:
+                seen.add(key)
+                payload.append({'fid': fact_id, 'content': ' '.join(fts_tokens(content, stop_names))})
+        with self.engines[lanlan_name].begin() as conn:
+            conn.execute(text(f'DELETE FROM {self.FACTS_FTS_TABLE}'))
+            if payload:
+                conn.execute(text(f'INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)'), payload)
+            conn.execute(text(f'INSERT OR REPLACE INTO {self.FACTS_FTS_META_TABLE}(key, value) VALUES(:key, :value)'),
+                         {'key': self._FTS_BACKFILL_META_KEY, 'value': datetime.now().isoformat()})
 
     async def abackfill_fact_index(
         self, lanlan_name: str, rows: list[tuple[object, str]],

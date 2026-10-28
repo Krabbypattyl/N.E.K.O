@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Process-wide serialization for every read and write of ``<character>/recent.json``.
+"""Cross-process serialization for every read and write of ``<character>/recent.json``.
 
-This module is deliberately a leaf: it depends only on ``utils.file_utils``,
-``os`` and ``threading``. ``memory``, ``main_routers`` and ``utils`` can all
+This module is deliberately a leaf: it uses ``utils.file_utils``, ``filelock``
+and standard-library primitives. ``memory``, ``main_routers`` and ``utils`` can all
 import it without dragging in the memory god-module and without inverting the
 dependency direction.
 
@@ -30,14 +30,18 @@ Both helpers block on file IO. Call them from a worker thread
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
+
+from filelock import FileLock, Timeout
 
 from utils.file_utils import atomic_write_json
 
@@ -68,10 +72,12 @@ __all__ = [
     "recent_file_locks",
     "read_recent_text",
     "read_recent_text_unlocked",
+    "read_recent_write_receipt_unlocked",
     "release_recent_file_locks",
     "restore_recent_deletions",
     "restore_recent_registry_state",
     "set_recent_pending_unlocked",
+    "subscribe_recent_changes",
     "snapshot_recent_redirects",
     "snapshot_recent_deletions",
     "mark_recent_deleted",
@@ -114,7 +120,52 @@ class RecentGenerationConflictError(RuntimeError):
 #
 # Deliberately avoid RLock: every *_unlocked helper requires caller ownership; reentrancy would merely hide
 # bugs where an inner nested RMW persists the outer transaction's partially modified state.
-_LOCKS: dict[str, threading.Lock] = {}
+class _RecentFileLock:
+    """Keep the nonreentrant thread gate and serialize independent services."""
+
+    def __init__(self, key: str):
+        self._local = threading.Lock()
+        suffix = "-" + str(os.getuid()) if hasattr(os, "getuid") else ""
+        self._directory = os.path.join(tempfile.gettempdir(), "neko-recent-locks" + suffix)
+        name = hashlib.sha256(os.fsencode(key)).hexdigest() + ".lock"
+        self._shared = FileLock(os.path.join(self._directory, name), thread_local=False)
+
+    def acquire(self, blocking=True, timeout=-1):
+        started = time.monotonic()
+        if not self._local.acquire(blocking, timeout):
+            return False
+        try:
+            # Lock files must outlive renames and deletes, and acquiring a stale
+            # path must never recreate its character directory.
+            os.makedirs(self._directory, exist_ok=True)
+            remaining = -1 if timeout < 0 else max(0, timeout - (time.monotonic() - started))
+            self._shared.acquire(timeout=remaining if blocking else 0)
+        except Timeout:
+            self._local.release()
+            return False
+        except BaseException:
+            self._local.release()
+            raise
+        return True
+
+    def release(self):
+        try:
+            self._shared.release()
+        finally:
+            self._local.release()
+
+    def locked(self):
+        return self._local.locked()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self.release()
+
+
+_LOCKS: dict[str, _RecentFileLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
 _PENDING_GUARD = threading.Lock()
@@ -122,7 +173,19 @@ _REDIRECTS: dict[str, str] = {}
 _DELETED: set[str] = set()
 _GENERATIONS: dict[str, int] = {}
 _CONTENT_VERSIONS: dict[str, int] = {}
+_CHANGE_LISTENERS: set = set()
 _NEXT_GENERATION = 1
+
+
+def subscribe_recent_changes(callback):
+    """Subscribe a nonblocking hint after successful writes; return its cleanup."""
+    with _LOCKS_GUARD:
+        _CHANGE_LISTENERS.add(callback)
+
+    def unsubscribe():
+        with _LOCKS_GUARD:
+            _CHANGE_LISTENERS.discard(callback)
+    return unsubscribe
 
 
 def _lock_key(path: Any) -> str:
@@ -138,13 +201,13 @@ def _resolve_key_unlocked(key: str) -> str:
     return key
 
 
-def recent_file_lock(path: Any) -> threading.Lock:
-    """Return the process-wide lock guarding one recent.json path."""
+def recent_file_lock(path: Any) -> _RecentFileLock:
+    """Return the cross-process lock guarding one recent.json path."""
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         lock = _LOCKS.get(key)
         if lock is None:
-            lock = threading.Lock()
+            lock = _RecentFileLock(key)
             _LOCKS[key] = lock
     return lock
 
@@ -179,7 +242,7 @@ def recent_file_access(
             resolved_key = _resolve_key_unlocked(original_key)
             lock = _LOCKS.get(resolved_key)
             if lock is None:
-                lock = threading.Lock()
+                lock = _RecentFileLock(resolved_key)
                 _LOCKS[resolved_key] = lock
         lock.acquire()
         with _LOCKS_GUARD:
@@ -212,7 +275,7 @@ def recent_file_locks(paths: list[Any]) -> Iterator[None]:
         release_recent_file_locks(locks)
 
 
-def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
+def acquire_recent_file_locks(paths: list[Any]) -> list[_RecentFileLock]:
     """Acquire physical path locks for a transaction spanning multiple calls."""
     original_keys = {_lock_key(path) for path in paths}
     while True:
@@ -226,11 +289,17 @@ def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
             for key in sorted(scoped_keys):
                 lock = _LOCKS.get(key)
                 if lock is None:
-                    lock = threading.Lock()
+                    lock = _RecentFileLock(key)
                     _LOCKS[key] = lock
                 locks.append(lock)
-        for lock in locks:
-            lock.acquire()
+        acquired = []
+        try:
+            for lock in locks:
+                lock.acquire()
+                acquired.append(lock)
+        except BaseException:
+            release_recent_file_locks(acquired)
+            raise
         with _LOCKS_GUARD:
             latest_redirects = _redirect_keys_touching_unlocked(original_keys)
             latest_scope = original_keys | latest_redirects
@@ -243,7 +312,7 @@ def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
         release_recent_file_locks(locks)
 
 
-def release_recent_file_locks(locks: list[threading.Lock]) -> None:
+def release_recent_file_locks(locks: list[_RecentFileLock]) -> None:
     """Release locks returned by ``acquire_recent_file_locks``."""
     for lock in reversed(locks):
         lock.release()
@@ -456,7 +525,50 @@ def read_recent_text(path: Any, *, encoding: str = "utf-8") -> str:
         return read_recent_text_unlocked(resolved_path, encoding=encoding)
 
 
-def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
+def _write_receipts_filename(path: Any) -> str:
+    return "." + os.path.basename(os.fspath(path)) + ".write-receipts.json"
+
+
+def _recent_text_hash_unlocked(path: Any) -> str | None:
+    try:
+        text = read_recent_text_unlocked(path)
+    except FileNotFoundError:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _resolve_recent_write_receipts_unlocked(path: Any) -> dict:
+    try:
+        with open(recent_sidecar_path(path, _write_receipts_filename(path)), encoding="utf-8") as handle:
+            receipts = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(receipts, dict) or any(
+        not isinstance(value, dict) or set(value) != {"token", "before", "after", "applied"}
+        or not isinstance(value["token"], str) or not isinstance(value["after"], str)
+        or (value["before"] is not None and not isinstance(value["before"], str))
+        or (value["applied"] is not None and type(value["applied"]) is not bool and value["applied"] != "conflict")
+        for value in receipts.values()
+    ):
+        raise ValueError("invalid_recent_write_receipt")
+    unresolved = [value for value in receipts.values() if value["applied"] is None]
+    if unresolved:
+        current = _recent_text_hash_unlocked(path)
+        for value in unresolved:
+            value["applied"] = current == value["after"] if current in (value["before"], value["after"]) else "conflict"
+        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
+    return receipts
+
+
+def read_recent_write_receipt_unlocked(path: Any, key: str, token: str) -> bool:
+    """Resolve a staged replacement before another writer can obscure its outcome."""
+    receipt = _resolve_recent_write_receipts_unlocked(path).get(key)
+    if receipt and receipt["token"] == token and receipt["applied"] == "conflict":
+        raise ValueError("recent_write_receipt_conflict")
+    return bool(receipt and receipt["token"] == token and receipt["applied"] is True)
+
+
+def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str, str] | None = None) -> None:
     """Serialize and atomically replace the file. The caller MUST already hold the lock.
 
     ``atomic_write_json`` creates the parent directory itself, so callers do not
@@ -473,11 +585,28 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     written to the ``RETIRED_KEYS_FILENAME`` sidecar
     (:func:`retire_removed_keyed_entries`).
     """
+    # Seal a prior replacement before any ordinary local edit. The receipt is
+    # staged before os.replace, so a crash can be resolved from either file hash.
+    # Keep one receipt per consumer; later edits retain its completed outcome.
+    receipts = _resolve_recent_write_receipts_unlocked(path)
+    if receipt is not None:
+        key, token = receipt
+        text = json.dumps(payload, indent=2, ensure_ascii=False)
+        receipts[key] = {"token": token, "before": _recent_text_hash_unlocked(path),
+                         "after": hashlib.sha256(text.encode("utf-8")).hexdigest(), "applied": None}
+        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
     retire_removed_keyed_entries(path, None, payload)
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
+        listeners = tuple(_CHANGE_LISTENERS)
+    for callback in listeners:
+        try:
+            callback(key)
+        except Exception:
+            # Optional hints must never turn a committed local save into a failure.
+            pass
 
 
 def recent_sidecar_path(path: Any, filename: str) -> str:

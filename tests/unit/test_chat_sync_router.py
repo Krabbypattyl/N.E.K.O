@@ -1,6 +1,7 @@
 """Local HTTP controls use synthetic roots, never a desktop login or user chat."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,6 +23,8 @@ class SyntheticRuntime:
         self.flush_calls = []
         self.originals = [{"messageId": "b" * 32, "text": "synthetic"}]
         self.local_reply_records = []
+        self.state = SimpleNamespace(binding=lambda _uid: None)
+        self.media = SimpleNamespace(records=AsyncMock(return_value={}), local_images=AsyncMock(return_value={}))
 
     async def status(self):
         """Return a bound role and an unrelated stale role to check local projection."""
@@ -38,6 +41,9 @@ class SyntheticRuntime:
     async def request_catchup(self):
         """Represent a local-only wake across all opted-in roles."""
         self.calls.append(("wake",))
+
+    def wake_scheduler(self):
+        self.calls.append(("recent-changed",))
 
     async def enable(self, uid, name):
         """Return a synthetic service-authoritative owner for the real local UID."""
@@ -108,8 +114,24 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "localOnlyOriginals": 0,
-                    "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None},
+                    "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None,
+                    "mediaVersion": None},
     }]
+
+
+def test_status_exposes_media_revision_when_original_cursor_has_not_changed(local_client):
+    client, runtime = local_client
+    original = runtime.status
+
+    async def changed_media():
+        state = await original()
+        state['bindings'][0]['mediaVersion'] = '4:2:3:800'
+        return state
+
+    runtime.status = changed_media
+    binding = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
+    assert binding['cursor'] == 0
+    assert binding['mediaVersion'] == '4:2:3:800'
 
 
 @pytest.mark.parametrize('choices,expected', [({}, False), ({UID: False}, False), ({UID: True}, True)])
@@ -167,11 +189,21 @@ def test_history_keeps_local_only_replies_outside_canonical_originals(local_clie
     response = client.get(f"/api/chat-sync/characters/{UID}/history")
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
-    assert response.json() == {"characterSyncId": UID, "originals": runtime.originals, "localReplies": [local]}
+    assert response.json() == {"characterSyncId": UID, "originals": runtime.originals, "localReplies": [local], "media": {}, "localMedia": {}}
     assert runtime.calls == [("history", UID), ("local_replies", UID)]
     runtime.calls.clear()
     assert client.get(f"/api/chat-sync/characters/{'f' * 32}/history").status_code == 404
     assert runtime.calls == []
+
+
+def test_recent_write_hint_is_local_only_content_free_and_does_not_force_catchup(local_client):
+    client, runtime = local_client
+    path = '/api/chat-sync/recent-changed'
+    assert client.post(path).json() == {'scheduled': True}
+    assert runtime.calls == [('recent-changed',)]
+    assert client.post(path, headers={'Origin': 'https://foreign.test'}).status_code == 403
+    assert client.post(path, json={'text': 'private chat'}).status_code == 422
+    assert runtime.calls == [('recent-changed',)]
 
 
 def test_foreground_wake_is_local_only_and_retains_origin_gate(local_client):
@@ -383,4 +415,31 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert client.get('/api/chat-sync/cloud/character-policy').status_code == 404
     assert client.post('/api/chat-sync/cloud/character-policy', json={}).status_code == 404
     assert client.post('/api/chat-sync/cloud/characters/' + UID + '/delete', json={}).status_code == 404
+    assert runtime.calls == []
+
+
+def test_recent_display_excludes_local_sources_and_keeps_received_media(local_client, tmp_path, monkeypatch):
+    from services.chat_sync import source
+    client, runtime = local_client
+    runtime.recent_memory = object()
+    runtime.state.path = tmp_path / 'state.sqlite3'
+    runtime.state.binding = lambda uid: {'owner_id': OWNER, 'enabled': 1}
+    (tmp_path / 'sources.sqlite3').touch()
+    monkeypatch.setattr(source, 'ChatOriginalSource', lambda path: SimpleNamespace(stored_ids=lambda uid: {'b' * 32}))
+    runtime.originals = [{'messageId': 'b' * 32, 'text': 'local'}, {'messageId': 'c' * 32, 'text': 'phone'}]
+    runtime.media.records = AsyncMock(return_value={'c' * 32: {'attachments': []}})
+    result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
+    assert result.status_code == 200
+    assert result.json()['originals'] == [{'messageId': 'c' * 32, 'text': 'phone'}]
+    assert result.json()['media'] == {'c' * 32: {'attachments': []}}
+
+
+@pytest.mark.parametrize('recent,enabled', [(None, 1), (object(), 0)])
+def test_recent_display_never_reads_legacy_archive_or_paused_role(local_client, recent, enabled):
+    client, runtime = local_client
+    runtime.recent_memory = recent
+    runtime.state.binding = lambda uid: {'enabled': enabled}
+    result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
+    assert result.status_code == 200
+    assert result.json()['originals'] == []
     assert runtime.calls == []

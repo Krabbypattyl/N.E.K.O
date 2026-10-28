@@ -1,0 +1,871 @@
+{
+  "valid": [
+    {
+      "name": "empty_attachments",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": []
+      },
+      "canonical": "{\"attachments\":[],\"messageId\":\"11111111111111111111111111111111\",\"messageOrigin\":\"chat\",\"proactive\":null,\"schemaVersion\":1}",
+      "sha256": "b99a09279b40a7d1aadb77773da6141cccbd7ba246369e2d7b9bf9a2169159f6"
+    },
+    {
+      "name": "ordered_mixed",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "22222222222222222222222222222222",
+            "type": "image",
+            "title": "已发送图片 👋",
+            "source": "chat",
+            "original": {
+              "resourceId": "33333333333333333333333333333333"
+            },
+            "thumbnail": {
+              "resourceId": "44444444444444444444444444444444"
+            }
+          },
+          {
+            "id": "55555555555555555555555555555555",
+            "type": "music",
+            "title": "推荐歌曲",
+            "source": "音乐推荐",
+            "artist": "Artist",
+            "url": "https://music.example.com/play?id=123",
+            "cover": {
+              "url": "https://images.example.com/cover-small.jpg"
+            }
+          },
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "https://example.com/post?q=%E7%8C%AB",
+            "mode": "community"
+          }
+        ]
+      },
+      "canonical": "{\"attachments\":[{\"id\":\"22222222222222222222222222222222\",\"original\":{\"resourceId\":\"33333333333333333333333333333333\"},\"source\":\"chat\",\"thumbnail\":{\"resourceId\":\"44444444444444444444444444444444\"},\"title\":\"已发送图片 👋\",\"type\":\"image\"},{\"artist\":\"Artist\",\"cover\":{\"url\":\"https://images.example.com/cover-small.jpg\"},\"id\":\"55555555555555555555555555555555\",\"source\":\"音乐推荐\",\"title\":\"推荐歌曲\",\"type\":\"music\",\"url\":\"https://music.example.com/play?id=123\"},{\"id\":\"66666666666666666666666666666666\",\"mode\":\"community\",\"source\":\"community\",\"title\":\"来源\",\"type\":\"link\",\"url\":\"https://example.com/post?q=%E7%8C%AB\"}],\"messageId\":\"11111111111111111111111111111111\",\"messageOrigin\":\"chat\",\"proactive\":null,\"schemaVersion\":1}",
+      "sha256": "cafc2a440fccfed1985408a0922b81b1fd0fb2e5c55332d2a27c4d30a216a41e"
+    },
+    {
+      "name": "proactive_text",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "proactive",
+        "proactive": {
+          "deliveryId": "speech-123",
+          "sourceMode": "work_break",
+          "triggerReason": null
+        },
+        "attachments": []
+      },
+      "canonical": "{\"attachments\":[],\"messageId\":\"11111111111111111111111111111111\",\"messageOrigin\":\"proactive\",\"proactive\":{\"deliveryId\":\"speech-123\",\"sourceMode\":\"work_break\",\"triggerReason\":null},\"schemaVersion\":1}",
+      "sha256": "7cfe14f034c150e06dfc15a708bd237d35a5e25cbd2bf807499651f253b134ec"
+    },
+    {
+      "name": "missing_thumbnail",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "22222222222222222222222222222222",
+            "type": "image",
+            "title": "已发送图片 👋",
+            "source": "chat",
+            "original": {
+              "url": "https://images.example.com/meme.gif"
+            },
+            "thumbnail": null
+          }
+        ]
+      },
+      "canonical": "{\"attachments\":[{\"id\":\"22222222222222222222222222222222\",\"original\":{\"url\":\"https://images.example.com/meme.gif\"},\"source\":\"chat\",\"thumbnail\":null,\"title\":\"已发送图片 👋\",\"type\":\"image\"}],\"messageId\":\"11111111111111111111111111111111\",\"messageOrigin\":\"chat\",\"proactive\":null,\"schemaVersion\":1}",
+      "sha256": "f4cbdec4ad961b2e5dad0760a2982033c08eb20c8b9f3208b26f7decaf45b9f5"
+    },
+    {
+      "name": "explicit_unbind",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": null
+      },
+      "canonical": "{\"model\":null,\"schemaVersion\":1}",
+      "sha256": "eee0e7c006e43f76d1d78fea2c04320b3e2ffedc45da08c509e8be656283e68d"
+    },
+    {
+      "name": "complete_model",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      },
+      "canonical": "{\"model\":{\"compression\":{\"format\":\"zip-deflate\",\"textureMaxEdge\":1024,\"version\":1},\"files\":[{\"path\":\"猫 猫/model.model3.json\",\"sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"size\":100},{\"path\":\"猫 猫/model.moc3\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":300}],\"modelFile\":\"猫 猫/model.model3.json\",\"package\":{\"resource\":{\"resourceId\":\"77777777777777777777777777777777\"},\"sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"size\":512}},\"schemaVersion\":1}",
+      "sha256": "2cefd16c8372799a427a227ddc6b3c1c424b93a17ad46bb042c4d30b595ba1c4"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "playback_state",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [],
+        "playbackState": "playing"
+      }
+    },
+    {
+      "name": "credentials",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [],
+        "accessToken": "synthetic-never-accepted"
+      }
+    },
+    {
+      "name": "duplicate_attachment",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "22222222222222222222222222222222",
+            "type": "image",
+            "title": "已发送图片 👋",
+            "source": "chat",
+            "original": {
+              "resourceId": "33333333333333333333333333333333"
+            },
+            "thumbnail": {
+              "resourceId": "44444444444444444444444444444444"
+            }
+          },
+          {
+            "id": "22222222222222222222222222222222",
+            "type": "image",
+            "title": "已发送图片 👋",
+            "source": "chat",
+            "original": {
+              "resourceId": "33333333333333333333333333333333"
+            },
+            "thumbnail": {
+              "resourceId": "44444444444444444444444444444444"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "original_as_thumbnail",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "22222222222222222222222222222222",
+            "type": "image",
+            "title": "已发送图片 👋",
+            "source": "chat",
+            "original": {
+              "resourceId": "33333333333333333333333333333333"
+            },
+            "thumbnail": {
+              "resourceId": "33333333333333333333333333333333"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "proactive_without_origin",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": {
+          "deliveryId": "123",
+          "sourceMode": "music",
+          "triggerReason": null
+        },
+        "attachments": []
+      }
+    },
+    {
+      "name": "url_loopback",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "http://127.0.0.1/a",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "url_local",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "http://localhost/a",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "url_private",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "http://192.168.1.2/a",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "url_credentials",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "https://user:password@example.com/a",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "url_script",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "javascript:alert(1)",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "url_file",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "file:///tmp/a",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "url_relative",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "66666666666666666666666666666666",
+            "type": "link",
+            "title": "来源",
+            "source": "community",
+            "url": "/api/image/a",
+            "mode": "community"
+          }
+        ]
+      }
+    },
+    {
+      "name": "model_traversal",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "../model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "model_duplicate",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "model_oversized",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 125829120,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "model_hash",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "not-a-hash"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "windows_device_path",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "NUL.model3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "windows_trailing_dot",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "dir./model.model3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "escaped_url_path",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "%2e%2e/model.model3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "package_receipt_collision",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": ".cloud-model.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "unicode_filesystem_collision",
+      "model": true,
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "café.motion3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "café.motion3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "host_normalization_0",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http://0x7f.0.0.1/a",
+            "mode": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "host_normalization_1",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http://%31%32%37.0.0.1/a",
+            "mode": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "host_normalization_2",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http://１２７.０.０.１/a",
+            "mode": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "host_normalization_3",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http:example.com",
+            "mode": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "host_normalization_4",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http://localhost../a",
+            "mode": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "host_normalization_5",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http://192.0.2.1/a",
+            "mode": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "host_normalization_6",
+      "model": false,
+      "record": {
+        "schemaVersion": 1,
+        "messageId": "11111111111111111111111111111111",
+        "messageOrigin": "chat",
+        "proactive": null,
+        "attachments": [
+          {
+            "id": "11111111111111111111111111111111",
+            "type": "link",
+            "title": "",
+            "source": "",
+            "url": "http://100.64.0.1/a",
+            "mode": null
+          }
+        ]
+      }
+    }
+  ]
+}

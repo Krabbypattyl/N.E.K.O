@@ -3134,8 +3134,6 @@
                     text: displayText,
                     imageUrls: optimisticImageUrls
                 });
-                // Display identity only: the backend independently assigns the saved original ID.
-                if (window.nekoChatSync) window.nekoChatSync.markUserRequest(requestId, reactOptimisticMessageId);
             }
 
             // Enter 已通过空内容、教程锁和附件预处理校验，即视为发送请求已被聊天逻辑接受。
@@ -3303,6 +3301,7 @@
                                     action: 'stream_data',
                                     data: img.src,
                                     input_type: getPendingAttachmentInputType(screenshotItems[i]),
+                                    chat_image_only_final: !text && !hasExtraImages && i === screenshotItems.length - 1,
                                     request_id: requestId
                                 };
                                 // Attach paired avatar position metadata (captured at screenshot time)
@@ -3344,6 +3343,7 @@
                                 action: 'stream_data',
                                 data: extraUrl,
                                 input_type: 'avatar_drop_image',
+                                chat_image_only_final: !text && extraIndex === extraImageDataUrls.length - 1,
                                 request_id: requestId
                             };
                             if (messageSource) {

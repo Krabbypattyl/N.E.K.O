@@ -150,6 +150,30 @@ def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     return None
 
 
+def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
+    """Resolve saved catalog selections through the same directory lookup as the renderer."""
+    normalized = unquote(str(path or "").strip().replace("\\", "/"))
+    parts = normalized.split("/")
+    if not normalized or any(part in {".", ".."} for part in parts):
+        return None
+    direct = _resolve_model_url_to_file_path(path, config_manager)
+    if direct is not None:
+        return direct
+    if normalized.startswith("/") or ":" in normalized:
+        return None
+    directory, _ = find_model_directory(parts[0])
+    if not directory:
+        return None
+    root = Path(directory).resolve()
+    relative = Path(*parts[1:]) if len(parts) > 1 else Path(parts[0] + ".model3.json")
+    candidate = (root / relative).resolve()
+    return candidate if candidate.is_relative_to(root) and candidate.is_file() else None
+
+
+from services.chat_sync import host as _sync_host
+_sync_host.install_model_file_resolver(_resolve_sync_model_file)
+
+
 def _extract_local_shadow_key(path: str) -> str:
     decoded_path = unquote(str(path or "").strip().replace("\\", "/"))
     parts = [part for part in decoded_path.split("/") if part]

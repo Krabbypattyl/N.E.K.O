@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 import sqlite3
 from typing import Annotated, Literal
 
@@ -152,6 +154,7 @@ async def status(runtime: Runtime):
             "profile": binding.get("profile"),
             # Registration progress never represents cloud delivery or recovery.
             "historyBackfill": binding.get("historyBackfill"),
+            "mediaVersion": binding.get("mediaVersion"),
         }
     return {**state, "characters": characters}
 
@@ -175,6 +178,13 @@ async def wake(runtime: Runtime, body: None = Body(default=None)):
         raise _error(exc) from None
     except (OSError, sqlite3.Error):
         raise _error(ValueError("chat_sync_unavailable")) from None
+    return {"scheduled": True}
+
+
+@router.post("/recent-changed")
+async def recent_changed(runtime: Runtime, body: None = Body(default=None)):
+    """Accept a local write hint without resetting profile or network retry gates."""
+    runtime.wake_scheduler()
     return {"scheduled": True}
 
 
@@ -237,8 +247,102 @@ async def sync(character_uid: str, body: ManualSyncRequest, runtime: Runtime):
 async def history(character_uid: str, runtime: Runtime):
     """Return canonical originals and separate local-only replies for passive display."""
     await _character(character_uid)
-    return {"characterSyncId": character_uid, "originals": await runtime.history(character_uid),
+    originals = await runtime.history(character_uid)
+    binding = await asyncio.to_thread(runtime.state.binding, character_uid)
+    from services.chat_sync.ledger import ChatDomain
+    domain = ChatDomain(binding["owner_id"], character_uid) if binding else None
+    media, local_images = {}, {}
+    try:
+        media = await runtime.media.records(character_uid, domain, {record["messageId"] for record in originals})
+        local_images = await runtime.media.local_images(character_uid, domain, {record["messageId"] for record in originals})
+    except (ValueError, OSError):
+        # Optional display data cannot hide the original text archive.
+        pass
+    return {"characterSyncId": character_uid, "originals": originals, "media": media,
+            "localMedia": local_images,
             "localReplies": await runtime.local_replies(character_uid)}
+
+
+@router.get("/characters/{character_uid}/recent-display")
+async def recent_display(character_uid: str, runtime: Runtime):
+    """Render received recent messages without replaying local session bubbles or archives."""
+    await _character(character_uid)
+    binding = await asyncio.to_thread(runtime.state.binding, character_uid)
+    if runtime.recent_memory is None or not binding or not binding["enabled"]:
+        return {"characterSyncId": character_uid, "originals": [], "media": {}, "localMedia": {}}
+    result = await history(character_uid, runtime)
+    from services.chat_sync.source import ChatOriginalSource
+    source_path = runtime.state.path.parent / "sources.sqlite3"
+    local_ids = set()
+    if source_path.is_file():
+        source = await asyncio.to_thread(ChatOriginalSource, source_path)
+        local_ids = await asyncio.to_thread(source.stored_ids, character_uid)
+    result["originals"] = [row for row in result["originals"] if row["messageId"] not in local_ids]
+    result.pop("localReplies", None)
+    return result
+
+
+@router.get("/characters/{character_uid}/local-media/{message_id}/{attachment_id}/{purpose}")
+async def local_media_image(character_uid: str, message_id: str, attachment_id: str, purpose: str, runtime: Runtime):
+    from fastapi.responses import FileResponse
+    from PIL import Image
+    await _character(character_uid)
+    try:
+        path = await runtime.media.local_image_path(character_uid, message_id, attachment_id, purpose)
+        with Image.open(path) as image:
+            if image.width * image.height > 50_000_000:
+                raise ValueError("chat_media_image_too_large")
+            media_type = Image.MIME.get(image.format, "application/octet-stream")
+    except (ValueError, OSError):
+        raise HTTPException(404, "chat_media_resource_unavailable") from None
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/characters/{character_uid}/resources/{resource_id}")
+async def media_resource(character_uid: str, resource_id: str, runtime: Runtime):
+    """Serve a verified local image; cloud credentials never reach the browser."""
+    from fastapi.responses import FileResponse
+    await _character(character_uid)
+    try:
+        path = await runtime.media.resource(character_uid, resource_id)
+    except (ValueError, OSError):
+        raise HTTPException(404, "chat_media_resource_unavailable") from None
+    from PIL import Image
+    try:
+        with Image.open(path) as image:
+            if image.width * image.height > 50_000_000:
+                raise ValueError("chat_media_image_too_large")
+            media_type = Image.MIME.get(image.format, "application/octet-stream")
+    except (OSError, ValueError):
+        raise HTTPException(404, "chat_media_resource_unavailable") from None
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/characters/{character_uid}/model-sync")
+async def model_sync_status(character_uid: str, runtime: Runtime):
+    await _character(character_uid)
+    return await runtime.models.status(character_uid)
+
+
+@router.post("/characters/{character_uid}/model-sync/{token}")
+async def model_sync_loaded(character_uid: str, token: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"loaded"} or type(body["loaded"]) is not bool or not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(400, "invalid_model_response")
+    try:
+        return {"applied": await runtime.models.finish(character_uid, token, body["loaded"])}
+    except (ValueError, OSError):
+        raise HTTPException(409, "chat_sync_binding_changed") from None
+
+
+@router.post("/characters/{character_uid}/model-sync-action")
+async def model_sync_action(character_uid: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"action"} or body["action"] not in {"cloud", "local", "retry"}:
+        raise HTTPException(400, "invalid_model_response")
+    await runtime.models.resolve(character_uid, body["action"])
+    runtime.wake_scheduler()
+    return {"accepted": True}
 
 
 @router.post("/characters/{character_uid}/history/preview")

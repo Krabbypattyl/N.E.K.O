@@ -383,6 +383,13 @@ async def _commit_proactive_delivery(
             delivery=None,
         )
 
+    try:
+        from services.chat_sync.media_sync import capture_proactive_media
+        await capture_proactive_media(mgr, proactive_sid, source_links, primary_channel.lower())
+    except Exception:
+        # Optional display persistence never turns an accepted publication into a retry.
+        active_logger.warning("[chat-sync] proactive_media_save_unavailable")
+
     return DeliveryCommit(
         result=None,
         delivery=CommittedDelivery(

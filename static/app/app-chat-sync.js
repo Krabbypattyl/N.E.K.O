@@ -1,20 +1,8 @@
-/* Opt-in chat-original controls. Restoring originals never submits chat or models. */
+/* Opt-in sync controls and foreground wake; chat history stays with the chat host. */
 (function () {
     'use strict';
-    var ID = /^[0-9a-f]{32}(?![\s\S])/;
-    var liveIds = new Map();
-    var userRequests = new Map();
-    var assistantTurns = new Map();
-    var completedTurns = new Set();
-    var knownIds = new Map();
-    var deletedLocalIds = new Map();
-    var knownCursors = new Map();
-    var historyPollRunning = false;
-    var pendingHistoryHint = null;
-    var historyPollTimer = null;
     var activeUid = null;
-    var activeName = null;
-    var historyRequestGeneration = 0;
+    var modelFlight = null;
     var dialog = null;
     var settingsCharacterName = null;
     var statusNode = null;
@@ -59,19 +47,6 @@
         return settingsCharacterName || window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
     }
 
-    function traceHistoryMerge(records, uid, localOnly) {
-        // A collector may install this opt-in observer; it never owns chat state.
-        if (typeof window.__nekoChatSyncTrace !== 'function') return;
-        records.forEach(function (record) {
-            try {
-                window.__nekoChatSyncTrace('ui_merge_requested', {
-                    character_uid: uid, message_id: record.messageId,
-                    local_message_id: (localOnly ? 'local-reply-' : 'sync-original-') + record.messageId
-                });
-            } catch (_) { /* Diagnostics must never prevent passive restoration. */ }
-        });
-    }
-
     async function api(path, method, body) {
         // Only the local backend handles OAuth; the browser never receives its bearer.
         var response = await fetch('/api/chat-sync' + path, {
@@ -84,228 +59,6 @@
         catch (_) { throw new Error('chat_sync_unavailable'); }
         if (!response.ok) throw new Error(result && typeof result.detail === 'string' ? result.detail : 'chat_sync_unavailable');
         return result;
-    }
-
-    function originalMessage(record, name, localOnly) {
-        // Unknown source times stay explicitly unknown instead of becoming import time.
-        var numeric = typeof record.originalTime === 'string' && /^\d+$/.test(record.originalTime)
-            ? Number(record.originalTime) : NaN;
-        var timestamp = Number.isSafeInteger(numeric) ? numeric : 0;
-        var date = new Date(timestamp);
-        var time = record.originalTime === null ? text('unknownTime')
-            : timestamp && !Number.isNaN(date.getTime()) ? date.toLocaleString() : record.originalTime;
-        var message = {
-            id: (localOnly ? 'local-reply-' : 'sync-original-') + record.messageId,
-            role: record.role,
-            author: record.role === 'assistant' ? name : text('userLabel'),
-            time: time, createdAt: timestamp, status: 'sent',
-            blocks: [{ type: 'text', text: record.text }]
-        };
-        return message;
-    }
-
-    function mergeHistory(current, originals, previousKnown, mappings, name, turnMappings, localReplies) {
-        // Identity is the only dedupe key; equal text/time never joins distinct messages.
-        localReplies = localReplies || [];
-        var received = new Set(originals.concat(localReplies).map(function (record) { return record.messageId; }));
-        var live = new Map();
-        current.forEach(function (message) {
-            if (message.id.indexOf('sync-original-') === 0 || message.id.indexOf('local-reply-') === 0) return;
-            var identity = mappings.get(message.id)
-                || (turnMappings && message.role === 'assistant' && turnMappings.get(message.turnId));
-            if (!identity) return;
-            if (!live.has(identity)) live.set(identity, []);
-            live.get(identity).push(message);
-        });
-        function restore(record, localOnly) {
-            var canonical = originalMessage(record, name, localOnly);
-            var displayed = live.get(record.messageId);
-            if (!displayed) return [canonical];
-            // Wire identity is independent of React keys. Keep the visible split
-            // bubbles and blocks so passive sync cannot replay their entry animation.
-            // Local-only/tool records stay local; this is presentation, not eligibility.
-            return displayed.map(function (message) {
-                // Retire cached transitional actions, preserving unrelated ones.
-                var actions = (message.actions || []).filter(function (action) {
-                    return action.action !== 'chat_sync_delete_original';
-                });
-                var next = Object.assign({}, message, { status: 'sent', actions: actions.length ? actions : undefined });
-                if (typeof next.createdAt !== 'number' && canonical.createdAt) next.createdAt = canonical.createdAt;
-                return next;
-            });
-        }
-        var restored = originals.slice().sort(function (a, b) {
-            var at = /^\d+$/.test(a.originalTime || '') ? Number(a.originalTime) : 0;
-            var bt = /^\d+$/.test(b.originalTime || '') ? Number(b.originalTime) : 0;
-            return at - bt || (a.originStreamId || '').localeCompare(b.originStreamId || '')
-                || (a.originSeq || 0) - (b.originSeq || 0);
-        }).flatMap(function (record) { return restore(record, false); });
-        restored = restored.concat(localReplies.flatMap(function (record) { return restore(record, true); }));
-        var retained = current.filter(function (message) {
-            if (message.id.indexOf('sync-original-') === 0 || message.id.indexOf('local-reply-') === 0) return false;
-            var originalId = mappings.get(message.id)
-                || (turnMappings && message.role === 'assistant' && turnMappings.get(message.turnId));
-            // Preserve live/uncommitted records until their exact source was stored.
-            return !originalId || (!received.has(originalId) && !previousKnown.has(originalId));
-        });
-        // Local-only replies keep their actual place between restored originals.
-        // Missing live timestamps remain at the end; equal times retain their order.
-        return restored.concat(retained).sort(function (a, b) {
-            var at = typeof a.createdAt === 'number' && Number.isFinite(a.createdAt) ? a.createdAt : Infinity;
-            var bt = typeof b.createdAt === 'number' && Number.isFinite(b.createdAt) ? b.createdAt : Infinity;
-            return at - bt;
-        }).map(function (message, index) {
-            return Object.assign({}, message, { sortKey: index });
-        });
-    }
-
-    async function loadHistory(state, idleOnly) {
-        // Latest-request wins also fences same-role pages overtaken by a delete.
-        var generation = ++historyRequestGeneration;
-        var name = characterName();
-        if (!name) return;
-        if (idleOnly && (document.visibilityState === 'hidden' || unfinishedChat())) return;
-        state = state || await api('/status');
-        var role = state.characters.find(function (item) { return item.displayName === name; });
-        if (!role || characterName() !== name || generation !== historyRequestGeneration) return;
-        activeUid = role.characterSyncId;
-        activeName = name;
-        var result = await api('/characters/' + activeUid + '/history');
-        if (characterName() !== name || activeUid !== role.characterSyncId || generation !== historyRequestGeneration) return;
-        // A live turn may start while local history I/O waits. Automatic refresh
-        // defers without consuming its cursor so the next idle check can retry.
-        if (idleOnly && (document.visibilityState === 'hidden' || unfinishedChat())) return;
-        var host = window.reactChatWindowHost;
-        if (!host || typeof host.getState !== 'function' || typeof host.setMessages !== 'function') return;
-        var previous = new Set(knownIds.get(activeUid) || []);
-        (deletedLocalIds.get(activeUid) || new Set()).forEach(function (id) { previous.add(id); });
-        var localDeleted = deletedLocalIds.get(activeUid) || new Set();
-        var localReplies = (result.localReplies || []).filter(function (record) { return !localDeleted.has(record.messageId); });
-        if (!result.originals.length && !localReplies.length && !previous.size) {
-            // An empty read is still a successful restoration of this exact cursor.
-            if (role.binding) knownCursors.set(activeUid, role.binding.cursor);
-            return true;
-        }
-        var merged = mergeHistory(host.getState().messages || [], result.originals, previous, liveIds, name, assistantTurns, localReplies);
-        // setMessages is passive: appendMessage would enqueue message reactions.
-        traceHistoryMerge(result.originals, activeUid);
-        traceHistoryMerge(localReplies, activeUid, true);
-        host.setMessages(merged);
-        knownIds.set(activeUid, new Set(result.originals.map(function (record) { return record.messageId; })));
-        if (role.binding) knownCursors.set(activeUid, role.binding.cursor);
-        return true;
-    }
-
-    async function refreshDownloadedHistory() {
-        // This local-only check does no cloud/auth work. Reuse passive restoration
-        // only when a committed download cursor changes, retaining live bubbles.
-        if (historyPollRunning || document.visibilityState === 'hidden' || unfinishedChat()) return;
-        historyPollRunning = true;
-        var hint = null;
-        try {
-            do {
-                hint = pendingHistoryHint;
-                pendingHistoryHint = null;
-                var name = characterName();
-                if (!name || (hint && hint.name !== name)) return;
-                var state = await api('/status');
-                if (name !== characterName()) return;
-                var role = state.characters.find(function (item) { return item.displayName === name; });
-                if (hint && (!role || hint.uid !== role.characterSyncId)) return;
-                if (document.visibilityState === 'hidden' || unfinishedChat()) {
-                    pendingHistoryHint = pendingHistoryHint || hint;
-                    return;
-                }
-                if (role && role.binding && (!knownCursors.has(role.characterSyncId)
-                        || knownCursors.get(role.characterSyncId) !== role.binding.cursor)) {
-                    if (!await loadHistory(state, true)) {
-                        // Do not consume a hint if a live turn began during I/O.
-                        if (name === characterName()) pendingHistoryHint = pendingHistoryHint || hint;
-                        return;
-                    }
-                }
-                hint = null;
-            } while (pendingHistoryHint && document.visibilityState !== 'hidden' && !unfinishedChat());
-        } catch (error) {
-            pendingHistoryHint = pendingHistoryHint || hint;
-            throw error;
-        } finally {
-            historyPollRunning = false;
-        }
-    }
-
-    function notifyHistoryCommitted(payload) {
-        // This socket hint contains no progress or content. Read the local
-        // authoritative cursor and history under the existing role/I/O fences.
-        if (!payload || payload.type !== 'chat_sync_history_changed' || typeof payload.characterSyncId !== 'string'
-                || !ID.test(payload.characterSyncId)
-                || Object.keys(payload).length !== 2) return Promise.resolve();
-        if (activeName === characterName() && activeUid !== payload.characterSyncId) return Promise.resolve();
-        pendingHistoryHint = { uid: payload.characterSyncId, name: characterName() };
-        return refreshDownloadedHistory();
-    }
-
-    function retryPendingHistory() {
-        // Lifecycle events can fire before their producer clears pending state.
-        // Retry after that synchronous cleanup; real rendering/streaming still wins.
-        return Promise.resolve().then(function () {
-            if (pendingHistoryHint) return refreshDownloadedHistory();
-        }).catch(function () { /* The local poll retries after offline/window failures. */ });
-    }
-
-    function startHistoryPoll() {
-        // BFCache restoration reuses this page instead of firing DOMContentLoaded.
-        if (historyPollTimer !== null || !document.getElementById('react-chat-window-root')) return;
-        historyPollTimer = window.setInterval(function () {
-            return refreshDownloadedHistory().catch(function () { /* Local chat remains available offline. */ });
-        }, 5000);
-    }
-
-    function unfinishedChat() {
-        // Reuse actual live host/socket states rather than creating a sync busy flag.
-        var host = window.reactChatWindowHost;
-        var state = window.appState || {};
-        // A cleared current lifecycle cannot borrow a previous role's fallback ID.
-        var turnId = Object.prototype.hasOwnProperty.call(state, 'assistantTurnId')
-            ? state.assistantTurnId : window._nekoAssistantTurnId;
-        var messages = host && typeof host.getState === 'function' ? host.getState().messages || [] : [];
-        // Completion may precede this script's listener. Only exact lifecycle
-        // identities release delayed tail bubbles, never unknown streaming work.
-        if (state.assistantTurnCompletedId) completedTurns.add(state.assistantTurnCompletedId);
-        if (state.assistantTurnSettledId) completedTurns.add(state.assistantTurnSettledId);
-        // Completed text and settled voice retain their turn ID until the next
-        // user input. Pending submissions and real rendering still block merge.
-        return !!(turnId && turnId !== state.assistantTurnCompletedId && turnId !== state.assistantTurnSettledId)
-            || !!state.assistantTurnAwaitingBubble || !!window._lastSubmittedRequestId
-            || !!(state.pendingTextTurnSubmitAt && Date.now() - state.pendingTextTurnSubmitAt < 15000)
-            || !!window._isProcessingRealisticQueue || messages.some(function (message) {
-            return message.status === 'sending' || (message.status === 'streaming'
-                && !(message.role === 'assistant' && message.turnId && completedTurns.has(message.turnId)));
-        });
-    }
-
-    function rememberDeletion(uid, receipt) {
-        // A just-saved live bubble may not have appeared in a previous history page.
-        if (uid === activeUid && activeName === characterName()) historyRequestGeneration++;
-        var known = new Set(knownIds.get(uid) || []);
-        receipt.messageIds.forEach(function (id) { if (ID.test(id)) known.add(id); });
-        knownIds.set(uid, known);
-        var localDeleted = new Set(deletedLocalIds.get(uid) || []);
-        (receipt.localMessageIds || []).forEach(function (id) { if (ID.test(id)) localDeleted.add(id); });
-        deletedLocalIds.set(uid, localDeleted);
-        // Exact local hiding must survive a temporarily unavailable witness;
-        // fetching history can fail while the ordinary current chat stays visible.
-        var host = window.reactChatWindowHost;
-        if (uid === activeUid && host && typeof host.getState === 'function' && typeof host.setMessages === 'function') {
-            var deleted = new Set(receipt.messageIds);
-            localDeleted.forEach(function (id) { deleted.add(id); });
-            host.setMessages((host.getState().messages || []).filter(function (message) {
-                var identity = message.id.indexOf('sync-original-') === 0 ? message.id.slice('sync-original-'.length)
-                    : message.id.indexOf('local-reply-') === 0 ? message.id.slice('local-reply-'.length)
-                    : liveIds.get(message.id) || (message.role === 'assistant' && assistantTurns.get(message.turnId));
-                return !deleted.has(identity);
-            }));
-        }
     }
 
     function updateControls() {
@@ -336,6 +89,34 @@
             if (awaiting) statusNode.textContent += '\n' + text('historyAwaitingRegistration', {count: awaiting});
         }
         updateControls();
+        var modelPanel = dialog.querySelector('[data-sync-model]');
+        if (modelPanel) {
+            modelPanel.replaceChildren();
+            if (activeUid && binding && binding.enabled) {
+                var modelUid = activeUid, modelName = characterName();
+                var modelStatus = await api('/characters/' + modelUid + '/model-sync').catch(function () { return {}; });
+                if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return false;
+                function modelButton(key, action) {
+                    var button = document.createElement('button');
+                    button.type = 'button';
+                    button.textContent = window.t('cloudModel.' + key);
+                    button.addEventListener('click', async function () {
+                        if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return;
+                        button.disabled = true;
+                        try { await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action }); await refreshStatus(); }
+                        finally { button.disabled = false; }
+                    });
+                    modelPanel.appendChild(button);
+                }
+                if (modelStatus.conflict) {
+                    var description = document.createElement('p'); description.textContent = window.t('cloudModel.conflict'); modelPanel.appendChild(description);
+                    modelButton('useCloud', 'cloud'); modelButton('keepLocal', 'local');
+                } else if (modelStatus.failed) {
+                    var failure = document.createElement('p'); failure.textContent = window.t('cloudModel.failed'); modelPanel.appendChild(failure);
+                    modelButton('retry', 'retry');
+                }
+            }
+        }
         return true;
     }
 
@@ -365,7 +146,6 @@
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
             if (recovered.historyError) statusNode.textContent += '\n' + text('initialHistoryFailed');
-            await loadHistory();
         } catch (error) {
             if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
                 statusNode.textContent = describeError(error);
@@ -432,6 +212,9 @@
         statusNode.className = 'chat-sync-status';
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
+        var modelPanel = document.createElement('div');
+        modelPanel.dataset.syncModel = '';
+        dialog.appendChild(modelPanel);
         dialog.addEventListener('close', function () { settingsCharacterName = null; });
         document.body.appendChild(dialog);
     }
@@ -446,64 +229,10 @@
             try { await refreshStatus(); } catch (error) { statusNode.textContent = describeError(error); }
         },
         describeError: describeError,
-        // Pure identity merge is exposed for direct browser-independent regression tests.
-        mergeHistory: mergeHistory,
-        loadHistory: loadHistory,
-        notifyHistoryCommitted: notifyHistoryCommitted,
-        markUserRequest: function (requestId, localBubbleId) {
-            // This mapping is display-only and does not authorize backend identities.
-            if (requestId && localBubbleId) userRequests.set(requestId, localBubbleId);
-        },
-        markLiveOriginal: function (messageId, localBubbleId) {
-            // Only backend-generated fixed IDs are accepted from the current socket.
-            if (typeof messageId === 'string' && ID.test(messageId) && localBubbleId) liveIds.set(localBubbleId, messageId);
-        },
-        markAcceptedUser: function (payload) {
-            // Optimistic text bubbles are joined only through a matching request ID.
-            var localId = userRequests.get(payload.request_id);
-            if (localId) this.markLiveOriginal(payload.message_id, localId);
-        },
-        markAssistantOriginal: function (messageId, turnId) {
-            // Realistic rendering can build bubbles later; its explicit turn ID stays stable.
-            if (typeof messageId === 'string' && ID.test(messageId) && turnId) assistantTurns.set(turnId, messageId);
-        }
+        notifyMediaChanged: refreshReadyModel
     };
 
-    function memoryBrowserDeletion(data) {
-        var receipt = data && data.receipt;
-        if (!data || data.action !== 'chat_sync_deleted' || !ID.test(data.characterSyncId || '') || !receipt
-                || !Array.isArray(receipt.messageIds) || !receipt.messageIds.every(function (id) { return ID.test(id); })
-                || !Array.isArray(receipt.localMessageIds) || !receipt.localMessageIds.every(function (id) { return ID.test(id); })) return;
-        rememberDeletion(data.characterSyncId, receipt);
-        loadHistory().catch(function () { /* Durable tombstones already hide exact IDs. */ });
-    }
-    if (typeof window.BroadcastChannel === 'function') {
-        var memoryDeletionChannel = new window.BroadcastChannel('neko_page_channel');
-        memoryDeletionChannel.addEventListener('message', function (event) { memoryBrowserDeletion(event.data); });
-    }
-    window.addEventListener('message', function (event) {
-        if (event.origin === window.location.origin) memoryBrowserDeletion(event.data);
-    });
-
-    window.addEventListener('neko-assistant-turn-end', function (event) {
-        // The realistic queue can create streaming tail bubbles after turn_end.
-        // Keep earlier completions when the next turn replaces appState's ID.
-        var turnId = event.detail && event.detail.turnId;
-        if (typeof turnId === 'string' && turnId) completedTurns.add(turnId);
-        retryPendingHistory();
-    });
-    window.addEventListener('neko-assistant-speech-end', retryPendingHistory);
-    window.addEventListener('neko-realistic-queue-idle', retryPendingHistory);
-
-    window.addEventListener('voice-input-socket-open', function () {
-        // Initial connect and role switches restore local originals without cloud I/O.
-        loadHistory().catch(function () { /* Optional sync never blocks local chat. */ });
-    });
-
     document.addEventListener('DOMContentLoaded', function () {
-        // Notifications wake backend downloads. This cheap local cursor check
-        // belongs to the chat host, independently of optional settings controls.
-        startHistoryPoll();
         var button = document.getElementById('chatSyncButton');
         if (!button) return;
         button.addEventListener('click', async function () {
@@ -511,20 +240,152 @@
         });
     });
 
-    window.addEventListener('pagehide', function () {
-        // A closed chat page owns no timer; the backend scheduler continues.
-        if (historyPollTimer !== null) window.clearInterval(historyPollTimer);
-        historyPollTimer = null;
-    });
+    async function applyReadyModel(uid, name) {
+        if (modelFlight || !document.getElementById('live2d-container') || typeof window.handleModelReload !== 'function') return;
+        var value;
+        try { value = await api('/characters/' + uid + '/model-sync'); }
+        catch (_) { return; }
+        var candidate = value && value.candidate;
+        if (!candidate || characterName() !== name || candidate.name !== name) return;
+        modelFlight = candidate.token;
+        try {
+            await window.handleModelReload(name, { temporaryConfig: {
+                model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
+            }, suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true });
+            if (characterName() !== name) return;
+            var manager = window.live2dManager;
+            var loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
+                && typeof manager.getCurrentModel === 'function' && manager.getCurrentModel());
+            var receipt = await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: loaded });
+            if (!receipt.applied && characterName() === name) await window.handleModelReload(name, { suppressToast: true });
+        } catch (_) {
+            if (characterName() === name) {
+                await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
+                await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
+            }
+        } finally { modelFlight = null; }
+    }
+
+    async function refreshReadyModel() {
+        if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
+        var name = characterName();
+        var state = await api('/status');
+        var role = state.characters.find(function (item) { return item.displayName === name; });
+        if (role && characterName() === name) await applyReadyModel(role.characterSyncId, name);
+    }
+
+    var displayFlight = false;
+    var displayPending = false;
+    var displayPrefix = 'sync-recent-';
+
+    function liveCharacterName() {
+        return window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
+    }
+
+    function liveChatBusy(host) {
+        var state = window.appState || {};
+        var completed = new Set([state.assistantTurnCompletedId, state.assistantTurnSettledId]);
+        return !!state.assistantTurnAwaitingBubble || !!window._isProcessingRealisticQueue
+            || (state.pendingTextTurnSubmitAt && Date.now() - state.pendingTextTurnSubmitAt < 15000)
+            || (host.getState().messages || []).some(function (message) {
+                return message.status === 'sending' || (message.status === 'streaming' && !completed.has(message.turnId));
+            });
+    }
+
+    function resourceUrl(resource, uid) {
+        return resource && (resource.url || resource.resourceId && '/api/chat-sync/characters/' + uid + '/resources/' + resource.resourceId) || '';
+    }
+
+    function recentMessage(record, result, name, uid) {
+        var body = record.role === 'assistant'
+            ? record.text.replace(/^\[\d{8} [^\]\s]+ \d{2}:\d{2}\][ \t]*/, '') : record.text;
+        var blocks = body ? [{ type: 'text', text: body }] : [];
+        var media = result.media && result.media[record.messageId];
+        (media && media.attachments || []).forEach(function (item) {
+            if (item.type === 'image') {
+                var cached = result.localMedia && result.localMedia[item.id];
+                var url = cached && cached.original || resourceUrl(item.original || item.thumbnail, uid);
+                if (url) blocks.push({ type: 'image', url: url, alt: item.title || '' });
+            } else if (item.url) {
+                blocks.push({ type: 'link', url: item.url, title: item.title || item.url,
+                    description: item.artist || undefined, thumbnailUrl: resourceUrl(item.cover, uid) || undefined });
+            }
+        });
+        if (!blocks.length) return null;
+        var timestamp = record.originalTime === null ? 0 : Number(record.originalTime);
+        if (!Number.isSafeInteger(timestamp)) timestamp = 0;
+        return { id: displayPrefix + uid + '-' + record.messageId, role: record.role,
+            author: record.role === 'assistant' ? name : text('userLabel'),
+            time: timestamp ? new Date(timestamp).toLocaleString() : text('unknownTime'),
+            createdAt: timestamp, status: 'sent', blocks: blocks };
+    }
+
+    function displaySnapshot(messages) {
+        return JSON.stringify(messages.map(function (message) {
+            return [message.id, message.role, message.author, message.time, message.createdAt,
+                message.status, message.blocks, message.sortKey];
+        }));
+    }
+
+    async function refreshRecentDisplay() {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.getState !== 'function' || typeof host.setMessages !== 'function'
+                || document.visibilityState === 'hidden' || liveChatBusy(host)) return;
+        if (displayFlight) { displayPending = true; return; }
+        displayFlight = true;
+        try {
+            var name = liveCharacterName();
+            var state = await api('/status');
+            var role = (state.characters || []).find(function (item) { return item.displayName === name; });
+            if (!role || !role.binding || !role.binding.enabled || liveCharacterName() !== name) return;
+            var uid = role.characterSyncId;
+            var result = await api('/characters/' + uid + '/recent-display');
+            if (liveCharacterName() !== name || window.reactChatWindowHost !== host || liveChatBusy(host)) return;
+            var received = result.originals.map(function (record) { return recentMessage(record, result, name, uid); }).filter(Boolean);
+            // The endpoint supplies only received recent messages. Local split bubbles stay owned by the chat host.
+            var current = host.getState().messages || [];
+            var local = current.filter(function (message) { return !message.id.startsWith(displayPrefix); });
+            var merged = local.concat(received).sort(function (a, b) {
+                return (typeof a.createdAt === 'number' ? a.createdAt : Infinity) - (typeof b.createdAt === 'number' ? b.createdAt : Infinity);
+            }).map(function (message, index) {
+                // The host sorts by explicit keys, including keys retained by local split bubbles.
+                return Object.assign({}, message, { sortKey: index });
+            });
+            if (displaySnapshot(current) !== displaySnapshot(merged)) host.setMessages(merged);
+        } finally {
+            displayFlight = false;
+            if (displayPending) { displayPending = false; refreshRecentDisplay().catch(function () {}); }
+        }
+    }
+
+    function refreshReceived() {
+        refreshRecentDisplay().catch(function () { /* The next committed hint or local poll retries. */ });
+    }
+    window.addEventListener('voice-input-socket-open', refreshReceived);
+    window.addEventListener('neko-assistant-turn-end', refreshReceived);
+    window.addEventListener('neko-realistic-queue-idle', refreshReceived);
+
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground
         // wake does not perform manual sync or bypass durable retry fences.
         if (foregroundWakeRunning || document.visibilityState === 'hidden' || !document.getElementById('react-chat-window-root')) return;
         foregroundWakeRunning = true;
-        try { await api('/wake', 'POST'); } catch (_) { /* Local chat stays usable. */ }
+        try { await api('/wake', 'POST'); await refreshReadyModel(); await refreshRecentDisplay(); } catch (_) { /* Local chat stays usable. */ }
         finally { foregroundWakeRunning = false; }
-        await refreshDownloadedHistory().catch(function () { /* Retry on the next local tick. */ });
     }
+    document.addEventListener('neko:chat-sync-history-changed', function () {
+        refreshReceived();
+        return refreshReadyModel().catch(function () { /* A later foreground wake retries. */ });
+    });
+    document.addEventListener('DOMContentLoaded', function () {
+        refreshReceived();
+        window.setInterval(refreshReceived, 30000);
+        if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
+        refreshReadyModel().catch(function () {});
+        window.setInterval(function () {
+            if (document.visibilityState !== 'hidden') refreshReadyModel().catch(function () {});
+        }, 30000);
+    });
     document.addEventListener('visibilitychange', foregroundCatchup);
-    window.addEventListener('pageshow', function () { startHistoryPoll(); return foregroundCatchup(); });
+    window.addEventListener('pageshow', foregroundCatchup);
 })();

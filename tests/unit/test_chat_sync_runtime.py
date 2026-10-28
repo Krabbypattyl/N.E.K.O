@@ -37,6 +37,32 @@ BINDING = "c" * 32
 DOMAIN = ChatDomain(OWNER, UID)
 
 
+def test_delivered_media_keeps_music_semantics_and_never_uses_full_image_as_preview():
+    from services.chat_sync.media_sync import delivered_record
+    record = delivered_record("1" * 32, [
+        {"title": "Song", "artist": "Artist", "url": "https://music.example/play", "cover": "https://music.example/small.jpg", "source": "音乐推荐"},
+        {"title": "GIF", "url": "https://images.example/sent.gif", "type": "gif", "source": "meme"},
+        {"title": "News", "url": "https://news.example/item", "mode": "news", "source": "web"},
+        {"title": "Private", "url": "http://127.0.0.1/private", "source": "web"},
+    ], delivery_id="actual-turn", source_mode="music")
+    assert [item["type"] for item in record["attachments"]] == ["music", "image", "link"]
+    assert record["attachments"][0]["artist"] == "Artist"
+    assert record["attachments"][1]["thumbnail"] is None
+    assert record["proactive"]["deliveryId"] == "actual-turn"
+
+
+@pytest.mark.asyncio
+async def test_media_restore_is_passive_and_deleted_originals_are_not_projected(tmp_path):
+    from services.chat_sync.media_sync import delivered_record
+    runtime, _, _ = setup_runtime(tmp_path)
+    record = delivered_record("1" * 32, [{"title": "News", "url": "https://news.example/item"}])
+    runtime.media.store.capture(UID, record)
+    assert await runtime.media.records(UID, DOMAIN, {record["messageId"]}) == {record["messageId"]: record}
+    assert await runtime.media.records(UID, DOMAIN, set()) == {}
+    assert runtime.media.store.rows(DOMAIN.key()) == []
+    await runtime.close()
+
+
 class SyntheticService:
     """Emulate binding receipts and fixed original requests without real network."""
 
@@ -54,6 +80,9 @@ class SyntheticService:
         if self.on_request is not None:
             await self.on_request(request)
         path = request.url.path
+        if path == "/v1/chat-sync/media/capabilities":
+            # Historical synthetic services model an older text/profile-only deployment.
+            return httpx.Response(404, json={"detail": "Not Found"})
         if path == "/v1/chat-sync/identity":
             return httpx.Response(200, json={"ownerId": self.owner})
         body = json.loads(request.content) if request.content else None
@@ -83,7 +112,7 @@ class SyntheticService:
         })
 
 
-def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
+def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memory_adapter=None, long_term_memory_adapter=None):
     """Inject only synthetic session state and an in-memory HTTP transport."""
     service = service or SyntheticService()
     session = {"logged_in": True, "snapshot": {
@@ -117,6 +146,9 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
         """Select one disposable role without loading production configuration."""
         return UID
 
+    async def recent_character_name(uid):
+        return 'Neko' if uid == UID else None
+
     runtime = DesktopChatSyncRuntime(
         tmp_path / "chat_sync", resolve,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(service.request)),
@@ -124,6 +156,7 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
         fixed_service_url=fixed_service_url,
+        recent_memory_adapter=recent_memory_adapter, long_term_memory_adapter=long_term_memory_adapter, recent_character_name=recent_character_name,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -463,9 +496,11 @@ async def test_production_history_notifier_routes_only_exact_local_character_uid
         websocket=SimpleNamespace(send_json=send_json))})
     runtime = await module.get_desktop_chat_sync_runtime(config)
     try:
+        assert runtime.chat_history_provider is None
+        assert runtime.recent_memory is not None
         await runtime.history_changed(UID)
         await runtime.history_changed(OTHER_UID)
-        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID}]
+        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID, "memoryEditedName": "Synthetic"}]
         assert await runtime.current_character_uid_provider() == UID
         character_data["当前猫娘"] = "Other"
         assert await runtime.current_character_uid_provider() == OTHER_UID

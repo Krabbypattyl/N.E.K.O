@@ -1214,6 +1214,27 @@ class StreamingMixin:
                             and image_arrival_time is not None
                         ):
                             self.note_user_engagement(at=image_arrival_time)
+                            # Only deliberate one-shot attachments carry this display marker.
+                            # Live camera/screen frames never enter this map.
+                            request_key = str(message.get("request_id") or "")
+                            if request_key:
+                                shares = getattr(self, "_chat_shared_images", None)
+                                if shares is None:
+                                    shares = self._chat_shared_images = {}
+                                shares.setdefault(request_key, []).append(image_b64)
+                                shares[request_key] = shares[request_key][-16:]
+                                while len(shares) > 16:
+                                    shares.pop(next(iter(shares)))
+                                if message.get("chat_image_only_final") is True:
+                                    try:
+                                        from services.chat_sync.media_sync import capture_user_media
+                                        identity = await capture_user_media(self, None, request_key,
+                                            original_time=str(int(image_arrival_time * 1000)))
+                                        if identity and self.websocket:
+                                            await self.websocket.send_json({"type": "chat_original_identity", "role": "user",
+                                                "request_id": request_key, "message_id": identity})
+                                    except Exception:
+                                        logger.warning("[chat-sync] image_original_save_unavailable")
                     else:
                         logger.error("💥 Stream: 图像数据验证失败")
                         return

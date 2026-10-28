@@ -2314,6 +2314,36 @@ async def test_cached_user_image_preserves_server_ingress_time(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize('input_type,final', [('user_image', True), ('avatar_drop_image', True),
+                                           ('user_image', False), ('screen', True)])
+async def test_only_completed_deliberate_image_submissions_publish_a_sync_identity(monkeypatch, input_type, final):
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr._config_manager = object()
+    mgr.websocket = SimpleNamespace(send_json=AsyncMock())
+    mgr._chat_shared_images = {'images-only': ['first-image']}
+    monkeypatch.setattr(core_module, 'process_screen_data', AsyncMock(return_value='last-image'))
+    capture = AsyncMock(return_value='1' * 32)
+    monkeypatch.setattr('services.chat_sync.media_sync.capture_user_media', capture)
+    await core_module.LLMSessionManager._process_stream_data_internal(mgr, {
+        'input_type': input_type, 'data': 'raw-image', 'request_id': 'images-only',
+        'chat_image_only_final': final, '_user_input_ingress_time': FIXED_TS,
+    })
+    if input_type in {'user_image', 'avatar_drop_image'} and final:
+        capture.assert_awaited_once_with(mgr, None, 'images-only', original_time=str(int(FIXED_TS * 1000)))
+        assert mgr._chat_shared_images['images-only'] == ['first-image', 'last-image']
+        mgr.websocket.send_json.assert_awaited_once_with({'type': 'chat_original_identity', 'role': 'user',
+                                                        'request_id': 'images-only', 'message_id': '1' * 32})
+    else:
+        capture.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
     """Task startup must not overwrite the timestamp sampled by the WS router."""
     mgr = _make_manager()

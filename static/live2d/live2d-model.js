@@ -1112,6 +1112,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 
     try {
+        const preparedModel = options.preparedModel || (options.preservePreviousUntilLoaded
+            ? await Live2DModel.from(modelPath, { autoFocus: false }) : null);
         // 移除当前模型
         if (this.currentModel) {
             await this.removeModel({
@@ -1119,7 +1121,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             });
         }
 
-        const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        const model = preparedModel || await Live2DModel.from(modelPath, { autoFocus: false });
         if (!this._isLoadTokenActive(loadToken)) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             const cancelError = new Error('Live2D load superseded by a newer model request.');
@@ -1151,6 +1153,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             throw error;
         }
         console.error('加载模型失败:', error);
+        if (options.preservePreviousUntilLoaded) throw error;
         
         // 尝试回退到默认模型
         if (modelPath !== '/static/yui-lolita/yui-lolita.model3.json') {
