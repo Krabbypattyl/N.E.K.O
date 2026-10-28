@@ -145,11 +145,12 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
         raise NumericV2GenerationError("invalid_cast_names")
     attempts = 0
 
-    def outline_issues(candidate, *, pending_state_index=None):
+    def outline_issues(candidate, *, pending_state_index=None, pending_chapter_index=None):
         return _validate_idea_outline(candidate, minimum=minimum, maximum=maximum,
             scene_expected_turns_target=8 if preset == "short" else None,
             cast_names=names, token_counter=generator._token_counter,
-            pending_state_index=pending_state_index)
+            pending_state_index=pending_state_index,
+            pending_chapter_index=pending_chapter_index)
 
     def persist():
         if save_checkpoint is not None:
@@ -353,7 +354,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             prefixes = (f"mainline_chapters[{index}]", f"relationship_arc.stages[{index}]",
                         f"character_state_arc.stages[{index}]")
             issues = [issue for issue in outline_issues(proposed,
-                pending_state_index=None if extracted else index) if any(
+                pending_state_index=None if extracted else index,
+                pending_chapter_index=index) if any(
                 _belongs(issue["path"], prefix) for prefix in prefixes)
                 or (repairing and issue not in prior_issues)]
             if not extracted:
@@ -453,7 +455,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             proposed["character_state_arc"]["ending_stage"] = deepcopy(draft["ending_stage"])
             if not extracted:
                 proposed["character_state_arc"]["ending_stage"].pop("temporal_context", None)
-            issues = outline_issues(proposed, pending_state_index=None if extracted else count)
+            issues = outline_issues(proposed, pending_state_index=None if extracted else count,
+                pending_chapter_index=count)
             return issues if extracted else _before_state_extraction(issues, "character_state_arc.ending_stage")
         ending_source = previous(count)
         last_chapter = ending_source["chapter"]

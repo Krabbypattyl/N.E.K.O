@@ -49,25 +49,48 @@ def test_mainline_requests_repair_of_invalid_fixed_entry_declaration(case):
                and issue["path"] == "mainline_chapters[0].exit_plan.fixed_entry_only" for issue in issues)
 
 
+@pytest.mark.parametrize("extracted", [False, True])
 @pytest.mark.parametrize("case", ["no_entry", "required"])
-def test_staged_pass_defers_cross_chapter_entry_check_until_target_exists(case):
-    """The per-chapter pass cannot repair a target chapter it has not written yet."""
+def test_staged_pass_defers_cross_chapter_entry_check_until_target_exists(case, extracted):
+    """Neither validation pass of a chapter can repair a target chapter not written yet."""
     outline = _idea_outline()
     outline["mainline_chapters"][0]["exit_plan"]["fixed_entry_only"] = True
     if case == "required":
         outline["mainline_chapters"][1]["fixed_narrations"] = [_fixed_piece()]
     codes = {issue["code"] for issue in _validate_idea_outline(
-        outline, minimum=4, maximum=6, pending_state_index=0)}
+        outline, minimum=4, maximum=6,
+        # The state extractor's pass clears pending_state_index but leaves the
+        # next chapter a stub, so this gate must not ride on that argument.
+        pending_state_index=None if extracted else 0, pending_chapter_index=0)}
     assert "transition_fixed_entry_only_invalid" not in codes
     assert any(issue["code"] == "transition_fixed_entry_only_invalid"
                for issue in _validate_idea_outline(outline, minimum=4, maximum=6))
+
+
+def test_situation_budget_check_follows_state_extraction_not_the_chapter_gate():
+    """Only pending_state_index defers the situation budget; the chapter gate must not."""
+    from utils.tokenize import count_tokens
+
+    outline = _idea_outline()
+    outline["mainline_chapters"][0]["catgirl_situation"] = "女主" + "甲" * 1200
+
+    def codes(**kwargs):
+        return {issue["code"] for issue in _validate_idea_outline(
+            outline, minimum=4, maximum=6, token_counter=count_tokens, **kwargs)}
+
+    assert "projected_prompt_field_too_large" in codes()
+    # Before extraction the extractor still owns catgirl_situation, so its budget waits.
+    assert "projected_prompt_field_too_large" not in codes(pending_state_index=0, pending_chapter_index=0)
+    # After extraction the field is real and must be measured again, even though the
+    # next chapter is still a stub and the cross-chapter gate stays closed.
+    assert "projected_prompt_field_too_large" in codes(pending_chapter_index=0)
 
 
 def test_staged_pass_keeps_cross_chapter_entry_check_for_written_chapters():
     """A declaration on an already written chapter still points at a written target."""
     outline = _idea_outline()
     outline["mainline_chapters"][0]["exit_plan"]["fixed_entry_only"] = True
-    issues = _validate_idea_outline(outline, minimum=4, maximum=6, pending_state_index=1)
+    issues = _validate_idea_outline(outline, minimum=4, maximum=6, pending_chapter_index=1)
     assert any(issue["code"] == "transition_fixed_entry_only_invalid"
                and issue["path"] == "mainline_chapters[0].exit_plan.fixed_entry_only" for issue in issues)
 

@@ -1309,6 +1309,7 @@ def _validate_idea_outline(
     cast_names: Mapping[str, str] | None = None,
     token_counter: Callable[[str], int] | None = None,
     pending_state_index: int | None = None,
+    pending_chapter_index: int | None = None,
 ) -> list[dict[str, str]]:
     """Check structural contracts, then existing exported-field caps with the host's token counter."""
 
@@ -1982,8 +1983,10 @@ def _validate_idea_outline(
             continue
         if chapter["exit_plan"].get("fixed_entry_only") is not True:
             continue
-        if pending_state_index is not None and index >= pending_state_index:
+        if pending_chapter_index is not None and index >= pending_chapter_index:
             # 目标幕此刻还只有标题提纲；逐幕阶段改不了它，这项跨幕要求留给最终全量校验。
+            # 与 pending_state_index 分开传：状态摘录完成后那一次校验要恢复
+            # catgirl_situation 的容量检查，但下一幕依然没有生成。
             continue
         target = chapters[index + 1] if index + 1 < len(chapters) else ending
         target = target if isinstance(target, Mapping) else {}
