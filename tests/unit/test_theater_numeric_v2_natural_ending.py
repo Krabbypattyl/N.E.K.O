@@ -35,7 +35,7 @@ def _engine(*, ordinary=False, blocked=False):
 def test_builtin_neon_overload_can_fall_silent_without_dialogue_retry():
     from services.theater.numeric_v2_actor_output import _parse_output
 
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text(encoding='utf-8'))
     engine = NumericV2Engine.from_mapping(story)
     session = engine.create_session(session_id='silent-overload', catgirl_binding=_binding(), opening_performance=_opening())
     session = replace(session, current_node_id='mainline_07')
@@ -52,7 +52,7 @@ def test_builtin_neon_overload_can_fall_silent_without_dialogue_retry():
 def test_builtin_neon_normal_ending_requires_actual_overload(hacking, emotion, combat, executed):
     from services.theater.numeric_v2_fixed_narration import add_entry
 
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text(encoding='utf-8'))
     engine = NumericV2Engine.from_mapping(story)
     session = engine.create_session(session_id='overload-result', catgirl_binding=_binding(), opening_performance=_opening())
     session = replace(session, current_node_id='mainline_07',
@@ -71,7 +71,7 @@ def test_builtin_neon_normal_ending_requires_actual_overload(hacking, emotion, c
 
 
 def test_builtin_neon_counterattack_route_does_not_require_overload():
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text(encoding='utf-8'))
     engine = NumericV2Engine.from_mapping(story)
     route = engine.preview_route('mainline_07',
         {'hacking_mastery': 80, 'emotional_sync': 80, 'combat_bond': 40},

@@ -202,7 +202,7 @@ def test_actor_cannot_supply_runtime_owned_text():
     ('story_neon_rebuild_ea2e45dab7.json', 'mainline_03', 'instinctive_isolation', ('自主接入', '连接建立', '隔离完成', '安全锁定', '围观者')),
 ])
 def test_builtin_key_evidence_and_current_crisis_are_visible_before_character_reply(filename, node_id, piece_id, terms):
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater' / filename).read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater' / filename).read_text(encoding='utf-8'))
     engine = NumericV2Engine.from_mapping(story)
     session = engine.create_session(session_id='authored-entry', catgirl_binding=_binding(), opening_performance=OPENING)
     session = replace(session, current_node_id=node_id,
@@ -215,7 +215,7 @@ def test_builtin_key_evidence_and_current_crisis_are_visible_before_character_re
 
 
 def test_neon_ambush_entry_state_matches_delivered_result():
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text(encoding='utf-8'))
     beat = next(node['story_beat'] for node in story['nodes'] if node['id'] == 'mainline_06')
     assert '已徒手砸毁' in beat['catgirl_situation']
     assert beat['character_state']['catgirl_state'] == beat['catgirl_situation']
@@ -239,7 +239,7 @@ def test_public_payload_keeps_literal_text_but_hides_internal_metadata():
     (5, 'mainline_06', 'blockade_ambush', ('无人机', '右小腿', '擦伤', '追踪已经解除', '旧地铁站', '要一起撤过去吗')),
 ])
 def test_builtin_neon_log_is_delivered_on_entry_without_model_review(transitions, node_id, piece_id, terms):
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_neon_rebuild_ea2e45dab7.json').read_text(encoding='utf-8'))
     engine = NumericV2Engine.from_mapping(story)
     session = engine.create_session(session_id='neon-log', catgirl_binding=_binding(), opening_performance=OPENING)
     for index in range(transitions):

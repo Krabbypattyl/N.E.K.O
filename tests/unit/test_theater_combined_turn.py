@@ -15,7 +15,7 @@ from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
 
 @pytest.mark.asyncio
 async def test_combined_player_route_fact_in_body_bucket_is_validated_as_player_evidence(tmp_path, monkeypatch):
-    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_a400cd1c2783.json').read_text())
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_a400cd1c2783.json').read_text(encoding='utf-8'))
     engine = NumericV2Engine.from_mapping(story)
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='route-choice', catgirl_binding=_binding(), opening_performance=_opening())
