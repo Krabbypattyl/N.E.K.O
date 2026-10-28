@@ -6,17 +6,31 @@
   var standalone = window.__NEKO_SOCIAL_HUB_STANDALONE__ === true;
   var state = {
     open: standalone, loading: true, loggedIn: false, loadFailed: false, loadError: '',
-    toast: '', toastError: false, incoming: null, friends: [], accountId: '', account: null,
+    toast: '', toastError: false, incoming: null, friends: [], recommendations: [],
+    recommendationBusy: new Set(), accountId: '', account: null,
     presenceMenuOpen: false, presenceSaving: false,
     invitations: new Map(), restoredAccountId: ''
   };
   var layer = null;
   var panel = null;
   var previousFocus = null;
+  var openGeneration = 0;
+  var dismissedRecommendationFocusKey = '';
   // 重试时按钮会先被“读取中”卡片替换；记住焦点目标，结果出来后再还给对应按钮。
   var pendingFocusKey = '';
+  // 关注补位可能耗时；只有用户仍停在原关注按钮时才恢复，避免覆盖其新选中的控件。
+  var pendingFocusOriginKey = '';
   var incomingDeliveryKey = '';
   var incomingDeliveryTimer = 0;
+  var hubRefreshRevision = 0;
+  var appliedRefreshRevision = 0;
+  var appliedRecommendationRevision = 0;
+  var loadingRefreshRevision = 0;
+  var invitationSnapshotRevision = 0;
+  var presenceRefreshInFlight = false;
+  var presencePushRevision = 0;
+  var presencePushRevisions = new Map();
+  var dismissedRecommendationIds = new Set();
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -128,6 +142,7 @@
     if (body && body.detail === 'mutual_follow_required') return tr('visit.socialHub.mutualRequired', '你们已不再互相关注，无法发送邀请');
     if (body && body.detail === 'target_offline') return tr('visit.socialHub.targetOffline', '对方当前离线，暂时不能邀请');
     if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，稍后再试一次');
+    if (body && body.detail === 'user_relationship_blocked') return tr('visit.socialHub.followBlocked', '当前关系无法关注这位用户');
     return fallback;
   }
   function normalizeFriend(item) {
@@ -154,6 +169,19 @@
       username: String(item.username || ''),
       avatarUrl: String(item.avatar_url || ''),
       presenceStatus: presenceStatus
+    };
+  }
+  function normalizeRecommendation(item) {
+    if (!item || !item.id) return null;
+    var reason = String(item.reason || 'active_user');
+    if (['active_user', 'liked_you', 'recent_follower'].indexOf(reason) === -1) reason = 'active_user';
+    return {
+      id: String(item.id),
+      displayName: String(item.display_name || item.username || '喵友'),
+      username: String(item.username || ''),
+      avatarUrl: String(item.avatar_url || ''),
+      reason: reason,
+      followsViewer: item.follows_viewer === true
     };
   }
   function normalizeIncoming(item) {
@@ -351,9 +379,35 @@
     });
   }
 
-  async function refresh(silent) {
+  function applyInvitationSnapshot(body, revision) {
+    if (revision < invitationSnapshotRevision) return false;
+    invitationSnapshotRevision = revision;
+    body = body || {};
+    state.incoming = normalizeIncoming(body.incoming_invite);
+    applyInviteResponses(body.invite_responses);
+    reconcileCurrentVisit();
+    deliverIncomingToChat(0);
+    return true;
+  }
+
+  function applyRecommendationSnapshot(body, revision) {
+    if (revision < appliedRecommendationRevision) return false;
+    appliedRecommendationRevision = revision;
+    state.recommendations = Array.isArray(body && body.recommendations)
+      ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(function (item) {
+        return item && !dismissedRecommendationIds.has(item.id);
+      }) : [];
+    return true;
+  }
+
+  async function refresh(silent, replaceRecommendationsRequested) {
     silent = silent === true;
+    replaceRecommendationsRequested = replaceRecommendationsRequested === true;
+    var refreshGeneration = openGeneration;
+    var refreshRevision = ++hubRefreshRevision;
+    var presenceRevisionAtStart = presencePushRevision;
     if (!silent) {
+      loadingRefreshRevision = refreshRevision;
       state.loading = true;
       render();
     }
@@ -367,27 +421,64 @@
         serverError.fromServer = true;
         throw serverError;
       }
+      // 浮窗内容按打开代数隔离，但邀请属于聊天事件，关闭浮窗后仍需及时投递。
+      if (refreshGeneration !== openGeneration) {
+        applyInvitationSnapshot(body, refreshRevision);
+        return;
+      }
+      var nextAccountId = String(body.account && body.account.id || '');
+      // 只拒绝早于最近已应用资料的响应；较新的请求失败时，较早的成功响应仍可兜底。
+      if (refreshRevision < appliedRefreshRevision) {
+        // 推荐替换有独立版本：后发的普通静默刷新不能吞掉打开读取或关注补位。
+        if ((replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId) {
+          applyRecommendationSnapshot(body, refreshRevision);
+        }
+        applyInvitationSnapshot(body, refreshRevision);
+        return;
+      }
+      appliedRefreshRevision = refreshRevision;
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
-      state.accountId = String(body.account && body.account.id || '');
+      var accountChanged = nextAccountId !== state.accountId;
+      if (accountChanged) {
+        dismissedRecommendationIds.clear();
+        state.recommendationBusy.clear();
+      }
+      var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
+      state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
-      state.friends = Array.isArray(body.friends)
+      var nextFriends = Array.isArray(body.friends)
         ? body.friends.map(normalizeFriend).filter(function (friend) { return friend.id; }) : [];
-      state.incoming = normalizeIncoming(body.incoming_invite);
+      if (!accountChanged) {
+        var previousFriends = new Map(state.friends.map(function (friend) {
+          return [friend.id, friend];
+        }));
+        nextFriends.forEach(function (friend) {
+          var previous = previousFriends.get(friend.id);
+          if (!previous || (presencePushRevisions.get(friend.id) || 0) <= presenceRevisionAtStart) return;
+          friend.online = previous.online;
+          friend.presenceStatus = previous.presenceStatus;
+          friend.lastSeenAt = previous.lastSeenAt;
+        });
+      }
+      state.friends = nextFriends;
+      if (shouldReplaceRecommendations) applyRecommendationSnapshot(body, refreshRevision);
       restoreInvitations();
-      applyInviteResponses(body.invite_responses);
-      reconcileCurrentVisit();
+      applyInvitationSnapshot(body, refreshRevision);
       if (!silent) {
         state.toast = '';
         state.toastError = false;
       }
     } catch (error) {
+      if (refreshGeneration !== openGeneration || refreshRevision < appliedRefreshRevision) return;
       if (!silent) {
         state.loadFailed = true;
         state.loggedIn = false;
         state.account = null;
         state.friends = [];
+        state.recommendations = [];
+        state.recommendationBusy.clear();
         state.incoming = null;
         // 失败原因直接写进空状态卡片（带重试按钮），不再额外弹一条重复的红色提示。
         // 服务端给出的原因照常显示；网络层异常（浏览器的 "Failed to fetch" 等）换成本地化文案。
@@ -398,9 +489,11 @@
         state.toastError = false;
       }
     } finally {
-      if (!silent) state.loading = false;
-      render();
-      deliverIncomingToChat(0);
+      if (refreshGeneration === openGeneration) {
+        // 静默刷新不拥有 loading；重叠读取也只能由最近的非静默刷新结束它。
+        if (!silent && refreshRevision === loadingRefreshRevision) state.loading = false;
+        render();
+      }
     }
   }
 
@@ -633,6 +726,128 @@
     render();
   }
 
+  function recommendationReason(recommendation) {
+    if (recommendation.reason === 'recent_follower') {
+      return tr('visit.socialHub.recommendationRecentFollower', '最近关注了你');
+    }
+    if (recommendation.reason === 'liked_you') {
+      return tr('visit.socialHub.recommendationLikedYou', '最近赞过你的内容');
+    }
+    return tr('visit.socialHub.recommendationActive', '最近很活跃');
+  }
+
+  function dismissRecommendation(recommendation) {
+    if (!recommendation || state.recommendationBusy.has(recommendation.id)) return;
+    var index = state.recommendations.findIndex(function (item) {
+      return item.id === recommendation.id;
+    });
+    var remaining = state.recommendations.filter(function (item) {
+      return item.id !== recommendation.id;
+    });
+    var next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)] || null;
+    dismissedRecommendationFocusKey = next
+      ? 'recommendation-dismiss-' + next.id
+      : 'open-community';
+    dismissedRecommendationIds.add(recommendation.id);
+    state.recommendations = remaining;
+    render();
+  }
+
+  async function followRecommendation(recommendation) {
+    if (!recommendation || state.recommendationBusy.has(recommendation.id)) return;
+    var followGeneration = openGeneration;
+    var followAccountId = state.accountId;
+    var followFocusKey = 'recommendation-' + recommendation.id;
+    var activeAtFollow = document.activeElement;
+    var restoreFollowFocus = !!(activeAtFollow && activeAtFollow.getAttribute &&
+      activeAtFollow.getAttribute('data-neko-focus-key') === followFocusKey);
+    function isCurrentFollow() {
+      return followGeneration === openGeneration && followAccountId === state.accountId;
+    }
+    state.recommendationBusy.add(recommendation.id);
+    state.toast = '';
+    state.toastError = false;
+    render();
+    try {
+      var response = await fetch('/api/community/users/' + encodeURIComponent(recommendation.id) +
+        '/follow?expected_account_id=' + encodeURIComponent(followAccountId), {
+        method: 'POST', credentials: 'same-origin'
+      });
+      var body = await json(response);
+      if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.followFailed', '关注失败，请稍后重试')));
+      if (!isCurrentFollow()) return;
+      var index = state.recommendations.findIndex(function (item) {
+        return item.id === recommendation.id;
+      });
+      var remaining = state.recommendations.filter(function (item) {
+        return item.id !== recommendation.id;
+      });
+      var next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)] || null;
+      if (restoreFollowFocus) {
+        pendingFocusOriginKey = followFocusKey;
+        pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community';
+      }
+      state.recommendations = remaining;
+      await refresh(true, true);
+      if (!isCurrentFollow()) return;
+      state.toast = tr('visit.socialHub.followedUser', '已关注 {{name}}', { name: recommendation.displayName });
+    } catch (error) {
+      if (!isCurrentFollow()) return;
+      state.toast = error && error.message || tr('visit.socialHub.followFailed', '关注失败，请稍后重试');
+      state.toastError = true;
+    } finally {
+      if (isCurrentFollow()) {
+        state.recommendationBusy.delete(recommendation.id);
+        render();
+      }
+    }
+  }
+
+  function recommendationRow(recommendation) {
+    var row = el('li', 'neko-social-hub-friend neko-social-hub-recommendation');
+    row.appendChild(avatar(recommendation, ''));
+    var copy = el('div', 'neko-social-hub-friend-copy');
+    copy.appendChild(el('strong', 'neko-social-hub-name', recommendation.displayName));
+    copy.appendChild(el('span', 'neko-social-hub-status', recommendationReason(recommendation)));
+    row.appendChild(copy);
+    var busy = state.recommendationBusy.has(recommendation.id);
+    var action = button(
+      busy ? tr('visit.socialHub.followingUser', '关注中…') : tr('visit.socialHub.followUser', '关注'),
+      'neko-social-hub-button primary',
+      function () { followRecommendation(recommendation); }
+    );
+    focusKey(action, 'recommendation-' + recommendation.id);
+    action.disabled = busy;
+    var actions = el('div', 'neko-social-hub-recommendation-actions');
+    actions.appendChild(action);
+    var dismissLabel = tr('visit.socialHub.dismissRecommendation', '不再推荐 {{name}}', {
+      name: recommendation.displayName
+    });
+    var dismiss = button('×', 'neko-social-hub-recommendation-dismiss', function () {
+      dismissRecommendation(recommendation);
+    });
+    dismiss.setAttribute('aria-label', dismissLabel);
+    dismiss.title = dismissLabel;
+    focusKey(dismiss, 'recommendation-dismiss-' + recommendation.id);
+    dismiss.disabled = busy;
+    actions.appendChild(dismiss);
+    row.appendChild(actions);
+    return row;
+  }
+
+  function renderRecommendations(target) {
+    if (!state.recommendations.length) return;
+    var section = el('section', 'neko-social-hub-recommendation-section');
+    section.appendChild(el('h3', 'neko-social-hub-heading neko-social-hub-recommendation-heading',
+      tr('visit.socialHub.recommendedUsers', '你可能感兴趣的人')));
+    var list = el('ul', 'neko-social-hub-friends neko-social-hub-recommendations');
+    state.recommendations.forEach(function (recommendation) {
+      list.appendChild(recommendationRow(recommendation));
+    });
+    section.appendChild(list);
+    target.appendChild(section);
+  }
+
   function friendRow(friend) {
     var invitation = state.invitations.get(friend.id) || null;
     var view = invitationView(invitation);
@@ -684,7 +899,7 @@
     var locale = document.documentElement.lang || undefined;
     var formatter;
     try { formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }); } catch (_) {}
-    if (minutes < 1) return formatter ? formatter.format(0, 'minute') : tr('visit.socialHub.justNow', '刚刚');
+    if (minutes < 1) return tr('visit.socialHub.justNow', '刚刚');
     if (minutes < 60) return formatter ? formatter.format(-minutes, 'minute') : minutes + ' 分钟前';
     var hours = Math.floor(minutes / 60);
     if (hours < 24) return formatter ? formatter.format(-hours, 'hour') : hours + ' 小时前';
@@ -700,6 +915,68 @@
     if (friend.online) return tr('visit.socialHub.presenceOnline', '在线');
     var lastSeen = relativeLastSeen(friend.lastSeenAt);
     return lastSeen ? tr('visit.socialHub.lastSeen', '上次在线 {{time}}', { time: lastSeen }) : tr('visit.socialHub.offline', '离线');
+  }
+  function applyPresenceChanged(notification) {
+    var payload = notification && notification.payload;
+    var userId = String(payload && payload.user_id || '');
+    var status = String(payload && payload.presence_status || '');
+    if (!userId || ['online', 'away', 'offline'].indexOf(status) === -1) return false;
+    var friend = state.friends.find(function (item) { return item.id === userId; });
+    if (!friend) return false;
+    presencePushRevisions.set(userId, ++presencePushRevision);
+    friend.presenceStatus = status;
+    friend.online = status === 'online' || status === 'away';
+    friend.lastSeenAt = String(payload.last_seen_at || friend.lastSeenAt || '');
+    if (state.open) render();
+    return true;
+  }
+  async function refreshPresence() {
+    if (!state.open || !state.loggedIn || presenceRefreshInFlight) return false;
+    presenceRefreshInFlight = true;
+    var requestAccountId = state.accountId;
+    var requestGeneration = openGeneration;
+    var requestRevision = presencePushRevision;
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var abortTimer = controller ? setTimeout(function () { controller.abort(); }, 8000) : 0;
+    try {
+      var response = await fetch('/api/community/friend-presence', {
+        credentials: 'same-origin', signal: controller ? controller.signal : undefined
+      });
+      var body = await json(response);
+      if (!response.ok || !Array.isArray(body.friends)) return false;
+      if (openGeneration !== requestGeneration || state.accountId !== requestAccountId) return false;
+      var updates = new Map();
+      body.friends.forEach(function (item) {
+        var userId = String(item && item.id || '');
+        var status = String(item && item.presence_status || '');
+        if (userId && ['online', 'away', 'offline'].indexOf(status) !== -1) {
+          updates.set(userId, item);
+        }
+      });
+      var changed = false;
+      state.friends.forEach(function (friend) {
+        var item = updates.get(friend.id);
+        if (!item) return;
+        if ((presencePushRevisions.get(friend.id) || 0) > requestRevision) return;
+        var status = String(item.presence_status);
+        var online = status === 'online' || status === 'away';
+        var lastSeenAt = String(item.last_seen_at || '');
+        // 即使值未变化也记录这次确认，阻止更早的全量快照随后回写旧 presence。
+        presencePushRevisions.set(friend.id, ++presencePushRevision);
+        if (friend.presenceStatus === status && friend.online === online && friend.lastSeenAt === lastSeenAt) return;
+        friend.presenceStatus = status;
+        friend.online = online;
+        friend.lastSeenAt = lastSeenAt;
+        changed = true;
+      });
+      if (changed && state.open) render();
+      return changed;
+    } catch (_) {
+      return false;
+    } finally {
+      if (abortTimer) clearTimeout(abortTimer);
+      presenceRefreshInFlight = false;
+    }
   }
   function renderFriendGroup(title, friends, target) {
     if (!friends.length) return;
@@ -773,10 +1050,31 @@
     var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0;
     var active = document.activeElement;
     var activeKey = active && panel.contains(active) ? active.getAttribute('data-neko-focus-key') : '';
+    if (dismissedRecommendationFocusKey) {
+      activeKey = dismissedRecommendationFocusKey;
+      dismissedRecommendationFocusKey = '';
+    }
     // 用户已把焦点移到面板外的其他控件：放弃待恢复的焦点，不再抢回来。
-    if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) pendingFocusKey = '';
-    if (!activeKey && pendingFocusKey && !state.loading && active && panel.contains(active)) activeKey = pendingFocusKey;
-    if (!state.loading) pendingFocusKey = '';
+    if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) {
+      pendingFocusKey = '';
+      pendingFocusOriginKey = '';
+    }
+    var pendingFocusFallback = !!(pendingFocusKey && !state.loading);
+    if (pendingFocusFallback) {
+      var focusStayedOnOrigin = !!(pendingFocusOriginKey && activeKey === pendingFocusOriginKey);
+      var focusedNodeDisappeared = !active || active === document.body || active === panel;
+      if (focusStayedOnOrigin || focusedNodeDisappeared) activeKey = pendingFocusKey;
+      else if (active && panel.contains(active)) {
+        // 用户在补位期间主动选择了面板内的其他控件，保留其选择。
+        pendingFocusKey = '';
+        pendingFocusOriginKey = '';
+        pendingFocusFallback = false;
+      }
+    }
+    if (!state.loading) {
+      pendingFocusKey = '';
+      pendingFocusOriginKey = '';
+    }
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));
@@ -790,7 +1088,9 @@
     panel.appendChild(header);
     if (state.loggedIn && state.account) renderOwnAccount(panel);
 
-    // 账号区固定在顶部，好友分组独立滚动，避免滚动好友时丢失自己的头像和状态入口。
+    // 账号区和推荐区固定在顶部，只让好友分组独立滚动。
+    // 这样滚动条不会穿过“你可能感兴趣的人”，也不会挡住关注按钮。
+    renderRecommendations(panel);
     var friendScroller = el('div', 'neko-social-hub-friend-scroller');
     panel.appendChild(friendScroller);
     var orphanInvitations = orphanInvitationFriends();
@@ -804,18 +1104,25 @@
     }
     if (state.toast) panel.appendChild(el('div', 'neko-social-hub-toast' + (state.toastError ? ' is-error' : ''), state.toast));
     friendScroller.scrollTop = oldScrollTop;
+    var restoredFocus = false;
     if (activeKey) {
-      Array.from(panel.querySelectorAll('[data-neko-focus-key]')).some(function (node) {
+      restoredFocus = Array.from(panel.querySelectorAll('[data-neko-focus-key]')).some(function (node) {
         if (node.getAttribute('data-neko-focus-key') !== activeKey) return false;
         try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
         return true;
       });
     }
+    if (!restoredFocus && pendingFocusFallback) {
+      var communityEntry = panel.querySelector('[data-neko-focus-key="open-community"]');
+      if (communityEntry) {
+        try { communityEntry.focus({ preventScroll: true }); } catch (_) { communityEntry.focus(); }
+      }
+    }
     // 读取中按钮暂时不存在，先把焦点留在面板上，避免掉到 body。
     if (pendingFocusKey && state.loading && (!document.activeElement || document.activeElement === document.body)) {
       try { panel.focus({ preventScroll: true }); } catch (_) { panel.focus(); }
     }
-    if (state.open && !standalone) requestAnimationFrame(positionPanel);
+    if (state.open && !standalone) requestAnimationFrame(keepPanelInViewport);
   }
 
   function panelViewport() {
@@ -851,6 +1158,20 @@
     return Math.max(min, Math.min(value, Math.max(min, max)));
   }
 
+  function keepPanelInViewport() {
+    if (standalone || !panel || !state.open) return;
+    var currentTop = Number.parseFloat(panel.style.top);
+    if (!Number.isFinite(currentTop)) return;
+    var rect = panel.getBoundingClientRect();
+    var viewport = panelViewport();
+    var topEdge = viewport.top + 12;
+    var bottomEdge = viewport.bottom - 12;
+    var nextTop = currentTop;
+    if (rect.bottom > bottomEdge) nextTop -= rect.bottom - bottomEdge;
+    if (rect.top < topEdge) nextTop += topEdge - rect.top;
+    if (Math.abs(nextTop - currentTop) >= 1) panel.style.top = Math.round(nextTop) + 'px';
+  }
+
   function positionPanel() {
     if (standalone || !panel || !state.open) return;
     var margin = 12;
@@ -873,8 +1194,10 @@
     );
     panel.style.maxHeight = Math.max(1, Math.floor(maxHeight)) + 'px';
 
-    var width = Math.min(panel.offsetWidth || 392, availableWidth);
-    var height = Math.min(panel.scrollHeight, maxHeight);
+    var width = Math.min(panel.offsetWidth || 360, availableWidth);
+    // 状态菜单是绝对定位的浮层，部分浏览器仍会把它计入 scrollHeight。
+    // 用真实布局高度定位，避免菜单展开/收起时把整个面板向上夹紧几像素。
+    var height = Math.min(panel.offsetHeight || panel.scrollHeight, maxHeight);
     var left = clamp(rightEdge - width, leftEdge, rightEdge - width);
     var top = clamp((topEdge + bottomEdge - height) / 2, topEdge, bottomEdge - height);
     if (anchor) {
@@ -908,16 +1231,43 @@
       document.body.appendChild(layer);
     }
   }
-  function open() {
-    mount();
-    closeAvatarPopups();
-    previousFocus = document.activeElement;
-    state.open = true;
+  function revealOpenPanel(generation) {
+    if (!state.open || generation !== openGeneration) return;
     if (layer) layer.hidden = false;
     notifyOverlayVisibilityChanged();
     render();
-    requestAnimationFrame(function () { positionPanel(); panel.focus({ preventScroll: true }); });
-    refresh();
+    requestAnimationFrame(function () {
+      if (!state.open || generation !== openGeneration) return;
+      positionPanel();
+      panel.focus({ preventScroll: true });
+    });
+  }
+  function open() {
+    if (state.open && panel && !standalone) return true;
+    mount();
+    closeAvatarPopups();
+    previousFocus = document.activeElement;
+    var generation = ++openGeneration;
+    state.open = true;
+    dismissedRecommendationIds.clear();
+    if (!layer) {
+      revealOpenPanel(generation);
+      refresh();
+      return true;
+    }
+    // 快速请求一次性展示完整内容；慢请求超过短暂防闪窗口后才显示 loading。
+    // 这样不会先闪出上次的推荐，也不会在上游变慢时长时间毫无反馈。
+    layer.hidden = true;
+    state.recommendations = [];
+    state.recommendationBusy.clear();
+    var loadingRevealTimer = setTimeout(function () {
+      revealOpenPanel(generation);
+    }, 300);
+    refresh().finally(function () {
+      clearTimeout(loadingRevealTimer);
+      // 慢请求的 loading 已经展示并聚焦过；完成后只由 refresh() 更新内容。
+      if (layer.hidden) revealOpenPanel(generation);
+    });
     return true;
   }
   function close() {
@@ -926,6 +1276,7 @@
       return bridge && typeof bridge.close === 'function' ? bridge.close() : window.close();
     }
     if (!layer) return;
+    openGeneration += 1;
     state.open = false;
     layer.hidden = true;
     notifyOverlayVisibilityChanged();
@@ -985,6 +1336,9 @@
     }
     reconcileCurrentVisit();
   }, 5000);
+  // 推送负责即时变化；短轮询只在面板打开时兜底断线和 presence 租约自然过期。
+  // 它只拉好友状态，不刷新推荐、通知或整个浮窗。
+  setInterval(function () { refreshPresence(); }, 3000);
   // 面板关着时也维持社区 presence；静默刷新不会清空现有好友或制造 loading 闪烁。
   setInterval(function () { refresh(true); }, 60000);
   var socialApi = social();
@@ -992,7 +1346,8 @@
     socialApi.onNotifyIncoming(function (notification) {
       var payload = notification && notification.payload;
       var kind = String(notification && notification.kind || payload && payload.type || '');
-      if (kind === 'visit_invite' || kind === 'visit_invite_response') refresh();
+      if (kind === 'presence_changed') applyPresenceChanged(notification);
+      else if (kind === 'visit_invite' || kind === 'visit_invite_response') refresh(true);
     });
   }
 
@@ -1000,7 +1355,11 @@
     open: open, close: close, toggle: toggle, handlePrimaryClick: toggle,
     openFullCommunity: openCommunity, refresh: refresh, _state: state,
     _applyVisitStatus: applyVisitStatus, _inviteFriend: inviteFriend,
-    _orphanInvitationFriends: orphanInvitationFriends
+    _orphanInvitationFriends: orphanInvitationFriends,
+    _applyPresenceChanged: applyPresenceChanged,
+    _refreshPresence: refreshPresence,
+    _dismissRecommendation: dismissRecommendation,
+    _followRecommendation: followRecommendation
   };
   if (standalone) requestAnimationFrame(open);
   else requestAnimationFrame(refresh);
