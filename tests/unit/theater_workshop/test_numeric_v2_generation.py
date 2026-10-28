@@ -547,7 +547,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "默认使用 semantic 且 anchors 为空" in _BRANCH_PATH_PROMPT
     assert "exact anchors 指代玩家时必须使用最终可见的第二人称“你”" in _BRANCH_PATH_PROMPT
     assert "多个必须全部成立的条件、数量、期限或范围" in _BRANCH_PATH_PROMPT
-    assert "不得写入新的玩家身体行动" in _BRANCH_PATH_PROMPT
+    assert "不新增未经授权的玩家身体行动" in _BRANCH_PATH_PROMPT
     assert "每一幕只能推进一小级" in _BRANCH_PATH_PROMPT
     assert "不得仅因进入支线就从警惕或疏离跳到粘人" in _BRANCH_PATH_PROMPT
     assert "不得把 source 或 scene 的预期目标写成已经完成" in _BRANCH_PATH_PROMPT
@@ -1275,7 +1275,7 @@ def test_independent_capacity_text_matches_full_projection_for_cast_names(names)
         outline=candidate, tone=[], **kwargs)
     expected = [node["story_beat"][field] for node in story["nodes"]
                 for field in (("opening_scene", "catgirl_situation") if node["type"] == "ending"
-                              else ("opening_scene", "narrative_focus", "catgirl_situation"))]
+                              else ("opening_scene", "summary", "narrative_focus", "catgirl_situation"))]
     actual = []
 
     def counter(text):

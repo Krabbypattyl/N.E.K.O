@@ -10,6 +10,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater import numeric_v2_narrative_proposer as proposer
 from services.theater.numeric_v2_narrative import make_narrative_record, narrative_body_fingerprint
 from services.theater.numeric_v2_runtime import NumericV2Engine
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_narrative_proposer import _client
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -50,7 +51,7 @@ def _case():
 
 def _data(messages):
     text = messages[1].content
-    return json.loads(text[text.index("{"):])
+    return prompt_payload(text)
 
 
 def test_evaluator_retains_world_rule_observation_and_public_memory_as_distinct_evidence():

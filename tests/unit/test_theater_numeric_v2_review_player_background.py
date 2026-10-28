@@ -15,6 +15,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2 import MAX_ACTOR_PROMPT_FIELD_TOKENS
 from services.theater.numeric_v2_budget import numeric_v2_actor_budget
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_author_entry_plan import _case as _entry_case
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -46,7 +47,7 @@ def _case(identity=IDENTITY, *, restricted=False):
 
 def _data(messages):
     human = messages[1].content
-    return json.loads(human[human.index("{"):])
+    return prompt_payload(human)
 
 
 def _review_messages(engine, session, mode="ordinary", *, performance=None):
@@ -97,7 +98,7 @@ def test_review_keeps_full_cast_background_separate_from_actions_and_future_plan
     assert system.count("作者初始玩家身份/背景") == 1
     assert "不是本轮行动、完成证据或角色知情许可" in system
     assert "问句、引文与否定按原意核对" in system
-    assert "你及NPC仍须遵守各自认知限制和实际公开范围" in system
+    assert "当前角色及NPC仍须遵守各自认知限制和实际公开范围" in system
     assert "字段缺省不证明背景不存在" in system
     assert (engine.story, session.to_dict()) == before
 

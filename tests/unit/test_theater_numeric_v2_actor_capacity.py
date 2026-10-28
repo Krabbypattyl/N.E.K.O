@@ -31,9 +31,9 @@ RENDERED_HISTORY = [{
     "revision": 8,
     "player_input": "先别开，我只是核对封条。",
     "committed_text": (
-        "场景：管事说：“许可仍待确认。”\n"
-        "已展示的作者原文：封存须知：未经签字不得开匣。\n"
-        f"你：{REPLY}\n已展示的作者原文：封条编号：A-17。"
+        "场景／NPC | 管事说：“许可仍待确认。”\n"
+        "已展示的作者原文 | 封存须知：未经签字不得开匣。\n"
+        f"角色（你） | {REPLY}\n已展示的作者原文 | 封条编号：A-17。"
     ),
 }]
 LARGE = {"revision": 2, "source": "performance", "current_visit": False,
@@ -66,7 +66,7 @@ def _data(evidence):
 
 def _wire_tokens(data, *, system=SYSTEM, prefix=PREFIX):
     return actor.count_tokens(system) + actor.count_tokens(
-        prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+        prefix + actor.render_prompt_context(data),
     )
 
 
@@ -236,7 +236,8 @@ async def test_native_formal_capacity_preserves_entry_permissions_history_and_st
         assert calls == [[]]
         assert fitted == baseline
         assert fitted["player_input"] == turn.message
-        assert fitted["transition"]["target_scene"]["author_entry_plan"] == expected_plan
+        from tests.unit.test_theater_numeric_v2_target_entry_plan import _assert_actor_entry_plan
+        _assert_actor_entry_plan(kwargs["system_prompt"], fitted["transition"]["target_scene"]["author_entry_plan"], expected_plan)
         assert _wire_tokens(fitted, system=kwargs["system_prompt"], prefix=kwargs["human_prefix"]) <= limit
         observed.append(fitted)
         return fitted
@@ -315,3 +316,112 @@ def test_simple_reselection_cannot_accept_an_oversized_selector_result():
             **{**common, "max_tokens": limit}, evidence_records=[LARGE],
             evidence_expander=lambda _retained, _fits: [LARGE],
         )
+
+
+def _fixed_history(field, text, *, revision=12, phase="target_opening"):
+    return [{
+        "revision": revision,
+        "segments": [{"phase": phase, field: text, "performance": ""}],
+    }]
+
+
+def _fixed_evidence(text, **changes):
+    item = {"revision": 12, "source": "performance", "current_visit": True, "text": text}
+    item.update(changes)
+    return item
+
+
+def test_fixed_history_evidence_deduplicates_one_complete_piece_from_multi_piece_container():
+    first = "封存须知：未经签字不得开匣。"
+    second = "四项可读字段：来源为天穹集团；回收目标是原型机；持续追踪仍在运行；远程熔断尚未清除。"
+    evidence = _fixed_evidence(second)
+
+    assert actor._remaining_history_evidence(
+        _fixed_history("fixed_narration_before", first + "\n\n" + second), [evidence],
+    ) == []
+
+
+def test_fixed_history_evidence_matches_piece_with_internal_blank_line():
+    piece = "封存须知：第一段仍有效。\n\n补充：保管人当面提出归还时才允许交还。"
+    other = "封条编号：A-17。"
+    evidence = _fixed_evidence(piece)
+
+    assert actor._remaining_history_evidence(
+        _fixed_history("fixed_narration_before", piece + "\n\n" + other), [evidence],
+    ) == []
+
+
+def test_fixed_history_evidence_matches_multi_line_piece():
+    piece = "第一行：未经签字不得开匣。\n第二行：例外仅限保管人当面提出归还。\n第三行：其余封条保持完整。"
+    other = "柜台上的旧信仍待核对。"
+    evidence = _fixed_evidence(piece)
+
+    assert actor._remaining_history_evidence(
+        _fixed_history("fixed_narration_before", piece + "\n\n" + other), [evidence],
+    ) == []
+
+
+def test_fixed_history_evidence_matches_after_position_piece():
+    piece = "封条编号：A-17。\n\n保管人：未变。"
+    other = "匣子仍在原处。"
+    evidence = _fixed_evidence(piece)
+
+    assert actor._remaining_history_evidence(
+        _fixed_history("fixed_narration_after", piece + "\n\n" + other), [evidence],
+    ) == []
+
+
+def test_fixed_history_evidence_keeps_near_substring_foreign_source_revision_old_visit_and_previous_tail():
+    piece = "封存须知：未经签字不得开匣。"
+    other = "封条编号：A-17。"
+    history = _fixed_history("fixed_narration_before", piece + "\n\n" + other)
+    candidates = [
+        _fixed_evidence(piece + "尾部条件仍有效。"),  # 近似，不是完整片段
+        _fixed_evidence("未经签字"),  # 任意子串
+        _fixed_evidence(piece, source="player_input"),
+        _fixed_evidence(piece, revision=11),
+        _fixed_evidence(piece, current_visit=False),
+    ]
+    previous_tail = _fixed_history("fixed_narration_before", piece, phase="previous_scene_tail")
+    untouched = [*candidates, _fixed_evidence("旧的幕后原文。")]
+    assert actor._remaining_history_evidence(history + previous_tail, untouched) == untouched
+
+    assert actor._remaining_history_evidence(
+        previous_tail, [_fixed_evidence(piece)],
+    ) == [_fixed_evidence(piece)]
+
+
+def test_fixed_history_evidence_restores_when_recent_history_is_trimmed():
+    evidence = [_fixed_evidence("封存须知：未经签字不得开匣。")]
+    before = deepcopy(evidence)
+
+    assert actor._remaining_history_evidence([], evidence) == evidence
+    assert actor._remaining_history_evidence(
+        _fixed_history("fixed_narration_before", "另一条原文。", revision=11), evidence,
+    ) == evidence
+    assert evidence == before
+
+
+def test_fixed_history_evidence_does_not_mutate_inputs():
+    piece = "封存须知：第一段仍有效。\n\n补充：保管人当面提出归还时才允许交还。"
+    other = "封条编号：A-17。"
+    history = _fixed_history("fixed_narration_before", piece + "\n\n" + other)
+    evidence = [_fixed_evidence(piece), _fixed_evidence(other + "尾部")]
+    before = deepcopy((history, evidence))
+
+    actor._remaining_history_evidence(history, evidence)
+
+    assert (history, evidence) == before
+
+
+def test_fixed_history_evidence_does_not_normalize_whitespace_to_find_a_match():
+    piece = "封存须知：未经签字不得开匣。"
+    candidates = [_fixed_evidence(' ' + piece), _fixed_evidence(piece + ' ')]
+    history = _fixed_history('fixed_narration_before', '另一份原文。\n\n' + piece)
+    assert actor._remaining_history_evidence(history, candidates) == candidates
+
+
+def test_fixed_history_evidence_keeps_the_complete_piece_indentation():
+    piece = "  原始说明。\n  条件与缩进保持原样。  "
+    history = _fixed_history('fixed_narration_before', '上一份原文。\n\n' + piece + '\n\n下一份原文。')
+    assert actor._remaining_history_evidence(history, [_fixed_evidence(piece)]) == []

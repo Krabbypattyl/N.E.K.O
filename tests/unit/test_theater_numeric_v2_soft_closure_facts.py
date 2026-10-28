@@ -1,12 +1,12 @@
 """Soft completion cannot override the author's pending fact or display contract."""
 
 from copy import deepcopy
-import json
 
 import pytest
 
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -61,7 +61,7 @@ def _messages(engine, session, *, complete=True):
     assert session.to_dict() == before
     assert outcome.session.current_node_id == "start"
     assert outcome.ledger_event["scene_complete"] is complete
-    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert payload["player_input"] == QUESTION
     assert "与自由输入适用同一行动授权" in messages[0].content
     return messages[0].content, payload

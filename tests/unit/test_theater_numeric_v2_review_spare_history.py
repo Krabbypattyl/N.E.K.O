@@ -8,6 +8,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_context import HISTORY_EVIDENCE_RULE, history_evidence
 from services.theater.numeric_v2_runtime import NumericV2Runtime
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.test_theater_numeric_v2_spare_history import KEY_ANSWER, KEY_QUESTION, TOPICS, _commit
@@ -16,7 +17,7 @@ from utils.tokenize import count_tokens
 
 def _payload(messages):
     human = messages[1].content
-    return json.loads(human[human.index("{"):])
+    return prompt_payload(human)
 
 
 def _messages(engine, stored, message, consumer, *, diagnostics=None):

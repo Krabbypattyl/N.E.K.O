@@ -75,15 +75,19 @@ class NekoWorkshopModel:
         if type(input_max_tokens) is not int or input_max_tokens <= 0:
             raise WorkshopError("workshop_model_input_budget_required")
         quality_options = {}
+        staged_writing = operation in {
+            "numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation"}
         if (model == "qwen3.8-flash" and operation in {
-                "numeric_v2_fact_review", "numeric_v2_fact_evidence_review"}
+                "numeric_v2_fact_review", "numeric_v2_fact_evidence_review",
+                "numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation"}
                 and response_format_for(settings, "workshop_quality", {}) is not None):
             from config.providers import focus_extra_body
 
-            # These author checks need complete conclusions, not provider JSON-mode
-            # strings cut at embedded quotes. Local validation remains authoritative.
+            # Author reasoning stays off the live performance path. Reserve
+            # output space for staged prose and keep native validation/retries.
             response_format = None
-            quality_options["extra_body"] = {**focus_extra_body(model), "thinking_budget": 2048}
+            budget = min(2048, max_tokens // 2) if staged_writing else 2048
+            quality_options["extra_body"] = {**focus_extra_body(model), "thinking_budget": budget}
         # Count the complete messages, including any original response supplied
         # for one format correction. Never trim author facts to make them fit.
         if count_tokens(json.dumps(messages, ensure_ascii=False)) > input_max_tokens:

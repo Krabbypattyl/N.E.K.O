@@ -6,17 +6,106 @@ import pytest
 
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
+def _invitation_text(data):
+    invitation = data['transition']['pending_invitation']
+    if 'content' in invitation:
+        return '\n'.join(block['text'] for block in invitation['content'])
+    assert invitation['content_reference'] == 'recent_context中同revision的已公开原文'
+    return next(row['committed_text'] for row in data['recent_context'] if row['revision'] == invitation['revision'])
+
+
+@pytest.mark.parametrize('message', [
+    '（深吸一口气，闭上眼）……那就动手吧。别犹豫了。',
+    '（握紧扶手，慢慢向前挪动一步）你先找个安全处。',
+])
+def test_actor_rejects_a_whole_copied_player_action_and_short_speech(message):
+    from services.theater.numeric_v2_actor import _repeats_player_dialogue
+
+    assert _repeats_player_dialogue({'performance': message}, message)
+
+
+@pytest.mark.parametrize('message,response', [
+    ('（点头）好，我们一起过去。', '（点头）好，我们一起过去。'),
+    ('（沿着狭窄通道贴墙蹲下，放缓呼吸）', '（沿着狭窄通道贴墙蹲下，放缓呼吸）'),
+    ('（深吸一口气，闭上眼）……那就动手吧。别犹豫了。', '（深吸一口气，闭上眼）收到，开始执行。'),
+])
+def test_player_copy_guard_preserves_shared_actions_and_brief_agreement(message, response):
+    from services.theater.numeric_v2_actor import _repeats_player_dialogue
+
+    assert not _repeats_player_dialogue({'performance': response}, message)
+
+
+@pytest.mark.asyncio
+async def test_whole_player_copy_uses_the_existing_repetition_rejection(monkeypatch):
+    from services.theater.numeric_v2_actor import NumericV2Actor, NumericV2ActorOutputError
+
+    engine = _engine()
+    session = engine.create_session(session_id='copied-player', catgirl_binding=_binding(), opening_performance=_opening())
+    message = '（深吸一口气，闭上眼）……那就动手吧。别犹豫了。'
+    outcome = engine.resolve_turn(session, TurnRequestV2('copy', 0, message), ())
+
+    async def invoke(*args, **kwargs):
+        return {'performance': message, 'suggested_inputs': [], 'transition_offered': False}
+
+    monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
+    with pytest.raises(NumericV2ActorOutputError, match='repeated_output') as caught:
+        await NumericV2Actor(object()).generate_turn(engine=engine, session=session, outcome=outcome,
+            player_input=message, character_profile='温和。')
+    assert caught.value.repetition_guard == 'player_input'
+
+
+@pytest.mark.parametrize('offer,old_flag', [('', True), ('明天下午三点一起整理旧箱，好吗？', False)])
+def test_ordinary_invitation_is_published_before_its_flag_is_derived(offer, old_flag):
+    from services.theater.numeric_v2_actor_output import _parse_output
+
+    parsed = _parse_output(json.dumps({'performance': '今晚的登记已经完成。',
+        'transition_offer': offer, 'transition_offered': old_flag,
+        'suggested_inputs': ['好，按这个安排。', '我先考虑一下。']}))
+    assert parsed['performance'] == '今晚的登记已经完成。' + ('\n' + offer if offer else '')
+    assert parsed['transition_offered'] is bool(offer)
+    assert parsed['_transition_offer_provided'] is True
+
+
+def test_ordinary_invitation_normalizes_once_and_does_not_duplicate_visible_text():
+    from services.theater.numeric_v2_actor_output import _parse_output
+
+    parsed = _parse_output(json.dumps({'performance': '登记好了。\n明天下午三点见。',
+        'transition_offer': '**明天下午三点见。**', 'suggested_inputs': []}))
+    assert parsed['performance'] == '登记好了。\n明天下午三点见。'
+    assert parsed['transition_offered'] is True
+
+
+@pytest.mark.parametrize('offer', [None, True, [], {}])
+def test_ordinary_invitation_requires_text(offer):
+    from services.theater.numeric_v2_actor_output import _parse_output, NumericV2ActorOutputError
+
+    with pytest.raises(NumericV2ActorOutputError, match='transition_offer_invalid'):
+        _parse_output(json.dumps({'performance': '登记好了。', 'transition_offer': offer}))
+
+
+def test_published_invitation_uses_the_same_speech_contract_as_the_body():
+    from services.theater.numeric_v2_actor_output import _parse_output, NumericV2ActorOutputError
+
+    with pytest.raises(NumericV2ActorOutputError, match='dialogue_forbidden'):
+        _parse_output(json.dumps({'performance': '（点头）', 'transition_offer': '一起过去吗？'}),
+            dialogue_policy='forbidden')
+    silent = _parse_output(json.dumps({'performance': '（点头）', 'transition_offer': ''}),
+        dialogue_policy='forbidden')
+    assert silent['performance'] == '（点头）' and not silent['transition_offered']
+
+
 def test_role_keeps_author_extras_without_repeating_structured_entry_states():
-    from services.theater.numeric_v2_actor import _role_prompt_text
+    from services.theater.numeric_v2_actor import _author_entry_prompt_text
 
     state = {'catgirl_state': '女主站在窗边。', 'player_state': '男主坐在桌旁。',
              'environment_state': '环境为明亮的工作室。'}
-    text = _role_prompt_text(catgirl_name='小葵', acting_context={
+    text = _author_entry_prompt_text(acting_context={
         'current_scene_state': ''.join(state.values()) + '信号灯只用于指路。', 'character_state': state})
     assert all(text.count(value) == 1 for value in state.values())
     assert '信号灯只用于指路。' in text
@@ -190,7 +279,7 @@ async def test_transition_binds_original_invitation_beyond_recent_window(tmp_pat
     outcome = runtime.prepare_turn(stored, request, (), transition_intent='accept')
     messages = _turn_messages(runtime.engine, stored.session, outcome, request.message,
                              '克制。', '小岚', '你', recent_ledger_events=stored.ledger_events)
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['transition']['transition_intent'] == 'accept'
     assert data['transition']['pending_invitation'] == {
         'revision': original['revision'], 'content': performance_content_blocks(original),
@@ -213,10 +302,10 @@ async def test_transition_uses_new_offer_after_rejection(tmp_path):
     outcome = runtime.prepare_turn(stored, request, (), transition_intent='accept')
     messages = _turn_messages(runtime.engine, stored.session, outcome, request.message,
                              '克制。', '小岚', '你', recent_ledger_events=stored.ledger_events)
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['transition']['pending_invitation']['revision'] == stored.session.revision
-    assert '改去门外的平台看看' in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
-    assert '旧码头' not in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+    assert '改去门外的平台看看' in _invitation_text(data)
+    assert '旧码头' not in _invitation_text(data)
 
 
 @pytest.mark.asyncio
@@ -233,11 +322,11 @@ async def test_transition_preserves_runtime_names_in_committed_invitation(tmp_pa
     original = stored.session.performance_history[-1]
     request = TurnRequestV2('accept_names', stored.session.revision, '好，就去走廊。')
     outcome = runtime.prepare_turn(stored, request, (), transition_intent='accept')
-    data = json.loads(_turn_messages(engine, stored.session, outcome, request.message,
-        '克制。', '小岚', '哥哥', recent_ledger_events=stored.ledger_events)[1].content.split('\n', 1)[1])
-    assert data['transition']['pending_invitation']['content'] == performance_content_blocks(original)
-    assert '小岚抬眼' in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
-    assert '哥哥抬眼' not in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+    data = prompt_payload(_turn_messages(engine, stored.session, outcome, request.message, '克制。', '小岚', '哥哥', recent_ledger_events=stored.ledger_events)[1].content)
+    assert 'content' not in data['transition']['pending_invitation']
+    assert all(block['text'] in _invitation_text(data) for block in performance_content_blocks(original))
+    assert '小岚抬眼' in _invitation_text(data)
+    assert '哥哥抬眼' not in _invitation_text(data)
 
 
 @pytest.mark.asyncio
@@ -254,9 +343,9 @@ async def test_explicit_acceptance_control_binds_invitation_without_inventing_pl
                                    (), transition_intent='accept')
     messages = _turn_messages(runtime.engine, stored.session, outcome, '', '克制。', '小岚', '你',
                              input_source='accept_invitation', recent_ledger_events=stored.ledger_events)
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['player_input'] == ''
-    assert invitation in json.dumps(data['transition']['pending_invitation'], ensure_ascii=False)
+    assert invitation in _invitation_text(data)
     assert '程序已确认玩家接受刚展示的邀请' in messages[0].content
     assert '不是玩家台词' in messages[0].content
     assert '不新增玩家动作、分工或重要操作的授权' in messages[0].content
@@ -269,7 +358,7 @@ def test_formal_authorization_does_not_invent_a_pending_invitation():
                                     opening_performance=_opening())
     session = replace(session, transition_offered=True)
     outcome = engine.resolve_turn(session, TurnRequestV2('accept', 0, '好。'), (), transition_intent='accept')
-    data = json.loads(_turn_messages(engine, session, outcome, '好。', '克制。', '小岚', '你')[1].content.split('\n', 1)[1])
+    data = prompt_payload(_turn_messages(engine, session, outcome, '好。', '克制。', '小岚', '你')[1].content)
     assert data['transition']['pending_invitation'] is None
 
 
@@ -290,7 +379,7 @@ async def test_other_transition_modes_do_not_reuse_an_old_invitation(tmp_path, m
         scene_complete=mode == 'natural_ending', natural_ending_ready=mode == 'natural_ending')
     messages = _turn_messages(runtime.engine, stored.session, outcome, request.message,
                              '克制。', '小岚', '你', recent_ledger_events=stored.ledger_events)
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['transition']['transition_intent'] == ('initiate' if mode == 'initiate' else 'unclear')
     assert 'pending_invitation' not in data['transition']
 
@@ -307,7 +396,7 @@ def test_transition_keeps_source_direction_separate_from_history_and_target():
     engine.nodes[outcome.session.current_node_id]['story_beat']['narrative_summary'] = ending_direction
     messages = _turn_messages(engine, session, outcome, '最后一条船也安全了。',
                              '克制，重视具体事实。', '小岚', '你')
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['transition']['source_scene']['story_direction'] == direction
     assert direction not in json.dumps(data['recent_context'], ensure_ascii=False)
     assert data['transition']['target_scene']['story_direction'] == ending_direction
@@ -333,7 +422,7 @@ async def test_interactive_target_direction_waits_until_after_its_opening(tmp_pa
     request = TurnRequestV2('enter', 0, case['message'])
     outcome = runtime.prepare_turn(stored, request, (), transition_intent='initiate')
     messages = _turn_messages(engine, stored.session, outcome, request.message, '克制。', '小岚', '你')
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert future not in '\n'.join(message.content for message in messages)
     assert 'story_direction' not in data['transition']['target_scene']
     assert data['transition']['target_scene']['opening_situation'] == target['opening_scene']
@@ -387,8 +476,8 @@ def test_ordinary_actor_puts_actual_continuity_before_planned_direction():
     assert '最新已提交原文和本轮独立预审证据确定当前起点' in prefix
     assert '承接 player_input 的实际原话，再交付尚缺的回应' in prefix
     assert '作者禁令不证明当前未发生，也不撤销实际历史' in prefix
-    data = json.loads(body)
-    assert list(data) == ['role', 'current_scene', 'story_so_far', 'pacing', 'next_scene', 'player_input']
+    data = prompt_payload(body)
+    assert list(data) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
     assert data['player_input'] == message
 
 
@@ -400,6 +489,48 @@ def _repair_material():
                     'code': 'actor_issue'}],
         'body_violations': ['actor_boundary'],
     }
+
+
+def test_formal_repair_uses_spare_budget_without_displacing_transition_contract(monkeypatch):
+    from copy import deepcopy
+    from services.theater import numeric_v2_actor as actor
+
+    engine = _engine()
+    session = engine.create_session(session_id='formal-repair-budget', catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2('end', 0, '谢谢。'), (),
+        scene_complete=True, natural_ending_ready=True)
+    material = {'draft': {'source_performance': '旧稿的来源回应。',
+                         'bridge_scene_narration': '旧稿错误地把目标开场放在桥段。',
+                         'target_scene_narration': '旧稿的目标开场。',
+                         'target_performance': '旧稿的结局回应。', 'suggested_inputs': []},
+                'issues': [{'field': 'bridge_scene_narration', 'quote': '目标开场'}]}
+    original = deepcopy((session, outcome, material))
+    diagnostics = []
+    monkeypatch.setattr(actor, '_log_prompt_diagnostics', lambda _session, values: diagnostics.append(dict(values)))
+
+    def messages(context=None):
+        return _turn_messages(engine, session, outcome, '谢谢。', '温和。', '小岚', '你',
+            retry_hint='只修正桥段提前包含的目标开场，其他段也须重审。', draft_repair_context=context)
+
+    base = messages()
+    admitted = messages(material)
+    data = prompt_payload(admitted[1].content)
+    assert data.pop('draft_repair') == material
+    assert data == prompt_payload(base[1].content)
+    assert admitted[0].content == base[0].content
+    assert '旧稿的来源回应' not in admitted[0].content
+    assert list(prompt_payload(admitted[1].content))[-1] == 'player_input'
+    assert diagnostics[-1]['draft_repair'] == 'admitted'
+    admitted_tokens = actor._messages_tokens(admitted)
+    budget = actor.numeric_v2_actor_budget(session.actor_budget_profile)
+    monkeypatch.setattr(actor, 'numeric_v2_actor_budget', lambda _: {**budget, 'input_max_tokens': admitted_tokens})
+    assert messages(material) == admitted
+    monkeypatch.setattr(actor, 'numeric_v2_actor_budget', lambda _: {**budget, 'input_max_tokens': admitted_tokens - 1})
+    omitted = messages(material)
+    assert [m.content for m in omitted] == [m.content for m in messages()]
+    assert diagnostics[-2]['draft_repair'] == 'omitted_budget'
+    assert (session, outcome, material) == original
 
 
 @pytest.mark.asyncio
@@ -426,8 +557,8 @@ async def test_draft_repair_uses_only_remaining_budget_and_never_replaces_histor
 
     base = messages()
     admitted = messages(material)
-    data = json.loads(admitted[1].content.split('\n', 1)[1])
-    base_data = json.loads(base[1].content.split('\n', 1)[1])
+    data = prompt_payload(admitted[1].content)
+    base_data = prompt_payload(base[1].content)
     assert '管事已经把原件交还给你' in base_data['story_so_far']
     assert '原件还在你手里' in base_data['story_so_far']
     assert data.pop('draft_repair') == material
@@ -460,7 +591,7 @@ def test_draft_repair_cannot_enter_other_actor_phases(mode):
         input_source='reinvite' if mode == 'reinvite' else 'freeform',
         draft_repair_context=_repair_material())
     assert '尚未交付的旧答复' not in ''.join(item.content for item in messages)
-    assert 'draft_repair' not in json.loads(messages[1].content.split('\n', 1)[1])
+    assert 'draft_repair' not in prompt_payload(messages[1].content)
 
 
 @pytest.mark.asyncio
@@ -483,5 +614,5 @@ async def test_generate_turn_forwards_draft_repair_without_committing_it(monkeyp
     result = await generator.generate_turn(engine=engine, session=session, outcome=outcome,
         player_input='请继续。', character_profile='温和。', allow_suggestion_fill=False,
         retry_hint='按编辑材料修正，全部重审。', draft_repair_context=_repair_material())
-    assert json.loads(captured[1].content.split('\n', 1)[1])['draft_repair'] == _repair_material()
+    assert prompt_payload(captured[1].content)['draft_repair'] == _repair_material()
     assert 'draft_repair' not in result and (session, outcome) == original

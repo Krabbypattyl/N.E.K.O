@@ -9,6 +9,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_context import history_evidence, performance_history_records
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from utils.tokenize import count_tokens
@@ -51,7 +52,7 @@ async def _commit(runtime, current, message, text, *, move=False):
 
 def _payload(messages):
     human = messages[1].content
-    return json.loads(human[human.index("{"):])
+    return prompt_payload(human)
 
 
 def _evidence(payload):
@@ -123,7 +124,7 @@ EXTRA = {"revision": 2, "source": "performance", "current_visit": False,
 
 
 def _wire(data):
-    return PREFIX + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return PREFIX + actor.render_prompt_context(data)
 
 
 def _packing_input(formal):

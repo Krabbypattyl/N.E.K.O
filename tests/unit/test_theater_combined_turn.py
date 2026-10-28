@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,40 @@ from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fact_source,malformed_changes', [('actor', False), ('actor', True), ('history', False), ('forged', False)])
+async def test_combined_player_route_fact_in_body_bucket_is_validated_as_player_evidence(tmp_path, monkeypatch):
+    story = json.loads((Path(__file__).resolve().parents[2] / 'assets/theater/story_a400cd1c2783.json').read_text())
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='route-choice', catgirl_binding=_binding(), opening_performance=_opening())
+    monkeypatch.setattr(options, 'MODEL_REVIEWS_ENABLED', False)
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options.aload_theater_module_options)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    message = '走官道吧，稳妥些。'
+    key = 'scene:mainline_01:route_decided'
+
+    async def generate(self, **kwargs):
+        assert kwargs['combined_evaluation']
+        return {'performance': '官道稳妥，先检查行装。', 'suggested_inputs': [], 'transition_offered': False,
+                'fact_candidates': [{'key': key, 'value': '官道', 'evidence_quote': message}],
+                '_turn_evaluation': {'scene_complete': False, 'metric_changes': {}, 'fact_candidates': []}}
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('No extra evaluator or review call for a misplaced source field')
+
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', forbidden)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', forbidden)
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('choose', 0, message), ensure_current_binding=lambda _: _binding())
+    assert result.stored.session.story_state['facts'][key]['value'] == '官道'
+    assert 'scene:mainline_01:departure_confirmed' not in result.stored.session.story_state['facts']
+    assert result.stored.session.current_node_id == 'mainline_01'
+    assert result.diagnostics['actor_generation_attempts'] == 1
+    assert await runtime.restore_session(current.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fact_source,malformed_changes', [('actor', False), ('actor', True), ('misplaced_actor', False), ('history', False), ('forged', False)])
 async def test_combined_turn_reuses_body_and_only_commits_valid_state(tmp_path, monkeypatch, fact_source, malformed_changes):
     story = story_for('山径的避风棚')
     # Keep both endings reachable while the first act has only a scene exit.
@@ -36,10 +70,10 @@ async def test_combined_turn_reuses_body_and_only_commits_valid_state(tmp_path, 
         assert kwargs['combined_evaluation'] is True
         assert kwargs['outcome'].session.current_node_id == 'start'
         fact = {'key': 'scene:start:done', 'value': True, 'evidence_quote': text}
-        return {'performance': text if fact_source == 'actor' else '我记得刚才的经过。',
+        return {'performance': text if fact_source in {'actor', 'misplaced_actor'} else '我记得刚才的经过。',
                 'suggested_inputs': [], 'transition_offered': False,
                 'fact_candidates': [fact] if fact_source == 'actor' else [],
-                '_turn_visible_history': [text],
+                '_turn_visible_history': [] if fact_source == 'misplaced_actor' else [text],
                 '_turn_evaluation': {'scene_complete': True, 'metric_changes': {
                     'trust': {} if malformed_changes else {'strength': 'weak', 'criterion_id': 'trust.increase.1'}},
                     'fact_candidates': [] if fact_source == 'actor' else [fact]}}

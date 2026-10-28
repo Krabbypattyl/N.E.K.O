@@ -10,6 +10,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as wf
 from services.theater.numeric_v2_options import default_options
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_pending_offer import _commit
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -87,7 +88,7 @@ def _parse(engine, session, candidate=None):
 
 
 def _data(messages):
-    return json.loads(messages[1].content[messages[1].content.index("{"):])
+    return prompt_payload(messages[1].content)
 
 
 def _reference_request(engine, session):
@@ -257,9 +258,9 @@ def test_reference_tables_use_only_spare_budget_and_clear_reused_request_banks(m
     baseline = ev._build_messages(engine, session, MESSAGE, committed_evidence=baseline_originals)
     data = _data(baseline)
     data.pop("fact_evidence_refs", None)
-    human_prefix = baseline[1].content[:baseline[1].content.index("{")]
+    human_prefix = baseline[1].content.split("======以下为", 1)[0]
     baseline_contents = [baseline[0].content,
-        human_prefix + json.dumps(data, ensure_ascii=False, separators=(",", ":"))]
+        human_prefix + ev.render_prompt_context(data)]
     token_limit = sum(ev.count_tokens(content) for content in baseline_contents)
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES[session.actor_budget_profile],
         "evaluator_input_max_tokens", token_limit)
@@ -487,7 +488,7 @@ def test_request_binds_retained_committed_rows_and_names_exact_sources(phase):
     data = _data(messages)
     _assert_bound_sources(data, bank)
     assert data["scene_context"][-1] == ev._current_scene_context(session)[-1]
-    assert "player_input、runtime_fact" in messages[0].content
+    assert "player_input" in messages[0].content and "runtime_fact" in messages[0].content
     assert "actor_performance" in messages[0].content and "不是本轮待生成稿" in messages[0].content
     assert "subject" in messages[0].content and "不能自证" in messages[0].content
 

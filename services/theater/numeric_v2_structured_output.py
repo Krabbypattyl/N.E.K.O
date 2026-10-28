@@ -81,6 +81,7 @@ def actor_output_schema(*, opening_required: bool = False, transition_required: 
                         fact_candidates_expected: bool = False,
                         reinvitation_only: bool = False,
                         single_ending_response: bool = False,
+                        fixed_entry_only: bool = False,
                         combined_metric_ids: tuple[str, ...] | None = None) -> dict[str, Any]:
     """Declare fields already used by each prompt; scene_update remains optional."""
     suggestions = _array({"type": "string"})
@@ -93,11 +94,22 @@ def actor_output_schema(*, opening_required: bool = False, transition_required: 
         return _object({"performance": {"type": "string"},
                         "transition_offered": {"type": "boolean"}})
     if transition_required:
+        if fixed_entry_only:
+            # Author-marked route: the program plays the complete target entry text.
+            # Only source narration/performance and the bridge carry model text.
+            return _object({
+                "source_scene_narration": {"type": "string"},
+                "source_performance": {"type": "string"},
+                "bridge_scene_narration": {"type": "string"},
+                "target_scene_narration": {"type": "string", "enum": [""]},
+                "target_performance": {"type": "string", "enum": [""]},
+                "suggested_inputs": {"type": "array", "items": {"type": "string"}, "maxItems": 0},
+            })
         if single_ending_response:
             return _object({
                 **{key: {"type": "string"} for key in (
                     "source_scene_narration", "performance", "bridge_scene_narration", "target_scene_narration")},
-                "response_phase": {"type": "string", "enum": ["source_response", "target_opening"]},
+                "response_phase": {"type": "string", "enum": ["source_response", "target_opening", "none"]},
                 "suggested_inputs": suggestions,
             })
         return _object({
@@ -109,8 +121,11 @@ def actor_output_schema(*, opening_required: bool = False, transition_required: 
         })
     # Independent external events/NPC replies precede the character's reaction in playback.
     properties = {"scene_narration" if opening_required else "scene_update": {"type": "string"}}
-    properties.update(performance={"type": "string"}, suggested_inputs=suggestions,
-                      transition_offered={"type": "boolean"})
+    properties["performance"] = {"type": "string"}
+    if opening_required:
+        properties.update(suggested_inputs=suggestions, transition_offered={"type": "boolean"})
+    else:
+        properties.update(transition_offer={"type": "string"}, suggested_inputs=suggestions)
     if not opening_required and fact_candidates_expected:
         properties["fact_candidates"] = _fact_candidates()
     if combined_metric_ids is not None:

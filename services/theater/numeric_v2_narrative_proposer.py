@@ -51,7 +51,7 @@ _SOURCE_REFERENCE_FIELDS = (
 _ENTITY_REFERENCE_FIELDS = (
     'subject和change.entity只填{"ref":"entity_refs中的编号"}，或新实体{"type":"类型","name":"原文名"}。'
     "新type只用item/person/activity/arrangement/environment，name须逐字在本项quote出现，解码后身份总长最多80字。"
-    "player是用户，character是当前你；以protagonists核对身份，不能给这两个固定角色拼接姓名。"
+    "player是玩家，character是当前演出角色；二者都不是账本提取或复核模型。以protagonists核对身份，不能给这两个固定角色拼接姓名。"
     "entity_refs只标识已知身份，不证明当前状态；last_known、缺项或身份目录都不能补造现状。"
 )
 _HOLDER_REFERENCE_FIELDS = (
@@ -247,7 +247,7 @@ def _messages(performance: Mapping[str, Any], player_input: str,
         "narrative_state": project_narrative_state(session, focus=message),
         "history_evidence": history_evidence(session, message, claims=body, max_tokens=1500),
     }
-    protagonists = {"player": {"role": "用户"}, "character": {"role": "当前你"}}
+    protagonists = {"player": {"role": "用户"}, "character": {"role": "当前演出角色"}}
     binding = getattr(session, "catgirl_binding", {})
     for role, name in (("character", binding.get("catgirl_name")),
                        ("player", binding.get("player_address") if getattr(session, "player_address_known", False) else None)):

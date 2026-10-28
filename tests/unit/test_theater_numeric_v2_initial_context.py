@@ -8,6 +8,7 @@ import pytest
 
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -45,7 +46,7 @@ def _messages(story, *, formal=False, message=None):
 
 
 def _data(messages):
-    return json.loads(messages[1].content[messages[1].content.index("{"):])
+    return prompt_payload(messages[1].content)
 
 
 @pytest.mark.parametrize("formal", [False, True])
@@ -63,7 +64,7 @@ def test_continuing_initial_premise_is_relabelled_in_full_without_identity_or_hi
         history = json.dumps(data["recent_context"], ensure_ascii=False)
         assert data["transition"]["target_scene"]["chapter_title"] == chapter
     else:
-        assert f"剧本初始前情：{background}" in data["role"]
+        assert f"剧本初始前情：{background}" in data["current_scene"]
         assert "共同背景：" not in data["role"]
         assert "玩家身份：哥哥，回乡整理旧屋的年轻男性。" in data["role"]
         assert "剧本身份：测试猫娘，经营花店、保留旧信的年轻女性。" in data["role"]
@@ -99,14 +100,14 @@ def test_current_player_turn_stays_last_without_rewriting_quoted_speech(context,
     assert data["player_input"] == message
     prefix = messages[1].content.split("\n", 1)[0]
     assert "玩家刚结束的发言" in prefix
-    assert "你“测试猫娘”" in prefix
+    assert "角色设定中的你" in prefix
     assert "suggested_inputs 是玩家看到" in prefix
     if formal:
         assert "source_performance" in prefix and "target_performance" in prefix
         assert data["transition"]["target_scene"]["opening_situation"] == story["nodes"][2]["story_beat"]["opening_scene"]
     else:
         # Entry is a past starting point; the actually committed indoor scene remains visible.
-        assert data["current_scene"].startswith("本幕首次入场时")
+        assert "本幕首次入场时的开场设定" in data["current_scene"]
         assert "周末的午后，阳光落在桌上。" in data["story_so_far"]
 
 
@@ -129,5 +130,5 @@ def test_cognition_gate_never_regains_hidden_background_or_identity(context, for
         assert "background" not in data["story_context"]
         assert "knowledge_scope" in data["story_context"]
     else:
-        assert "剧本初始前情：" not in data["role"]
+        assert "剧本初始前情：" not in data["current_scene"]
         assert "认知范围：" in data["role"]

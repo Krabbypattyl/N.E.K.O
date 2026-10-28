@@ -6,6 +6,7 @@ import pytest
 
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -44,7 +45,7 @@ def _messages(phase, *, restricted=False):
 
 
 def _data(messages):
-    return json.loads(messages[1].content[messages[1].content.index("{"):])
+    return prompt_payload(messages[1].content)
 
 
 @pytest.mark.parametrize('phase', ['turn', 'transition'])

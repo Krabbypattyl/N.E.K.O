@@ -11,6 +11,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_narrative import RECORD_SCHEMA, project_narrative_state
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from services.theater.numeric_v2_structured_output import review_output_schema
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -124,7 +125,7 @@ async def test_narrative_table_stays_in_scene_review_in_all_body_phases(monkeypa
             return False
 
         async def ainvoke(self, messages, **kwargs):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             requests.append((messages, kwargs))
             return SimpleNamespace(content=json.dumps(_payload(
@@ -165,7 +166,7 @@ async def test_narrative_table_stays_in_scene_review_in_all_body_phases(monkeypa
     schema = requests[0][1]["response_format"]["json_schema"]["schema"]
     assert "approved_narrative_event_indexes" in schema["required"]
     messages = requests[0][0]
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert data["narrative_state"] == projected
     assert data["narrative_events"][0]["quote"] == event["quote"]
     assert data["narrative_events"][0]["index"] == 0
@@ -191,7 +192,7 @@ def test_absent_or_wrong_quote_table_does_not_offer_confirmation_permission(supp
     messages, _ = evaluator._build_transition_judge_messages(
         engine, session, actor_performance=supplied, player_input="我把木匣递给你。",
     )
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert "narrative_events" not in data
     assert "approved_narrative_event_indexes" not in messages[0].content
     assert supplied == original
@@ -203,7 +204,7 @@ def test_valid_empty_event_table_still_requests_no_change_confirmation():
         engine, session, actor_performance={"performance": "我看着你。", "narrative_events": []},
         player_input="继续说。",
     )
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert data["narrative_events"] == []
     assert "narrative_review_complete" in messages[0].content
 
@@ -258,7 +259,7 @@ async def test_evaluator_actual_request_keeps_current_state_and_original_pending
     assert calls[0]["max_retries"] == 0
     assert "extra_body" not in calls[0]
     messages = requests[0]
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert data["narrative_state"] == project_narrative_state(current.session)
     assert data["narrative_state"]["current"]["item:木匣"]["holder"]["value"] == "character"
     assert data["pending_transition"]["visible_performance"] == body

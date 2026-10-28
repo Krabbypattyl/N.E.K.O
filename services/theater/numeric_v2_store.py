@@ -1523,12 +1523,14 @@ class NumericV2SessionStore:
                         )
                         # Contract version 3 allows an empty deduplicated beat; the target opening must remain non-empty and be injected by Runtime.
                         or not valid_scene_narration(segments[1], allow_empty=True)
-                        or not valid_scene_narration(segments[2])
+                        or not valid_scene_narration(segments[2], allow_empty=any(
+                            piece["position"] == "before" for piece in segments[2].get("fixed_narrations", ())))
                         or not valid_mixed_performance_policy(
                             segments[2], replayed_session.dialogue_policy,
-                            allow_empty=replayed_session.status == "ended"
-                                and expected_event.get("natural_ending_ready") is True
-                                and bool(segments[0]["performance"].strip()),
+                            allow_empty=any(piece["position"] == "before"
+                                for piece in segments[2].get("fixed_narrations", ()))
+                                or (replayed_session.status == "ended"
+                                    and expected_event.get("natural_ending_ready") is True),
                         )
                     ):
                         raise NumericV2StoreError("numeric_transition_performance_invalid")

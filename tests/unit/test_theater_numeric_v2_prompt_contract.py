@@ -1,4 +1,4 @@
-"""Verify the ordinary Numeric v2 Actor uses six context blocks rather than the obsolete internal state tree."""
+"""Verify the ordinary Actor keeps its six fields in the partitioned prompt."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from services.theater.numeric_v2_context import (
 from services.theater.numeric_v2_narrative import apply_narrative_record
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from services.theater.numeric_v2_workflow import _prefilter_suggestion_candidates
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, numeric_v2_story
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine as _ending_engine
 
@@ -62,7 +63,7 @@ def _story_state_at(session, revision: int) -> dict:
 def _payload(messages):
     """Read the Human prompt's six-block JSON without depending on the message object's implementation."""
 
-    return json.loads(messages[1].content.split("：\n", 1)[1])
+    return prompt_payload(messages[1].content)
 
 
 def test_transition_source_may_be_empty_without_weakening_target_or_npc_delivery():
@@ -73,7 +74,7 @@ def test_transition_source_may_be_empty_without_weakening_target_or_npc_delivery
     assert "source_performance 填空字符串，直接承接桥段" in prompt
     assert "target_performance 与 target_scene_narration 必须非空" in prompt
     assert "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复" in prompt
-    assert "所有段落的状态与角色边界：" + numeric_v2_actor._ACTOR_STATE_RULE in prompt
+    assert numeric_v2_actor._ACTOR_STATE_RULE in prompt
     assert numeric_v2_actor._ACTOR_EXPRESSION_RULE not in prompt
     assert "opening_situation 中你自己的动作和对白交给 target_performance" in prompt
 
@@ -84,7 +85,11 @@ def test_optional_transition_source_does_not_change_other_phase_response_rules(p
         catgirl_name="测试猫娘", phase=phase,
     )
     if phase == "turn":
-        assert numeric_v2_actor._ACTOR_RESPONSE_RULE in prompt
+        # Merged ordinary-turn contract keeps the old response/state obligations:
+        # respond to the concrete object, never speak after dormancy, persona grants no new authority.
+        assert "先回应 player_input 的具体对象" in prompt
+        assert "失去意识、休眠或失声后不再说话" in prompt
+        assert "人格影响判断与措辞，不增加身份、知识、能力或关系权限" in prompt
     else:
         assert "本次只生成玩家输入前的公开开场" in prompt
     assert "source_performance 填空字符串" not in prompt
@@ -206,7 +211,7 @@ def test_partial_action_projection_keeps_raw_input_authority_in_every_consumer(p
 
     for messages in calls:
         system = messages[0].content
-        assert json.loads(messages[1].content.split("：", 1)[1])["player_input"] == player_input
+        assert prompt_payload(messages[1].content)["player_input"] == player_input
         assert system.count("不是完整行动清单") == 1
         assert "只表示未提取到对应证据" in system
         assert "仍按 player_input 和已提交历史核对" in system
@@ -231,7 +236,7 @@ def test_closure_signal_is_defined_only_for_review_that_receives_it(scene_comple
             actor_performance={"performance": "我也很高兴。", "suggested_inputs": []},
             transition_outcome=transition_outcome,
         )[0]
-        data = json.loads(messages[1].content.split("：", 1)[1])
+        data = prompt_payload(messages[1].content)
         if transition_outcome is None:
             assert data["natural_closure_signal"] is scene_complete
             assert "natural_closure_signal 来自前置判定的 scene_complete" in messages[0].content
@@ -242,8 +247,8 @@ def test_closure_signal_is_defined_only_for_review_that_receives_it(scene_comple
             assert "natural_closure_signal" not in messages[0].content
 
 
-def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
-    # Normal turns retain only the six product-approved data blocks, placing player input last.
+def test_numeric_v2_turn_prompt_keeps_six_fields_in_partition_order():
+    # The six existing fields are grouped for display, with current input last.
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
     outcome = engine.resolve_turn(
@@ -265,51 +270,47 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
     payload = _payload(messages)
 
     assert list(payload) == [
-        "role",
-        "current_scene",
-        "story_so_far",
-        "pacing",
-        "next_scene",
-        "player_input",
+        "role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input",
     ]
-    assert payload["current_scene"].splitlines()[0].endswith("雨后的花店门铃轻轻响起。")
-    assert "玩家：我先听你把话说完。" not in payload["story_so_far"]
+    assert next(line for line in payload["current_scene"].splitlines() if line.startswith("本幕首次入场时")).endswith("雨后的花店门铃轻轻响起。")
+    assert "玩家 | 我先听你把话说完。" not in payload["story_so_far"]
     assert "开场" in payload["story_so_far"]
-    assert "event:scene.entered:start:r0" in payload["story_so_far"]
+    assert "event:scene.entered:start:r0" not in payload["story_so_far"]
+    assert "event:scene.entered:start:r0" in session.story_state["facts"]
     assert "当前是第 1 回合" in payload["pacing"]
     assert "推荐 4 回合" in payload["pacing"]
     # Declare the general contract only in System; pacing no longer duplicates all fact/action rules.
-    assert "幕内因果单元" in messages[0].content
-    assert "玩家直接询问或等待在场 NPC 时" in messages[0].content
-    assert "不能用神情动作或你重问同一问题代替答复" in messages[0].content
-    assert "具体答复、拒绝、未知或尚缺的信息" in messages[0].content
-    assert "不以问句、猜测或模糊措辞补成部分发生" in messages[0].content
+    assert "推进当前核心因果" in messages[0].content
+    assert "玩家向在场 NPC 询问、递物或请求行动时" in messages[0].content
+    assert "不能以神情或你的代答替代" in messages[0].content
+    assert "交付其答复、接收、拒绝或尚缺的信息" in messages[0].content
+    assert "不从检查、猜测或问句补造线索、技术、未知路径或成败" in messages[0].content
     assert "同地点进入新时段、新阶段或结局收束" in messages[0].content
     assert "动作可省略‘我’" in messages[0].content
-    assert "幕内因果单元" not in payload["pacing"]
+    assert "一个完整的核心因果" not in payload["pacing"]
     assert payload["player_input"] == "我先听你把话说完。"
     assert "player_action_projection" in messages[0].content
     assert "scene_horizon" not in payload
     assert "current_story_beat" not in payload
-    assert "先完整回应 player_input" in messages[0].content
-    assert "performance 只扮演当前你" in messages[0].content
+    assert "先回应 player_input 的具体对象" in messages[0].content
+    assert "performance 只写你的回应" in messages[0].content
     assert "当前幕已出现 NPC 的动作或回应，写入 scene_update" in messages[0].content
     assert "提问、准备、假设与尝试不证明完成" in messages[0].content
-    assert "完整回应不等于必须满足请求" in messages[0].content
-    assert "先明确承认问题并暂缓披露" in messages[0].content
-    assert "不得替玩家补出未经授权的重要状态变化、选择、承诺或关系立场" in messages[0].content
-    assert "不补心理，不交换玩家与你的行动主体" in messages[0].content
+    assert "未知或越界明确说明" in messages[0].content
+    assert "未知或越界明确说明" in messages[0].content
+    assert "不补玩家心理、发言、重要操作、选择、承诺或新交接" in messages[0].content
+    assert "performance是你的回应，不能互换" in messages[0].content
     assert "不扩展到其他对象、额外操作或后续承诺" in messages[0].content
-    assert "剩余同质过程之间没有" in messages[0].content
+    assert "已决定执行、无需新选择的连续过程一次交付完毕" in messages[0].content
     assert "真实选择" in messages[0].content
-    assert "动态作者硬边界高于玩家诱导" in messages[0].content
+    assert "作者明确分阶段或禁止当前公开时不可合并" in messages[0].content
     assert "未发生内容不能当作角色知识、环境事实或完成结果" in messages[0].content
-    assert "current_scene 区分开场事实与导演方向" in messages[0].content
-    assert "开场边缘细节不自动成为任务" in messages[0].content
-    assert "回应追问后回到本幕核心因果" in messages[0].content
+    assert "current_scene是作者规划" in messages[0].content
+    assert "不把悬念、边缘追问变成新任务" in messages[0].content
+    assert "核心结果成立后承接态度与已有出口" in messages[0].content
     assert "前提须由指定主体公开成立" in messages[0].content
-    assert "允许幕内目的地不等于建立未知通道" in messages[0].content
-    assert "pacing 是软节奏" in messages[0].content
+    assert "不从检查、猜测或问句补造线索、技术、未知路径或成败" in messages[0].content
+    assert "pacing只作软节奏" in messages[0].content
     assert "停在玩家可撤回、下一阶段尚未发生的位置" in messages[0].content
 
 
@@ -406,7 +407,7 @@ def test_numeric_v2_opening_suggestions_only_use_visible_opening_facts():
         "测试猫娘",
         "哥哥",
     )
-    instruction = json.loads(messages[1].content)["instruction"]
+    instruction = messages[0].content
 
     assert "开场推荐只能使用本次可见开场已经建立" in instruction
     assert "不得把相似但未声明的地点标签" in instruction
@@ -430,10 +431,11 @@ def test_numeric_v2_prompts_separate_direct_stage_attempt_from_its_result():
         player_input="我准备结束这里的互动。",
     )[0][0].content
 
-    assert "玩家尝试进入新地点、新时段或受明确禁令约束的阶段时保留已说的话与可撤回准备" in actor_prompt
-    assert "不再次要求执行，也不把物件退回操作前" in actor_prompt
+    assert "进入新地点、新时段或受明确禁令约束的阶段须等正式换幕" in actor_prompt
+    assert "也不再次要求执行" in actor_prompt
+    assert "也不把物件退回操作前" in actor_prompt
     assert "或玩家明确要求前往已公开的下一地点" in actor_prompt
-    assert "不把同地连续动作仅因分幕当作这种跨阶段" in actor_prompt
+    assert "同地点连续动作可以演完" in actor_prompt
     assert "边界前准备、提议与未来邀请不属已越界" in judge_prompt
     assert "新地点、新时段或受明确禁令约束的后续结果仍不能凭玩家尝试提前播放" in judge_prompt
     assert "同地可执行动作按玩家本轮授权承接，不因分节点安排误报" in judge_prompt
@@ -459,7 +461,7 @@ def test_numeric_v2_prompts_reject_assumed_new_stage_without_story_playbook():
     )[0][0].content
 
     assert "也不得提前跨越正式换幕后的时间或地点" in actor_prompt
-    assert "玩家尝试进入新地点、新时段或受明确禁令约束的阶段时" in actor_prompt
+    assert "进入新地点、新时段或受明确禁令约束的阶段须等正式换幕" in actor_prompt
     assert "明确邀请进入其他地点/时段/阶段，即使方向错误也为 true" in judge_prompt
     assert "提议方向错误只影响 valid，不等于正文已经越界" in judge_prompt
     assert "valid 只核对这条邀请能否兑现既有出口" in judge_prompt
@@ -492,7 +494,7 @@ def test_numeric_v2_prompts_match_boundaries_by_actor_object_action_and_stage():
     assert "不重演、不转给你重做" in actor_prompt
     assert "先确定本次是谁对哪个对象实施了什么" in judge_prompt
     assert "只约束同一主体、对象、动作和阶段" in judge_prompt
-    assert "你或 NPC 自主执行各自行为均不属代做" in judge_prompt
+    assert "当前角色或 NPC 自主执行各自行为均不属代做" in judge_prompt
     assert "当前幕明确授权的行为与结果仍属当前幕" in judge_prompt
 
 
@@ -516,8 +518,8 @@ def test_numeric_v2_prompts_do_not_treat_last_source_action_as_transition():
         player_input="我来完成当前动作。",
     )[0][0].content
 
-    assert "完成本幕最后一个普通行动只会让出口成熟，本身不是转场提议" in actor_prompt
-    assert "结果成立后另提跨阶段行动" in actor_prompt
+    assert "完成本幕最后一个普通行动只让出口成熟，结果成立后再提出跨阶段行动" in actor_prompt
+    assert "结果成立后再提出跨阶段行动" in actor_prompt
     assert "只邀请执行出口之前的其他动作、仅完成前置条件、泛问或只有按钮提出都为 false" in judge_prompt
     assert "无正文提议时为 false" in judge_prompt
 
@@ -568,9 +570,9 @@ def test_numeric_v2_actor_finishes_low_risk_micro_action_instead_of_stalling():
         phase="turn",
     )
 
-    assert "概括过程并交付已知事实支持的结果" in actor_prompt
-    assert "遇到新风险、不可逆选择或阶段边界停下" in actor_prompt
-    assert "不得索要等价微调、重复准备或移动终点" in actor_prompt
+    assert "已决定执行、无需新选择的连续过程一次交付完毕" in actor_prompt
+    assert "遇到真实未决选择、未知成败或阶段边界才停下" in actor_prompt
+    assert "不为保持短句停在启动或等待" in actor_prompt
 
 
 def test_numeric_v2_prompts_preserve_entity_ownership_across_the_turn():
@@ -591,7 +593,7 @@ def test_numeric_v2_prompts_preserve_entity_ownership_across_the_turn():
         player_input="（把东西收好）先谈谈结果。",
     )[0][0].content
 
-    assert "保持实体的持有者、位置和最新状态" in actor_prompt
+    assert "物品归属与位置承接实际交接，注视不能重置持有者" in actor_prompt
     assert "主体、持有者和操作对象不能交换" in judge_prompt
 
 
@@ -644,7 +646,7 @@ def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions
             player_input="（举起相机）这个位置可以吗？",
             max_tokens=1800,
         )
-        payload = json.loads(messages[1].content)
+        payload = prompt_payload(messages[1].content)
         assert "我来展示花束" in payload["visible_performance"]
         assert payload["player_input"] == "（举起相机）这个位置可以吗？"
         system_prompt = messages[0].content
@@ -654,9 +656,10 @@ def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions
             catgirl_name="测试猫娘",
             phase="turn",
         )
-        assert "保持实体的持有者、位置和最新状态" in system_prompt
+        assert "物品归属与位置承接实际交接，注视不能重置持有者" in system_prompt
 
-    assert "不能把你正在做的动作误写成玩家已在做" in system_prompt
+    assert ("不能把当前演出角色正在做的动作误写成玩家已在做" in system_prompt
+            if suggestions_only else "不把你的动作、职责或所持物转给玩家" in system_prompt)
     assert "不能接管你正在做的动作" not in system_prompt
 
 
@@ -679,7 +682,7 @@ def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
         )
         payload = _payload(messages)
         assert list(payload) == [
-            "role", "current_scene", "story_so_far", "pacing", "next_scene", "player_input",
+            "role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input",
         ]
         assert payload["player_input"] == player_input
         assert "当前是第 6 回合" in payload["pacing"]
@@ -765,7 +768,7 @@ def test_numeric_v2_transition_suggestion_fill_drops_consumed_source_input():
         max_tokens=1800,
         after_scene_change=True,
     )
-    payload = json.loads(messages[1].content)
+    payload = prompt_payload(messages[1].content)
 
     assert payload["player_input"] == ""
     assert "清晨，玩家正在打扫房间" in payload["visible_performance"]
@@ -940,12 +943,13 @@ async def test_numeric_v2_actor_tags_previous_performance_repeat(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('copied_phase', ['source_response', 'target_opening'])
 @pytest.mark.parametrize('target_text', [
     '（望着晚霞）你看这颜色，像是打翻了调色盘一样。',
     '（意识在强光中彻底涣散，身体重量完全交由你支撑，电子眼的光芒熄灭成两点死灰）……好吵……安静了。',
 ])
-async def test_actor_rejects_copied_transition_target_after_fresh_source(monkeypatch, target_text):
-    """A new source reply cannot hide a copied closing segment behind a longer body."""
+async def test_actor_rejects_copied_transition_segment(monkeypatch, target_text, copied_phase):
+    """Fresh text in one segment cannot hide an exact replay in the other."""
     engine = _ending_engine()
     session = replace(
         _session(engine), revision=1,
@@ -963,19 +967,19 @@ async def test_actor_rejects_copied_transition_target_after_fresh_source(monkeyp
 
     async def invoke(_messages, **_kwargs):
         return {"segments": [
-            {"phase": "source_response", "performance": (
+            {"phase": "source_response", "performance": target_text if copied_phase == 'source_response' else (
                 "（转头看向你）气喘吁吁换来满眼晚霞，确实是稳赚不赔的买卖。"
                 "刚才走过的那段陡坡现在也成了有趣的回忆，晚风正好让人慢慢平复呼吸。"
             )},
             {"phase": "transition_bridge", "scene_narration": "你们安静地站在护栏前。"},
-            {"phase": "target_opening", "performance": target_text},
+            {"phase": "target_opening", "performance": target_text if copied_phase == 'target_opening' else '（望向山下）这一路值得。'},
         ], "suggested_inputs": []}
 
     monkeypatch.setattr(actor, "_invoke", invoke)
     with pytest.raises(NumericV2ActorOutputError) as raised:
         await actor.generate_turn(engine=engine, session=session, outcome=outcome,
                                   player_input="看到这一幕全值了。", character_profile="温和克制。")
-    assert raised.value.repetition_guard == "transition_target"
+    assert raised.value.repetition_guard == ('transition_source' if copied_phase == 'source_response' else 'transition_target')
 
 
 def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_boundaries():
@@ -988,8 +992,8 @@ def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_bounda
 
     assert "作者剧情方向是导演信息" in system
     assert "明确的因果先后不能倒置" in system
-    assert "target_scene.opening_situation 是目标段整体的内容依据" in system
-    assert "按环境/NPC 与你分配到两个字段" in system
+    assert "target_scene.opening_situation是目标段整体依据" in system
+    assert "环境/NPC与自身表演分别写目标旁白和target_performance" in system
     assert "作者只给出抽象状态或待确认事项时，不得自行具体化" in system
 
 
@@ -1020,7 +1024,7 @@ def test_numeric_v2_turn_prompt_keeps_opening_and_complete_scene_direction():
     )
     payload = _payload(messages)
 
-    assert payload["current_scene"].splitlines()[0].endswith("雨后的花店门铃轻轻响起。")
+    assert next(line for line in payload["current_scene"].splitlines() if line.startswith("本幕首次入场时")).endswith("雨后的花店门铃轻轻响起。")
     assert "本幕完整剧情方向（自然演绎，不是任务清单，也不是已发生事实）" in payload["current_scene"]
     assert "围绕仍未拆开的旧信" in payload["current_scene"]
 
@@ -1119,12 +1123,12 @@ def test_numeric_v2_turn_prompt_distinguishes_entry_state_from_committed_changes
     payload = _payload(messages)
 
     # The author baseline explicitly follows the opening; retain checks of committed letter-opening facts below rather than resetting history through relabeling.
-    assert "作者入幕规划中的处境：她在门边等待。" in payload["role"]
-    assert "作者入幕规划中的你状态：她站在门边，手中没有物品。" in payload["role"]
-    assert "作者入幕规划中的玩家处境：玩家站在柜台旁。" in payload["role"]
-    assert "作者入幕规划中的环境：旧信仍未拆开。" in payload["role"]
-    assert "动态变化承接 story_so_far 已提交事实" in payload["role"]
-    assert "作者身份、能力、认知/记忆限制与硬边界持续有效" in payload["role"]
+    assert "作者入幕规划中的处境：她在门边等待。" in payload["current_scene"]
+    assert "作者入幕规划中的角色状态：她站在门边，手中没有物品。" in payload["current_scene"]
+    assert "作者入幕规划中的玩家处境：玩家站在柜台旁。" in payload["current_scene"]
+    assert "作者入幕规划中的环境：旧信仍未拆开。" in payload["current_scene"]
+    assert "动态变化承接 story_so_far 已提交事实" in payload["current_scene"]
+    assert "作者身份、能力、认知/记忆限制与硬边界持续有效" in payload["current_scene"]
     assert "此刻的身体" not in payload["role"]
     assert "眼前环境状态" not in payload["role"]
     assert "剧本身份：" in payload["role"]
@@ -1153,12 +1157,12 @@ def test_numeric_v2_opening_only_boundary_expires_after_public_opening():
         "测试猫娘",
         "哥哥",
     )
-    opening_payload = json.loads(opening_messages[1].content)
+    opening_payload = prompt_payload(opening_messages[1].content)
     assert "以下为本轮作者硬边界" in opening_messages[0].content
     assert "不得在公开开场披露后续身份。" in opening_messages[0].content
-    assert "不得在公开开场披露后续身份。" in opening_payload[
+    assert "不得在公开开场披露后续身份。" not in opening_payload[
         "current_story_beat"
-    ]["boundaries"]
+    ].get("boundaries", [])
     assert "scene_direction" not in opening_payload["current_story_beat"]
     assert "narrative_focus" not in opening_payload["current_story_beat"]
 
@@ -1187,7 +1191,7 @@ def test_numeric_v2_opening_only_boundary_expires_after_public_opening():
         actor_performance={"performance": "（继续说明）这是后续身份。"},
         player_input="现在可以继续介绍了。",
     )[0]
-    ordinary_payload = json.loads(ordinary_review[1].content.split("：", 1)[1])
+    ordinary_payload = prompt_payload(ordinary_review[1].content)
     assert "不得在公开开场披露后续身份。" not in ordinary_payload[
         "current_scene"
     ]["hard_boundaries"]
@@ -1199,9 +1203,7 @@ def test_numeric_v2_opening_only_boundary_expires_after_public_opening():
         player_input="好，我们过去。",
         route_changed=True,
     )[0]
-    opening_review_payload = json.loads(
-        opening_review[1].content.split("：", 1)[1]
-    )
+    opening_review_payload = prompt_payload(opening_review[1].content)
     assert "不得在公开开场披露后续身份。" in opening_review_payload[
         "current_scene"
     ]["hard_boundaries"]
@@ -1230,7 +1232,8 @@ def test_numeric_v2_overdue_pacing_requires_new_result_and_concrete_exit():
 
     assert pacing["phase"] == "overdue"
     assert "核心因果发生一次可见变化" in pacing["instruction"]
-    assert "结果尚未成立时交付结果或真实选择" in pacing["instruction"]
+    assert "已获授权、没有新风险或真实选择的连续过程" in pacing["instruction"]
+    assert "本轮概括剩余过程并交付结果" in pacing["instruction"]
     assert "不得新增支线或补齐可选内容来延长" in pacing["instruction"]
     assert "自然出口成熟" in pacing["instruction"]
     assert "基于已发生事实" in pacing["instruction"]
@@ -1368,8 +1371,8 @@ def test_numeric_v2_turn_prompt_keeps_real_current_scene_history():
         "哥哥",
     ))
 
-    assert "玩家：我愿意先留下来听你解释。" in payload["story_so_far"]
-    assert "你：（抬眼）那就先坐下。" in payload["story_so_far"]
+    assert "玩家 | 我愿意先留下来听你解释。" in payload["story_so_far"]
+    assert "角色（你） | （抬眼）那就先坐下。" in payload["story_so_far"]
     assert payload["player_input"] == "我坐到了窗边。"
 
 
@@ -1491,8 +1494,8 @@ def test_numeric_v2_previous_scene_tail_disappears_after_first_current_scene_tur
     assert "上一幕尾声" not in payload["story_so_far"]
     assert "抹去眼泪" not in payload["story_so_far"]
     assert "我答应替你继续追查旧信" not in payload["story_so_far"]
-    assert "玩家：我把窗帘拉开了。" in payload["story_so_far"]
-    assert "你：（眯起眼）晨光有点亮。" in payload["story_so_far"]
+    assert "玩家 | 我把窗帘拉开了。" in payload["story_so_far"]
+    assert "角色（你） | （眯起眼）晨光有点亮。" in payload["story_so_far"]
 
 
 def test_numeric_v2_turn_prompt_separates_opening_facts_from_scene_direction():
@@ -1523,7 +1526,7 @@ def test_numeric_v2_turn_prompt_separates_opening_facts_from_scene_direction():
     )
     payload = _payload(messages)
 
-    assert payload["current_scene"].splitlines()[0].endswith("雨后的花店门口只有一盏昏黄路灯。")
+    assert next(line for line in payload["current_scene"].splitlines() if line.startswith("本幕首次入场时")).endswith("雨后的花店门口只有一盏昏黄路灯。")
     assert "本幕完整剧情方向（自然演绎，不是任务清单，也不是已发生事实）" in payload["current_scene"]
     assert "先观察门外" in payload["current_scene"]
     assert "未发生内容不能当作角色知识、环境事实或完成结果" in messages[0].content
@@ -1658,7 +1661,7 @@ def test_multiroute_completed_scene_gets_ending_direction_without_extra_offer(tr
     assert "不为结束追加邀请" in _payload(messages)["next_scene"]
     assert "trust" not in _payload(messages)["next_scene"]
     guard = _build_transition_judge_messages(engine, outcome.session, player_input="处理好了。", actor_performance={"performance": "好了。"})[0]
-    assert json.loads(guard[1].content.split("：", 1)[1])["next_scene_direction"]["chapter"] in _payload(messages)["next_scene"]
+    assert prompt_payload(guard[1].content)["next_scene_direction"]["chapter"] in _payload(messages)["next_scene"]
 
 
 def test_guard_current_opening_is_not_the_whole_legacy_scene_summary():
@@ -1668,7 +1671,7 @@ def test_guard_current_opening_is_not_the_whole_legacy_scene_summary():
     engine.nodes["start"]["story_beat"]["summary"] = "猫娘站在门边。随后才解释旧信。"
     messages = _build_transition_judge_messages(engine, _session(engine), player_input="你好。",
         actor_performance={"performance": "你好。", "suggested_inputs": []})[0]
-    current = json.loads(messages[1].content.split("：", 1)[1])["current_scene"]
+    current = prompt_payload(messages[1].content)["current_scene"]
     assert current["opening_situation"] == "猫娘站在门边。"
     assert current["story_direction"] == "猫娘站在门边。随后才解释旧信。"
 
@@ -1694,7 +1697,7 @@ def test_actor_and_guard_share_actual_opening_fallback(opening, summary, expecte
     played_opening = numeric_v2_actor._beat_for_actor(cast, beat)["opening_scene"]
     messages = _build_transition_judge_messages(engine, session, player_input="现在呢？",
         actor_performance={"performance": "这里的事情已告一段落。", "suggested_inputs": []})[0]
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert played_opening == expected
     assert payload["next_scene_direction"]["opening_boundary"] == played_opening
 
@@ -1753,7 +1756,7 @@ def test_numeric_v2_prompts_share_a_non_task_narrative_focus():
         scene_complete=False,
     )
 
-    actor_payload = _payload(_turn_messages(
+    actor_messages = _turn_messages(
         engine,
         session,
         outcome,
@@ -1761,13 +1764,13 @@ def test_numeric_v2_prompts_share_a_non_task_narrative_focus():
         "安静克制，习惯用短句回应。",
         "测试猫娘",
         "哥哥",
-    ))
-    evaluator_payload = json.loads(
-        _build_evaluator_messages(engine, session, "我继续听。")[1]
-        .content.split("：\n", 1)[1]
     )
+    actor_payload = _payload(actor_messages)
+    evaluator_payload = prompt_payload(_build_evaluator_messages(engine, session, '我继续听。')[1].content)
 
-    assert "先听完她对旧信的解释" in actor_payload["pacing"]
+    assert "先听完她对旧信的解释" in actor_messages[0].content
+    assert "先听完她对旧信的解释" not in actor_payload["pacing"]
+    assert "不是历史或新权限" in actor_messages[0].content
     assert evaluator_payload["current_story_beat"]["narrative_focus"] == (
         "先听完她对旧信的解释。"
     )
@@ -1847,12 +1850,17 @@ def test_numeric_v2_simple_prompt_packing_drops_oldest_complete_history():
         "player_input": "我继续观察。",
     }
 
+    prefix = "以下四块是本回合演绎上下文：\n"
+    latest_only = {**data, "story_so_far": numeric_v2_actor._story_so_far_text(history[-1:])}
+    budget = numeric_v2_actor.count_tokens("只回应玩家。") + numeric_v2_actor.count_tokens(
+        prefix + numeric_v2_actor.render_prompt_context(latest_only),
+    )
     fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
         system_prompt="只回应玩家。",
-        human_prefix="以下 JSON 是本回合六块演绎上下文：\n",
+        human_prefix=prefix,
         data=data,
         history_rows=history,
-        max_tokens=95,
+        max_tokens=budget,
     )
 
     assert "旧回合一" not in fitted["story_so_far"]
@@ -1945,19 +1953,31 @@ def test_numeric_v2_fact_index_is_budgeted_when_final_packing_drops_history():
     calls = []
     diagnostics = {}
 
+    index = {"evidence": [{"revision": 1, "source": "performance", "current_visit": True, "text": "早期已提交片段。", "field": "performance"}], "omitted_units": 0, "latest_omitted_revision": None}
+
     def fact_index():
         calls.append(True)
-        return {"evidence": [{"revision": 1, "source": "performance", "current_visit": True, "text": "早期已提交片段。", "field": "performance"}], "omitted_units": 0, "latest_omitted_revision": None}
+        return index
+
+    expected_history = (
+        "当前幕已提交原文索引（历史已裁剪；仅所列原文完整，省略项保持未知；"
+        "按回合和来源承接后续变化，不代表任务或完成判定）：\n"
+        + json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n最近完整对话：\n\n" + numeric_v2_actor._story_so_far_text(history[-1:])
+    )
+    budget = numeric_v2_actor.count_tokens("回应玩家。") + numeric_v2_actor.count_tokens(
+        numeric_v2_actor.render_prompt_context({**data, "story_so_far": expected_history}),
+    )
 
     fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
         system_prompt="回应玩家。", human_prefix="", data=data,
-        history_rows=history, max_tokens=200, fact_index=fact_index,
+        history_rows=history, max_tokens=budget, fact_index=fact_index,
         diagnostics=diagnostics,
     )
     assert calls == [True]
     assert diagnostics["fact_index_included"] is True
     assert diagnostics["history_dropped_revisions"] == [1]
-    assert diagnostics["final_tokens"] <= 200
+    assert diagnostics["final_tokens"] <= budget
     assert "很早的对话" not in fitted["story_so_far"]
     assert "早期已提交片段" in fitted["story_so_far"]
     assert "最新完整回复。" in fitted["story_so_far"]
@@ -1995,6 +2015,35 @@ def test_numeric_v2_rejected_turn_has_no_competing_closure_instruction():
     assert "本轮有自然收束信号" not in payload["pacing"]
     assert "对照本幕方向与已提交历史" not in payload["pacing"]
     assert "玩家拒绝或暂停了上一提议" in payload["pacing"]
+
+
+@pytest.mark.asyncio
+async def test_old_withdrawal_does_not_classify_a_new_arrangement_question_as_refusal(tmp_path):
+    from services.theater.numeric_v2_runtime import NumericV2Runtime
+    from services.theater.numeric_v2_context import pending_transition_record
+    from tests.unit.test_theater_numeric_v2_pending_offer import _commit
+    from tests.unit.test_theater_numeric_v2_runtime import _binding
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id='old-withdrawal',
+        catgirl_binding=_binding(),
+        opening_performance={'performance': '我在这里。', 'suggested_inputs': []})
+    stored = await _commit(runtime, stored, '我们沿长街寻找旧信，好吗？', offer=True)
+    stored = await _commit(runtime, stored, '好，先留在这里。', intent='reject')
+    stored = await _commit(runtime, stored, '休息过后，再商量安排。')
+    assert pending_transition_record(stored.session, include_withdrawn=True) is not None
+    question = '我休息好了，那现在怎么安排？'
+    outcome = runtime.prepare_turn(stored, TurnRequestV2('new-question', 3, question), (),
+        scene_complete=True, transition_intent='unclear')
+    messages = _turn_messages(engine, stored.session, outcome, question, '克制', '测试猫娘', '玩家',
+        recent_ledger_events=stored.ledger_events)
+    pacing = _payload(messages)['pacing']
+    assert '玩家拒绝或暂停了上一提议' not in pacing
+    assert '不自动恢复历史撤回的提议' in pacing
+    assert '确定性完成收束合同' not in messages[0].content
+    assert outcome.session.current_node_id == stored.session.current_node_id
+    assert not outcome.session.transition_offered
 
 
 def test_numeric_v2_next_scene_projection_excludes_future_story_fields():
@@ -2057,7 +2106,7 @@ def test_numeric_v2_simple_prompt_packing_drops_previous_scene_tail_first():
         numeric_v2_actor.count_tokens(system_prompt)
         + numeric_v2_actor.count_tokens(
             human_prefix
-            + json.dumps(expected_data, ensure_ascii=False, separators=(",", ":"))
+            + numeric_v2_actor.render_prompt_context(expected_data)
         )
     )
 
@@ -2176,7 +2225,8 @@ def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missi
     assert '"status":"pending"' in payload["current_scene"]
     assert '"committed":false' in payload["current_scene"]
     assert '"satisfied":false' in payload["current_scene"]
-    assert "fact_candidates 只能记录本轮最终 performance 或 scene_update" in messages[0].content
+    assert "本轮 performance 或 scene_update 已经明确演出的结果，必须逐项写入顶层 fact_candidates" in messages[0].content
+    assert "完成一项就登记一项，不等整幕完成" in messages[0].content
     assert "顶层必须包含 fact_candidates:object[]" in messages[0].content
     assert "每项必须且只能包含 key、value、evidence_quote" in messages[0].content
     assert "也必须返回 fact_candidates:[]，不得省略字段" in messages[0].content
@@ -2246,7 +2296,7 @@ def test_numeric_v2_committed_completion_facts_prompt_next_turn_offer_without_au
         assert "在交付直接结果后依据 next_scene 提出具体未来行动" not in messages[0].content
         assert messages[0].content.endswith(retry_hint)
     else:
-        assert "设置 transition_offered=true" in messages[0].content
+        assert "在 transition_offer 公开一个具体的未来跨阶段行动" in messages[0].content
         assert "不得写成玩家已接受" in messages[0].content
 
 
@@ -2344,10 +2394,10 @@ def test_reinvitation_actor_control_keeps_persona_history_and_readonly_facts(
         assert "不补当前幕任务" in payload["pacing"]
         assert "末尾 player_input 为空" in messages[1].content
         assert "末尾 player_input 是玩家刚结束的发言" not in messages[1].content
-        assert "fact_candidates 只能记录本轮最终 performance" not in system
+        assert "必须逐项写入顶层 fact_candidates" not in system
     else:
         assert "重新邀请控制合同" not in system
-        assert "fact_candidates 只能记录本轮最终 performance" in system
+        assert "必须逐项写入顶层 fact_candidates" in system
         assert "末尾 player_input 是玩家刚结束的发言" in messages[1].content
     assert numeric_v2_actor._messages_tokens(messages) <= (
         NUMERIC_V2_ACTOR_BUDGET_PROFILES[session.actor_budget_profile]["input_max_tokens"]
@@ -2374,6 +2424,8 @@ async def test_reinvitation_final_wire_uses_control_schema_without_changing_ordi
         "transition_offered": reinvitation,
     }
     if not reinvitation:
+        response.pop("transition_offered")
+        response["transition_offer"] = ""
         response["suggested_inputs"] = ["好，我们一起走。", "先在这里待一会儿。"]
         response["fact_candidates"] = []
 
@@ -2420,7 +2472,7 @@ async def test_reinvitation_final_wire_uses_control_schema_without_changing_ordi
     assert (engine.story, session, outcome) == original
     messages, kwargs = seen[0]
     payload = _payload(messages)
-    assert list(payload) == ["role", "current_scene", "story_so_far", "pacing", "next_scene", "player_input"]
+    assert list(payload) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
     assert "谨慎，喜欢用简短比喻表达关心。" in payload["role"]
     assert invitation in payload["story_so_far"]
     assert '"committed":true' in payload["current_scene"]
@@ -2433,7 +2485,7 @@ async def test_reinvitation_final_wire_uses_control_schema_without_changing_ordi
     if schema_supported:
         schema = kwargs["response_format"]["json_schema"]["schema"]
         fields = ["performance", "transition_offered"] if reinvitation else [
-            "scene_update", "performance", "suggested_inputs", "transition_offered", "fact_candidates",
+            "scene_update", "performance", "transition_offer", "suggested_inputs", "fact_candidates",
         ]
         assert list(schema["properties"]) == fields
         assert schema["required"] == [field for field in fields if field != "scene_update"]
@@ -2633,7 +2685,7 @@ def test_numeric_v2_review_reuses_same_call_for_pending_completion_fact_candidat
         },
         player_input="我把伤者拉出来。",
     )
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
 
     assert payload["pending_completion_facts"] == [{
         "key": "scene:start:rescued",
@@ -2726,7 +2778,7 @@ def test_numeric_v2_actor_suggestion_fill_is_limited_to_one_lightweight_call(mon
         performance={"performance": "（抬眼）我听到了。", "suggested_inputs": []},
         player_input="我先听你说。",
         catgirl_name="测试猫娘",
-        max_input_tokens=900,
+        max_input_tokens=10000,
         hard_boundaries=["不得主动亲密接触。"],
     ))
 
@@ -2754,7 +2806,7 @@ def test_numeric_v2_suggestion_fill_includes_visible_scene_narration(player_inpu
         player_input=player_input,
         max_tokens=1800,
     )
-    payload = json.loads(messages[1].content)
+    payload = prompt_payload(messages[1].content)
 
     assert payload["visible_performance"] == (
         "柜门已经打开，文件仍在柜内。\n（侧身让开）现在可以取文件了。"
@@ -2771,7 +2823,7 @@ def test_numeric_v2_opening_suggestion_fill_only_uses_visible_performance(monkey
     async def fake_invoke(messages, **kwargs):
         calls.append(kwargs)
         assert kwargs.get("suggestions_only") is True
-        payload = json.loads(messages[1].content)
+        payload = prompt_payload(messages[1].content)
         assert "未在开场出现的地点" not in payload["visible_performance"]
         return {
             "suggested_inputs": [
@@ -2791,7 +2843,7 @@ def test_numeric_v2_opening_suggestion_fill_only_uses_visible_performance(monkey
         },
         player_input="",
         catgirl_name="测试猫娘",
-        max_input_tokens=900,
+        max_input_tokens=10000,
     ))
 
     assert len(calls) == 1
@@ -2917,7 +2969,7 @@ def test_numeric_v2_opening_prompt_requires_at_least_one_suggestion():
 
     assert "suggested_inputs 至少给出 1 条" in system
     assert "一至三条即可，不能为凑数量补造前提" in system
-    assert "或仅“（保持安静）”" in system
+    assert "玩家对白、全角括号动作加对白或纯动作" in system and "“（保持安静）”" in system
 
 
 def test_numeric_v2_actor_keeps_one_suggestion_without_waiting_for_fill(monkeypatch):
@@ -2974,12 +3026,12 @@ def test_numeric_v2_suggestion_fill_boundaries_come_from_authored_scene():
     assert boundaries == [
         "不要主动发起肢体接触。",
         "不得在玩家选择前离开花店。",
-        "你禁止行为：不得主动拥抱。",
+        "演出角色禁止行为：不得主动拥抱。",
         "禁止发生的剧情：不得把旧信交给猫娘。",
     ]
     assert numeric_v2_actor._beat_for_actor(cast, beat)["boundaries"] == [
         "不得在玩家选择前离开花店。",
-        "你禁止行为：不得主动拥抱。",
+        "演出角色禁止行为：不得主动拥抱。",
         "禁止发生的剧情：不得把旧信交给猫娘。",
     ]
     assert "围绕仍未拆开的旧信" in numeric_v2_actor._beat_for_actor(
@@ -3072,8 +3124,8 @@ def test_numeric_v2_compact_transition_declares_sendable_suggestion_format():
     )
 
     assert "非终局的 suggested_inputs 给出一至三条" in system
-    assert "或仅“（保持安静）”" in system
-    assert "不能预写环境、他人或成功结果" in system
+    assert "玩家对白、全角括号动作加对白或纯动作" in system and "“（保持安静）”" in system
+    assert "不预演他人动作或成功结果" in system
     assert "suggested_inputs 只承接最终可见的目标" in system
 
 
@@ -3132,14 +3184,14 @@ def test_numeric_v2_actor_prompt_preserves_its_own_committed_proposals():
         phase="transition_compact",
     )
 
-    assert "story_so_far 是已提交历史" in turn_prompt
-    assert "必须承认此前说过的话" in turn_prompt
-    assert "更正安排不等于否认说过" in turn_prompt
-    assert "recent_context 是已提交原文，须区分实际事件与其中人物的判断" in transition_prompt
-    assert "历史已发生的动作只承接结果，不再次演出" in transition_prompt
+    assert "story_so_far 是实际历史" in turn_prompt
+    assert "后续变化以实际已提交历史为准" in turn_prompt
+    assert "自己先前说错可以更正" in turn_prompt
+    assert "已提交原文先证明谁说过什么、做过什么" in transition_prompt
+    assert "已播放开场的动作只承接结果" in transition_prompt
     assert "suggested_inputs 只承接最终可见的目标" in transition_prompt
-    assert "只承接已经成立的具体主体、对象和结果" in transition_prompt
-    assert "导演方向不是任务清单" in turn_prompt
+    assert "三段共用最近实际原文确定的位置、同行分工、持物和完成状态" in transition_prompt
+    assert "current_scene是作者规划" in turn_prompt
 
 
 def test_numeric_v2_hard_boundary_prompt_requires_refusal_or_safe_alternative():
@@ -3214,7 +3266,7 @@ def test_numeric_v2_actor_counts_real_provider_requests(monkeypatch):
         performance={"performance": "（抬眼）我听到了。", "suggested_inputs": []},
         player_input="我先听你说。",
         catgirl_name="测试猫娘",
-        max_input_tokens=900,
+        max_input_tokens=10000,
     ))
 
     assert len(suggestions) == 2
@@ -3238,7 +3290,7 @@ def test_numeric_v2_v22_evaluator_does_not_project_legacy_evidence():
         session,
         "我先听你说。",
     )
-    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert "pending_goals" not in payload["current_story_beat"]
     assert '"goal_evidence"' not in messages[0].content
 
@@ -3284,7 +3336,7 @@ def test_numeric_v2_evaluator_marks_pending_visible_transition_for_acceptance():
         session,
         "（我站起身）好，我现在就去外面看看。",
     )
-    payload = json.loads(messages[1].content.split("：\n", 1)[1])
+    payload = prompt_payload(messages[1].content)
 
     assert payload["pending_transition"]["visible_performance"] == (
         "（抬手指向门口）我们现在去外面看看，好吗？"
@@ -3427,7 +3479,7 @@ def test_numeric_v2_actor_does_not_force_transition_offer_when_route_is_unresolv
     ))
 
     assert "必须在正文中提出一个基于当前已知事实的离开当前幕的具体下一步" not in payload["pacing"]
-    assert "结果尚未成立时" in payload["pacing"]
+    assert "已获授权、没有新风险或真实选择的连续过程" in payload["pacing"]
     assert "结果已经成立且自然出口成熟时" in payload["pacing"]
 
 
@@ -3480,7 +3532,7 @@ def test_numeric_v2_transition_judge_receives_visible_offer_and_scene_context():
         player_input="我想听听你的建议。",
         scene_complete=True,
     )[0]
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
 
     assert payload["actor_performance"] == "（望向门外）我们沿着长街去找旧信，好吗？"
     assert payload["scene_update"] == "两人仍站在门边，等待玩家决定。"
@@ -3532,7 +3584,7 @@ def test_numeric_v2_transition_judge_uses_route_reason_and_actual_nonending_entr
     )[0]
     assert "跨阶段不限于换地点" in messages[0].content
     assert "opening_boundary 与 bridge_boundary 是接受后的入口" in messages[0].content
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
 
     assert payload["next_scene_direction"]["is_ending"] is False
     assert payload["next_scene_direction"]["direction"] == "当前信任度满足作者路线条件。"
@@ -3556,11 +3608,11 @@ def test_numeric_v2_transition_judge_uses_route_reason_and_actual_nonending_entr
     assert "边界前准备、提议与未来邀请不属已越界" in messages[0].content
     assert "当前幕明确授权的行为与结果仍属当前幕，即使也导向下一幕" in messages[0].content
     assert "当前幕未授权的新地点、新时段或新互动阶段结果" in messages[0].content
-    assert "你或 NPC 自主执行各自行为均不属代做" in messages[0].content
+    assert "当前角色或 NPC 自主执行各自行为均不属代做" in messages[0].content
     assert "证据支持的外部结果" in messages[0].content
     assert "句尾的‘请检查／请清点’不会把前面第一人称陈述降为计划" in messages[0].content
     assert "不得在 failure_reason 中自我辩论" in messages[0].content
-    assert "主体仍是你" in messages[0].content
+    assert "主体仍是该角色" in messages[0].content
 
 
 def test_numeric_v2_transition_judge_receives_positive_author_fact_authority():
@@ -3589,7 +3641,7 @@ def test_numeric_v2_transition_judge_receives_positive_author_fact_authority():
         },
         player_input="你的能源还够吗？",
     )[0]
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
     current_scene = payload["current_scene"]
 
     assert current_scene["author_entry_plan"]["catgirl_state"].endswith("32%。")
@@ -3619,7 +3671,7 @@ def test_numeric_v2_transition_judge_long_history_preserves_latest_complete_evid
         engine, session, player_input="放在哪里了？",
         actor_performance={"performance": candidate, "suggested_inputs": ["（点头）知道了。"]},
     )[0]
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert payload["scene_context"][-1] == numeric_v2_evaluator._current_scene_context(session)[-1]
     assert payload["actor_performance"] == candidate
     assert payload["player_input"] == "放在哪里了？"
@@ -3674,7 +3726,7 @@ def test_numeric_v2_transition_judge_keeps_compact_facts_from_early_scene_turns(
         },
         player_input="现在呢？",
     )[0]
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
 
     assert len(payload["scene_context"]) == 12
     # The latest twelve turns already hold full evidence; index supplements only the opening/earlier three turns without duplicating budget.
@@ -3822,7 +3874,7 @@ def test_guard_compacts_recent_history_before_discarding_early_operation(monkeyp
     budget = sum(ev.count_tokens(m.content) for m in complete) - 200
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES["balanced"], "judge_input_max_tokens", budget)
     messages = ev._build_transition_judge_messages(engine, session, **kw)[0]
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert sum(ev.count_tokens(m.content) for m in messages) <= budget
     assert any(r.get("revision") == 1 and "已经归还" in r["visible_response"] for r in payload["scene_fact_index"])
     assert payload["scene_context"][-1] == ev._current_scene_context(session)[-1]

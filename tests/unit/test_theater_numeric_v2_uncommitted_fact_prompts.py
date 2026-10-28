@@ -9,6 +9,7 @@ from services.theater import numeric_v2_action_projection as projection
 from services.theater import numeric_v2_actor as actor
 from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening, _performance
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
@@ -35,7 +36,7 @@ def _operations(value=True):
 
 def _payload(messages):
     text = messages[1].content
-    return json.loads(text[text.index("{"):])
+    return prompt_payload(text)
 
 
 def _system_projection(messages):

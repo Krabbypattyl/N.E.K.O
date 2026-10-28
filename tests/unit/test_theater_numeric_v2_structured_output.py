@@ -47,19 +47,19 @@ def test_only_supported_provider_and_model_get_schema(changes, enabled):
 
 
 ACTOR_CASES = [
-    ({}, {'performance': '我只知道记录里的内容。', 'suggested_inputs': ['（点头）', '（保持沉默）'], 'transition_offered': False}),
+    ({}, {'performance': '我只知道记录里的内容。', 'transition_offer': '', 'suggested_inputs': ['（点头）', '（保持沉默）']}),
     ({'opening_required': True}, {'scene_narration': '灯光亮起。', 'performance': '准备好了。', 'suggested_inputs': ['（点头）', '（保持沉默）'], 'transition_offered': False}),
     ({'transition_required': True}, {'source_scene_narration': '', 'source_performance': '好。', 'target_performance': '到了。', 'bridge_scene_narration': '门打开了。', 'target_scene_narration': '走廊亮着灯。', 'suggested_inputs': []}),
     ({'suggestions_only': True}, {'suggested_inputs': ['（点头）', '（保持沉默）']}),
     ({'transition_suggestions_only': True}, {'accept_input': '（点头）好，我们过去。', 'alternative_inputs': ['（摇头）先留在这里。']}),
-    ({'fact_candidates_expected': True}, {'performance': '灯亮了。', 'suggested_inputs': [], 'transition_offered': False, 'fact_candidates': [{'key': 'ready', 'value': True, 'evidence_quote': '灯亮了'}]}),
+    ({'fact_candidates_expected': True}, {'performance': '灯亮了。', 'transition_offer': '', 'suggested_inputs': [], 'fact_candidates': [{'key': 'ready', 'value': True, 'evidence_quote': '灯亮了'}]}),
 ]
 
 
 @pytest.mark.parametrize('flags,fields', [
-    ({}, ['scene_update', 'performance', 'suggested_inputs', 'transition_offered']),
-    ({'fact_candidates_expected': True}, ['scene_update', 'performance', 'suggested_inputs',
-                                        'transition_offered', 'fact_candidates']),
+    ({}, ['scene_update', 'performance', 'transition_offer', 'suggested_inputs']),
+    ({'fact_candidates_expected': True}, ['scene_update', 'performance', 'transition_offer',
+                                        'suggested_inputs', 'fact_candidates']),
     ({'opening_required': True}, ['scene_narration', 'performance', 'suggested_inputs', 'transition_offered']),
     ({'transition_required': True}, ['source_scene_narration', 'source_performance',
                                   'bridge_scene_narration', 'target_scene_narration',
@@ -75,7 +75,7 @@ def test_actor_schema_generates_text_in_playback_order(flags, fields):
 @pytest.mark.parametrize('scene_first', [False, True])
 def test_ordinary_scene_first_generation_preserves_parser_and_playback(scene_first):
     payload = {'performance': '（收起文书）那就按规矩办。', 'suggested_inputs': [],
-               'transition_offered': False, 'scene_update': '管事答道：“登记已经完成。”',
+               'transition_offer': '', 'scene_update': '管事答道：“登记已经完成。”',
                'fact_candidates': []}
     if scene_first:
         payload = {'scene_update': payload['scene_update'], **payload}
@@ -154,7 +154,8 @@ def test_schema_rejects_wrong_fields_types_and_keeps_existing_optional_contract(
     valid = ACTOR_CASES[0][1]
     assert validator.is_valid(valid)
     assert validator.is_valid({**valid, 'scene_update': '灯亮了。'})
-    assert not validator.is_valid({**valid, 'transition_offered': 'false'})
+    assert not validator.is_valid({**valid, 'transition_offer': False})
+    assert not validator.is_valid({**valid, 'transition_offered': True})
     assert not validator.is_valid({**valid, 'scene_update': None})
     assert not validator.is_valid({**valid, 'segments': []})
     assert not validator.is_valid({**valid, 'narrative_events': []})
@@ -188,7 +189,8 @@ def test_reinvitation_only_schema_does_not_request_story_state_updates():
             _parse_output(json.dumps(invalid), reinvitation_only=True)
     # 普通演出仍可记录本轮新结果；不能把控制限制施加到所有调用。
     assert Draft202012Validator(actor_output_schema(fact_candidates_expected=True)).is_valid(
-        {**valid, 'suggested_inputs': ['好，现在去。'], 'scene_update': '门已经打开。', 'fact_candidates': []})
+        {'performance': '门开了。', 'transition_offer': valid['performance'],
+         'suggested_inputs': ['好，现在去。'], 'scene_update': '门已经打开。', 'fact_candidates': []})
 
 
 def _narrative_event(phase='turn'):

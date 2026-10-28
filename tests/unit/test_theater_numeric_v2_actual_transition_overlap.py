@@ -42,8 +42,13 @@ async def test_bridge_overlap_with_authored_or_delivered_opening_rewrites_or_blo
         calls["actor"] += 1
         if drafts:
             hint = kwargs["retry_hint"]
-            assert json.dumps(drafts[-1], ensure_ascii=False, separators=(",", ":")) in hint
+            assert json.dumps(drafts[-1], ensure_ascii=False, separators=(",", ":")) not in hint
             assert "bridge_scene_narration" in hint and "target_scene_narration" in hint
+            material = kwargs['draft_repair_context']
+            assert material['draft']['bridge_scene_narration'] == drafts[-1]['segments'][1]['scene_narration']
+            assert material['draft']['target_scene_narration'] == drafts[-1]['segments'][2]['scene_narration']
+            assert 'fixed_narrations' not in json.dumps(material, ensure_ascii=False)
+            assert 'fact_candidates' not in material['draft']
         marker = second if scenario == "new_duplicate" and calls["actor"] == 2 else first
         candidate = _candidate()
         candidate["bridge_scene_narration"] = marker + "。"

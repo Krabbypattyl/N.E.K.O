@@ -8,6 +8,7 @@ import pytest
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -34,7 +35,7 @@ def _setup(beat_updates, *, target_direction=None):
 
 def _payload(messages):
     content = messages[1].content
-    return json.loads(content[content.index("{"):])
+    return prompt_payload(content)
 
 
 def _review(engine, session, *, opening=False, outcome=None):

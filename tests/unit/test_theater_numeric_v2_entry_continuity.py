@@ -14,6 +14,7 @@ from services.theater.numeric_v2 import MAX_ACTOR_PROMPT_FIELD_TOKENS, NumericV2
 from services.theater.numeric_v2_budget import numeric_v2_actor_budget
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.theater_workshop.test_numeric_v2_generation import _generation_setup, _idea_outline
 from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
@@ -65,12 +66,12 @@ def _request(engine, session, *, profile="说话简短。", address="你"):
 
 def _data(messages):
     text = messages[1].content
-    return json.loads(text[text.index("{"):])
+    return prompt_payload(text)
 
 
 def _projected(engine, values, address="你"):
     return NumericV2CastProjection.from_story(
-        engine.story, player_name=address, catgirl_name="Lan",
+        engine.story, player_name="玩家" if address == "你" else address, catgirl_name="Lan",
     ).value(values)
 
 
@@ -110,11 +111,11 @@ async def test_sdk_transition_restore_and_fork_keep_continuity_as_author_plan(tm
         before = deepcopy((engine.story, stored))
         data = _data(_request(engine, stored.session, address=address))
         projected = _projected(engine, CONTINUITY, address)
-        assert all(item in data["role"] for item in projected)
-        assert data["role"].index(projected[0]) < data["role"].index(projected[1])
-        assert "作者入幕延续规划" in data["role"]
-        assert "本轮授权" in data["role"]
-        assert "不是已发生事实、任务或新增权限" in data["role"]
+        assert all(item in data["current_scene"] for item in projected)
+        assert data["current_scene"].index(projected[0]) < data["current_scene"].index(projected[1])
+        assert "作者入幕延续规划" in data["current_scene"]
+        assert "本轮授权" in data["current_scene"]
+        assert "不是已发生事实、任务或新增权限" in data["current_scene"]
         # The current possession comes from actual play, not the earlier plan.
         assert ACTUAL_HISTORY in data["story_so_far"]
         assert all(item not in data["story_so_far"] for item in projected)
@@ -141,14 +142,15 @@ def test_continuity_uses_existing_state_visibility_without_restoring_hidden_iden
     engine = NumericV2Engine.from_mapping(_story(restricted=(field, value), first_continuity=True))
     session = _session(engine)
     before = deepcopy((engine.story, session.to_dict()))
-    role = _data(_request(engine, session))["role"]
-    assert all(item in role for item in _projected(engine, CONTINUITY))
+    data = _data(_request(engine, session))
+    role = data["role"]
+    assert all(item in data["current_scene"] for item in _projected(engine, CONTINUITY))
     assert value in role
     # Existing state plans remain readable; backstage identity and motivation
     # still pass through the existing cognition gate instead of this new line.
     assert "多年后回乡处理旧屋" not in role
     assert "确认玩家是否值得再次信任" not in role
-    assert "雨季小镇与保存旧信的花店。" not in role
+    assert "雨季小镇与保存旧信的花店。" not in data["current_scene"]
     assert (engine.story, session.to_dict()) == before
 
 
@@ -160,7 +162,7 @@ def test_empty_or_legacy_absent_state_adds_no_continuity_noise(legacy):
             node["story_beat"].pop("character_state")
     engine = NumericV2Engine.from_mapping(story)
     messages = _request(engine, _session(engine))
-    assert "作者入幕延续规划" not in _data(messages)["role"]
+    assert "作者入幕延续规划" not in _data(messages)["current_scene"]
 
 
 def _long_continuity():
@@ -176,10 +178,10 @@ def _long_continuity():
 def test_compiler_valid_continuity_keeps_complete_tail_negation():
     text = _long_continuity()
     engine = NumericV2Engine.from_mapping(_story([text], first_continuity=True))
-    role = _data(_request(engine, _session(engine)))["role"]
+    scene = _data(_request(engine, _session(engine)))["current_scene"]
     projected = _projected(engine, [text])[0]
-    assert projected in role
-    assert projected.endswith("；但未取得你许可，也没有完成检修。")
+    assert projected in scene
+    assert projected.endswith("；但未取得玩家许可，也没有完成检修。")
 
 
 @pytest.mark.asyncio
@@ -204,7 +206,7 @@ async def test_continuity_uses_the_existing_single_actor_request(monkeypatch):
         character_profile="说话简短。", allow_suggestion_fill=False,
     )
     assert len(calls) == 1
-    assert all(item in _data(calls[0][0])["role"] for item in _projected(engine, CONTINUITY))
+    assert all(item in _data(calls[0][0])["current_scene"] for item in _projected(engine, CONTINUITY))
     assert calls[0][1]["max_input_tokens"] == numeric_v2_actor_budget(session.actor_budget_profile)["input_max_tokens"]
     assert calls[0][1]["max_output_tokens"] == actor.NUMERIC_V2_ACTOR_TURN_MAX_OUTPUT_TOKENS
     assert result == performance

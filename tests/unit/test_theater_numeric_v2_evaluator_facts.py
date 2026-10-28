@@ -9,6 +9,7 @@ import pytest
 from services.theater.numeric_v2_context import project_scene_facts
 from services.theater.numeric_v2_evaluator import _build_messages, _parse_output
 from services.theater.numeric_v2_runtime import apply_fact_ops, NumericV2Engine
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -58,7 +59,7 @@ def test_evaluator_prompt_scopes_contract_and_exposes_committed_values(fact_cont
     engine, session = fact_context
     original_contract = deepcopy(engine.fact_contract)
     messages = _build_messages(engine, session, "我已经打开门。")
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     beat = data["current_story_beat"]
 
     assert set(beat["fact_contract"]["facts"]) == {
@@ -101,7 +102,7 @@ def test_evaluator_sees_typed_unmet_completion_targets_as_plans(key, value_type,
     ))
     original = deepcopy(session)
     messages = _build_messages(engine, session, "我先看看，还没决定。")
-    beat = json.loads(messages[1].content.split("\n", 1)[1])["current_story_beat"]
+    beat = prompt_payload(messages[1].content)["current_story_beat"]
 
     assert beat.get("completion_fact_targets") == {key: target}
     assert type(beat["completion_fact_targets"][key]) is type(target)

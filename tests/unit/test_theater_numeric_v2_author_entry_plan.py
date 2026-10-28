@@ -9,6 +9,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_behavior_permissions import _contract
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -16,7 +17,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding
 
 def _payload(messages):
     text = messages[1].content
-    return json.loads(text[text.index("{"):])
+    return prompt_payload(text)
 
 
 def _case(*, restricted=False):
@@ -77,10 +78,10 @@ def test_ordinary_actor_labels_staging_without_losing_committed_continuous_actio
     outcome = engine.resolve_turn(session, turn, ())
     messages = actor._turn_messages(engine, session, outcome, turn.message, "谨慎。", "测试猫娘", "哥哥")
     data = _payload(messages)
-    assert "作者入幕规划中的玩家处境：男主留在门边，尚未领取工具。" in data["role"]
+    assert "作者入幕规划中的玩家处境：男主留在门边，尚未领取工具。" in data["current_scene"]
     assert "玩家开场演完后的已知处境" not in data["role"]
     assert actual in data["story_so_far"]
-    assert "须与实际开场及已提交历史核对" in data["role"]
+    assert "须与实际开场及已提交历史核对" in data["current_scene"]
     assert session.to_dict() == before
 
 

@@ -8,6 +8,7 @@ import pytest
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_evaluator import _build_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -227,12 +228,12 @@ async def test_invalidated_invitation_is_shared_before_rewrite_and_review(tmp_pa
     outcome, _ = runtime.engine.finalize_transition_offer_state(outcome, {}, new_offer=False, invalidate_previous_offer=True)
     messages = _turn_messages(runtime.engine, current.session, outcome, "好，走吧。", "温和。", "测试猫娘", "哥哥",
                              retry_hint="请更正邀请。",  recent_ledger_events=current.ledger_events)
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert "已确认去向错误并撤下的旧邀请原文：我们去便利店买热饮吧？" in data['pacing']
     assert "当前待确认提议原文" not in data['pacing']
     messages = _build_transition_judge_messages(runtime.engine, outcome.session, player_input="好，走吧。",
         actor_performance={"performance": "那就走吧。"}, cancelled_transition=True, invalidated_invitation=True)[0]
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert "便利店" in json.dumps(data['invalidated_invitation'], ensure_ascii=False)
     assert "不再判断它是否有效" in messages[0].content
 
@@ -272,7 +273,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
     forked = await runtime.fork_session_for_test(stored.session.session_id, session_id="pending_fork", through_revision=3)
     for current in (stored, restored, forked):
         messages = _build_messages(engine, current.session, "好，我们现在去长街。", recent_ledger_events=current.ledger_events)
-        pending = json.loads(messages[1].content.split("：", 1)[1])["pending_transition"]
+        pending = prompt_payload(messages[1].content)["pending_transition"]
         assert invitation in pending["visible_performance"]
         assert "不会很远" not in pending["visible_performance"]
         assert pending["suggested_inputs"] == original["suggested_inputs"]
@@ -282,7 +283,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
         for retry_hint in ("", "请修正未提交的重复正文。"):
             actor_messages = _turn_messages(engine, current.session, outcome, "我再想一想。", "安静克制。", "测试猫娘", "哥哥",
                 retry_hint=retry_hint, recent_ledger_events=current.ledger_events)
-            actor_data = json.loads(actor_messages[1].content.split("：", 1)[1])
+            actor_data = prompt_payload(actor_messages[1].content)
             assert invitation in actor_data["pacing"]
             assert "ledger_events" not in actor_data
             # Latching proves only prior public disclosure; it cannot turn erroneous wording into a valid arrangement the actor must fulfill.
@@ -301,8 +302,7 @@ async def test_reject_then_new_offer_uses_new_origin_even_when_all_records_are_t
     stored = await _commit(runtime, stored, "那就改为结束今晚的谈话，好吗？", offer=True, intent="reject")
     stored = await _commit(runtime, stored, "你可以慢慢考虑。")
     assert all(record["transition_offered"] for record in stored.session.performance_history)
-    pending = json.loads(_build_messages(engine, stored.session, "好，那今晚到这里。",
-        recent_ledger_events=stored.ledger_events)[1].content.split("：", 1)[1])["pending_transition"]
+    pending = prompt_payload(_build_messages(engine, stored.session, '好，那今晚到这里。', recent_ledger_events=stored.ledger_events)[1].content)["pending_transition"]
     assert "结束今晚的谈话" in pending["visible_performance"]
     assert "长街" not in pending["visible_performance"]
 
@@ -319,8 +319,7 @@ async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp
     stored = await _commit(runtime, stored, "那就先留在这里。", intent="reject")
     stored = await _commit(runtime, stored, "我听着。")
     assert not stored.session.transition_offered
-    data = json.loads(_build_messages(engine, stored.session, "我改主意了，就按刚才说的走。",
-                      recent_ledger_events=stored.ledger_events)[1].content.split("：", 1)[1])
+    data = prompt_payload(_build_messages(engine, stored.session, '我改主意了，就按刚才说的走。', recent_ledger_events=stored.ledger_events)[1].content)
     assert data["pending_transition"]["status"] == "withdrawn"
     assert "沿长街寻找旧信" in data["pending_transition"]["visible_performance"]
     assert "我听着" not in data["pending_transition"]["visible_performance"]

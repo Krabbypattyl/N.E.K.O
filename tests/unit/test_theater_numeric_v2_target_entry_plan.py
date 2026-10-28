@@ -8,6 +8,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -84,7 +85,13 @@ def _messages(runtime, current, outcome, turn):
 
 def _data(messages):
     content = messages[1].content
-    return json.loads(content[content.index('{'):])
+    return prompt_payload(content)
+
+
+def _assert_actor_entry_plan(system, actual, expected):
+    assert actual == {key: value for key, value in expected.items() if key != 'scene_boundaries'}
+    for boundary in expected.get('scene_boundaries', []):
+        assert '目标幕：' + boundary in system
 
 
 @pytest.mark.asyncio
@@ -96,7 +103,7 @@ async def test_runtime_formal_entry_plan_keeps_every_field_and_existing_knowledg
     messages = _messages(runtime, current, outcome, turn)
     data = _data(messages)
     assert 'target_character_state' not in data['acting_context']
-    assert data['transition']['target_scene']['author_entry_plan'] == expected
+    _assert_actor_entry_plan(messages[0].content, data['transition']['target_scene']['author_entry_plan'], expected)
     assert len(expected['continuity_from_previous']) == 2
     assert ACTUAL in json.dumps(data['recent_context'], ensure_ascii=False)
     assert PLAN['player_state'] not in json.dumps(data['recent_context'], ensure_ascii=False)
@@ -130,7 +137,8 @@ async def test_plan_transport_does_not_rewrite_canonical_history_or_cold_restore
     original_story = deepcopy(runtime.engine.story)
     original_state = current.session.to_dict()
     canonical_file = runtime.store._path(current.session.session_id).read_bytes()
-    assert _data(_messages(runtime, current, outcome, turn))['transition']['target_scene']['author_entry_plan'] == expected
+    messages = _messages(runtime, current, outcome, turn)
+    _assert_actor_entry_plan(messages[0].content, _data(messages)['transition']['target_scene']['author_entry_plan'], expected)
     assert runtime.store._path(current.session.session_id).read_bytes() == canonical_file
     assert current.session.to_dict() == original_state
     performance = runtime.engine.finalize_transition_performance(outcome, {
@@ -153,17 +161,17 @@ async def test_fixed_context_budget_retains_complete_plan_or_rejects(tmp_path):
     runtime, current, outcome, turn, expected = await _case(tmp_path)
     messages = _messages(runtime, current, outcome, turn)
     data = _data(messages)
-    assert data['transition']['target_scene']['author_entry_plan'] == expected
+    _assert_actor_entry_plan(messages[0].content, data['transition']['target_scene']['author_entry_plan'], expected)
     # A single latest history row cannot be evicted to make the author plan fit;
     # the existing fixed-context check must reject rather than clip its conditions.
     data['recent_context'] = data['recent_context'][-1:]
     prefix = messages[1].content[:messages[1].content.index('{')]
     full_tokens = actor._prompt_token_counter(messages[0].content)(
-        prefix + json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+        prefix + actor.render_prompt_context(data))
     before = deepcopy(data)
     fitted = actor._fit_turn_prompt_data(system_prompt=messages[0].content,
         human_prefix=prefix, data=data, max_tokens=full_tokens)
-    assert fitted['transition']['target_scene']['author_entry_plan'] == expected
+    _assert_actor_entry_plan(messages[0].content, fitted['transition']['target_scene']['author_entry_plan'], expected)
     with pytest.raises(actor.NumericV2ActorError, match='fixed_context_budget_exceeded'):
         actor._fit_turn_prompt_data(system_prompt=messages[0].content,
             human_prefix=prefix, data=data, max_tokens=full_tokens - 1)

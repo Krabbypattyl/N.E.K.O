@@ -11,6 +11,7 @@ from services.theater.numeric_v2_evaluator import _build_messages, _parse_output
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_options import default_options
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -39,7 +40,7 @@ def _session(engine):
 def _prompt(engine, session, message):
     messages = _build_messages(engine, session, message)
     human = messages[1].content
-    return messages[0].content, json.loads(human[human.index("{"):])
+    return messages[0].content, prompt_payload(human)
 
 
 def _evaluation(value=None, message="走山径。"):
@@ -169,7 +170,7 @@ def test_actor_sees_alternative_route_targets_without_turning_them_into_completi
     message = "这两种交接方式有什么区别？"
     outcome = engine.resolve_turn(session, TurnRequestV2("ask_options", 0, message), ())
     messages = _turn_messages(engine, session, outcome, message, "温和。", "小葵", "林舟")
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     scene = data["current_scene"]
     decoder = json.JSONDecoder()
     completion, _ = decoder.raw_decode(scene[scene.index("{", scene.index("结构化幕完成事实")):])
@@ -181,7 +182,9 @@ def test_actor_sees_alternative_route_targets_without_turning_them_into_completi
         (route["id"], value) for route, value in zip(engine.nodes["start"]["route_gates"], values)
     ]
     assert all(group["condition_mode"] == "all" for group in groups)
-    assert all(row["key"] == KEY and row["description"] == description
+    assert groups[0]["facts"][0]["description"] == description
+    assert all("description" not in row for group in groups[1:] for row in group["facts"])
+    assert all(row["key"] == KEY
                and row["committed"] is False and row["satisfied"] is False
                for group in groups for row in group["facts"])
     assert "fact_candidates" in messages[0].content
@@ -205,7 +208,7 @@ def test_actor_route_targets_do_not_disclose_hidden_global_or_other_scene_facts(
     session = _session(engine)
     outcome = engine.resolve_turn(session, TurnRequestV2("ask", 0, "现在还缺什么？"), ())
     messages = _turn_messages(engine, session, outcome, "现在还缺什么？", "温和。", "小葵", "林舟")
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     scene = data["current_scene"]
     groups, _ = json.JSONDecoder().raw_decode(scene[scene.index("[", scene.index("当前幕路线事实条件")):])
 
@@ -238,7 +241,7 @@ async def test_both_values_of_one_route_key_receive_only_native_index_approval(m
         return Client()
 
     async def invoke(client, messages, **kwargs):
-        data = json.loads(messages[1].content[messages[1].content.index("{"):])
+        data = prompt_payload(messages[1].content)
         requests.append(data)
         assert data["actor_fact_candidates"] == [{
             "index": 0, **candidate, "description": "玩家明确选定的行进路线。",
@@ -293,7 +296,7 @@ def test_source_only_fact_review_distinguishes_current_decision_from_npc_receipt
         evaluator_fact_claims=claims, completion_fact_review_only=True,
     )
     system = messages[0].content
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
 
     assert data["actor_performance"] == data["scene_update"] == ""
     assert "actor_fact_candidates" not in data
@@ -370,7 +373,7 @@ async def test_only_bodyless_source_approval_closes_new_fact_schema_channel(monk
 
     async def invoke(client, messages, **kwargs):
         actual_schema = kwargs["response_format"]["json_schema"]["schema"]
-        data = json.loads(messages[1].content[messages[1].content.index("{"):])
+        data = prompt_payload(messages[1].content)
         requests.append((deepcopy(actual_schema), data))
         # 这里只检查实际发送的合同，不让mock自行批准事实或证明模型遵守合同。
         empty_values = {"array": [], "boolean": False, "string": "", "integer": -1}

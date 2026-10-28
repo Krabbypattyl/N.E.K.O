@@ -10,6 +10,7 @@ from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_actor_output import NumericV2ActorOutputError, _parse_output
 from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_fixed_narration import _piece
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
@@ -50,7 +51,7 @@ def _context(*, required_bridge=False, message=CONFLICT, formal=True, target_sel
         transition_intent="accept" if formal else "unclear")
     assert (outcome.session.current_node_id == "middle") is formal
     messages = actor._turn_messages(engine, session, outcome, message, "温和，谨慎。", "小葵", "你")
-    payload = json.loads(messages[1].content[messages[1].content.index("{"):])
+    payload = prompt_payload(messages[1].content)
     return engine, session, outcome, messages, payload
 
 
@@ -117,7 +118,7 @@ def _farewell_messages(*, source_policy="required", target_policy="required"):
     before = deepcopy((engine.story, session, outcome))
     messages = actor._turn_messages(engine, session, outcome, message, "平静克制。", "小葵", "你")
     assert (engine.story, session, outcome) == before
-    payload = json.loads(messages[1].content.split("\n", 1)[1])
+    payload = prompt_payload(messages[1].content)
     return messages, payload, previous, message
 
 
@@ -132,7 +133,7 @@ def test_npc_farewell_keeps_completed_history_without_requiring_catgirl_to_summa
     system = messages[0].content
     assert "先按原话和动作辨明受话人，不把对 NPC 的话当成对你说" in system
     assert "由该 NPC 在来源旁白回应；你不代答、受谢或再次评价已完成结果" in system
-    assert "没有新信息时 source_performance 留空" in system
+    assert "玩家仅接受、道谢或告别且没有必要新回应时留空" in system
     assert actor._PLAYER_AUTHORIZATION_RULE in system
 
 
@@ -149,8 +150,8 @@ def test_formal_brevity_and_action_ownership_keep_each_scene_speech_policy(sourc
         assert data["acting_context"][field]["memory_state"] == "available"
     system = messages[0].content
     assert "在允许发声时优先纯对白，通常一至三句；有必要的新动作才用一对括号写一个即时动作" in system
-    assert "不要在你动作括号中串写 NPC 或玩家的独立动作、对白；观察对象可以出现" in system
-    assert "source_performance 遵守 acting_context.dialogue_policy；target_performance 遵守 acting_context.target_dialogue_policy" in system
+    assert "NPC、玩家的动作和对白不能写入你的动作括号" in system
+    assert "source_performance遵守acting_context.dialogue_policy，target_performance遵守target_dialogue_policy" in system
     candidate = _candidate()
     candidate["target_performance"] = "（抬手挥别）" if target_policy == "forbidden" else "一路顺风。"
     assert _parse_output(json.dumps(candidate), transition_required=True,
@@ -225,7 +226,7 @@ def _completed_transition_messages(*, case="public", restricted="", later_change
     before = deepcopy((session, outcome))
     messages = actor._turn_messages(engine, session, outcome, message, "平静克制。", "小葵", "你")
     assert (session, outcome) == before
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     return messages, data, session, outcome
 
 

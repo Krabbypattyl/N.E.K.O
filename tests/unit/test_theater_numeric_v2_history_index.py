@@ -85,6 +85,25 @@ def test_original_permission_and_later_withdrawal_keep_time_and_speaker():
     assert index["omitted_units"] == 0
 
 
+def test_index_respects_final_wire_capacity_and_preserves_later_correction():
+    session = _session(
+        _turn(1, performance="观察记录可以公开展示。"),
+        _turn(2, performance="观察记录授权已撤回。"),
+    )
+    before = deepcopy(session)
+    full = current_scene_history_index(session, "观察记录可以公开吗？")
+    expected = {"evidence": [full["evidence"][-1]], "omitted_units": 1,
+                "latest_omitted_revision": 1}
+    limit = count_tokens(json.dumps(expected, ensure_ascii=False, separators=(",", ":")))
+    selected = current_scene_history_index(
+        session, "观察记录可以公开吗？",
+        within_prompt=lambda value: count_tokens(json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"))) <= limit,
+    )
+    assert selected == expected
+    assert session == before
+
+
 def test_small_budget_prefers_later_change_over_longer_old_query_match():
     session = _session(
         _turn(1, performance="观察记录允许公开展示，观察记录的公开授权已经确认。"),

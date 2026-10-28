@@ -16,6 +16,48 @@ from .numeric_v2_cast import NumericV2CastProjection
 from .numeric_v2_performance import performance_content_blocks, scene_narration_text
 
 
+def prompt_data_block(label: str, data: Mapping[str, Any]) -> str:
+    """Fence lossless JSON data without allowing values to forge block delimiters."""
+
+    # Keep evidence and player input reversible; destructive sanitizers would
+    # change the original strings against which quote validation operates.
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    payload = payload.replace("=", r"\u003d").replace("<", r"\u003c").replace(">", r"\u003e")
+    return f"======以下为{label}======\n{payload}\n======以上为{label}======"
+
+
+def render_prompt_context(data: Mapping[str, Any]) -> str:
+    """Group existing prompt fields for display without changing their values."""
+
+    role, story, history, player = {}, {}, {}, {}
+    role_keys = {"role", "character_name", "acting_context", "player_address", "player_address_state"}
+    history_keys = {"story_so_far", "recent_context", "scene_context", "visible_player_history",
+                    "history_evidence", "committed_fact_evidence", "pending_transition"}
+    for key, value in data.items():
+        target = (role if key in role_keys else history if key in history_keys
+                  else player if key in {"player_input_revision", "player_input"} else story)
+        target[key] = value
+    # The same source object has stable identity and author staging. Keep its
+    # field paths intact, but show staging alongside the script, not personality.
+    acting = role.get("acting_context")
+    if isinstance(acting, Mapping):
+        entry_keys = {"current_scene_state", "character_state", "source_author_entry_situation",
+                      "source_author_entry_state", "target_character_state"}
+        role["acting_context"] = {key: value for key, value in acting.items() if key not in entry_keys}
+        entry = {key: value for key, value in acting.items() if key in entry_keys}
+        if entry:
+            story["acting_context"] = entry
+    context = story.get("story_context")
+    if isinstance(context, Mapping):
+        identity = {key: value for key, value in context.items() if key in {"player_identity", "knowledge_scope"}}
+        if identity:
+            role["story_context"] = identity
+            story["story_context"] = {key: value for key, value in context.items() if key not in identity}
+    return "\n\n".join(prompt_data_block(label, values) for label, values in (
+        ("角色设定", role), ("剧本资料", story), ("历史对话", history), ("玩家本轮输入", player),
+    ))
+
+
 # Interpret user confirmation using ordinary present-tense language; all three model types share the rule and must not require extra parentheses or perfective aspect.
 PLAYER_ACTION_LANGUAGE_RULE = (
     "玩家行动按日常表达理解，不要求括号动作或‘已经’字样。"
@@ -59,7 +101,7 @@ SCENE_ENTRY_STATE_RULE = (
     "状态描述不授权新增玩家行动；认知、能力、关系和明确阶段边界仍有效。"
     "temporal_context是作者入幕时序规划，anchor为时间原文，relation_to_previous仅说明相对安排，"
     "不是Runtime已推进日期的回执；当前时间须承接实际演出，未来约定或回忆不改变现在，同幕自然经过不自动算跨日。"
-    "关系上限不是已达关系；待发生的关系契机只在实际互动满足时产生有限回应，玩家拒绝或条件未成立时保留原有距离和分歧，表达仍服从你本人人设。"
+    "关系上限不是已达关系；待发生的关系契机只在实际互动满足时产生有限回应，玩家拒绝或条件未成立时保留原有距离和分歧，表达仍服从演出角色本人的人设。"
 )
 
 
@@ -290,6 +332,7 @@ def history_evidence(session: Any, query: str, *, focus: str = "", claims: str =
 
 def current_scene_history_index(
     session: Any, query: str = "", *, max_tokens: int = 900,
+    within_prompt: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Index complete current-visit originals; omission never becomes a completed fact.
 
@@ -361,7 +404,8 @@ def current_scene_history_index(
 
     def fits(value: Mapping[str, Any]) -> bool:
         # Provenance and omission metadata consume the same budget as original text.
-        return count_tokens(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) <= max_tokens
+        return (count_tokens(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) <= max_tokens
+                and (within_prompt is None or within_prompt(value)))
 
     if not fits(projection(selected)):
         return None
@@ -618,7 +662,7 @@ def project_contract_boundaries(
     if explicit_prohibitions and not fact_only:
         # Preserve prohibition provenance even when the raw text first appears in an earlier scene/opening field.
         for items, label in (
-            (forbidden_behaviors, "你禁止行为"),
+            (forbidden_behaviors, "演出角色禁止行为"),
             (must_not_happen, "禁止发生的剧情"),
         ):
             for item in items:

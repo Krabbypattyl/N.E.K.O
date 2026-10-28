@@ -11,11 +11,27 @@ from services.theater.numeric_v2_performance import (
     performance_content_blocks, transition_source_dialogue_policy, valid_mixed_performance_policy,
 )
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
 
 NPC_ANSWER = '管事答道：“文书已经核验，可以通过。”'
+
+# Exact Actor output from holdout10-max-off, turn 32: the model chose
+# target_opening but wrote no performance. Everything else is legal.
+REAL_HOLDOUT10_EMPTY_TARGET_OPENING = {
+    'source_scene_narration': '',
+    'performance': '',
+    'bridge_scene_narration': '',
+    'target_scene_narration': (
+        '楼道里的感应灯亮着暖黄的光，两人一前一后走进屋子。防盗门在身后咔哒一声合上，'
+        '把社区中庭残留的碗碟碰撞声彻底隔在了外头。客厅里还留着出门前的样子，茶几上放着两杯水，'
+        '厨房方向能看见冰箱门上贴着的便签纸。'
+    ),
+    'response_phase': 'target_opening',
+    'suggested_inputs': [],
+}
 
 
 def _candidate():
@@ -78,8 +94,8 @@ def test_natural_ending_can_close_with_source_response_and_target_narration(poli
     assert parsed['target_performance'] == ''
     assert parsed['target_scene_narration'] == candidate['target_scene_narration']
     candidate['source_performance'] = ''
-    with pytest.raises(NumericV2ActorOutputError):
-        _parse(candidate, natural_ending=True, target_dialogue_policy=policy)
+    parsed = _parse(candidate, natural_ending=True, target_dialogue_policy=policy)
+    assert parsed['source_performance'] == parsed['target_performance'] == ''
 
 
 def test_natural_ending_does_not_remove_required_target_speech():
@@ -116,7 +132,8 @@ def test_two_responses_still_work_for_ordinary_transition_but_not_single_ending(
 
 
 @pytest.mark.asyncio
-async def test_single_ending_response_commits_restores_and_forks(tmp_path):
+@pytest.mark.parametrize('phase', ['source_response', 'none'])
+async def test_single_ending_response_commits_restores_and_forks(tmp_path, phase):
     story = deepcopy(_engine().story)
     for node in story['nodes']:
         node['story_beat']['acting_contract'] = dict(
@@ -131,17 +148,110 @@ async def test_single_ending_response_commits_restores_and_forks(tmp_path):
     candidate = _candidate()
     candidate.pop('source_performance')
     candidate.pop('target_performance')
-    candidate.update(response_phase='source_response', performance='（轻轻点头）嗯，这样就好。')
+    candidate.update(response_phase=phase,
+        performance='（轻轻点头）嗯，这样就好。' if phase == 'source_response' else '')
     parsed = _parse(candidate, natural_ending=True, target_dialogue_policy='optional')
     performance = runtime.engine.finalize_transition_performance(outcome, parsed,
         target_opening='不能替换模型旁白。', source_dialogue_policy='optional', target_dialogue_policy='optional')
-    assert sum(bool(s.get('performance')) for s in performance['segments']) == 1
+    assert sum(bool(s.get('performance')) for s in performance['segments']) == (phase != 'none')
     assert NPC_ANSWER in str(performance_content_blocks(performance))
     committed = await runtime.commit_turn(outcome, performance)
     assert await runtime.restore_session('single-ending') == committed
     fork = await runtime.fork_session_for_test('single-ending', session_id='single-fork', through_revision=1)
     assert fork.session.performance_history[-1]['segments'] == performance['segments']
     assert await runtime.restore_session('single-fork') == fork
+
+
+def test_real_holdout10_empty_target_opening_is_no_response():
+    parsed = _parse(deepcopy(REAL_HOLDOUT10_EMPTY_TARGET_OPENING), bridge_required=False,
+                    natural_ending=True, target_dialogue_policy='optional')
+    assert parsed['source_performance'] == parsed['target_performance'] == ''
+    assert parsed['bridge_scene_narration'] == ''
+    assert parsed['target_scene_narration'] == REAL_HOLDOUT10_EMPTY_TARGET_OPENING['target_scene_narration']
+    assert 'source_scene_narration' not in parsed
+    assert 'response_phase' not in parsed
+    assert parsed['suggested_inputs'] == []
+
+
+@pytest.mark.parametrize('policy', ['optional', 'forbidden'])
+@pytest.mark.parametrize('phase', ['source_response', 'target_opening'])
+@pytest.mark.parametrize('body', ['', ' \n '])
+def test_response_mode_accepts_empty_as_no_response_in_either_position(policy, phase, body):
+    candidate = _candidate()
+    candidate.pop('source_performance')
+    candidate.pop('target_performance')
+    candidate.update(response_phase=phase, performance=body)
+    parsed = _parse(candidate, natural_ending=True, target_dialogue_policy=policy)
+    assert parsed['source_performance'] == parsed['target_performance'] == ''
+    assert parsed['source_scene_narration'] == NPC_ANSWER
+    assert parsed['bridge_scene_narration'] == candidate['bridge_scene_narration']
+    assert parsed['target_scene_narration'] == candidate['target_scene_narration']
+    assert 'response_phase' not in parsed
+
+
+@pytest.mark.parametrize('phase', ['other', '', None])
+def test_response_mode_still_rejects_unknown_marker(phase):
+    candidate = _candidate()
+    candidate.pop('source_performance')
+    candidate.pop('target_performance')
+    candidate.update(response_phase=phase, performance='')
+    with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_actor_response_phase_invalid'):
+        _parse(candidate, natural_ending=True, target_dialogue_policy='optional')
+
+
+@pytest.mark.parametrize('field', ['response_phase', 'performance', 'source_scene_narration',
+                                   'bridge_scene_narration', 'target_scene_narration', 'suggested_inputs'])
+def test_response_mode_still_requires_the_complete_field_set(field):
+    candidate = _candidate()
+    candidate.pop('source_performance')
+    candidate.pop('target_performance')
+    candidate.update(response_phase='target_opening', performance='')
+    candidate.pop(field)
+    with pytest.raises(NumericV2ActorOutputError):
+        _parse(candidate, natural_ending=True, target_dialogue_policy='optional')
+
+
+@pytest.mark.parametrize('value', [None, 0, [], {}])
+def test_response_mode_still_rejects_a_nonstring_performance(value):
+    candidate = _candidate()
+    candidate.pop('source_performance')
+    candidate.pop('target_performance')
+    candidate.update(response_phase='target_opening', performance=value)
+    with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_actor_response_phase_invalid'):
+        _parse(candidate, natural_ending=True, target_dialogue_policy='optional')
+
+
+def test_empty_response_marker_does_not_bypass_required_target_or_ordinary_transition():
+    candidate = _candidate()
+    candidate.pop('source_performance')
+    candidate.pop('target_performance')
+    candidate.update(response_phase='target_opening', performance='')
+    with pytest.raises(NumericV2ActorOutputError):
+        _parse(candidate, natural_ending=True, target_dialogue_policy='required')
+    with pytest.raises(NumericV2ActorOutputError):
+        _parse(candidate, natural_ending=False, target_dialogue_policy='optional')
+    with pytest.raises(NumericV2ActorOutputError):
+        _parse(candidate, natural_ending=True, target_dialogue_policy='invalid')
+
+
+@pytest.mark.parametrize('body', ['再见。', '（在黑暗中摸索她的身体，检查生命体征）',
+                                '(瞳孔中的数据流骤然熄灭，身体无力地瘫软在维修台上)'])
+def test_none_rejects_a_nonempty_response_instead_of_silently_discarding_it(body):
+    candidate = _candidate()
+    candidate.pop('source_performance')
+    candidate.pop('target_performance')
+    candidate.update(response_phase='none', performance=body)
+    with pytest.raises(NumericV2ActorOutputError, match='response_phase_invalid'):
+        _parse(candidate, natural_ending=True, target_dialogue_policy='optional')
+
+
+def test_single_ending_format_retry_corrects_phase_without_requesting_new_acting():
+    from services.theater.numeric_v2_workflow import _output_retry_hint
+
+    hint = _output_retry_hint(last_error_code='numeric_v2_actor_response_phase_invalid',
+        retry_number=1, route_changed=True)
+    assert 'none' in hint
+    assert '全新的简短来源回应' not in hint
 
 
 def test_required_direct_source_and_nonempty_forbidden_source_stay_strict():
@@ -182,7 +292,7 @@ def test_ending_prompt_keeps_source_optional_without_skipping_pending_interactio
     outcome = engine.resolve_turn(session, TurnRequestV2('finish', 0, message), (),
         scene_complete=True, natural_ending_ready=True)
     messages = _turn_messages(engine, session, outcome, message, '平静克制。', '小葵', '老谢')
-    payload = json.loads(messages[1].content.split('\n', 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert outcome.session.status == 'ended'
     assert payload['player_input'] == message
     assert payload['acting_context']['dialogue_policy'] == 'optional'

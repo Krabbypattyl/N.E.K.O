@@ -32,7 +32,7 @@ def inputs(request):
 
 
 def tokens(data):
-    return actor.count_tokens('system') + actor.count_tokens('context:' + json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+    return actor.count_tokens('system') + actor.count_tokens('context:' + actor.render_prompt_context(data))
 
 
 def minimum(data):

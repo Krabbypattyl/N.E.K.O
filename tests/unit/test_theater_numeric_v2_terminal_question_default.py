@@ -176,16 +176,17 @@ async def test_all_auxiliary_modules_off_keeps_zero_call_conservative_terminal_g
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", [GREETING, CHOICE])
-async def test_paused_model_reviews_do_not_reject_endings_by_punctuation(tmp_path, monkeypatch, text):
-    # Speed-first delivery deliberately accepts the risk of an unanswered
-    # question rather than misclassifying greetings or adding another draft.
+async def test_paused_full_reviews_still_distinguish_terminal_questions_from_greetings(tmp_path, monkeypatch, text):
+    # Only terminal interaction semantics are checked; ordinary/full review
+    # remains paused, and greetings are never rejected just for punctuation.
     from services.theater import numeric_v2_options
 
     monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
-    runtime, current, calls, diagnostics, execute = await _setup(tmp_path, monkeypatch, drafts=(text,))
+    runtime, current, calls, diagnostics, execute = await _setup(tmp_path, monkeypatch, drafts=(text, CLOSING))
     result = await execute()
-    assert calls["actor"] == 1 and calls["terminal"] == [] and calls["full"] == 0
-    assert diagnostics["terminal_question_review_calls"] == 0
+    assert calls["actor"] == (2 if text == CHOICE else 1)
+    assert len(calls["terminal"]) == 1 and calls["full"] == 0
+    assert diagnostics["terminal_question_review_calls"] == 1
     assert result.stored.session.status == "ended"
     assert result.stored.session.metrics == current.session.metrics
     assert result.performance["suggested_inputs"] == []

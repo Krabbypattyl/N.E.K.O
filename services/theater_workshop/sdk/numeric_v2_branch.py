@@ -612,6 +612,7 @@ class NumericV2BranchService:
                 story.setdefault("fact_contract", {}).setdefault("facts", {})[key] = {
                     "value_type": fact["value_type"], "visibility": fact["visibility"],
                     "description": fact["description"].strip(),
+                    **({"evidence_source": "performance"} if "evidence_source" in fact else {}),
                 }
                 completion_by_id[fact["id"]] = {"key": key, "equals": fact["target_value"]}
             # Like mainline chapters, only author-selected results govern completion
@@ -1841,6 +1842,9 @@ class NumericV2BranchService:
             if not isinstance(raw, Mapping):
                 raise NumericV2BranchError("invalid_branch_generation")
             transition = deepcopy(dict(raw))
+            if "fixed_entry_only" in transition and not isinstance(transition["fixed_entry_only"], bool):
+                raise NumericV2BranchError("invalid_branch_generation",
+                    {"path": f"transitions[{index}].fixed_entry_only"})
             expected_from = "source" if index == 0 else f"scene:{index - 1}"
             expected_to = "endpoint" if index == plan["length"] else f"scene:{index}"
             if transition.get("from") != expected_from or transition.get("to") != expected_to:
@@ -1978,8 +1982,10 @@ class NumericV2BranchService:
             for fact_index, fact in enumerate(facts):
                 fact_path = f"{path}[{fact_index}]"
                 fields = {"id", "description", "value_type", "target_value", "visibility"}
-                if not isinstance(fact, Mapping) or set(fact) not in (fields, fields | {"fixed_narration_id"}):
+                if not isinstance(fact, Mapping) or set(fact) not in (fields, fields | {"fixed_narration_id"}, fields | {"evidence_source"}):
                     reject(fact_path)
+                if "evidence_source" in fact and fact["evidence_source"] != "performance":
+                    reject(f"{fact_path}.evidence_source")
                 fact_id = fact["id"]
                 if (not isinstance(fact_id, str)
                         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", fact_id)
@@ -2233,6 +2239,8 @@ class NumericV2BranchService:
             contract["trigger_fact_ids"] = list(dict.fromkeys(
                 str(item).strip() for item in trigger_fact_ids if str(item).strip()
             ))
+        if "fixed_entry_only" in transition:
+            contract["fixed_entry_only"] = transition["fixed_entry_only"]
         # Invitations at ordinary-act exits are handled by the author-side contract and must not be assembled ad hoc by Runtime; routes whose endpoint is an ending
         # omit these two fields and continue to follow the contract that entering an ending concludes the story.
         if fallback_offer:

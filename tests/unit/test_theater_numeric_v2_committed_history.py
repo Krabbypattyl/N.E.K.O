@@ -8,6 +8,7 @@ import pytest
 
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_runtime import TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_prompt_contract import _session, _story_state_at
 
@@ -19,7 +20,7 @@ def _fit(data, **kwargs):
 
 def _tokens(data):
     return actor.count_tokens("规则") + actor.count_tokens(
-        "原文：\n" + json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+        "原文：\n" + actor.render_prompt_context(data))
 
 
 def test_formal_request_does_not_present_previous_entry_as_target_output():
@@ -45,11 +46,11 @@ def test_formal_request_does_not_present_previous_entry_as_target_output():
                                   scene_complete=True, natural_ending_ready=True)
     assert outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]
     messages = actor._turn_messages(engine, session, outcome, message, "温和", "猫娘", "哥哥")
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     entry = data["recent_context"][0]
     assert set(entry) == {"revision", "player_input", "committed_text"}
     assert entry["revision"] == 8 and entry["player_input"] == ""
-    assert entry["committed_text"] == f"场景：周末的下午，店里没什么人。\n场景：{narration}\n你：{spoken}"
+    assert entry["committed_text"] == f"场景／NPC | 周末的下午，店里没什么人。\n场景／NPC | {narration}\n角色（你） | {spoken}"
     assert data["recent_context"][1]["player_input"] == "我会先查清生活成本，再比较学校。"
     assert data["player_input"] == message
     assert "上幕收尾" not in entry["committed_text"]
@@ -70,9 +71,9 @@ def test_render_keeps_npc_fixed_text_actions_and_player_input_once_in_order():
     original = deepcopy(data)
     result = _fit(data)
     assert result["recent_context"] == [{"revision": 4, "player_input": player,
-        "committed_text": "场景：管事回答：“许可还没下来。”\n场景：两人仍站在门外。\n场景：箱子没有打开。\n"
-        "已展示的作者原文：告示原文：\n  未经许可，不得开启。  \n"
-        "你：（收回伸向锁扣的手）那就等许可。\n已展示的作者原文：旧信：‘昨天门开过。’"}]
+        "committed_text": "场景／NPC | 管事回答：“许可还没下来。”\n场景／NPC | 两人仍站在门外。\n场景／NPC | 箱子没有打开。\n"
+        "已展示的作者原文 | 告示原文：\n  未经许可，不得开启。  \n"
+        "角色（你） | （收回伸向锁扣的手）那就等许可。\n已展示的作者原文 | 旧信：‘昨天门开过。’"}]
     assert json.dumps(result, ensure_ascii=False).count(player) == 1
     assert data == original
 
@@ -91,7 +92,7 @@ def test_raw_history_dedup_runs_before_render_and_restores_evicted_evidence(trim
     ]
     data = {"recent_context": history, "history_evidence": evidence}
     original = deepcopy(data)
-    trimmed = {"recent_context": [{"revision": 2, "player_input": "暂时不动。", "committed_text": "你：我也不碰锁扣。"}],
+    trimmed = {"recent_context": [{"revision": 2, "player_input": "暂时不动。", "committed_text": "角色（你） | 我也不碰锁扣。"}],
                "history_evidence": evidence}
     diagnostics = {}
     result = _fit(data, max_tokens=_tokens(trimmed) if trim else 10000, diagnostics=diagnostics)
@@ -104,7 +105,7 @@ def test_raw_history_dedup_runs_before_render_and_restores_evicted_evidence(trim
 
 def test_budget_counts_rendered_representation_and_preserves_latest_complete_turn():
     data = {"recent_context": [{"revision": 1, "performance": "好。"}]}
-    rendered = {"recent_context": [{"revision": 1, "player_input": "", "committed_text": "你：好。"}]}
+    rendered = {"recent_context": [{"revision": 1, "player_input": "", "committed_text": "角色（你） | 好。"}]}
     assert _tokens(rendered) > _tokens(data)
     exact = _tokens(rendered)
     diagnostics = {}
@@ -128,12 +129,12 @@ def test_other_phases_do_not_use_formal_history_packer(monkeypatch, phase):
     engine = _engine()
     if phase == "opening":
         messages = actor._opening_messages(engine, "温和", "猫娘", "哥哥")
-        data = json.loads(messages[1].content)
+        data = prompt_payload(messages[1].content)
         assert "current_story_beat" in data
     else:
         session = _session(engine)
         outcome = engine.resolve_turn(session, TurnRequestV2("ordinary", 0, "先看看。"), ())
         messages = actor._turn_messages(engine, session, outcome, "先看看。", "温和", "猫娘", "哥哥")
-        data = json.loads(messages[1].content.split("\n", 1)[1])
-        assert list(data) == ["role", "current_scene", "story_so_far", "pacing", "next_scene", "player_input"]
+        data = prompt_payload(messages[1].content)
+        assert list(data) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
     assert "committed_text" not in json.dumps(data, ensure_ascii=False)

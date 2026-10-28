@@ -7,6 +7,7 @@ import pytest
 
 from services.theater import numeric_v2_actor as actor, numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -81,7 +82,7 @@ async def test_committed_old_question_keeps_reply_across_consumers_restore_and_f
         stored_before = deepcopy(stored)
         messages = _messages(runtime, stored, consumer)
         text = messages[1].content
-        data = json.loads(text[text.index("{"):])
+        data = prompt_payload(text)
         if consumer == "actor":
             marker = "history_evidence（已提交原文）："
             assert marker in data["story_so_far"]

@@ -710,12 +710,19 @@ def test_model_requires_explicit_positive_input_budget_before_opening_client(mon
 @pytest.mark.parametrize("model_name,compatible,operation,focused", [
     ("qwen3.8-flash", True, "numeric_v2_fact_review", True),
     ("qwen3.8-flash", True, "numeric_v2_fact_evidence_review", True),
+    ("qwen3.8-flash", True, "numeric_v2_story_frame", True),
+    ("qwen3.8-flash", True, "numeric_v2_chapter_generation", True),
+    ("qwen3.8-flash", True, "numeric_v2_ending_generation", True),
+    ("qwen3.8-flash", True, "numeric_v2_opening_state_extraction", False),
+    ("qwen3.8-flash", False, "numeric_v2_story_frame", False),
+    ("qwen3.8-max", True, "numeric_v2_story_frame", False),
     ("qwen3.8-flash", True, "numeric_v2_fact_evidence_review_format_repair", False),
     ("qwen3.8-flash", True, "numeric_v2_mainline_generation", False),
     ("qwen3.8-flash", False, "numeric_v2_fact_review", False),
     ("qwen3.8-max", True, "numeric_v2_fact_review", False),
 ])
-def test_workshop_flash_quality_mode_is_scoped_without_extra_retries(monkeypatch, model_name, compatible, operation, focused):
+@pytest.mark.parametrize("output_tokens", [3000, 5000, 6000])
+def test_workshop_flash_quality_mode_is_scoped_without_extra_retries(monkeypatch, model_name, compatible, operation, focused, output_tokens):
     from types import SimpleNamespace
     from utils import llm_client
     from utils.tokenize import count_tokens
@@ -729,14 +736,16 @@ def test_workshop_flash_quality_mode_is_scoped_without_extra_retries(monkeypatch
             return SimpleNamespace(content="{}", response_metadata={})
         def close(self): pass
     def create(**options):
-        assert options["max_retries"] == 0 and options["max_completion_tokens"] == 6000
-        assert options.get("extra_body") == ({"enable_thinking": True, "thinking_budget": 2048} if focused else None)
+        assert options["max_retries"] == 0 and options["max_completion_tokens"] == output_tokens
+        budget = (min(2048, output_tokens // 2) if operation in {
+            "numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation"} else 2048)
+        assert options.get("extra_body") == ({"enable_thinking": True, "thinking_budget": budget} if focused else None)
         return Client()
     monkeypatch.setattr(llm_client, "create_chat_llm", create)
     model = NekoWorkshopModel({"model": model_name,
         "max_input_tokens": count_tokens(json.dumps(messages, ensure_ascii=False)),
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1" if compatible else "https://example.invalid/v1"})
-    reply = model(messages, max_tokens=6000, max_retries=1, response_format={"type": "json_object"},
+    reply = model(messages, max_tokens=output_tokens, max_retries=1, response_format={"type": "json_object"},
                   thinking=None, operation=operation)
     assert reply.content == "{}"
     assert calls == [None if focused else {"type": "json_object"}]

@@ -13,7 +13,7 @@ from typing import Any, Mapping
 from utils.tokenize import truncate_to_tokens
 
 from .numeric_v2_context import pending_transition_record
-from .numeric_v2_fixed_narration import add_entry, displayed_ids, required_pending, validate_delivery
+from .numeric_v2_fixed_narration import add_entry, displayed_ids, has_pending_entry, required_pending, validate_delivery
 
 from .numeric_v2 import (
     CompiledNumericV2Package,
@@ -148,7 +148,8 @@ def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
             not isinstance(key, str)
             or not isinstance(definition, Mapping)
             or not {"value_type", "visibility"}.issubset(definition)
-            or set(definition).difference({"value_type", "visibility", "description"})
+            or set(definition).difference({"value_type", "visibility", "description", "evidence_source"})
+            or ("evidence_source" in definition and definition["evidence_source"] != "performance")
             or definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES
             or definition.get("visibility") not in _FACT_CONTRACT_VISIBILITIES
             or (
@@ -163,6 +164,7 @@ def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
         result[key] = {
             "value_type": str(definition["value_type"]),
             "visibility": str(definition["visibility"]),
+            **({"evidence_source": "performance"} if "evidence_source" in definition else {}),
             **(
                 {"description": str(definition["description"])}
                 if "description" in definition
@@ -249,6 +251,11 @@ def validate_fact_candidates(
                 raise NumericV2RuntimeError("story_fact_candidate_evidence_unverifiable")
             if _UNCONFIRMED_FACT_EVIDENCE_RE.search(quote):
                 raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
+            # Player instructions can authorize a character's action, but cannot
+            # prove its performed result. Authors opt in per fact; old packages
+            # retain their original source permissions and archive semantics.
+            if definition.get("evidence_source") == "performance" and source != "actor_performance":
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_source_not_allowed")
             description = str(definition.get("description") or "")
             if (
                 _COMPLETED_LOCATION_FACT_RE.search(description)
@@ -1556,6 +1563,7 @@ class NumericV2Engine:
         result = deepcopy(dict(performance))
         segments = result.get("segments")
         authored_bridge = str(bridge_scene_narration or "").strip()
+        entry_narration = has_pending_entry(self.nodes[target_node_id], outcome.session)
         if {
             "source_performance",
             "target_performance",
@@ -1568,7 +1576,8 @@ class NumericV2Engine:
                     {"scene_narration": result.get("bridge_scene_narration")},
                     allow_empty=not bridge_required,
                 )
-                or not valid_scene_narration({"scene_narration": result.get("target_scene_narration")})
+                or not valid_scene_narration(
+                    {"scene_narration": result.get("target_scene_narration")}, allow_empty=entry_narration)
             ):
                 raise NumericV2RuntimeError("numeric_transition_performance_invalid")
             authored_bridge = result.pop("bridge_scene_narration")
@@ -1603,7 +1612,7 @@ class NumericV2Engine:
                 "scene_narration": authored_bridge,
             }
         if (
-            not valid_scene_narration({"scene_narration": target_opening})
+            not valid_scene_narration({"scene_narration": target_opening}, allow_empty=entry_narration)
             or not isinstance(segments, list)
             or len(segments) != 3
             or not all(isinstance(item, Mapping) for item in segments)
@@ -1620,9 +1629,8 @@ class NumericV2Engine:
             or not valid_scene_narration(segments[1], allow_empty=not bridge_required)
             or not valid_mixed_performance_policy(
                 segments[2], target_dialogue_policy,
-                allow_empty=outcome.session.status == "ended"
-                    and outcome.ledger_event.get("natural_ending_ready") is True
-                    and bool(segments[0]["performance"].strip()),
+                allow_empty=entry_narration or (outcome.session.status == "ended"
+                    and outcome.ledger_event.get("natural_ending_ready") is True),
             )
         ):
             raise NumericV2RuntimeError("numeric_transition_performance_invalid")
@@ -2037,12 +2045,14 @@ class NumericV2Runtime:
                             allow_empty=True,
                         )
                         or not valid_scene_narration(segments[1], allow_empty=True)
-                        or not valid_scene_narration(segments[2])
+                        or not valid_scene_narration(segments[2], allow_empty=any(
+                            piece["position"] == "before" for piece in segments[2].get("fixed_narrations", ())))
                         or not valid_mixed_performance_policy(
                             segments[2], outcome.session.dialogue_policy,
-                            allow_empty=outcome.session.status == "ended"
-                                and outcome.ledger_event.get("natural_ending_ready") is True
-                                and bool(segments[0]["performance"].strip()),
+                            allow_empty=any(piece["position"] == "before"
+                                for piece in segments[2].get("fixed_narrations", ()))
+                                or (outcome.session.status == "ended"
+                                    and outcome.ledger_event.get("natural_ending_ready") is True),
                         )
                     )
                 )

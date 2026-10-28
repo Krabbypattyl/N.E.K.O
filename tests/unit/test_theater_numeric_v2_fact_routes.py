@@ -7,6 +7,7 @@ import pytest
 
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, NumericV2RuntimeError, TurnRequestV2
 from services.theater.numeric_v2_store import NumericV2StoreError
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening, _transition_performance
 
@@ -146,7 +147,7 @@ def test_actor_preview_uses_choice_from_prepared_outcome():
     session = engine.create_session(session_id="preview", catgirl_binding=_binding(), opening_performance=_opening())
     outcome = engine.resolve_turn(session, TurnRequestV2("choose", 0, "我选山径。"), (), fact_operations=choice("山径"))
     messages = _turn_messages(engine, session, outcome, "我选山径。", "简洁", "Lan", "哥哥")
-    data = json.loads(messages[-1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[-1].content)
     assert "runtime_unresolved" not in data["next_scene"]
     assert engine.nodes["ending_leave"]["chapter"] in data["next_scene"]
 

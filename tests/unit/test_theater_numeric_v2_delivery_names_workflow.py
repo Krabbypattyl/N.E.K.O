@@ -153,7 +153,7 @@ async def _run_case(
     if disclose and not known:
         # The first request was built before committing the disclosed nickname;
         # the fixed original below can nevertheless use the native outcome.
-        assert "你的登记册" in requests[0][1].content
+        assert "玩家的登记册" in requests[0][1].content
         assert "哥哥的登记册" not in requests[0][1].content
     assert candidate == original_candidate
     assert (engine.story, current, turn, binding) == original

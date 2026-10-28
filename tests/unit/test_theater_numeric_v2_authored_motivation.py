@@ -17,6 +17,7 @@ from services.theater.numeric_v2 import NumericV2Compiler
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup
 from tests.unit.theater_workshop.test_numeric_v2_generation import _idea_outline
@@ -57,7 +58,7 @@ def _case(*, scope="full", restricted=None):
 
 def _data(messages):
     content = messages[1].content
-    return json.loads(content[content.index("{"):])
+    return prompt_payload(content)
 
 
 def _projected(engine, text):

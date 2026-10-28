@@ -69,8 +69,8 @@ def test_player_fact_rule_reaches_all_suggestion_generation_paths():
             performance={'performance': '需要登记姓名和擅长的手工类型。'}, max_tokens=1800),
     ]
     for prompt in messages:
-        assert '不得编造玩家姓名、联系方式、职业、技能或既往经历' in prompt[0].content
-        assert '不能用假名、示例号码或占位符填空' in prompt[0].content
+        assert '不编造玩家姓名、联系方式、职业、技能、经历、既有关系与行程' in prompt[0].content
+        assert '未知资料留给玩家输入，不填假名、示例或占位符' in prompt[0].content
     for outcome in (None, transition):
         review = _build_transition_judge_messages(engine, session, player_input=message,
             actor_performance={'performance': '请问需要登记哪些信息？', 'suggested_inputs': ['（填写）我叫林风，擅长竹编。']},

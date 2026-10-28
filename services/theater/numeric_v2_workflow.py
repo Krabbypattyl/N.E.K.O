@@ -599,10 +599,20 @@ def _output_retry_hint(
 ) -> str:
     """Give each body retry a distinct rewriting angle to avoid repeating the same sampling path."""
 
+    if last_error_code == "numeric_v2_actor_response_phase_invalid":
+        return "表演非空选对应相位；none则表演为空。"
+
     if repetition_guard == "player_input":
         return (
-            "上一稿把玩家本轮台词原样写成了你回复或旁白。玩家的话不是你的台词。"
+            "上一稿把玩家本轮台词原样写成了你的回复或旁白。玩家的话不是你的台词。"
             "直接回答其问题或承接其选择，只演你自己的反应；不复制玩家发言，不新增事实或行动。"
+        )
+
+    if repetition_guard == "fixed_narration":
+        return (
+            "上一稿长段复演了程序即将展示的入幕固定原文。固定原文仍会原样交付，不能抄进任何模型正文。"
+            "目标场景旁白只建立原文之前的地点和氛围，角色从原文结束后的状态给出新的简短反应；"
+            "不要只换开头一句或将事件换词重演，不新增事实或玩家行动。其他转场段及授权边界保持。"
         )
 
     if route_changed:
@@ -611,6 +621,8 @@ def _output_retry_hint(
                 "transition_target": "target_performance",
                 "transition_source": "source_performance",
                 "earlier_session": "source_performance",
+                "transition_target_narration": "target_scene_narration（复制了其它幕的整段开场）",
+                "transition_bridge_narration": "bridge_scene_narration（复制了另一条转场的整段桥段）",
             }.get(repetition_guard, "本轮正文")
             return (
                 f"这是正式换场重试。重复位置：{repeated_field}。只改写命中的重复正文，"
@@ -1824,6 +1836,8 @@ async def _execute_numeric_v2_turn(
         finally:
             _add_elapsed_ms(diagnostics, "runtime_prepare_work", started_at)
 
+    actor_publishes_transition_offer = False
+
     async def generate_actor_turn(
         outcome: TurnOutcomeV2,
         *,
@@ -1834,7 +1848,7 @@ async def _execute_numeric_v2_turn(
     ) -> dict[str, Any]:
         """Generate Actor narrative through official path, guiding pacing only by soft hints within same call."""  # noqa: DOCSTRING_CJK
 
-        nonlocal final_fixed_review
+        nonlocal final_fixed_review, actor_publishes_transition_offer
         final_fixed_review = None
         started_at = time.monotonic()
         try:
@@ -1889,6 +1903,7 @@ async def _execute_numeric_v2_turn(
                 trace_event("actor.wait_budget_exhausted")
                 raise NumericV2ActorError("numeric_v2_actor_timeout") from exc
             generated.pop("narrative_events", None)
+            actor_publishes_transition_offer = generated.pop("_transition_offer_provided", False) is True
             return generated
         finally:
             # Actor retries only on format, repetition, or explicit boundaries; record cumulative call latency and actual supplier request count.
@@ -2385,11 +2400,24 @@ async def _execute_numeric_v2_turn(
         combined_performance = await generate_actor_turn(provisional, combined_evaluation=True)
         proposed = combined_performance.pop("_turn_evaluation")
         visible_history = combined_performance.pop("_turn_visible_history", [])
+        # The combined response has two fact buckets. Route a misplaced quote
+        # from this player's input through the existing Evaluator validator;
+        # never pretend it was spoken/performed by the Actor or grant a move.
+        proposed_candidates = list(proposed.get("fact_candidates", []))
+        actor_candidates = []
+        for candidate in combined_performance.get("fact_candidates", []):
+            quote = candidate.get("evidence_quote")
+            if isinstance(quote, str) and quote.strip() and quote in turn.message:
+                if candidate not in proposed_candidates:
+                    proposed_candidates.append(candidate)
+            else:
+                actor_candidates.append(candidate)
+        combined_performance["fact_candidates"] = actor_candidates
         # Reuse the original Evaluator's current-visit evidence permissions. Quotes
         # must also occur in this Actor request's retained history, never author plans.
         _, committed_evidence = _committed_completion_evidence(runtime.engine, current.session)
         candidates = []
-        for candidate in proposed.get("fact_candidates", []):
+        for candidate in proposed_candidates:
             try:
                 normalized, = _normalize_actor_fact_candidates(
                     [candidate], fact_contract=runtime.engine.fact_contract,
@@ -2400,6 +2428,13 @@ async def _execute_numeric_v2_turn(
             if evidence["quote"] in turn.message:
                 evidence["source"] = "player_input"
             elif not any(evidence["quote"] in text for text in visible_history):
+                # A new performance quote may be misplaced in turn_evaluation.
+                # Keep it out of historical evidence and use the existing Actor
+                # fact validation after generation; it cannot authorize this turn's move.
+                if any(evidence["quote"] in block["text"]
+                       for block in performance_content_blocks(combined_performance)):
+                    if candidate not in actor_candidates:
+                        actor_candidates.append(candidate)
                 continue
             candidates.append(normalized)
         proposed["fact_candidates"] = candidates
@@ -2458,7 +2493,8 @@ async def _execute_numeric_v2_turn(
         and acceptance_origin.get("revision") == current.session.revision
         and turn.message.strip() in (acceptance_origin.get("suggested_inputs") or [])
     )
-    if ((not module_options.get("review") and not fresh_reviewed_offer) or diagnostics["evaluator_degraded"]
+    if ((numeric_v2_options.MODEL_REVIEWS_ENABLED and not module_options.get("review") and not fresh_reviewed_offer)
+            or diagnostics["evaluator_degraded"]
             or silent_acceptance_required
             or _pending_silent_receipt(current, include_withdrawn=True) is not None):
         if evaluation.transition_intent == "accept" and not confirmed_acceptance_route_id:
@@ -2512,10 +2548,8 @@ async def _execute_numeric_v2_turn(
             raise NumericV2EvaluatorError("numeric_v2_contract_check_timeout") from exc
 
     async def review_terminal_question_markers(candidate: Mapping[str, Any]) -> tuple[str, ...]:
-        # Without semantic review a question mark proves no pending task: even
-        # recognition greetings and rhetorical endings used to trigger retries.
-        if not numeric_v2_options.MODEL_REVIEWS_ENABLED:
-            return ()
+        # This terminal-only interaction check stays active independently of
+        # full body review; punctuation alone still cannot reject a greeting.
         markers = _terminal_new_question_markers(
             engine=runtime.engine, outcome=outcome, performance=candidate)
         if not markers or not (
@@ -2637,11 +2671,23 @@ async def _execute_numeric_v2_turn(
             diagnostics["transition_bridge_leak_markers"] = list(leak_markers)
             trace_event("transition.bridge_target_leak", markers=list(leak_markers))
             diagnostics["semantic_rewrite_attempts"] += 1
+            parts = {part["phase"]: part for part in performance["segments"]}
+            repair_material = {
+                "draft": {
+                    "source_scene_narration": str(parts["source_response"].get("scene_narration") or ""),
+                    "source_performance": str(parts["source_response"].get("performance") or ""),
+                    "bridge_scene_narration": str(parts["transition_bridge"].get("scene_narration") or ""),
+                    "target_scene_narration": str(parts["target_opening"].get("scene_narration") or ""),
+                    "target_performance": str(parts["target_opening"].get("performance") or ""),
+                    "suggested_inputs": deepcopy(performance.get("suggested_inputs") or []),
+                },
+                "issues": [{"field": "bridge_scene_narration", "quote": marker} for marker in leak_markers],
+            }
             performance = await generate_actor_turn(outcome, retry_hint=(
                 "过渡桥段提前包含了目标幕开场独有内容：" + "、".join(leak_markers)
                 + "。修正bridge_scene_narration中命中的内容，保留合法来源回应和作者允许的过渡时空；"
                 "target_scene_narration单独交付目标开场，不把它挪进桥段或重演其独有事实。"
-                + _actor_rewrite_candidate_context(performance)))
+            ), draft_repair_context=repair_material)
             remaining_leaks = transition_bridge_leaks(performance)
             diagnostics["transition_bridge_leak_markers_after_rewrite"] = list(remaining_leaks)
             if remaining_leaks:
@@ -3220,7 +3266,7 @@ async def _execute_numeric_v2_turn(
                     "承接玩家已做的合法动作、实际持物与所在位置，保留明确拒绝和条件；"
                     "你可直接回答、作自身反应或说明未知，本轮不必完成剧情。"
                     "scene_update只写确有前因的新变化，没有就省略；不能重做已结束事件。"
-                    "此修稿先交付本轮合法回应，暂不提出跨幕邀请，transition_offered填false，推荐不包含接受换幕。"
+                    "此修稿先交付本轮合法回应，暂不提出跨幕邀请，transition_offer填空字符串，推荐不包含接受换幕。"
                     "出口条件成立后可在后续回合正常邀请；不替玩家接受，推荐也不能依赖虚构结果。"
                     "fact_candidates仅报告本稿实际演出的合法新结果，没有就填空数组，不能靠删候选掩盖错误正文。"
                 ))
@@ -3290,7 +3336,11 @@ async def _execute_numeric_v2_turn(
     # Modules-off/degraded compatibility may retain author text; normal invitations use the generated reviewed draft.
     # No further Actor calls; actual act change still requires explicit player acceptance next turn.
     conservative_invitation = (
-        not module_options.get("review") or not module_options.get("evaluator")
+        # Pausing model audits must not discard Actor's visible offer or require
+        # a review receipt that this mode can never issue. Evaluator still checks
+        # the next input; Runtime retains route, fact and acceptance boundaries.
+        (numeric_v2_options.MODEL_REVIEWS_ENABLED and not module_options.get("review"))
+        or not module_options.get("evaluator")
         or diagnostics["evaluator_degraded"] or diagnostics["semantic_review_fallback"]
         or _pending_silent_receipt(current, include_withdrawn=True) is not None
     )
@@ -3308,12 +3358,24 @@ async def _execute_numeric_v2_turn(
     async def apply_completion_fallback_offer(completion_session: ScriptSessionV2) -> None:
         nonlocal performance, program_invitation_performance, reviewed_transition_offered, final_fixed_review
 
-        if not module_options.get("review") and module_options.get("evaluator") and not diagnostics["evaluator_degraded"]:
+        # The new wire explicitly publishes an invitation or chooses none.
+        # Do not override either decision with a second authored arrangement.
+        if actor_publishes_transition_offer:
             return
-
-        completion_ready = (
-            runtime.engine.completion_contract_satisfied(completion_session) is True
+        completion_status = runtime.engine.completion_contract_satisfied(completion_session)
+        completion_ready = completion_status is True or (
+            completion_status is None
+            and not numeric_v2_options.MODEL_REVIEWS_ENABLED
+            and not diagnostics["evaluator_degraded"]
+            and evaluation.scene_complete is True
+            and performance.get("transition_offered") is not True
         )
+        # With audits paused, settled author facts can provide the existing
+        # concrete invitation even if Actor omits or mislabels it. The guards
+        # below still preserve refusal, departure and actual player acceptance.
+        if (not module_options.get("review") and module_options.get("evaluator")
+                and not diagnostics["evaluator_degraded"] and numeric_v2_options.MODEL_REVIEWS_ENABLED):
+            return
         fallback_route = (
             runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics,
                                          facts=outcome.session.story_state["facts"])

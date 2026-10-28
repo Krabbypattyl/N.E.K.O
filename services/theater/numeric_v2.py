@@ -759,8 +759,10 @@ class NumericV2Compiler:
             if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):
                 c.add("invalid_fact_contract_key", path, "事实键必须是安全且稳定的 ID。")
             definition = c.obj(raw, path)
-            if set(definition).difference({"value_type", "visibility", "description"}):
-                c.add("unexpected_fact_contract_definition_field", path, "事实定义只允许 value_type、visibility 和 description。")
+            if set(definition).difference({"value_type", "visibility", "description", "evidence_source"}):
+                c.add("unexpected_fact_contract_definition_field", path, "事实定义只允许 value_type、visibility、description 和可选 evidence_source。")
+            if "evidence_source" in definition and definition["evidence_source"] != "performance":
+                c.add("invalid_fact_contract_evidence_source", f"{path}.evidence_source", "限定来源时只允许 performance。")
             if definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES:
                 c.add(
                     "invalid_fact_contract_value_type",
@@ -1503,6 +1505,9 @@ class NumericV2Compiler:
         if "accept_input_confirmation_only" in contract and not isinstance(contract["accept_input_confirmation_only"], bool):
             c.add("transition_confirmation_only_invalid", f"{path}.accept_input_confirmation_only",
                   "纯确认声明必须是布尔值。")
+        if "fixed_entry_only" in contract and not isinstance(contract["fixed_entry_only"], bool):
+            c.add("transition_fixed_entry_only_invalid", f"{path}.fixed_entry_only",
+                  "原文独立入幕声明必须是布尔值。")
         if "fallback_offer" in contract:
             fallback_offer = c.require_text(
                 contract.get("fallback_offer"),
@@ -1646,6 +1651,22 @@ class NumericV2Compiler:
                 contract = raw_route.get("transition_contract")
                 contract = contract if isinstance(contract, Mapping) else {}
                 terminal_target = target.get("type") == "ending" or target.get("terminal") is True
+                if contract.get("fixed_entry_only") is True:
+                    target_beat = target.get("story_beat") or {}
+                    target_beat = target_beat if isinstance(target_beat, Mapping) else {}
+                    target_acting = target_beat.get("acting_contract") or {}
+                    target_acting = target_acting if isinstance(target_acting, Mapping) else {}
+                    pieces = target_beat.get("fixed_narrations") or []
+                    has_entry = any(
+                        isinstance(piece, Mapping)
+                        and isinstance(piece.get("trigger"), Mapping)
+                        and piece["trigger"].get("type") == "entry"
+                        for piece in pieces if isinstance(pieces, list)
+                    )
+                    if target_acting.get("dialogue_policy") not in {"optional", "forbidden"} or not has_entry:
+                        c.add("transition_fixed_entry_only_invalid",
+                              f"nodes.{source_id}.route_gates[{route_index}].transition_contract.fixed_entry_only",
+                              "原文独立入幕需要目标幕有 entry 原文，且其发声策略为 optional 或 forbidden。")
                 if contract.get("accept_input_confirmation_only") is True:
                     completion = node.get("completion_contract")
                     if (

@@ -82,7 +82,7 @@ async def test_repeated_input_is_removed_before_deciding_to_fill(monkeypatch, re
         allow_fill=fill_enabled,
         performance={'performance': '（点头）好的。',
                      'suggested_inputs': [current_input] + ([usable] if remaining else [])},
-        player_input=current_input, catgirl_name='测试猫娘', max_input_tokens=900,
+        player_input=current_input, catgirl_name='测试猫娘', max_input_tokens=10000,
     )
     assert len(calls) == int(fill_enabled and not remaining)
     assert result == ([usable] if remaining else ['（点头）请详细说说。'] if fill_enabled else [])

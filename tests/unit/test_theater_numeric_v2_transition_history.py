@@ -12,6 +12,7 @@ from services.theater.numeric_v2_evaluator import _build_messages
 from services.theater.numeric_v2_fixed_narration import render_text
 from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
@@ -63,7 +64,7 @@ def test_evaluator_uses_current_narrative_instead_of_transition_title():
                 transition_goal='新生活')
     session = engine.create_session(session_id='direction', catgirl_binding=_binding(), opening_performance=_opening())
     messages = _build_messages(engine, session, '先去旅店放行李吧。')
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['current_story_beat']['scene_direction'] == beat['narrative_summary']
     # Ending preview must read full direction too, never fall back to another old summary.
     ending = data['transition_preview']['natural_ending_context']
@@ -81,12 +82,12 @@ def test_ending_preview_keeps_active_boundaries_and_target_direction():
                   opening_only_boundaries=['已有双方明确的约定。'],
                   acting_contract={'forbidden_behaviors': ['不追加入住手续。']})
     session = engine.create_session(session_id='boundaries', catgirl_binding=_binding(), opening_performance=_opening())
-    data = json.loads(_build_messages(engine, session, '按约定办。')[1].content.split('\n', 1)[1])
+    data = prompt_payload(_build_messages(engine, session, '按约定办。')[1].content)
     context = data['transition_preview']['natural_ending_context']
     assert context['ending_direction'] == target['narrative_summary']
     assert '不替玩家确认新的安排。' in context['source_boundaries']
     assert '玩家尚未提出方案。' not in context['source_boundaries']
-    assert {'已有双方明确的约定。', '你禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
+    assert {'已有双方明确的约定。', '演出角色禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
 
 
 @pytest.mark.parametrize('reason', [None, '双方已达成约定。', '依据' * 1000])
@@ -187,7 +188,7 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     candidate = engine.finalize_transition_performance(outcome, _candidate(), target_opening='旧开场。')
     messages = _build_transition_judge_messages(engine, session, player_input='谢谢。',
         actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0]
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['terminal'] is True
     assert '来源开场不得披露姓名。' not in data['current_scene']['hard_boundaries']
     assert data['candidate_segments'][0]['performer'] == 'catgirl'
@@ -247,7 +248,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     public_quote = f'左侧走廊通往{destination}，通道已经开放。'
     messages = _build_transition_judge_messages(engine, stored.session, player_input=message,
         actor_performance=candidate, transition_outcome=outcome, public_destination_quote=public_quote)[0]
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert 'story_direction' not in data['target_scene']
     assert future not in '\n'.join(part.content for part in messages)
     # An excluded template cannot consume packing budget or evict history.
@@ -265,7 +266,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     assert context['acting_contract']['allowed_behaviors'] == target['acting_contract']['allowed_behaviors']
     assert context['acting_contract']['assertable_self_facts'] == target['acting_contract']['assertable_self_facts']
     assert {'入幕时后续操作尚未开始。', '不得改变玩家登记卡的持有者。',
-            '你禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
+            '演出角色禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
     assert data['player_input'] == message
     assert data['transition_contract'] == outcome.transition_contract
     assert data['transition_authorization']['transition_intent'] == intent
@@ -290,7 +291,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     assert restored == committed
     ordinary = _build_transition_judge_messages(engine, restored.session, player_input='先看看入口标识。',
         actor_performance={'performance': '（指向标识）可以先看看这里。', 'suggested_inputs': []})[0]
-    ordinary_data = json.loads(ordinary[1].content.split('：', 1)[1])
+    ordinary_data = prompt_payload(ordinary[1].content)
     assert ordinary_data['current_scene']['story_direction'] == future
     assert 'target_scene' not in ordinary_data
     assert (engine.story, stored.session, outcome, candidate) == before
@@ -353,7 +354,7 @@ async def test_compact_bridge_contract_through_actor_commit_and_restore(monkeypa
         assert runtime.store._path('bridge').read_bytes() == before
         candidate['bridge_scene_narration'] = '天亮后，两人沿楼梯抵达大厅。'
     performance = await actor.generate_turn(**kwargs)
-    data = json.loads(messages_seen[-1][1].content.split('\n', 1)[1])
+    data = prompt_payload(messages_seen[-1][1].content)
     assert data['transition']['bridge_required'] is (requirement != 'optional')
     assert 'bridge_required' in messages_seen[-1][0].content
     assert performance['segments'][1]['scene_narration'] == candidate['bridge_scene_narration']

@@ -118,14 +118,153 @@ async def test_reinvitation_uses_author_contract_without_generation_or_review(sp
 
 
 @pytest.mark.asyncio
-async def test_ending_question_keeps_local_guard_without_model_audit(speed_first, tmp_path, monkeypatch):
+async def test_ending_question_uses_only_narrow_check_while_full_audits_stay_paused(speed_first, tmp_path, monkeypatch):
     from tests.unit.test_theater_numeric_v2_terminal_question_default import _setup, CHOICE
     _, _, calls, diagnostics, execute = await _setup(
         tmp_path, monkeypatch, drafts=(CHOICE, '（点头）故事到这里落幕。'))
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options.aload_theater_module_options)
-    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'verify_contract_boundaries', speed_first)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', speed_first)
     result = await execute()
     assert result.stored.session.status == 'ended'
-    assert calls['terminal'] == []
-    assert diagnostics['terminal_question_review_calls'] == 0
+    assert calls['actor'] == 2 and len(calls['terminal']) == 1
+    assert diagnostics['terminal_question_review_calls'] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply,intent,advance', [
+    ('好，明早见。', 'accept', True),
+    ('先不决定，聊一会儿。', 'reject', False),
+    ('你打算几点出发？', 'unclear', False),
+])
+async def test_generated_offer_survives_paused_reviews_and_acceptance_uses_evaluator(
+    speed_first, tmp_path, monkeypatch, reply, intent, advance,
+):
+    story = story_for('关外院落')
+    story['nodes'][0].pop('completion_contract')
+    story['fact_contract'] = {'facts': {}}
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='sleep-offer', catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    calls = []
+    offer = '今晚先休息，明早一起去关外院落交付，好吗？'
+
+    async def evaluate(self, **kwargs):
+        calls.append('evaluator')
+        return NumericV2EvaluationResult((), True,
+            transition_intent='unclear' if kwargs['session'].revision == 0 else intent,
+            transition_reply_target='pending_transition')
+
+    async def generate(self, **kwargs):
+        calls.append('actor')
+        if kwargs['session'].revision == 0:
+            return {'performance': offer, 'suggested_inputs': ['好，明早见。', '先不决定。'],
+                    'transition_offered': True}
+        if advance:
+            from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+            return engine.finalize_transition_performance(kwargs['outcome'], _candidate(),
+                                                          target_opening='关外的院落。')
+        return {'performance': '那就先在这里聊聊。', 'suggested_inputs': [], 'transition_offered': False}
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和克制。')
+    offered = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=current, turn=TurnRequestV2('offer', 0, '接下来呢？'), ensure_current_binding=lambda _: _binding())
+    assert offered.stored.session.transition_offered
+    assert offered.performance['performance'] == offer
+    assert offered.performance.get('transition_offer_source') != 'reviewed'
+    restored = await runtime.restore_session(current.session.session_id)
+    assert restored == offered.stored
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=restored, turn=TurnRequestV2('reply', 1, reply), ensure_current_binding=lambda _: _binding())
+    assert (result.stored.session.current_node_id != current.session.current_node_id) is advance
+    assert result.stored.session.transition_offered is (intent == 'unclear')
+    assert calls == ['evaluator', 'actor', 'evaluator', 'actor']
+    assert result.diagnostics['transition_judge_calls'] == 0
+    assert result.diagnostics['narrative_model_attempts'] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested,intent,expect_author_offer', [
+    (True, 'unclear', True), (False, 'unclear', True), (True, 'reject', False),
+])
+async def test_completed_actor_offer_has_the_actual_author_arrangement(
+    speed_first, tmp_path, monkeypatch, requested, intent, expect_author_offer,
+):
+    engine = NumericV2Engine.from_mapping(story_for('山径的避风棚'))
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='completed-offer', catgirl_binding=_binding(),
+        opening_performance=_opening())
+    prepared = runtime.prepare_turn(current, TurnRequestV2('complete', 0, '完成眼前工作。'), (),
+        fact_operations=({'op': 'set', 'key': 'scene:start:done', 'value': True, 'visibility': 'public'},))
+    current = await runtime.commit_turn(prepared, {'performance': '眼前的事情已经处理完。', 'suggested_inputs': []})
+    calls = []
+    body = '好，我们试着把手里的东西轻轻转一下。'
+    async def evaluate(self, **kwargs):
+        calls.append('evaluator')
+        return NumericV2EvaluationResult((), True, transition_intent=intent)
+    async def generate(self, **kwargs):
+        calls.append('actor')
+        return {'performance': body, 'suggested_inputs': ['再转一次。', '先停一下。'],
+                'transition_offered': requested}
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和克制。')
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('respond', 1, '再试着转一下。'), ensure_current_binding=lambda _: _binding())
+    contract = engine.preview_route('start', current.session.metrics)['transition_contract']
+    assert (contract['fallback_offer'] in result.performance['performance']) is expect_author_offer
+    assert body in result.performance['performance']
+    if expect_author_offer:
+        assert result.performance['suggested_inputs'][0] == contract['accept_input']
+        assert '先停一下。' in result.performance['suggested_inputs']
+        assert result.stored.session.transition_offered
+    assert calls == ['evaluator', 'actor']
+    assert result.stored.session.current_node_id == 'start'
+    assert await runtime.restore_session(current.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('declared,complete,intent,expected', [
+    (False, True, 'unclear', True),
+    (False, False, 'unclear', False),
+    (False, True, 'reject', False),
+    (True, True, 'unclear', False),
+])
+async def test_legacy_completed_scene_can_offer_without_overriding_explicit_conditions(
+    speed_first, tmp_path, monkeypatch, declared, complete, intent, expected,
+):
+    story = story_for('山径的避风棚')
+    if not declared:
+        story['nodes'][0].pop('completion_contract')
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='legacy-completion', catgirl_binding=_binding(),
+        opening_performance=_opening())
+    calls = []
+
+    async def evaluate(self, **kwargs):
+        calls.append('evaluator')
+        return NumericV2EvaluationResult((), complete, transition_intent=intent)
+
+    async def generate(self, **kwargs):
+        calls.append('actor')
+        return {'performance': '眼前的事情已经处理完。', 'suggested_inputs': ['先聊一会儿。'],
+                'transition_offered': False}
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和克制。')
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=current, turn=TurnRequestV2('ask', 0, '接下来呢？'),
+        ensure_current_binding=lambda _: _binding())
+    contract = engine.preview_route('start', current.session.metrics)['transition_contract']
+    assert (contract['fallback_offer'] in result.performance['performance']) is expected
+    assert result.stored.session.transition_offered is expected
+    assert result.stored.session.current_node_id == 'start'
+    assert calls == ['evaluator', 'actor']
+    if expected:
+        assert result.performance['suggested_inputs'][0] == contract['accept_input']
+        assert '先聊一会儿。' in result.performance['suggested_inputs']
+    assert await runtime.restore_session(current.session.session_id) == result.stored

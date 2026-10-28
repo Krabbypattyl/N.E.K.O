@@ -8,6 +8,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -119,17 +120,21 @@ def test_source_labels_stay_unchanged_outside_transition(source_context):
     outcome = engine.resolve_turn(session, TurnRequestV2('ordinary', 0, '眼前这件事已经做完了。'), ())
     assert outcome.session.current_node_id == session.current_node_id
     opening = actor._opening_messages(engine, original['core_persona'], '小岚', '你')
-    opening_data = json.loads(opening[1].content)
+    opening_data = prompt_payload(opening[1].content)
     for context in [generic, opening_data['acting_context']]:
         assert context['current_scene_state'] == original['current_scene_state']
-        assert context['character_state'] == original['character_state']
+        expected_state = deepcopy(original['character_state'])
+        if context is opening_data['acting_context']:
+            for rule in expected_state.pop('scene_boundaries'):
+                assert rule in opening[0].content
+        assert context['character_state'] == expected_state
         assert 'source_author_entry_situation' not in context
         assert 'source_author_entry_state' not in context
     ordinary = actor._turn_messages(engine, session, outcome, '眼前这件事已经做完了。',
                                     original['core_persona'], '小岚', '你')
-    ordinary_data = json.loads(ordinary[1].content.split('\n', 1)[1])
-    assert list(ordinary_data) == ['role', 'current_scene', 'story_so_far', 'pacing', 'next_scene', 'player_input']
-    assert original['current_scene_state'] in ordinary_data['role']
-    assert original['character_state']['player_state'] in ordinary_data['role']
+    ordinary_data = prompt_payload(ordinary[1].content)
+    assert list(ordinary_data) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
+    assert original['current_scene_state'] in ordinary_data['current_scene']
+    assert original['character_state']['player_state'] in ordinary_data['current_scene']
     assert 'source_author_entry_situation' not in ordinary[1].content
     assert 'source_author_entry_state' not in ordinary[1].content
