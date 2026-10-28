@@ -71,7 +71,7 @@
     "escort_style": {
       "bands": [
         {
-          "label": "持重守规",
+          "label": "当机立断",
           "max": -6,
           "min": -30
         },
@@ -81,7 +81,7 @@
           "min": -5
         },
         {
-          "label": "当机立断",
+          "label": "持重守规",
           "max": 30,
           "min": 6
         }
