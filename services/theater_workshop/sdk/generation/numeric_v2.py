@@ -1982,6 +1982,9 @@ def _validate_idea_outline(
             continue
         if chapter["exit_plan"].get("fixed_entry_only") is not True:
             continue
+        if pending_state_index is not None and index >= pending_state_index:
+            # 目标幕此刻还只有标题提纲；逐幕阶段改不了它，这项跨幕要求留给最终全量校验。
+            continue
         target = chapters[index + 1] if index + 1 < len(chapters) else ending
         target = target if isinstance(target, Mapping) else {}
         state = (character_state_stages[index + 1] if index + 1 < len(character_state_stages)

@@ -49,6 +49,29 @@ def test_mainline_requests_repair_of_invalid_fixed_entry_declaration(case):
                and issue["path"] == "mainline_chapters[0].exit_plan.fixed_entry_only" for issue in issues)
 
 
+@pytest.mark.parametrize("case", ["no_entry", "required"])
+def test_staged_pass_defers_cross_chapter_entry_check_until_target_exists(case):
+    """The per-chapter pass cannot repair a target chapter it has not written yet."""
+    outline = _idea_outline()
+    outline["mainline_chapters"][0]["exit_plan"]["fixed_entry_only"] = True
+    if case == "required":
+        outline["mainline_chapters"][1]["fixed_narrations"] = [_fixed_piece()]
+    codes = {issue["code"] for issue in _validate_idea_outline(
+        outline, minimum=4, maximum=6, pending_state_index=0)}
+    assert "transition_fixed_entry_only_invalid" not in codes
+    assert any(issue["code"] == "transition_fixed_entry_only_invalid"
+               for issue in _validate_idea_outline(outline, minimum=4, maximum=6))
+
+
+def test_staged_pass_keeps_cross_chapter_entry_check_for_written_chapters():
+    """A declaration on an already written chapter still points at a written target."""
+    outline = _idea_outline()
+    outline["mainline_chapters"][0]["exit_plan"]["fixed_entry_only"] = True
+    issues = _validate_idea_outline(outline, minimum=4, maximum=6, pending_state_index=1)
+    assert any(issue["code"] == "transition_fixed_entry_only_invalid"
+               and issue["path"] == "mainline_chapters[0].exit_plan.fixed_entry_only" for issue in issues)
+
+
 @pytest.mark.parametrize("flag", [None, False, True])
 def test_branch_contract_preserves_explicit_flag(flag):
     transition = {"reason": "此前交流已结束。", "bridge_scene_narration": "片刻后，雨停了。",
