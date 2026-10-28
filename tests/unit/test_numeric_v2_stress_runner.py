@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.theater.numeric_v2_context import prompt_data_block_payload
 from scripts import run_numeric_v2_stress
 
 
@@ -256,7 +257,9 @@ async def test_stress_preflight_reports_effective_projection_without_private_tex
     monkeypatch.setattr(actor, "_invoke", capture)
     with pytest.raises(OpeningCaptured):
         await actor.generate_opening(engine=engine, actor_budget_profile=args.profile)
-    actual_opening_persona = json.loads(captured[0][1].content)["acting_context"]["core_persona"]
+    actual_opening_persona = prompt_data_block_payload(
+        captured[0][1].content, "角色设定",
+    )["acting_context"]["core_persona"]
     assert report_package["opening_persona"]["effective_sha256"] == hashlib.sha256(
         actual_opening_persona.encode("utf-8"),
     ).hexdigest()

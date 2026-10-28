@@ -26,6 +26,25 @@ def prompt_data_block(label: str, data: Mapping[str, Any]) -> str:
     return f"======以下为{label}======\n{payload}\n======以上为{label}======"
 
 
+def prompt_data_block_payload(text: str, label: str) -> dict[str, Any]:
+    """Read one block back out of prompt_data_block output, reversing its delimiter escaping."""
+
+    # Match the markers without their surrounding newlines so CRLF text reads
+    # back too; json.loads ignores the leading/trailing whitespace that leaves
+    # behind, and turns the renderer's escaped delimiter characters back into
+    # the originals.
+    opening = f"======以下为{label}======"
+    closing = f"======以上为{label}======"
+    start = text.find(opening)
+    if start < 0:
+        raise KeyError(label)
+    start += len(opening)
+    end = text.find(closing, start)
+    if end < 0:
+        raise KeyError(label)
+    return json.loads(text[start:end])
+
+
 def render_prompt_context(data: Mapping[str, Any]) -> str:
     """Group existing prompt fields for display without changing their values."""
 

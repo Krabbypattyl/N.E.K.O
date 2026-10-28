@@ -30,6 +30,7 @@ from services.theater.numeric_v2_budget import (  # noqa: E402
 from services.theater.numeric_v2_actor import NumericV2Actor, actor_visible_profile  # noqa: E402
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding  # noqa: E402
 from services.theater import numeric_v2_actor, numeric_v2_workflow  # noqa: E402
+from services.theater.numeric_v2_context import prompt_data_block_payload  # noqa: E402
 from services.theater.numeric_v2_performance import performance_content_blocks  # noqa: E402
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry  # noqa: E402
 from services.theater.numeric_v2_trace import text_trace_scope, trace_event, trace_state  # noqa: E402
@@ -1669,7 +1670,11 @@ async def _stress_preflight(
                 engine, raw_profile, actor._current_catgirl_name(), address, known,
                 max_tokens=NUMERIC_V2_ACTOR_BUDGET_PROFILES[args.profile]["input_max_tokens"],
             )
-            opening = json.loads(messages[1].content)["acting_context"]["core_persona"]
+            # The Human message is the fenced multi-block context, not one JSON
+            # object; read the role block back the way the renderer wrote it.
+            opening = prompt_data_block_payload(
+                messages[1].content, "角色设定",
+            )["acting_context"]["core_persona"]
         except Exception as exc:
             package_reports.append({
                 "story_id": package.get("story_id"),
