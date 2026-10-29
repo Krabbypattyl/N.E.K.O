@@ -7049,7 +7049,7 @@
         "input": {
             "notDelivered": "届きませんでした",
             "placeholderAway": "おでかけ中です。呼び戻すこともできます",
-            "placeholderWaiting": "お客さんが着いてから話せます",
+            "placeholderWaiting": "お客さんはまだ来ていません。もう少し待ってからお話ししましょう。",
             "placeholderReconnecting": "再接続中です。少々お待ちください",
             "placeholderToGuest": "{{name}} に話しかける…",
             "placeholderToOwn": "{{name}} に話しかける…"
@@ -7135,9 +7135,9 @@
         },
         "status": {
             "VISIT_E_UNAUTHORIZED": "このページではおでかけを使えません（この端末からの直接アクセスのみ対応）",
-            "VISIT_VOICE_UNAVAILABLE": "おでかけ中は音声入力が使えません。文字で入力してください",
+            "VISIT_VOICE_UNAVAILABLE": "招待待ちやおでかけ中は音声入力を使えません。先に招待を取り消すか、おでかけを終了してください。",
             "VISIT_INPUT_REFUSED_AWAY": "よその家にいるので、ここからの言葉は届きません。呼び戻すことはできます",
-            "VISIT_INPUT_REFUSED_NOT_READY": "お客さんがまだ来ていません。おでかけが始まってから話しましょう",
+            "VISIT_INPUT_REFUSED_NOT_READY": "お客さんはまだ来ていません。もう少し待ってからお話ししましょう。",
             "VISIT_INPUT_REFUSED_RATE": "送信が早すぎます。少し待ってから送ってください",
             "VISIT_INPUT_REFUSED_SOURCE": "訪問中は、入力欄から話しかけた言葉だけが届きます。これは送信されませんでした",
             "VISIT_E_BUSY": "今は送れませんでした。文字は入力欄に残っています。少ししてからどうぞ",

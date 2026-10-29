@@ -401,6 +401,7 @@
     var inviteDialog = null;     // {visitId, handle, timer}
     var endedVisitIds = [];      // 本页见过 ended 的场次（最多 32 个）
     var boundCatgirl = '';       // 最近一次 bind 时这一页的角色名
+    var visitStateKnown = false; // 首次恢复完成前，空白状态不代表后端已经空闲。
     var previewedPeer = null;    // 出门确认时预览到的对端 {visitId, name, shortCode, crossRegion}
 
     function markEnded(visitId) {
@@ -414,7 +415,7 @@
             visitId: null, side: null, phase: null,
             peerName: '', peerShortId: '', peerHumanLabel: '',
             inviteCode: '', inviteExpiresAt: 0, targetUserId: '', crossRegion: false,
-            peerHidden: false, reconnecting: false, endingSoonAt: 0,
+            peerHidden: false, reconnecting: false, cancelRequested: false, endingSoonAt: 0,
             recipient: 'guest_cat', ownName: '',
             // 这一场真的开始过（见过 active / wrap_up）：结束时才留查看详情 / 导出 / 举报
             everStarted: false
@@ -445,7 +446,9 @@
 
     function publicVisitState() {
         return {
-            visitId: visit.visitId || '', phase: visit.phase || '', side: visit.side || '',
+            visitId: visit.visitId || '',
+            phase: visit.cancelRequested && OWNED_PHASES.indexOf(visit.phase) !== -1 ? 'cancelling' : visit.phase || '',
+            side: visit.side || '', ready: visitStateKnown,
             active: inVisit(), inviteExpiresAt: visit.inviteExpiresAt || 0,
             targetUserId: visit.targetUserId || ''
         };
@@ -570,8 +573,8 @@
     function inputPlaceholder() {
         if (!inVisit()) return '';
         if (visit.side === 'guest' && visit.phase !== 'ending') return t('visit.input.placeholderAway', '她出门了，可以叫她回来');
+        if (WAITING_PHASES.indexOf(visit.phase) !== -1) return t('visit.input.placeholderWaiting', '客人还没到等等再聊吧');
         if (visit.reconnecting) return t('visit.input.placeholderReconnecting', '正在重连，稍等一下');
-        if (WAITING_PHASES.indexOf(visit.phase) !== -1) return t('visit.input.placeholderWaiting', '等客人到了才能说话');
         if (visit.phase === 'wrap_up') return t('visit.wrapUp.composerPlaceholder', '她们正在道别…');
         if (visit.phase === 'active') {
             return visit.recipient === 'own_cat'
@@ -586,7 +589,8 @@
         if (!isUiWindow()) return null;
         var bar = visitBar();
         var disabled = inVisit() && visit.phase !== 'ending'
-            && (visit.side === 'guest' || visit.phase === 'wrap_up' || visit.reconnecting);
+            && (visit.side === 'guest' || visit.phase === 'wrap_up'
+                || (visit.reconnecting && WAITING_PHASES.indexOf(visit.phase) === -1));
         return {
             bar: bar,
             composerDisabled: disabled,
@@ -1036,28 +1040,35 @@
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
     }
 
+    function needsVisitStatePoll() {
+        return visit.reconnecting || (visit.cancelRequested && inVisit());
+    }
+
     function pollReconnect() {
         clearReconnectPoll();
         reconnectTimer = setTimeout(async function () {
             reconnectTimer = 0;
-            if (!visit.reconnecting) return;
+            if (!needsVisitStatePoll()) return;
             var catgirl = currentCatgirl();
             if (!catgirl) return;
             var polledVisitId = visit.visitId;
+            var seqAtSend = stateFrameSeq;
             var result = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
             var body = result.body;
             // 请求在路上时这一场已经结束、新一场开始：旧请求的快照不能拿来收新一场
             if (visit.visitId !== polledVisitId) return;
-            if (result.status === 200 && body && typeof body === 'object' && visit.reconnecting) {
+            if (result.status === 200 && body && typeof body === 'object' && needsVisitStatePoll()) {
                 // ended 帧可能在断线里丢了：快照说没在串门（或已是另一场）就收掉这一场；同一场则按快照校正阶段
-                applyState(body, false);
+                applyState(body, stateFrameSeq !== seqAtSend);
+                dispatchVisitStatus();
             }
-            if (visit.reconnecting) pollReconnect();
+            if (needsVisitStatePoll()) pollReconnect();
         }, RECONNECT_POLL_MS);
     }
 
     // 切换角色：清掉上一位角色的串门 UI 状态（不走 onEnded：不往新角色刚清空的聊天里写结束消息）
     function resetForCharacterSwitch() {
+        visitStateKnown = false;
         openDialogs.slice().forEach(function (handle) { handle.close(null); });
         // 人设面板是另一个模块的对话框：一并关掉，免得在新角色的页面上改 / 确认上一位的人设
         if (typeof window.closeVisitPersonaPreview === 'function') window.closeVisitPersonaPreview();
@@ -1170,9 +1181,7 @@
         case 'ended':
             onEnded(frame);
             render();
-            if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
-                window.nekoRelayVisitStateToDisplay(frame);
-            }
+            relayEndedToDisplay(visitId, frame.side);
             return;
         case 'pending':
         case 'joining':
@@ -1196,8 +1205,10 @@
         }
         if (action === 'started' || action === 'departed' || action === 'wrap_up' || action === 'ending') {
             visit.reconnecting = false;
-            clearReconnectPoll();
+            if (needsVisitStatePoll()) pollReconnect();
+            else clearReconnectPoll();
         }
+        visitStateKnown = true;
         render();
         // Electron 多窗口里 /chat 往往是最新的主 WebSocket，而媒体 iframe
         // 必须由 Pet 窗创建；把已经校验并应用的生命周期状态同步过去。
@@ -1207,6 +1218,7 @@
     }
 
     function onEnded(frame) {
+        visitStateKnown = true;
         markEnded(frame.visit_id);
         peerAvatarUrl = '';
         if (previewedPeer && previewedPeer.visitId === frame.visit_id) previewedPeer = null;
@@ -2364,6 +2376,7 @@
         }
         visit.side = 'host';
         visit.phase = 'awaiting_accept';
+        visitStateKnown = true;
         if (frame.peer_name) visit.peerName = String(frame.peer_name);
         if (frame.peer_short_id) visit.peerShortId = String(frame.peer_short_id);
         if (frame.peer_human_label) visit.peerHumanLabel = String(frame.peer_human_label);
@@ -2453,7 +2466,19 @@
         if (!VISIT_ID_RE.test(visitId) || visit.visitId !== visitId
                 || visit.side !== 'host' || !visit.targetUserId
                 || WAITING_PHASES.indexOf(visit.phase) === -1) return false;
+        var catgirl = currentCatgirl();
         var result = await endRoute('route_end');
+        if (currentCatgirl() === catgirl && visit.visitId === visitId && result) {
+            if (result.status === 404) {
+                handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: visitId, side: visit.side });
+            } else if (result.status === 200 && inVisit()) {
+                // 200 只确认开始收尾；持续核对后端，释放接管后再恢复普通聊天。
+                visit.cancelRequested = true;
+                pollReconnect();
+                dispatchVisitStatus();
+                render();
+            }
+        }
         return !!result && (result.status === 200 || result.status === 404);
     }
 
@@ -2898,10 +2923,16 @@
     }
 
     function relayEndedToDisplay(visitId, side) {
-        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
-        window.nekoRelayVisitStateToDisplay({
+        if (!visitId) return;
+        var frame = {
             type: 'visit_state_change', action: 'ended', visit_id: visitId, side: side || ''
-        });
+        };
+        // 网页单窗口需要直接归还媒体桥；Electron 聊天窗则转发给 Pet 窗。
+        if (!isChatFollowerPath() && window.nekoVisitParentBridge
+                && typeof window.nekoVisitParentBridge.onStateChange === 'function') {
+            try { window.nekoVisitParentBridge.onStateChange(frame); } catch (_) { /* 不阻止聊天面的收尾 */ }
+        }
+        if (typeof window.nekoRelayVisitStateToDisplay === 'function') window.nekoRelayVisitStateToDisplay(frame);
     }
 
     function relayStateSnapshotToDisplay(state, visitId) {
@@ -2938,6 +2969,12 @@
 
     // 快照里的对端信息与重载前的台词并进这一场；onlyFill：只填空缺字段（帧带来的更新不覆盖）
     function mergeSnapshotDetails(state, onlyFill) {
+        if (typeof state.target_user_id === 'string' && (!onlyFill || !visit.targetUserId)) {
+            visit.targetUserId = state.target_user_id;
+        }
+        if (typeof state.invite_expires_at === 'number' && (!onlyFill || !visit.inviteExpiresAt)) {
+            visit.inviteExpiresAt = state.invite_expires_at;
+        }
         var peer = state.peer;
         if (peer && typeof peer === 'object') {
             if (peer.cat_name && (!onlyFill || !visit.peerName)) visit.peerName = String(peer.cat_name);
@@ -2962,6 +2999,7 @@
 
     function applyState(state, stale) {
         if (!state || typeof state !== 'object') return;
+        if (!stale) visitStateKnown = true;
         releaseEnabled = state.enabled === true;
         if (!releaseEnabled && pendingDirectInvitation) {
             pendingDirectInvitation = null;
@@ -3033,7 +3071,7 @@
             visit.reconnecting = state.reconnecting === true;
             visit.ownName = currentCatgirl();
             mergeSnapshotDetails(state, false);
-            if (visit.reconnecting) pollReconnect();
+            if (needsVisitStatePoll()) pollReconnect();
             // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；本地场次完成
             // 收口 / 切换后再同步权威快照，确保显示端不会因旧 visit_id 而丢弃它。
             relayStateSnapshotToDisplay(state, snapshotVisit);
@@ -3046,6 +3084,9 @@
         } else if (state.active !== true && typeof state.visit_id === 'string' && state.visit_id) {
             // 页面本地状态已经空了，Pet 窗仍可能留着重载前的 iframe；权威空闲快照照样负责回收。
             relayEndedToDisplay(state.visit_id, state.side || state.role);
+        }
+        if (state.active === false && typeof window.nekoRelayVisitIdleToDisplay === 'function') {
+            window.nekoRelayVisitIdleToDisplay();
         }
         render();
     }
@@ -3119,6 +3160,7 @@
     function reconcileLineVisit(frame) {
         var lineVisit = typeof frame.visit_id === 'string' ? frame.visit_id : '';
         if (!lineVisit || endedVisitIds.indexOf(lineVisit) !== -1) return;
+        visitStateKnown = true;
         if (lineVisit === visit.visitId) {
             // 同一场、还停在等待阶段（漏了 started）：台词就是已开始的证据，推进到 active，在途的旧快照作废
             if (visit.phase === null || WAITING_PHASES.indexOf(visit.phase) !== -1) {

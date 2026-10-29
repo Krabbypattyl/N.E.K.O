@@ -280,13 +280,36 @@
     var visitId = String(detail.visitId || detail.visit_id || '');
     var phase = normalizePhase(detail.phase || detail.action);
     var changed = false;
+    var targetUserId = String(detail.targetUserId || '');
+    if (visitId && phase && detail.active === true && detail.side === 'host' && targetUserId) {
+      var restored = state.invitations.get(targetUserId);
+      if (!restored || restored.visitId !== visitId) {
+        var friend = state.friends.find(function (item) { return item.id === targetUserId; });
+        state.invitations.set(targetUserId, {
+          visitId: visitId, phase: phase, expiresAt: Number(detail.inviteExpiresAt) || 0,
+          displayName: friend ? friend.displayName : '', avatarUrl: friend ? friend.avatarUrl : ''
+        });
+        changed = true;
+      }
+    }
     state.invitations.forEach(function (invitation, friendId) {
-      if (!invitation || !visitId || invitation.visitId !== visitId) return;
+      if (!invitation) return;
+      if (!visitId && detail.ready === true && detail.active === false && invitation.visitId) {
+        state.invitations.delete(friendId);
+        changed = true;
+        return;
+      }
+      if (!visitId || invitation.visitId !== visitId) return;
       if (!phase || detail.action === 'ended' || detail.phase === 'ended') {
         state.invitations.delete(friendId);
         changed = true;
       } else if (invitation.phase !== phase) {
         invitation.phase = phase;
+        changed = true;
+      }
+      if (typeof detail.inviteExpiresAt === 'number' && detail.inviteExpiresAt > 0
+          && invitation.expiresAt !== detail.inviteExpiresAt) {
+        invitation.expiresAt = detail.inviteExpiresAt;
         changed = true;
       }
     });
@@ -300,6 +323,8 @@
     var visit = window.nekoVisitChat;
     if (!visit || typeof visit.getState !== 'function') return;
     var current = visit.getState() || {};
+    // 刷新后的聊天窗还未拿到权威状态时，不用初始空值删掉仍有效的邀请。
+    if (current.ready === false) return;
     var currentId = String(current.visitId || current.visit_id || '');
     var changed = false;
     state.invitations.forEach(function (invitation, friendId) {
@@ -309,7 +334,7 @@
       }
     });
     if (currentId) applyVisitStatus(current);
-    else if (changed) { saveInvitations(); render(); }
+    if (changed) { saveInvitations(); render(); }
   }
   function applyInviteResponses(items) {
     (Array.isArray(items) ? items : []).forEach(function (item) {
@@ -794,7 +819,7 @@
     render();
     try {
       if (!await cancelDirectVisit(invitation.visitId)) throw new Error('cancel_failed');
-      setInvitation(friendId, null);
+      // 保持“正在取消”，由 ended / 空闲快照确认收尾，避免后端还占用时提前显示可再次邀请。
       state.toast = '';
       state.toastError = false;
     } catch (_) {

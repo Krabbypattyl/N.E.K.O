@@ -7049,7 +7049,7 @@
         "input": {
             "notDelivered": "전달되지 않음",
             "placeholderAway": "지금 방문 중이에요. 집으로 부를 수 있어요",
-            "placeholderWaiting": "손님이 도착하면 대화할 수 있어요",
+            "placeholderWaiting": "아직 손님이 오지 않았어요. 조금만 기다렸다가 이야기해요.",
             "placeholderReconnecting": "다시 연결하는 중이에요. 잠시만요",
             "placeholderToGuest": "{{name}}에게 말하기…",
             "placeholderToOwn": "{{name}}에게 말하기…"
@@ -7135,9 +7135,9 @@
         },
         "status": {
             "VISIT_E_UNAUTHORIZED": "이 페이지에서는 방문 기능을 쓸 수 없어요(이 기기에서 직접 접속할 때만 지원)",
-            "VISIT_VOICE_UNAVAILABLE": "방문 중에는 음성 입력을 쓸 수 없어요. 글자로 입력해 주세요",
+            "VISIT_VOICE_UNAVAILABLE": "방문 초대를 기다리는 동안이나 방문 중에는 음성 입력을 사용할 수 없어요. 먼저 초대를 취소하거나 방문을 종료해 주세요.",
             "VISIT_INPUT_REFUSED_AWAY": "다른 집에 가 있어서 여기서 한 말은 전달되지 않아요. 집으로 부를 수 있어요",
-            "VISIT_INPUT_REFUSED_NOT_READY": "아직 손님이 오지 않았어요. 방문이 시작되면 이야기해요",
+            "VISIT_INPUT_REFUSED_NOT_READY": "아직 손님이 오지 않았어요. 조금만 기다렸다가 이야기해요.",
             "VISIT_INPUT_REFUSED_RATE": "너무 빨리 보내고 있어요. 잠시 후 보내 주세요",
             "VISIT_INPUT_REFUSED_SOURCE": "방문 중에는 입력창에서 한 말만 전달돼요. 이 메시지는 보내지지 않았어요",
             "VISIT_E_BUSY": "지금은 보내지 못했어요. 글은 입력창에 남아 있으니 잠시 후 다시 보내 주세요",

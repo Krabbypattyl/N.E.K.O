@@ -7049,7 +7049,7 @@
         "input": {
             "notDelivered": "未送达",
             "placeholderAway": "她出门了，可以叫她回来",
-            "placeholderWaiting": "等客人到了才能说话",
+            "placeholderWaiting": "客人还没到等等再聊吧",
             "placeholderReconnecting": "正在重连，稍等一下",
             "placeholderToGuest": "对 {{name}} 说…",
             "placeholderToOwn": "对 {{name}} 说…"
@@ -7135,9 +7135,9 @@
         },
         "status": {
             "VISIT_E_UNAUTHORIZED": "这个页面没有串门权限（只支持本机直接访问）",
-            "VISIT_VOICE_UNAVAILABLE": "串门时不能用语音输入，请打字",
+            "VISIT_VOICE_UNAVAILABLE": "当前串门状态下无法开启语音，请先取消邀请或结束串门。",
             "VISIT_INPUT_REFUSED_AWAY": "她在别人家做客，这里说的话传不过去；可以叫她回来",
-            "VISIT_INPUT_REFUSED_NOT_READY": "客人还没到，等串门开始再说吧",
+            "VISIT_INPUT_REFUSED_NOT_READY": "客人还没到等等再聊吧",
             "VISIT_INPUT_REFUSED_RATE": "说得太快了，歇一会儿再发",
             "VISIT_INPUT_REFUSED_SOURCE": "串门进行中，只有输入框里说给客人的话会发过去；这条没有发出去",
             "VISIT_E_BUSY": "这会儿发不出去，文字还在输入框里，稍后再试",

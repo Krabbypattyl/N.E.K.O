@@ -7049,7 +7049,7 @@
         "input": {
             "notDelivered": "No entregado",
             "placeholderAway": "Está de visita. Puedes llamarla a casa",
-            "placeholderWaiting": "Podrás hablar cuando llegue la visita",
+            "placeholderWaiting": "La visita aún no ha llegado. Esperemos un poco para charlar.",
             "placeholderReconnecting": "Reconectando, un momento",
             "placeholderToGuest": "Dile algo a {{name}}…",
             "placeholderToOwn": "Dile algo a {{name}}…"
@@ -7135,9 +7135,9 @@
         },
         "status": {
             "VISIT_E_UNAUTHORIZED": "Esta página no puede usar las visitas (solo acceso local)",
-            "VISIT_VOICE_UNAVAILABLE": "Durante las visitas no hay entrada de voz. Escribe",
+            "VISIT_VOICE_UNAVAILABLE": "La entrada de voz no está disponible mientras haya una invitación pendiente o una visita en curso. Cancela la invitación o termina la visita primero.",
             "VISIT_INPUT_REFUSED_AWAY": "Está de visita y lo que digas aquí no le llega. Puedes llamarla a casa",
-            "VISIT_INPUT_REFUSED_NOT_READY": "La visita aún no llegó. Espera a que empiece",
+            "VISIT_INPUT_REFUSED_NOT_READY": "La visita aún no ha llegado. Esperemos un poco para charlar.",
             "VISIT_INPUT_REFUSED_RATE": "Demasiados mensajes seguidos. Espera un momento",
             "VISIT_INPUT_REFUSED_SOURCE": "Hay una visita en curso: solo llegan los mensajes escritos en el cuadro de texto. Este no se envió",
             "VISIT_E_BUSY": "No se pudo enviar ahora. Tu texto sigue en el cuadro; inténtalo luego",

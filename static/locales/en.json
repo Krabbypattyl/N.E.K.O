@@ -7049,7 +7049,7 @@
         "input": {
             "notDelivered": "Not delivered",
             "placeholderAway": "She's out visiting. You can call her home",
-            "placeholderWaiting": "You can talk once the guest arrives",
+            "placeholderWaiting": "The guest hasn't arrived yet. Let's chat in a bit.",
             "placeholderReconnecting": "Reconnecting, one moment",
             "placeholderToGuest": "Say something to {{name}}…",
             "placeholderToOwn": "Say something to {{name}}…"
@@ -7135,9 +7135,9 @@
         },
         "status": {
             "VISIT_E_UNAUTHORIZED": "This page isn't allowed to use visits (local access only)",
-            "VISIT_VOICE_UNAVAILABLE": "Voice input isn't available during visits. Please type",
+            "VISIT_VOICE_UNAVAILABLE": "Voice input is unavailable while a visit invitation is pending or a visit is in progress. Cancel the invitation or end the visit first.",
             "VISIT_INPUT_REFUSED_AWAY": "She's visiting someone, so messages from here can't reach her. You can call her home",
-            "VISIT_INPUT_REFUSED_NOT_READY": "The guest hasn't arrived yet. Wait until the visit starts",
+            "VISIT_INPUT_REFUSED_NOT_READY": "The guest hasn't arrived yet. Let's chat in a bit.",
             "VISIT_INPUT_REFUSED_RATE": "Too many messages too fast. Wait a moment",
             "VISIT_INPUT_REFUSED_SOURCE": "A visit is in progress: only lines typed in the chat box reach it. This one was not sent",
             "VISIT_E_BUSY": "Couldn't send just now. Your text is still in the box; try again shortly",
