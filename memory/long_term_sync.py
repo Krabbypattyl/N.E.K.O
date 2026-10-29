@@ -106,7 +106,15 @@ def iso(value):
     if value is None:
         return None
     try:
-        return (datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=value)).astimezone().replace(tzinfo=None).isoformat()
+        instant = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=value)
+        try:
+            local = instant.astimezone()
+        except OSError:
+            if sys.platform != 'win32':
+                raise
+            from win32timezone import TimeZoneInfo
+            local = instant.astimezone(TimeZoneInfo.local())
+        return local.replace(tzinfo=None).isoformat()
     except (OverflowError, OSError, ValueError):
         return None
 
@@ -239,7 +247,8 @@ def export_document(views, completed_at, *, source_evidence=None):
                 known = reason in ('correction', 'refine_merge', 'refine_split', 'refine_modify', 'refine_discard')
                 history.append({'text': item['text'], 'replacedAt': timestamp(item.get('replaced_at', item.get('replacedAt'))),
                                 'reason': reason if known else 'refine_modify',
-                                **({'detail': reason[:300]} if not known else {})})
+                                **({'detail': item['detail']} if 'detail' in item else
+                                   {'detail': reason[:300]} if not known else {})})
             metadata['versionHistory'] = history
         if archived:
             metadata['archived'] = True
@@ -398,6 +407,11 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
         for original, portable in [('event_when', 'eventWhen'), ('relation_type', 'relationType'), ('temporal_scope', 'temporalScope')]:
             if portable in meta: native[original] = deepcopy(meta[portable])
         if kind == 'persona':
+            if 'versionHistory' in meta:
+                native['version_history'] = [
+                    {'text': item['text'], 'replaced_at': iso(item['replacedAt']), 'reason': item['reason'],
+                     **({'detail': item['detail']} if 'detail' in item else {})}
+                    for item in meta['versionHistory']]
             sources = meta.get('sourceReflectionIds') or []
             native.update(source='reflection' if sources else 'manual', source_id=sources[0] if sources else native['source_sync_id'],
                           merged_from_ids=list(sources[1:]))
@@ -643,6 +657,8 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
             continue
         ids = set(proof.get('source_message_ids', []))
         latest = timestamp(proof['source_created_at']) if proof.get('source_created_at') is not None else None
+        if not ids:
+            continue
         for row in retirements:
             if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
                     or _assertion_text(row['text']) == _assertion_text(fact['text'])):
@@ -681,7 +697,9 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
             break
         proofs.append((identity, at))
     if matching and not proofs:
-        raise FactExtractionFailed('retired_assertion_source_unavailable')
+        if any(trusted_message_source(message)[0] for message in source_messages or []):
+            raise FactExtractionFailed('retired_assertion_source_unavailable')
+        return None
     if not proofs and any(trusted_message_source(message)[0] for message in source_messages or []):
         return None
     if not proofs:
@@ -726,14 +744,10 @@ class DesktopLongTermAdapter:
     def incoming_path(self, uid):
         return self.directory / f'{uid}.incoming.json'
 
-    def expire_incoming(self, binding, epoch, expired):
+    def expire_incoming(self, binding, epoch, expired, *, require_epoch):
         """Retain obsolete inbox bytes outside the live slot after an authorized expiry."""
         from uuid import uuid4
-        from services.chat_sync.writer import registered_writer
-        writer = registered_writer(self.directory.parent)
-        if writer is None:
-            raise ValueError('chat_sync_store_unregistered')
-        writer.require_epoch(epoch)
+        require_epoch(epoch)
         path = self.incoming_path(binding['character_uid'])
         try:
             pending = json.loads(path.read_text(encoding='utf-8'))

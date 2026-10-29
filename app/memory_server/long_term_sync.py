@@ -131,6 +131,8 @@ def _recover_snapshot(name):
 def _snapshot_source_evidence(name, views, incoming=None):
     sources = {}
     for row in [*views.get('facts', []), *views.get('archive', [])]:
+        if not isinstance(row, dict):
+            continue
         sources.setdefault((row.get('entity'), row.get('id')), set()).update(row.get('source_message_ids') or [])
     for row in (incoming or {}).get('entries', []):
         if row['kind'] == 'fact':
@@ -309,7 +311,10 @@ def _write_snapshot_locked(name, payload):
                 atomic_write_json(directory / JOURNAL, {'version': 1, 'phase': 'closed'}, ensure_ascii=False)
             except BaseException as error:
                 # A failed rollback retains a durable journal and blocks all derived reads.
-                _recover_snapshot(name)
+                try:
+                    _recover_snapshot(name)
+                except LongTermMemoryRecoveryRequired:
+                    logger.warning('[LongTermSync] rollback incomplete; original save error retained')
                 if isinstance(error, OSError):
                     raise ValueError('long_term_memory_save_failed') from error
                 raise

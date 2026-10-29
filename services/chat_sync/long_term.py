@@ -4,7 +4,7 @@ from contextlib import closing
 
 from services.chat_sync.long_term_protocol import head, mutation
 from services.chat_sync.recent_protocol import canonical
-from services.chat_sync.writer import store_connection
+from services.chat_sync.writer import registered_writer, store_connection
 
 
 class LongTermMemorySync:
@@ -50,7 +50,7 @@ class LongTermMemorySync:
                 state['revision'] = revision
         metadata = head(await request('GET', path + '?metadataOnly=true', None), domain.owner_id, domain.character_uid)
         if metadata.get('expired'):
-            await commit(self.adapter.expire_incoming, binding, epoch, metadata)
+            await commit(self._expire_incoming, binding, epoch, metadata)
             await commit(self.applied, key, max(state['revision'], metadata['revision']))
             return {'changed': False, 'hasMore': False}
         pending_auth = await commit(self.adapter.needs_reauthentication, binding, epoch, session_fingerprint)
@@ -60,7 +60,7 @@ class LongTermMemorySync:
             return {'changed': False, 'hasMore': True}
         remote = head(await request('GET', path, None), domain.owner_id, domain.character_uid)
         if remote.get('expired'):
-            await commit(self.adapter.expire_incoming, binding, epoch, remote)
+            await commit(self._expire_incoming, binding, epoch, remote)
             await commit(self.applied, key, max(state['revision'], remote['revision']))
             return {'changed': False, 'hasMore': False}
         if remote.get('document') is None or remote['revision'] < metadata['revision']:
@@ -72,3 +72,9 @@ class LongTermMemorySync:
         if staged:
             await commit(self.applied, key, remote['revision'])
         return {'changed': staged, 'hasMore': not staged}
+
+    def _expire_incoming(self, binding, epoch, expired):
+        writer = registered_writer(self.path.parent)
+        if writer is None:
+            raise ValueError('chat_sync_store_unregistered')
+        self.adapter.expire_incoming(binding, epoch, expired, require_epoch=writer.require_epoch)

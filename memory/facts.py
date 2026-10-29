@@ -3736,7 +3736,12 @@ class FactStore:
                     with cloudsave_writable_transaction(self._config_manager, operation='save', target=state_path):
                         with open(state_path, encoding='utf-8') as handle:
                             state = json.load(handle)
-                        state['evidence']['retirements'] = retirements
+                        repaired = {row['id']: row for row in retirements}
+                        for row in state['evidence']['retirements']:
+                            update = repaired.get(row['id'], {})
+                            for field in ('retiredThroughAt', 'retiredThroughAtFromCorrection'):
+                                if field in update:
+                                    row[field] = update[field]
                         atomic_write_json(state_path, state, ensure_ascii=False, indent=2)
                 from memory.recent import _await_recent_mutation_to_completion
                 await _await_recent_mutation_to_completion(save_repairs)

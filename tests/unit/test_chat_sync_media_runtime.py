@@ -74,9 +74,10 @@ class MediaService(SyntheticService):
             identity = value["record"]["messageId"]
             if value["operationId"] not in self.operations:
                 self.revision += 1
-                self.media[identity] = self.revision, value["record"]
+                revision = self.media.get(identity, (0, None))[0] + 1
+                self.media[identity] = revision, value["record"]
                 self.operations[value["operationId"]] = {"ownerId": OWNER, "characterSyncId": UID,
-                    "operationId": value["operationId"], "revision": self.revision,
+                    "operationId": value["operationId"], "revision": revision,
                     "recordHash": hashlib.sha256(encode(value["record"])).hexdigest()}
             return httpx.Response(200, json=self.operations[value["operationId"]])
         return await super().request(request)
@@ -136,6 +137,128 @@ async def test_thumbnail_first_and_other_ready_resource_survives_upload_failure(
         assert complete['original'] == {'resourceId': '3' * 32}
         assert complete['thumbnail'] == {'resourceId': '4' * 32}
         assert len(service.operations) == 3
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_prepared_image_reference_survives_restart_before_publication(tmp_path, monkeypatch):
+    class Resources(MediaService):
+        async def request(self, request):
+            if request.url.path.endswith('/capabilities'):
+                return httpx.Response(200, json={'schemaVersion': 1, 'media': 1, 'modelBinding': 1, 'resources': True})
+            return await super().request(request)
+    runtime, service, _ = setup_runtime(tmp_path, Resources())
+    async def upload(_request, _base, file, guard=None):
+        await guard()
+    monkeypatch.setattr(runtime.media, 'upload_file', upload)
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        identity = capture(runtime)['messageId']
+        record = delivered_record(identity, [])
+        attachment = 'f' * 32
+        resource = '4' * 32
+        record['attachments'] = [{'id': attachment, 'type': 'image', 'title': '', 'source': 'chat', 'original': None, 'thumbnail': None}]
+        store = runtime.media.store
+        store.capture(UID, record, {'complete': False, 'images': {attachment: {
+            'thumbnail': {'resourceId': resource, 'purpose': 'thumbnail', 'uploaded': False}}}})
+        transport = runtime._bound_transport
+        async def crash_after_commit(*args, **kwargs):
+            domain, request, commit = await transport(*args, **kwargs)
+            async def crash_after_reference(operation, *values, **options):
+                result = await commit(operation, *values, **options)
+                if operation.__name__ == 'prepare' and values[2]['attachments'][0]['thumbnail'] == {'resourceId': resource}:
+                    raise OSError('synthetic restart after prepare')
+                return result
+            return domain, request, crash_after_reference
+        monkeypatch.setattr(runtime, '_bound_transport', crash_after_commit)
+        with pytest.raises(OSError, match='synthetic restart'):
+            await runtime.media.step(UID, manual=True)
+        row = store.rows(DOMAIN.key())[0]
+        assert json.loads(row['source'])['images'][attachment]['thumbnail']['uploaded'] is True
+        assert json.loads(row['pending'])['record']['attachments'][0]['thumbnail'] == {'resourceId': resource}
+        monkeypatch.setattr(runtime, '_bound_transport', transport)
+        runtime.media.store = type(store)(store.path)
+        await runtime.media.step(UID, manual=True)
+        assert service.media[identity][1]['attachments'][0]['thumbnail'] == {'resourceId': resource}
+        assert json.loads(runtime.media.store.rows(DOMAIN.key())[0]['source'])['complete'] is True
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error_code', ['invalid_chat_media_resource', 'chat_media_preview_too_large', 'invalid_chat_media_response'])
+async def test_failed_image_retries_without_blocking_other_rows(tmp_path, monkeypatch, error_code):
+    class Resources(MediaService):
+        async def request(self, request):
+            if request.url.path.endswith('/capabilities'):
+                return httpx.Response(200, json={'schemaVersion': 1, 'media': 1, 'modelBinding': 1, 'resources': True})
+            return await super().request(request)
+    runtime, service, _ = setup_runtime(tmp_path, Resources())
+    failed_resource = '3' * 32
+    attempts = []
+    async def upload(_request, _base, file, guard=None):
+        await guard()
+        attempts.append(file['resourceId'])
+        if file['resourceId'] == failed_resource:
+            raise ValueError(error_code)
+    monkeypatch.setattr(runtime.media, 'upload_file', upload)
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        identities = [capture(runtime, index)['messageId'] for index in (1, 2)]
+        for identity, resource in zip(identities, [failed_resource, '4' * 32]):
+            record = delivered_record(identity, [])
+            record['attachments'] = [{'id': 'f' * 32, 'type': 'image', 'title': '', 'source': 'chat', 'original': None, 'thumbnail': None}]
+            runtime.media.store.capture(UID, record, {'complete': False, 'images': {'f' * 32: {
+                'thumbnail': {'resourceId': resource, 'purpose': 'thumbnail', 'uploaded': False}}}})
+        await runtime.media.step(UID)
+        assert service.media[identities[1]][1]['attachments'][0]['thumbnail'] == {'resourceId': '4' * 32}
+        rows = {row['ref']: row for row in runtime.media.store.rows(DOMAIN.key())}
+        assert json.loads(rows[identities[0]]['source'])['complete'] is False
+        await runtime.media.step(UID)
+        assert attempts.count(failed_resource) == 2
+        assert attempts.count('4' * 32) == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_writer_recovery_keeps_local_display_without_restoring_media_uploads(tmp_path):
+    from services.chat_sync.recovery import apply_checked_candidates, finish_role, pending_candidates
+    runtime, service, _ = setup_runtime(tmp_path, MediaService())
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        identity = capture(runtime)['messageId']
+        attachment, resource = 'f' * 32, '4' * 32
+        image = tmp_path / 'local.png'
+        image.write_bytes(b'local display bytes')
+        record = delivered_record(identity, [])
+        record['attachments'] = [{'id': attachment, 'type': 'image', 'title': '', 'source': 'chat', 'original': None, 'thumbnail': None}]
+        store = runtime.media.store
+        store.capture(UID, record, {'complete': False, 'images': {attachment: {
+            'thumbnail': {'resourceId': resource, 'purpose': 'thumbnail', 'uploaded': False, 'path': str(image)}}}})
+        store.adopt(DOMAIN.key(), UID, {identity})
+        store.seal(DOMAIN.key(), identity)
+        runtime.prepare_writer_recovery()
+        assert (await runtime.media.local_images(UID, DOMAIN, {identity}))[attachment]['thumbnail'].endswith('/thumbnail')
+        assert image.read_bytes() == b'local display bytes'
+        assert all(row['pending'] is None for row in store.rows(DOMAIN.key()))
+        await runtime.enable(UID, 'Synthetic')
+        binding = runtime.state.binding(UID)
+        candidates = pending_candidates(runtime, DOMAIN)
+        apply_checked_candidates(runtime, DOMAIN, candidates,
+                                 [{'messageId': row['record_id'], 'state': 'received'} for row in candidates])
+        finish_role(runtime, DOMAIN, binding, (await runtime._session())[1])
+        await runtime.media.step(UID, manual=True)
+        assert service.media == {}
+        new_identity = capture(runtime, 2)['messageId']
+        store.capture(UID, delivered_record(new_identity, []))
+        await runtime.media.step(UID, manual=True)
+        assert set(service.media) == {new_identity}
+        assert (await runtime.media.local_images(UID, DOMAIN, {identity}))[attachment]['thumbnail'].endswith('/thumbnail')
     finally:
         await runtime.close()
 
@@ -413,7 +536,7 @@ async def test_default_model_candidate_loads_from_the_actual_static_route(tmp_pa
 async def test_model_download_failure_exposes_a_durable_manual_retry(tmp_path, monkeypatch):
     from pathlib import Path
     service = MediaService()
-    fixture = json.loads((Path(__file__).parents[1] / "fixtures/chat_media_v1.json").read_text())
+    fixture = json.loads((Path(__file__).parents[1] / "fixtures/chat_media_v1.json").read_text(encoding='utf-8'))
     service.model = next(item["record"] for item in fixture["valid"] if item["name"] == "complete_model")
     runtime, _, _ = setup_runtime(tmp_path, service)
     class Adapter:

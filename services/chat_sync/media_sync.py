@@ -52,19 +52,23 @@ class MediaStore:
     def adopt(self, domain, uid, approved):
         with closing(store_connection(self.path)) as conn, conn:
             for row in self.rows("local/" + uid):
-                if row["ref"] in approved:
+                if row["ref"] in approved and not json.loads(row["source"] or '{}').get('uploadRevoked'):
                     conn.execute("INSERT OR IGNORE INTO media_state(domain,ref,canonical,source) VALUES (?,?,?,?)",
                                  (domain, row["ref"], row["canonical"], row["source"]))
 
     def seal(self, domain, identity):
         with closing(store_connection(self.path)) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT canonical,revision,pending FROM media_state WHERE domain=? AND ref=?", (domain, identity)).fetchone()
-            if row[2]:
-                return bytes(row[2])
-            payload = canonical({"operationId": uuid4().hex, "baseRevision": row[1], "record": decode_chat_media(bytes(row[0]))})
-            conn.execute("UPDATE media_state SET pending=? WHERE domain=? AND ref=?", (payload, domain, identity))
-            return payload
+            return self._seal(conn, domain, identity)
+
+    @staticmethod
+    def _seal(conn, domain, identity):
+        row = conn.execute("SELECT canonical,revision,pending FROM media_state WHERE domain=? AND ref=?", (domain, identity)).fetchone()
+        if row[2]:
+            return bytes(row[2])
+        payload = canonical({"operationId": uuid4().hex, "baseRevision": row[1], "record": decode_chat_media(bytes(row[0]))})
+        conn.execute("UPDATE media_state SET pending=? WHERE domain=? AND ref=?", (payload, domain, identity))
+        return payload
 
     def acknowledge(self, domain, identity, pending, revision):
         with closing(store_connection(self.path)) as conn, conn:
@@ -85,10 +89,13 @@ class MediaStore:
                                   (domain, identity, pending, json.loads(pending)["baseRevision"]))
             return result.rowcount > 0
 
-    def prepare(self, domain, identity, record, source):
+    def prepare(self, domain, identity, record, source, *, publish=False):
         with closing(store_connection(self.path)) as conn, conn:
-            conn.execute("UPDATE media_state SET canonical=?,source=? WHERE domain=? AND ref=? AND pending IS NULL AND length(canonical)>0",
-                         (encode_chat_media(record), json.dumps(source), domain, identity))
+            conn.execute("BEGIN IMMEDIATE")
+            result = conn.execute("UPDATE media_state SET canonical=?,source=? WHERE domain=? AND ref=? AND pending IS NULL AND length(canonical)>0",
+                                  (encode_chat_media(record), json.dumps(source), domain, identity))
+            if publish and result.rowcount:
+                self._seal(conn, domain, identity)
 
     def discard(self, domain, uid, identity):
         with closing(store_connection(self.path)) as conn, conn:
@@ -334,6 +341,8 @@ class DesktopMediaSync:
                             raise ValueError("invalid_chat_media_response")
                         return await commit(self.store.acknowledge, key, row["ref"], pending, receipt["revision"])
                     source = json.loads(row["source"] or '{"complete":true,"images":{}}')
+                    if source.get('uploadRevoked'):
+                        continue
                     if row["pending"] or row["revision"] == 0:
                         if not await publish():
                             continue
@@ -366,7 +375,7 @@ class DesktopMediaSync:
                                 reference = {"resourceId": file["resourceId"]}
                                 if item.get(purpose) != reference:
                                     item[purpose] = reference
-                                    await commit(self.store.prepare, key, row["ref"], record, source)
+                                    await commit(self.store.prepare, key, row["ref"], record, source, publish=True)
                                     owns_head = await publish()
                                     if not owns_head:
                                         break
@@ -381,7 +390,13 @@ class DesktopMediaSync:
                 except (OSError, ValueError) as exc:
                     if getattr(exc, "status_code", None) in {401, 403, 410}:
                         raise
-                    local_error = exc
+                    if isinstance(exc, OSError):
+                        local_error = exc
+                    elif str(exc) in {'invalid_chat_media_resource', 'invalid_chat_media_response',
+                                     'chat_media_image_unavailable', 'chat_media_preview_too_large'}:
+                        logging.getLogger(__name__).warning('chat media row deferred (%s)', str(exc))
+                    else:
+                        raise
             if runtime.history_changed:
                 await runtime.history_changed(uid)
             if local_error:

@@ -8,7 +8,7 @@ import zipfile
 from PIL import Image
 import pytest
 
-from services.chat_sync.model_package import install_model, package_model
+from services.chat_sync.model_package import dependencies, install_model, package_model
 
 
 def test_sync_resolves_the_relative_binding_written_by_the_model_selector(tmp_path, monkeypatch):
@@ -50,8 +50,40 @@ def model_fixture(tmp_path):
     (source / "user-settings.json").write_text('{"private":"device preference"}')
     model = source / "角色.model3.json"
     model.write_text(json.dumps({"Version": 3, "FileReferences": {"Moc": "model.moc3", "Textures": [texture.name],
-        "Motions": {"Idle": [{"File": "动作.motion3.json"}]}}}, ensure_ascii=False))
+        "Motions": {"Idle": [{"File": "动作.motion3.json"}]}}}, ensure_ascii=False), encoding="utf-8")
     return source, model
+
+
+@pytest.mark.parametrize("model", [None, [], "model", 1,
+    {"FileReferences": {"Moc": "model.moc3", "Textures": [None]}},
+    {"FileReferences": {"Moc": "model.moc3", "Textures": [{}]}},
+    {"FileReferences": {"Moc": "model.moc3", "Textures": [[]]}},
+    {"FileReferences": {"Moc": "model.moc3", "Textures": [1]}}])
+def test_malformed_model_dependencies_raise_a_validation_error(model):
+    with pytest.raises(ValueError, match="invalid_cloud_model"):
+        dependencies(json.dumps(model).encode("utf-8"))
+
+
+@pytest.mark.parametrize("failure", ["missing-dependency", "filename", "size"])
+def test_failed_package_removes_only_its_new_partial_archive(tmp_path, monkeypatch, failure):
+    from services.chat_sync import model_package
+    source, model = model_fixture(tmp_path)
+    original = model.read_bytes()
+    if failure == "missing-dependency":
+        (source / "model.moc3").unlink()
+    elif failure == "filename":
+        (source / "invalid%name.exp3.json").write_text("{}", encoding="utf-8")
+    else:
+        monkeypatch.setattr(model_package, "MAX_MODEL_BYTES", 200)
+    destination = tmp_path / "packages"
+    destination.mkdir()
+    existing = destination / "existing.zip"
+    existing.write_bytes(b"previous package")
+    with pytest.raises((ValueError, OSError)):
+        package_model(model, destination)
+    assert list(destination.iterdir()) == [existing]
+    assert existing.read_bytes() == b"previous package"
+    assert model.read_bytes() == original
 
 
 def test_compressed_roundtrip_preserves_source_alpha_and_exact_received_package(tmp_path):

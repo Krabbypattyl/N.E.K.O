@@ -1655,6 +1655,41 @@ async def test_late_correction_time_is_resolved_from_original_store_and_survives
 
 
 @pytest.mark.asyncio
+async def test_retirement_clock_repair_does_not_persist_expanded_display_text(tmp_path):
+    from memory.long_term_sync import export_document, read_views
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    state = json.loads(path.read_text())
+    retirement = state['evidence']['retirements'][0]
+    retirement.pop('text')
+    text = 'Previous independent preference. ' * 200
+    dormant = {'kind': 'fact', 'subject': 'master', 'id': 'retired', 'text': text,
+               'metadata': {'createdAt': 1000, 'status': 'retracted', 'voidedAt': 2000}}
+    state['dormantEntries'] = [dormant]
+    path.write_text(json.dumps(state), encoding='utf-8')
+    h = _harness(tmp_path, [])
+    h._time_indexed.aget_original_source_evidence = AsyncMock(return_value={'sync:'+'c'*32: ('human', 2000)})
+    assert len(await h._apersist_new_facts('小天', [{'entity': 'master', 'text': text, 'source_indices': [1]}],
+                                         source_messages=[_trusted_sync_message('b', 3000)])) == 1
+    repaired = json.loads(path.read_text())
+    assert repaired['evidence']['retirements'] == [
+        {**retirement, 'retiredThroughAt': 2000, 'retiredThroughAtFromCorrection': True}]
+    assert repaired['dormantEntries'] == [dormant]
+    assert export_document(read_views(directory), 4000)['evidence']['retirements'] == repaired['evidence']['retirements']
+
+
+@pytest.mark.asyncio
+async def test_unprovenanced_facts_use_only_exact_retirement_matching(tmp_path):
+    _portable_retirement(tmp_path)
+    h = _harness(tmp_path, [])
+    h._llm_request = AsyncMock(side_effect=AssertionError('unprovenanced facts must not trigger semantic review'))
+    texts = ['用户喜欢红茶', 'The user likes black tea', 'The user has a round badge']
+    rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': text} for text in texts])
+    assert [row['text'] for row in rows] == texts[1:]
+    h._llm_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unresolved_correction_is_a_data_wait_and_not_a_terminal_model_failure(tmp_path):
     from memory.facts import FactExtractionFailed
     _portable_retirement(tmp_path, correction=True)

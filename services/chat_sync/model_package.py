@@ -20,8 +20,10 @@ def dependencies(raw):
     if len(raw) > 1024 * 1024:
         raise ValueError("invalid_cloud_model")
     model = json.loads(raw)
-    refs = model.get("FileReferences")
-    if not isinstance(refs, dict) or not isinstance(refs.get("Moc"), str) or not isinstance(refs.get("Textures"), list):
+    refs = model.get("FileReferences") if isinstance(model, dict) else None
+    if (not isinstance(refs, dict) or not isinstance(refs.get("Moc"), str)
+            or not isinstance(refs.get("Textures"), list)
+            or not all(isinstance(item, str) for item in refs["Textures"])):
         raise ValueError("invalid_cloud_model")
     result = []
 
@@ -73,42 +75,50 @@ def package_model(model_file, destination):
     target.mkdir(parents=True, exist_ok=True)
     identity, entries, total = uuid4().hex, [], 0
     package = target / (identity + ".zip")
-    with zipfile.ZipFile(package, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in paths:
-            candidate = (root / path).resolve(strict=True)
-            if not candidate.is_relative_to(root) or not candidate.is_file() or candidate.stat().st_size > MAX_MODEL_BYTES:
-                raise ValueError("invalid_cloud_model")
-            raw = candidate.read_bytes()
-            total += len(raw)
-            if total > MAX_MODEL_BYTES:
-                raise ValueError("cloud_model_too_large")
-            if path in textures:
-                with Image.open(io.BytesIO(raw)) as image:
-                    # An 8K atlas is reduced before it enters the transfer package.
-                    if image.width * image.height > 8192 * 8192:
-                        raise ValueError("cloud_model_texture_too_large")
-                    if max(image.size) > TEXTURE_MAX_EDGE:
-                        texture = image.convert("RGBA" if image.format != "JPEG" else "RGB")
-                        texture.thumbnail((TEXTURE_MAX_EDGE, TEXTURE_MAX_EDGE), Image.Resampling.LANCZOS)
-                        buffer = io.BytesIO()
-                        texture.save(buffer, format=image.format, optimize=True, **({"quality": 75} if image.format == "JPEG" else {}))
-                        raw = buffer.getvalue()
-            # Stable ZIP metadata prevents retries from changing a prepared artifact.
-            info = zipfile.ZipInfo(path, (1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, raw, compresslevel=9)
-            entries.append({"path": path, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
-    if package.stat().st_size > MAX_MODEL_BYTES:
-        raise ValueError("cloud_model_too_large")
-    with package.open("rb") as stream:
-        package_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-    descriptor = {"modelFile": source.name,
-                  "package": {"resource": {"resourceId": identity}, "size": package.stat().st_size,
-                              "sha256": package_hash},
-                  "files": entries, "compression": {"version": 1, "format": "zip-deflate", "textureMaxEdge": TEXTURE_MAX_EDGE}}
-    binding = decode(encode({"schemaVersion": 1, "model": descriptor}, model=True), model=True)
-    return binding, {"resourceId": identity, "purpose": "model", "path": str(package), "size": package.stat().st_size,
-                     "sha256": descriptor["package"]["sha256"], "contentType": "application/zip"}
+    created = False
+    try:
+        with package.open("xb") as package_stream:
+            created = True
+            with zipfile.ZipFile(package_stream, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+                for path in paths:
+                    candidate = (root / path).resolve(strict=True)
+                    if not candidate.is_relative_to(root) or not candidate.is_file() or candidate.stat().st_size > MAX_MODEL_BYTES:
+                        raise ValueError("invalid_cloud_model")
+                    raw = candidate.read_bytes()
+                    total += len(raw)
+                    if total > MAX_MODEL_BYTES:
+                        raise ValueError("cloud_model_too_large")
+                    if path in textures:
+                        with Image.open(io.BytesIO(raw)) as image:
+                            # An 8K atlas is reduced before it enters the transfer package.
+                            if image.width * image.height > 8192 * 8192:
+                                raise ValueError("cloud_model_texture_too_large")
+                            if max(image.size) > TEXTURE_MAX_EDGE:
+                                texture = image.convert("RGBA" if image.format != "JPEG" else "RGB")
+                                texture.thumbnail((TEXTURE_MAX_EDGE, TEXTURE_MAX_EDGE), Image.Resampling.LANCZOS)
+                                buffer = io.BytesIO()
+                                texture.save(buffer, format=image.format, optimize=True, **({"quality": 75} if image.format == "JPEG" else {}))
+                                raw = buffer.getvalue()
+                    # Stable ZIP metadata prevents retries from changing a prepared artifact.
+                    info = zipfile.ZipInfo(path, (1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    archive.writestr(info, raw, compresslevel=9)
+                    entries.append({"path": path, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        if package.stat().st_size > MAX_MODEL_BYTES:
+            raise ValueError("cloud_model_too_large")
+        with package.open("rb") as stream:
+            package_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+        descriptor = {"modelFile": source.name,
+                      "package": {"resource": {"resourceId": identity}, "size": package.stat().st_size,
+                                  "sha256": package_hash},
+                      "files": entries, "compression": {"version": 1, "format": "zip-deflate", "textureMaxEdge": TEXTURE_MAX_EDGE}}
+        binding = decode(encode({"schemaVersion": 1, "model": descriptor}, model=True), model=True)
+        return binding, {"resourceId": identity, "purpose": "model", "path": str(package), "size": package.stat().st_size,
+                         "sha256": descriptor["package"]["sha256"], "contentType": "application/zip"}
+    except BaseException:
+        if created:
+            package.unlink(missing_ok=True)
+        raise
 
 
 def install_model(package, binding, destination):

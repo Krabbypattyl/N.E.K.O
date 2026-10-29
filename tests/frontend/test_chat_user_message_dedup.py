@@ -234,6 +234,7 @@ def _open_app_buttons_page(mock_page: Page, running_server: str) -> None:
     mock_page.wait_for_function(
         "() => window.appButtons"
         " && typeof window.appButtons.normalizeImageBlobForPendingList === 'function'"
+        " && typeof window.sendTextPayload === 'function'"
     )
 
 

@@ -115,6 +115,28 @@ def test_windows_pre_epoch_local_date_does_not_use_mktime(monkeypatch, offset, e
     assert long_term_sync.timestamp('1969-12-31T23:59:59.125') == expected
 
 
+@pytest.mark.parametrize('offset', [0, 8, -5])
+@pytest.mark.parametrize('milliseconds', [-1000, 0, 1234])
+def test_windows_iso_conversion_preserves_dates_outside_localtime_range(monkeypatch, offset, milliseconds):
+    from memory import long_term_sync
+    local = timezone(timedelta(hours=offset))
+    class WindowsDatetime(datetime):
+        def astimezone(self, tz=None):
+            if tz is None:
+                raise OSError(22, 'Windows localtime is outside the CRT range')
+            return super().astimezone(tz)
+        def timestamp(self):
+            if self.tzinfo is None:
+                raise OSError(22, 'Windows mktime is outside the CRT range')
+            return super().timestamp()
+    monkeypatch.setitem(sys.modules, 'win32timezone', SimpleNamespace(TimeZoneInfo=SimpleNamespace(local=lambda: local)))
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(long_term_sync, 'datetime', WindowsDatetime)
+    expected = (datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=milliseconds)).astimezone(local).replace(tzinfo=None).isoformat()
+    assert long_term_sync.iso(milliseconds) == expected
+    assert long_term_sync.timestamp(expected) == milliseconds
+
+
 @pytest.mark.skipif(sys.platform != 'win32', reason='Native Windows timezone and CRT regression')
 def test_native_windows_exports_pre_epoch_local_naive_date():
     from win32timezone import TimeZoneInfo
@@ -448,7 +470,7 @@ async def test_failed_replacement_replays_without_losing_unpublished_entries(own
     def fail(name, views):
         raise OSError('synthetic index commit failure')
     monkeypatch.setattr(owner.native, '_replace_fact_index', fail)
-    with pytest.raises(Exception, match='long_term_memory_recovery_required'):
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
         await owner.native.consume(UID)
     with pytest.raises(Exception, match='long_term_memory_recovery_required'):
         read_views(owner.directory)
@@ -1127,11 +1149,13 @@ async def test_expiry_cannot_quarantine_newer_inbox_or_commit_after_logout(owner
     before = path.read_bytes()
     _, _, commit = await owner.runtime._bound_transport(UID)
     expired = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 2, 'completedAt': 2000, 'expired': True}
-    await commit(owner.adapter.expire_incoming, owner.binding, owner.runtime.writer.epoch(), expired)
+    await commit(owner.adapter.expire_incoming, owner.binding, owner.runtime.writer.epoch(), expired,
+                 require_epoch=owner.runtime.writer.require_epoch)
     assert path.read_bytes() == before
     owner.session['logged_in'] = False
     with pytest.raises(ValueError):
-        await commit(owner.adapter.expire_incoming, owner.binding, owner.runtime.writer.epoch(), {**expired, 'revision': 4})
+        await commit(owner.adapter.expire_incoming, owner.binding, owner.runtime.writer.epoch(), {**expired, 'revision': 4},
+                     require_epoch=owner.runtime.writer.require_epoch)
     assert path.read_bytes() == before
     assert not list(owner.adapter.directory.glob('*.expired-*.json'))
 
@@ -1145,7 +1169,8 @@ async def test_expiry_rejects_old_writer_epoch(owner):
     _, _, commit = await owner.runtime._bound_transport(UID)
     expired = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 2, 'completedAt': 2000, 'expired': True}
     with pytest.raises(ValueError):
-        await commit(owner.adapter.expire_incoming, owner.binding, (epoch[0], 'obsolete'), expired)
+        await commit(owner.adapter.expire_incoming, owner.binding, (epoch[0], 'obsolete'), expired,
+                     require_epoch=owner.runtime.writer.require_epoch)
     assert path.read_bytes() == before
 
 
@@ -1176,6 +1201,75 @@ def test_native_correction_history_exports_only_portable_fields():
         'facts': [], 'archive': [], 'reflections': []}
     version = export_document(views, 2000)['entries'][0]['metadata']['versionHistory'][0]
     assert version == {'text': 'old wording', 'replacedAt': 1767225600000, 'reason': 'correction'}
+
+
+@pytest.mark.parametrize('archived', [False, True])
+def test_persona_history_is_restored_for_native_readers_and_later_exports(archived):
+    incoming = learned()
+    entry = incoming['entries'][0]
+    history = [
+        {'text': 'earlier wording', 'replacedAt': 0, 'reason': 'correction'},
+        {'text': 'old wording', 'replacedAt': 1000, 'reason': 'refine_modify', 'detail': 'manual revision'},
+    ]
+    entry['metadata']['versionHistory'] = history
+    if archived:
+        entry['metadata'].update(archived=True, archivedAt=1500)
+    restored = import_document(incoming, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    native = (next(iter(restored['personaArchives'].values()))[0] if archived
+              else restored['persona']['master']['facts'][0])
+    assert [item['text'] for item in native['version_history']] == ['earlier wording', 'old wording']
+    assert native['version_history'][0]['replaced_at'] is not None
+    exported = export_document(restored, 3000)
+    assert next(row for row in exported['entries'] if row['id'] == 'p1')['metadata']['versionHistory'] == history
+    native['text'] = 'another native edit'
+    native['version_history'].append({'text': 'learned preference', 'replaced_at': '1970-01-01T00:00:02+00:00', 'reason': 'refine_modify'})
+    edited = export_document(restored, 4000)
+    assert next(row for row in edited['entries'] if row['id'] == 'p1')['metadata']['versionHistory'][:2] == history
+
+
+@pytest.mark.asyncio
+async def test_capture_ignores_non_object_fact_and_archive_rows(owner):
+    ids = [f'proof-{index}' for index in range(201)]
+    proof = {identity: ('human', index) for index, identity in enumerate(ids)}
+    owner.native.runtime.fact_store._time_indexed = SimpleNamespace(
+        get_original_source_evidence=lambda name, requested: {key: proof[key] for key in requested})
+    atomic_write_json(owner.directory / FILES['facts'], [None, 'legacy row', 7,
+        {'id': 'fact', 'entity': 'master', 'text': 'Prefers tea', 'source_message_ids': ids}])
+    atomic_write_json(owner.directory / FILES['archive'], [None, ['legacy row']])
+    assert owner.native._capture('Neko', True)
+    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert local['document']['entries'][0]['id'] == 'fact'
+    assert len(local['document']['entries'][0]['metadata']['sourceMessageIds']) == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('original_error', [OSError('synthetic disk failure'), ValueError('synthetic index failure')])
+async def test_failed_rollback_retains_journal_without_masking_write_error(owner, monkeypatch, original_error):
+    from memory.long_term_sync import JOURNAL, LongTermMemoryRecoveryRequired, require_consistent_views
+    await stage(owner)
+    write = owner.native.atomic_write_json
+    def fail_write(path, *args, **kwargs):
+        if path.name == 'facts.json':
+            raise original_error
+        return write(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', fail_write)
+    restore = owner.native.atomic_write_text
+    def fail_restore(path, *args, **kwargs):
+        if path.name == 'facts.json':
+            raise OSError('synthetic rollback failure')
+        return restore(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_text', fail_restore)
+    with pytest.raises(ValueError) as raised:
+        await owner.native.consume(UID)
+    if isinstance(original_error, OSError):
+        assert str(raised.value) == 'long_term_memory_save_failed'
+        assert raised.value.__cause__ is original_error
+    else:
+        assert raised.value is original_error
+    assert json.loads((owner.directory / JOURNAL).read_text())['phase'] == 'pending'
+    assert owner.adapter.incoming_path(UID).exists()
+    with pytest.raises(LongTermMemoryRecoveryRequired):
+        require_consistent_views(owner.directory)
 
 
 def test_retirement_cutoff_and_source_union_never_regress_on_receive():
@@ -1347,7 +1441,7 @@ async def test_formal_archive_apply_rolls_back_all_shards_and_replays_after_inde
     original = owner.native._replace_fact_index
     def failed(*args): raise OSError('persistent index failure')
     monkeypatch.setattr(owner.native, '_replace_fact_index', failed)
-    with pytest.raises(Exception, match='long_term_memory_recovery_required'):
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
         await owner.native.consume(UID)
     assert old.read_bytes() == old_bytes
     assert len(list((owner.directory / 'persona_archive').glob('*.json'))) == 1

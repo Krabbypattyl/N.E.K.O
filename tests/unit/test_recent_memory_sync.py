@@ -3,6 +3,7 @@
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
@@ -489,10 +490,10 @@ async def test_interrupted_download_recovers_before_uploading_local_changes(devi
         return original_connect(*args)
 
     def interrupted_replace(path, *args, **kwargs):
-        if failure == 'native_replace' and str(path) == str(left[1]):
+        if failure == 'native_replace' and Path(path) == left[1]:
             raise OSError('synthetic interruption before atomic replacement')
         result = original_write(path, *args, **kwargs)
-        if failure == 'after_replace' and str(path) == str(left[1]):
+        if failure == 'after_replace' and Path(path) == left[1]:
             raise InterruptedProcess()
         return result
 
