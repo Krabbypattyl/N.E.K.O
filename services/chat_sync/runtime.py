@@ -261,7 +261,12 @@ class DesktopSyncState:
     def new_role_errors(self):
         with closing(self._connect()) as conn:
             return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
-                    if (code := (request := json.loads(row[1])).get("error") or request.get("lastError"))}
+                    if (code := json.loads(row[1]).get("error"))}
+
+    def new_role_diagnostics(self):
+        with closing(self._connect()) as conn:
+            return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
+                    if not (request := json.loads(row[1])).get("error") and (code := request.get("lastError"))}
 
     def record_new_role_error(self, uid, request_id, code):
         """Keep a retryable fixed diagnostic without changing its admission deadline."""
@@ -814,6 +819,7 @@ class DesktopChatSyncRuntime:
         if channel == 'pull' and self.long_term_memory is not None:
             await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
                                     ChatDomain(binding['owner_id'], binding['character_uid']).key(), 'long_term',
+                                    verified_login=(binding['generation'], presence) if login_verified else None,
                                     fingerprint=presence)
         if wake:
             self.wake_scheduler()
@@ -1021,6 +1027,11 @@ class DesktopChatSyncRuntime:
                         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                             conn.execute(f"DELETE FROM {table} WHERE uid=?", (uid,))
             with closing(self.state._connect()) as conn, conn:
+                if self.recent_memory is not None:
+                    for table in ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply'):
+                        conn.execute(f"DELETE FROM {table} WHERE domain=?", (domain,))
+                if self.long_term_memory is not None:
+                    conn.execute("DELETE FROM long_term_memory_state WHERE domain=?", (domain,))
                 for table in ("sync_new_roles", "sync_choices", "sync_bindings"):
                     conn.execute(f"DELETE FROM {table} WHERE character_uid=?", (uid,))
 
@@ -1228,6 +1239,7 @@ class DesktopChatSyncRuntime:
                 ChatDomain(binding["owner_id"], binding["character_uid"]).key(), binding["character_uid"])
         return {"serviceUrl": settings["service_url"], "deviceId": settings["device_id"], "bindings": bindings,
                 "syncSetupErrors": await asyncio.to_thread(self.state.new_role_errors),
+                "syncSetupDiagnostics": await asyncio.to_thread(self.state.new_role_diagnostics),
                 "syncPendingChoices": await asyncio.to_thread(self.state.pending_choices, await asyncio.to_thread(self.writer.epoch)),
                 "syncChoices": await asyncio.to_thread(self.state.choices), "writerRecoveryRequired": False}
 

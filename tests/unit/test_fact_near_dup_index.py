@@ -1574,16 +1574,15 @@ async def test_cancel_during_reconfirmation_save_waits_for_consistent_committed_
 @pytest.mark.parametrize('indices', [None, [], [True], [0], [3], [2]])
 async def test_fresh_trusted_batch_rejects_unverified_user_observation_sources(tmp_path, indices):
     from utils.llm_client import AIMessage
-    from memory.facts import FactExtractionFailed
     h = _harness(tmp_path, [])
     sources = [_trusted_sync_message('a', 1000, 'My notebook has a silver cover.'),
                _trusted_sync_message('b', 2000, 'I remember your notebook.', AIMessage)]
-    with pytest.raises(FactExtractionFailed):
-        await h._apersist_new_facts('小天', [
-            {'entity': 'master', 'text': 'a valid independent fact', 'source_indices': [1]},
-            {'entity': 'neko', 'text': 'an unsupported candidate', 'source_indices': indices}],
-            source_messages=sources)
-    assert h._mem == []
+    rows = await h._apersist_new_facts('小天', [
+        {'entity': 'master', 'text': 'a valid independent fact', 'source_indices': [1]},
+        {'entity': 'neko', 'text': 'an unsupported candidate', 'source_indices': indices}],
+        source_messages=sources)
+    assert [row['text'] for row in rows] == ['a valid independent fact']
+    assert all(row['text'] != 'an unsupported candidate' for row in h._mem)
 
 
 @pytest.mark.asyncio
@@ -2109,3 +2108,51 @@ async def test_idle_recovers_committed_handoffs_when_strong_memory_is_disabled(m
         await loops._periodic_idle_maintenance_loop()
     retry.assert_awaited_once_with('Neko')
     resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_candidate_source_does_not_drop_valid_batch_members(tmp_path):
+    from utils.llm_client import HumanMessage, AIMessage
+    h = _harness(tmp_path, [])
+    messages = [HumanMessage(content='I enjoy tea', additional_kwargs={'memory_source_id': 'raw-user', 'memory_source_created_at': 1000}),
+                AIMessage(content='Maybe swimming', additional_kwargs={'memory_source_id': 'raw-ai', 'memory_source_created_at': 1001})]
+    rows = await h._apersist_new_facts('小天', [
+        {'entity': 'master', 'text': 'Enjoys tea', 'source_indices': [1]},
+        {'entity': 'master', 'text': 'Invented user preference', 'source_indices': [2]},
+        {'entity': 'master', 'text': 'Invalid index', 'source_indices': [99]},
+    ], source_messages=messages)
+    assert [row['text'] for row in rows] == ['Enjoys tea']
+    assert rows[0]['source_message_ids'] == ['raw-user']
+
+
+@pytest.mark.asyncio
+async def test_retirement_model_review_releases_persistence_lock_and_rechecks_evidence(tmp_path):
+    from utils.llm_client import HumanMessage
+    from memory.long_term_sync import FactEvidenceUnavailable
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    path = directory / 'long_term_portable.json'
+    path.write_text(json.dumps({'evidence': {'retirements': [
+        {'id': 'old', 'subject': 'master', 'text': 'old assertion', 'sourceMessageIds': ['raw']}
+    ], 'confirmations': []}}))
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def review(*args, **kwargs):
+        assert not h._get_persist_alock('小天').locked()
+        entered.set()
+        await release.wait()
+        return [{'index': 0, 'action': 'keep_both'}]
+    h._allm_call_with_retries = review
+    source = HumanMessage(content='new claim', additional_kwargs={'memory_source_id': 'raw', 'memory_source_created_at': 1000})
+    task = asyncio.create_task(h._apersist_new_facts('小天', [{'entity': 'master', 'text': 'new claim', 'source_indices': [1]}], source_messages=[source]))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        async with h._get_persist_alock('小天'):
+            path.write_text(json.dumps({'evidence': {'retirements': [], 'confirmations': []}}))
+        release.set()
+        with pytest.raises(FactEvidenceUnavailable):
+            await task
+        assert h._mem == []
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

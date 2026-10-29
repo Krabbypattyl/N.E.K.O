@@ -33,6 +33,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from config import (
@@ -3559,6 +3560,34 @@ class FactStore:
         # this character's writes and deduplication decisions.
         near_dup_pairs: list[tuple[dict, dict, float]] = []
         await self.aretry_pending_near_dups(lanlan_name)
+        memory_subject = coerce_subject(subject)
+        from memory.long_term_sync import retirement_evidence, verify_retired_assertions, resolve_retirement_cutoffs
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+        retirements = await asyncio.to_thread(retirement_evidence, directory) if memory_subject is None else []
+        expected_retirements = retirements
+        if default_source not in self._SOURCE_VALUES:
+            default_source = self._SOURCE_DEFAULT
+        # Validate the whole batch before changing any fact or signal marker.
+        if memory_subject is None and (retirements or source_messages):
+            extracted = [{**candidate,
+                'entity': candidate.get('entity') if candidate.get('entity') in ('master', 'neko', 'relationship') else 'master',
+                'source': candidate.get('source') if candidate.get('source') in self._SOURCE_VALUES else default_source}
+                if isinstance(candidate, dict) else candidate for candidate in extracted]
+        matches = {}
+        if retirements:
+            matches = await verify_retired_assertions(retirements, extracted, source_messages,
+                lambda prompt, **kwargs: self._allm_call_with_retries(prompt, lanlan_name, **kwargs), default_source=default_source)
+            relevant = [row for row in retirements if any(isinstance(candidate, dict)
+                and candidate.get('entity') == row['subject'] and (row['id'] in matches.get(id(candidate), ())
+                    or isinstance(candidate.get('text'), str) and candidate['text'].strip() == row.get('text', '').strip())
+                for candidate in extracted)]
+            resolved = await resolve_retirement_cutoffs(
+                relevant, source_messages,
+                lookup=(lambda ids: self._time_indexed.aget_original_source_evidence(lanlan_name, ids))
+                if getattr(self._time_indexed, 'aget_original_source_evidence', None) is not None else None)
+            repaired = {row['id']: row for row in resolved}
+            retirements = [repaired.get(row['id'], row) for row in retirements]
+        retirement_review = (expected_retirements, retirements, matches)
         try:
             async with self._get_persist_alock(lanlan_name):
                 memory_subject = coerce_subject(subject)
@@ -3591,6 +3620,7 @@ class FactStore:
                     speaker_provenance=speaker_provenance,
                     reconciled_facts=reconciled_facts,
                     near_dup_pairs_out=near_dup_pairs,
+                    retirement_review=retirement_review,
                     **({'source_messages': source_messages} if source_messages is not None else {}),
                     **(
                         {"effect_keys": effect_keys}
@@ -3643,6 +3673,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
         near_dup_pairs_out: list | None = None,
+        retirement_review=None,
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
         source_messages: list | None = None,
@@ -3691,30 +3722,25 @@ class FactStore:
             default_source = self._SOURCE_DEFAULT
         memory_subject = coerce_subject(subject)
 
-        from memory.long_term_sync import retirement_evidence, fact_source_evidence, verify_retired_assertions, resolve_retirement_cutoffs
-        retirements = retirement_evidence(os.path.join(self._config_manager.memory_dir, lanlan_name)) if memory_subject is None else []
+        from memory.long_term_sync import retirement_evidence, fact_source_evidence, FactEvidenceUnavailable
+        expected, retirements, matches = retirement_review
+        if memory_subject is None:
+            directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+            if await asyncio.to_thread(retirement_evidence, directory) != expected:
+                raise FactEvidenceUnavailable('retirement_evidence_changed')
+            if retirements != expected:
+                def save_repairs():
+                    from utils.file_utils import atomic_write_json
+                    from utils.cloudsave_runtime import cloudsave_writable_transaction
+                    state_path = Path(directory) / 'long_term_portable.json'
+                    with cloudsave_writable_transaction(self._config_manager, operation='save', target=state_path):
+                        with open(state_path, encoding='utf-8') as handle:
+                            state = json.load(handle)
+                        state['evidence']['retirements'] = retirements
+                        atomic_write_json(state_path, state, ensure_ascii=False, indent=2)
+                from memory.recent import _await_recent_mutation_to_completion
+                await _await_recent_mutation_to_completion(save_repairs)
         source_provenance = {}
-        # Validate the whole batch before changing any fact or signal marker.
-        if memory_subject is None and (retirements or source_messages):
-            extracted = [{**candidate,
-                'entity': candidate.get('entity') if candidate.get('entity') in ('master', 'neko', 'relationship') else 'master',
-                'source': candidate.get('source') if candidate.get('source') in self._SOURCE_VALUES else default_source}
-                if isinstance(candidate, dict) else candidate for candidate in extracted]
-        matches = {}
-        if retirements:
-            matches = await verify_retired_assertions(retirements, extracted, source_messages,
-                lambda prompt, **kwargs: self._allm_call_with_retries(prompt, lanlan_name, **kwargs), default_source=default_source)
-            relevant = [row for row in retirements if any(isinstance(candidate, dict)
-                and candidate.get('entity') == row['subject'] and (row['id'] in matches.get(id(candidate), ())
-                    or isinstance(candidate.get('text'), str) and candidate['text'].strip() == row.get('text', '').strip())
-                for candidate in extracted)]
-            resolved = await resolve_retirement_cutoffs(
-                os.path.join(self._config_manager.memory_dir, lanlan_name), relevant, source_messages,
-                lookup=(lambda ids: self._time_indexed.aget_original_source_evidence(lanlan_name, ids))
-                if getattr(self._time_indexed, 'aget_original_source_evidence', None) is not None else None,
-                config_manager=self._config_manager)
-            repaired = {row['id']: row for row in resolved}
-            retirements = [repaired.get(row['id'], row) for row in retirements]
         if memory_subject is None and (retirements or source_messages):
             accepted = []
             accepted_effects = [] if effect_keys is not None else None

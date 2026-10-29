@@ -35,8 +35,10 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import threading
+import tempfile
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -124,38 +126,42 @@ class _RecentFileLock:
     """Keep the nonreentrant thread gate and serialize independent services."""
 
     def __init__(self, key: str):
-        self._local = threading.Lock()
-        suffix = "-" + str(os.getuid()) if hasattr(os, "getuid") else ""
+        self._thread = threading.Lock()
+        suffix = "-" + (str(os.getuid()) if hasattr(os, "getuid") else "user")
         self._directory = os.path.join(tempfile.gettempdir(), "neko-recent-locks" + suffix)
         name = hashlib.sha256(os.fsencode(key)).hexdigest() + ".lock"
-        self._shared = FileLock(os.path.join(self._directory, name), thread_local=False)
+        self._file = FileLock(os.path.join(self._directory, name), thread_local=False)
 
     def acquire(self, blocking=True, timeout=-1):
         started = time.monotonic()
-        if not self._local.acquire(blocking, timeout):
+        if not self._thread.acquire(blocking, timeout):
             return False
         try:
             # Lock files must outlive renames and deletes, and acquiring a stale
             # path must never recreate its character directory.
-            os.makedirs(self._directory, exist_ok=True)
+            os.makedirs(self._directory, mode=0o700, exist_ok=True)
+            info = os.lstat(self._directory)
+            if (not stat.S_ISDIR(info.st_mode) or (hasattr(os, 'getuid')
+                    and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
+                raise PermissionError(f'unsafe recent lock directory: {self._directory}')
             remaining = -1 if timeout < 0 else max(0, timeout - (time.monotonic() - started))
-            self._shared.acquire(timeout=remaining if blocking else 0)
+            self._file.acquire(timeout=remaining if blocking else 0)
         except Timeout:
-            self._local.release()
+            self._thread.release()
             return False
         except BaseException:
-            self._local.release()
+            self._thread.release()
             raise
         return True
 
     def release(self):
         try:
-            self._shared.release()
+            self._file.release()
         finally:
-            self._local.release()
+            self._thread.release()
 
     def locked(self):
-        return self._local.locked()
+        return self._thread.locked()
 
     def __enter__(self):
         self.acquire()
@@ -588,7 +594,12 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
     # Seal a prior replacement before any ordinary local edit. The receipt is
     # staged before os.replace, so a crash can be resolved from either file hash.
     # Keep one receipt per consumer; later edits retain its completed outcome.
-    receipts = _resolve_recent_write_receipts_unlocked(path)
+    try:
+        receipts = _resolve_recent_write_receipts_unlocked(path)
+    except (OSError, ValueError):
+        if receipt is not None:
+            raise
+        receipts = None
     if receipt is not None:
         key, token = receipt
         text = json.dumps(payload, indent=2, ensure_ascii=False)

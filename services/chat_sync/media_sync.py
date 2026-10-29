@@ -497,10 +497,8 @@ class DesktopMediaSync:
         # Cache is display-only and never republishes a downloaded attachment.
         if cache.is_file():
             if preview:
-                from PIL import Image
-                with Image.open(cache) as image:
-                    if cache.stat().st_size > 256 * 1024 or max(image.size) > 1024 or image.width * image.height > 1024 * 1024:
-                        raise ValueError("invalid_chat_media_resource")
+                from services.chat_sync.media_files import checked_image_type
+                await asyncio.to_thread(checked_image_type, cache, preview=True)
             return cache
         _, request, _ = await runtime._bound_transport(uid)
         value = await request("GET", f"/v1/chat-sync/characters/{uid}/resources/{identity}/download", None)
@@ -523,13 +521,8 @@ class DesktopMediaSync:
         raw = b"".join(chunks)
         if len(raw) != size or hashlib.sha256(raw).hexdigest() != value["sha256"]:
             raise ValueError("invalid_chat_media_resource")
-        from PIL import Image
-        import io
-        with Image.open(io.BytesIO(raw)) as image:
-            if image.format not in {"JPEG", "PNG", "GIF", "WEBP"} or image.width * image.height > 50_000_000:
-                raise ValueError("invalid_chat_media_resource")
-            if preview and (max(image.size) > 1024 or image.width * image.height > 1024 * 1024):
-                raise ValueError("invalid_chat_media_resource")
+        from services.chat_sync.media_files import checked_image_type
+        await asyncio.to_thread(checked_image_type, raw, preview=preview)
         # Recheck the exact account/binding before installing private bytes.
         if await asyncio.to_thread(runtime.state.binding, uid) != binding:
             raise ValueError("chat_sync_binding_changed")

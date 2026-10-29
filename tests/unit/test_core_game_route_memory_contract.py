@@ -5750,3 +5750,24 @@ async def test_a_new_session_starts_with_no_owed_wrap_up():
     except AttributeError:
         pass  # later, unrelated resets need state this harness lacks
     assert mgr._turn_wrap_up_owed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('saved_identity', [None, 'a' * 32])
+async def test_transcript_captures_shared_image_only_after_original_save_admission(monkeypatch, saved_identity):
+    from types import SimpleNamespace
+    from services.chat_sync import media_sync
+    manager = _make_transcript_manager()
+    manager._config_manager = SimpleNamespace()
+    saved = AsyncMock(return_value=saved_identity)
+    capture = AsyncMock()
+    monkeypatch.setattr(turn_module, 'save_original', saved)
+    monkeypatch.setattr(media_sync, 'capture_user_media', capture)
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        manager, 'accepted caption', is_voice_source=False,
+        chat_input_source='react-chat-window', chat_request_id='request-image') is True
+    saved.assert_awaited_once()
+    if saved_identity:
+        capture.assert_awaited_once_with(manager, saved_identity, 'request-image')
+    else:
+        capture.assert_not_awaited()

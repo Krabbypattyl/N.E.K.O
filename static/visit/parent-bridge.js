@@ -12,6 +12,8 @@
  * - 分数累加器把任意源帧率抽成目标帧率：直通 30 fps、兼容模式（--disable-gpu-compositing，
  *   WebGL 源快照回读每帧约 8 ms）15 fps。
  * - 可见性 = 帧饥饿检测：>1 s 没有成功的 onFrame 就告诉 iframe hidden，不看页面可见性事件。
+ * - 猫娘语音（OD-15 v4）：传输页报 voice / remote_audio，交给 voice-relay.js 开关自家 TTS 旁路、
+ *   把对端语音接进自家扬声器；换 iframe / 移除 iframe 时一并收掉。
  * 除 PNGTuber 取帧期间的节拍外，本文件没有每帧循环、不自起动画帧、不建 WebSocket。
  */
 (function (root) {
@@ -46,6 +48,7 @@
                                         // 适配器 15 s 后兜底退房 / 断开、本身再最多 8 s，
                                         // 正常由传输页清理做完后报 cleanup_done 提前移除
   var PEER_AWAY_OPACITY = '0.6';
+  var HOST_SAFE_MARGIN_PX = 12;
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
     'left:0;top:0;width:1px;height:1px;';
@@ -106,6 +109,8 @@
     var clearTimeoutFn = env.clearTimeout || function (h) { win.clearTimeout(h); };
     var geo = env.geometry || win.NekoVisitCropGeometry;
     var assetVersion = env.assetVersion || '';
+    var relayFactory = win.NekoVisitVoiceRelay;
+    var voice = env.voice || (relayFactory ? relayFactory.createVoiceRelay({ window: win, log: function (level, msg) { logFrame(level, msg); } }) : null);
 
     var state = {
       frame: null,
@@ -143,6 +148,7 @@
       peerBadge: null,
       firstFrame: null,
       publishing: false,
+      voiceClosed: false,    // 这一场的语音已被收尾关掉（voice_off / ending）：之后的开启请求一律不理
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       authRetryVisitId: null,  // 已经因 4403 重取 token 重建过一次的场次（同一场只重来一次）
       forceTokenRefresh: false,  // 下一次鉴权跳过缓存的 token、直接重取
@@ -311,6 +317,7 @@
       state.place = null;
       state.firstFrame = null;
       state.publishing = false;
+      state.voiceClosed = false;
       state.captureFps = isCompatMode() ? CAPTURE_FPS_COMPAT : CAPTURE_FPS_DIRECT;
       state.sampler.setTarget(state.captureFps);
       state.sampler.reset();
@@ -391,6 +398,7 @@
       opts = opts || {};
       stopCapture();
       stopTick();
+      if (voice) voice.reset();
       if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
       state.readyTimer = null;
       if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -528,6 +536,8 @@
         state.readyTimer = null;
         var sink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!sink || typeof sink.setAuthToken !== 'function') return;
+        // 同一个 iframe 重新加载过：旧页面的语音旁路 / 对端语音都作废，新页面要时再报
+        if (voice) voice.reset();
         // iframe 每报一次 ready 就重新交一次 token（它重载过就要新的）；旧的重试作废
         state.authGen += 1;
         if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -537,6 +547,18 @@
         state.publishing = data.on === true;
         syncCapture();
         tick(true);
+      } else if (data.t === 'voice' || data.t === 'remote_audio') {
+        var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
+        if (!voice || !voiceSink) return;
+        // 收尾后迟到的 on:true 一律不处理：不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间），也不再播对端；关的照常处理
+        var ending = state.voiceClosed || state.phase === 'ending' || state.phase === 'ended';
+        var wantOn = data.on === true && !ending;
+        if (data.t === 'voice') {
+          voice.setLocalWanted(wantOn, voiceSink);
+        } else {
+          var peerTrack = wantOn && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
+          voice.setRemoteTrack(peerTrack);
+        }
       } else if (data.t === 'geometry') {
         if (data.crop === 'upper' || data.crop === 'full') state.cropMode = data.crop;
         if (data.cropW > 0 && data.cropH > 0) state.cropAspect = data.cropW / data.cropH;
@@ -860,18 +882,56 @@
       var type = modelType();
       var b = modelBounds(type);
       if (!b) return;
-      var vw = win.innerWidth || 0;
-      var vh = win.innerHeight || 0;
+      var viewport = win.visualViewport;
+      var viewLeft = viewport && isFinite(viewport.offsetLeft) ? viewport.offsetLeft : 0;
+      var viewTop = viewport && isFinite(viewport.offsetTop) ? viewport.offsetTop : 0;
+      var vw = viewport && viewport.width > 0 ? viewport.width : (win.innerWidth || 0);
+      var vh = viewport && viewport.height > 0 ? viewport.height : (win.innerHeight || 0);
+      var viewRight = viewLeft + vw;
+      var viewBottom = viewTop + vh;
+      var desktopRuntime = win.__NEKO_DESKTOP_RUNTIME__;
+      var screen = win.screen;
+      if (desktopRuntime && screen) {
+        // macOS may move the frameless Pet window below the menu bar without reducing its
+        // height (for example y=1 -> y=30 while keeping 1439 px). innerHeight / visualViewport
+        // still include the pixels now below the physical work area, so clamp the host layer
+        // to the part of the client area that is actually visible on screen.
+        var screenX = Number(win.screenX);
+        var screenY = Number(win.screenY);
+        var availLeft = Number(screen.availLeft);
+        var availTop = Number(screen.availTop);
+        var availWidth = Number(screen.availWidth);
+        var availHeight = Number(screen.availHeight);
+        if ([screenX, screenY, availLeft, availTop, availWidth, availHeight].every(isFinite) &&
+            availWidth > 0 && availHeight > 0) {
+          viewLeft = Math.max(viewLeft, availLeft - screenX);
+          viewTop = Math.max(viewTop, availTop - screenY);
+          viewRight = Math.min(viewRight, availLeft + availWidth - screenX);
+          viewBottom = Math.min(viewBottom, availTop + availHeight - screenY);
+        }
+      }
       var aspect = CROP_ASPECT[state.peerCrop] || CROP_ASPECT.upper;
-      // 竖屏 / 窄视口：宽度不能超出视口（否则右侧摆放算出负的 left，访客被裁掉一截）
-      var h = Math.min(Math.max(200, Math.min(900, b.height * 0.9)), vw / aspect, vh || Infinity);
+      // 浏览器缩放 / Electron 可见视口可能小于 layout viewport。所有边都留安全距并最终
+      // clamp 到 visualViewport 与桌面工作区的交集，避免头饰、鞋底或右侧身体落到窗口外。
+      var visibleW = Math.max(1, viewRight - viewLeft);
+      var visibleH = Math.max(1, viewBottom - viewTop);
+      var margin = Math.min(HOST_SAFE_MARGIN_PX, Math.max(0, visibleW / 4), Math.max(0, visibleH / 4));
+      var safeLeft = viewLeft + margin;
+      var safeTop = viewTop + margin;
+      var safeRight = viewRight - margin;
+      var safeBottom = viewBottom - margin;
+      var availableW = Math.max(1, safeRight - safeLeft);
+      var availableH = Math.max(1, safeBottom - safeTop);
+      var desiredH = Math.max(200, Math.min(900, b.height * 0.9));
+      var h = Math.min(desiredH, availableW / aspect, availableH);
       var w = h * aspect;
-      var spaceLeft = b.x;
-      var spaceRight = vw - (b.x + b.width);
+      var spaceLeft = b.x - safeLeft;
+      var spaceRight = safeRight - (b.x + b.width);
       var left = spaceRight >= spaceLeft
-        ? Math.min(vw - w, b.x + b.width)
-        : Math.max(0, b.x - w);
-      var top = Math.max(0, Math.min(vh - h, b.y + b.height - h));
+        ? Math.min(safeRight - w, b.x + b.width)
+        : Math.max(safeLeft, b.x - w);
+      left = Math.max(safeLeft, Math.min(safeRight - w, left));
+      var top = Math.max(safeTop, Math.min(safeBottom - h, b.y + b.height - h));
       var p = { left: Math.round(left), top: Math.round(top), width: Math.round(w), height: Math.round(h) };
       var old = state.place;
       if (old && old.left === p.left && old.top === p.top && old.width === p.width && old.height === p.height) return;
@@ -1022,6 +1082,13 @@
       if (phase && action !== 'ended') {
         state.phase = phase;
         post({ t: 'visit_state', phase: phase });
+      }
+      // 收掉语音旁路与对端语音并锁住，本场不再开：voice_off 是后端交还私聊之前直接写在主连接上的
+      // （私聊的 TTS 音频随后走同一条连接，这一帧一定先到），ending 再兜一道。旁路接的是共享的 TTS 链，
+      // 私聊恢复后她的台词不能再进串门房间
+      if (action === 'voice_off' || action === 'ending') {
+        state.voiceClosed = true;
+        if (voice) voice.reset();
       }
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);

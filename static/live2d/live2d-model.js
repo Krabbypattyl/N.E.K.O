@@ -1101,9 +1101,15 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     this._isLoadingModel = true;
     this._invalidateParameterReloadTickets();
     const loadToken = ++this._activeLoadToken;
-    this._modelLoadState = 'preparing';
-    this._isModelReadyForInteraction = false;
-    this._resetDerivedModelMetadata();
+    const preserving = options.preservePreviousUntilLoaded === true;
+    const previousModel = this.currentModel;
+    const previousReady = this._isModelReadyForInteraction;
+    const previousState = this._modelLoadState;
+    if (!preserving) {
+        this._modelLoadState = 'preparing';
+        this._isModelReadyForInteraction = false;
+        this._resetDerivedModelMetadata();
+    }
 
     // 清除上一次加载遗留的画布揭示定时器
     if (this._canvasRevealTimer) {
@@ -1114,6 +1120,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     try {
         const preparedModel = options.preparedModel || (options.preservePreviousUntilLoaded
             ? await Live2DModel.from(modelPath, { autoFocus: false }) : null);
+        if (preserving) {
+            this._modelLoadState = 'preparing';
+            this._isModelReadyForInteraction = false;
+            this._resetDerivedModelMetadata();
+        }
         // 移除当前模型
         if (this.currentModel) {
             await this.removeModel({
@@ -1153,7 +1164,19 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             throw error;
         }
         console.error('加载模型失败:', error);
-        if (options.preservePreviousUntilLoaded) throw error;
+        if (preserving) {
+            if (this.currentModel && this.currentModel !== previousModel) {
+                try { this.currentModel.destroy({ children: true }); } catch (_) {}
+                this.currentModel = null;
+                this._resetDerivedModelMetadata();
+                this._modelLoadState = 'idle';
+                this._isModelReadyForInteraction = false;
+            } else if (this.currentModel === previousModel) {
+                this._modelLoadState = previousState;
+                this._isModelReadyForInteraction = previousReady;
+            }
+            throw error;
+        }
         
         // 尝试回退到默认模型
         if (modelPath !== '/static/yui-lolita/yui-lolita.model3.json') {
@@ -1183,7 +1206,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     } finally {
         // 无论成功还是失败，都要释放加载锁
         this._isLoadingModel = false;
-        if (this._activeLoadToken === loadToken && this._modelLoadState !== 'ready') {
+        if (!(preserving && this.currentModel === previousModel)
+                && this._activeLoadToken === loadToken && this._modelLoadState !== 'ready') {
             this._modelLoadState = 'idle';
             this._isModelReadyForInteraction = false;
         }

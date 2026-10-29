@@ -602,3 +602,30 @@ def test_tiny_image_does_not_grow_due_to_thumbnail_encoder_overhead(tmp_path):
     Image.new('P', (1, 1)).save(raw, format='GIF')
     files = image_files(tmp_path, raw.getvalue())
     assert files['thumbnail']['size'] <= len(raw.getvalue())
+
+
+@pytest.mark.asyncio
+async def test_image_response_metadata_is_decoded_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from PIL import Image
+    from main_routers import chat_sync_router
+    from services.chat_sync import media_files
+    path = tmp_path / 'image.png'
+    Image.new('RGB', (4, 4)).save(path)
+    event_thread = threading.get_ident()
+    original = media_files.checked_image_type
+    checked = []
+    def inspect(source, **kwargs):
+        assert threading.get_ident() != event_thread
+        checked.append(source)
+        return original(source, **kwargs)
+    monkeypatch.setattr(media_files, 'checked_image_type', inspect)
+    monkeypatch.setattr(chat_sync_router, '_character', AsyncMock())
+    runtime = SimpleNamespace(media=SimpleNamespace(local_image_path=AsyncMock(return_value=path), resource=AsyncMock(return_value=path)))
+    response = await chat_sync_router.local_media_image(UID, 'a' * 32, 'b' * 32, 'original', runtime)
+    assert response.media_type == 'image/png'
+    response = await chat_sync_router.media_resource(UID, 'b' * 32, runtime)
+    assert response.media_type == 'image/png'
+    assert checked == [path, path]

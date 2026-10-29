@@ -11,6 +11,17 @@ from uuid import uuid4
 from PIL import Image
 
 
+def checked_image_type(source, *, preview=False):
+    """Inspect cached paths or verified download bytes on a worker thread."""
+    size = len(source) if isinstance(source, bytes) else Path(source).stat().st_size
+    with Image.open(io.BytesIO(source) if isinstance(source, bytes) else source) as image:
+        if image.format not in {'JPEG', 'PNG', 'GIF', 'WEBP'} or image.width * image.height > 50_000_000:
+            raise ValueError('invalid_chat_media_resource')
+        if preview and (size > 256 * 1024 or max(image.size) > 1024 or image.width * image.height > 1024 * 1024):
+            raise ValueError('invalid_chat_media_resource')
+        return Image.MIME.get(image.format, 'application/octet-stream')
+
+
 def image_files(directory, raw, *, original=True):
     if not raw or len(raw) > 40 * 1024 * 1024:
         raise ValueError("chat_media_image_unavailable")

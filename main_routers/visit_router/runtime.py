@@ -139,6 +139,8 @@ _SESSION_CLOSE_S = 5.0
 _RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
+_VOICE_OFF_SEND_S = 1.0  # Bound the voice-off media write that must precede handing the TTS chain back to private chat.
+_VOICE_OFF_PAGE_S = 2.5  # The voice-off display frame: a little over the frame write timeout (host_port._FRAME_TIMEOUT_S).
 _ENDED_AFTER_DISPLAY_S = 2.0  # Bound waiting for ended notifications queued behind stubborn display writes, then send best effort.
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
@@ -295,18 +297,48 @@ def end_visits_disabled() -> int:
     return sum(1 for rt in live_runtimes() if rt.request_finalize("visit_disabled"))
 
 
+async def reset_pending_host_invites_for_desktop_restart(timeout: float = 5.0) -> int:
+    """End unused host invitations when a new Electron process takes over.
+
+    A renderer reload inside one desktop process must keep its invitation, but
+    the desktop app can restart while reusing an already-running backend.  In
+    that case startup recovery does not run, so the new ``desktop_run_id`` on
+    ``visit_bind`` is the process boundary that invalidates pending codes.
+    """
+    pending = [
+        rt for rt in live_runtimes()
+        if rt.side == "host" and rt.peer is None
+        and rt.phase in (PHASE_PENDING, PHASE_INVITE_READY)
+    ]
+    exits: list[asyncio.Task] = []
+    reset = 0
+    for rt in pending:
+        if rt.request_finalize("route_end"):
+            reset += 1
+        if rt.exit_task is not None and not rt.exit_task.done():
+            exits.append(rt.exit_task)
+    if exits:
+        await asyncio.wait(exits, timeout=max(0.0, timeout))
+    return reset
+
+
 def apply_voice_setting(enabled: bool) -> int:
     """``visitVoiceEnabled`` was saved: live visits use it from their next line (design §3.7.6).
 
     Pushed by the settings save instead of re-read before each line, so the
     reply runner keeps no await between its admission check and taking the
     line; the home-coming line and debrief summary follow it as well. The
-    one-way TTS fallback (``voice.fallen_back``) is kept. Returns how many
-    runtimes were updated.
+    one-way TTS fallback (``voice.fallen_back``) is kept. The voice audio
+    tracks follow at once (OD-15 v4): a fresh ``media`` snapshot is sent so
+    the transport page stops / resumes sending and playing catgirl audio.
+    Returns how many runtimes were updated.
     """
     runtimes = live_runtimes()
     for rt in runtimes:
+        changed = rt.voice.enabled != bool(enabled)
         rt.voice.enabled = bool(enabled)
+        if changed and rt.ready_exchanged:
+            rt.spawn(rt.send_media(), name="voice-media")
     return len(runtimes)
 
 
@@ -651,6 +683,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         persona_text: str,
         crop: str = VISIT_CROP_DEFAULT,
         invite_code: Optional[str] = None,
+        target_user_id: Optional[str] = None,
+        direct: bool = False,
         deps: Optional[RuntimeDeps] = None,
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
@@ -664,6 +698,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.persona_text = persona_text
         self.crop = crop if crop in ("upper", "full") else VISIT_CROP_DEFAULT
         self.invite_code = invite_code
+        self.target_user_id = target_user_id
+        self.direct = direct
         self.deps = deps or runtime_deps()
         self.clock = clock
         self.wall = wall
@@ -743,6 +779,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._memory_off_unsaved = False
         self._state_writing: Optional[asyncio.Future] = None  # State write still running after activation cancellation; finalization awaits completion first.
         self._renew_task: Optional[asyncio.Task] = None
+        self._audio_gate: Optional[bool] = None
+        """Servers' ``publish.audio`` latched for this visit (OD-15 v4): the first issue decides, a renewal can only
+        turn it off (emergency stop, never back on); ``None`` until the first credentials."""
         self._renew_failures = 0
         self._renew_retry_at: Optional[float] = None
         self._exit_task: Optional[asyncio.Task] = None
@@ -753,6 +792,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.peer_reason: Optional[str] = None
         self.status_code: Optional[str] = None
         self.status_details: dict = {}
+        self._status_published = False
         self.finalize_at: Optional[float] = None
         self._was_phase = PHASE_PENDING
         self.ended_at_mono: Optional[float] = None
@@ -865,14 +905,48 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self._post_display(payload)
 
-    async def status(self, code: str, **details: Any) -> None:
+    async def status(self, code: str, **details: Any) -> bool:
         details = {"visit_id": self.visit_id, **{k: v for k, v in details.items() if v is not None}}
         ended = self._ended_sending
         if ended is not None and not ended.done():
             # ended still waits behind blocked display writes; queue this status afterward without overtaking/concurrent writes.
             self._keep_background(asyncio.ensure_future(self._status_after(ended, code, details)))
+            return False
+        return await self.host.send_status(code, details)
+
+    async def _publish_final_status(self) -> None:
+        """Publish one terminal banner, retrying during final teardown if an early send fails."""
+        if self.status_code is None or self._status_published:
             return
-        await self.host.send_status(code, details)
+        ended = self._ended_sending
+        if ended is not None and not ended.done():
+            # ended has its own bounded retirement deadline. Wait for it here so
+            # the delivery result below is authoritative rather than merely queued.
+            await asyncio.wait([ended])
+        try:
+            delivered = await self.status(
+                self.status_code,
+                reason=self.status_details.get("reason"),
+                retry_after_s=self.status_details.get("retry_after_s"),
+            )
+        except Exception as exc:  # noqa: BLE001 - Cleanup must continue; the late call below retries once.
+            logger.warning("visit %s: status not sent: %s", self.visit_id[:6], type(exc).__name__)
+            return
+        if not delivered:
+            # Active visits reach this boundary only once.  Give a transient
+            # disconnect/backpressure failure one bounded chance to recover.
+            await asyncio.sleep(0)
+            try:
+                delivered = await self.status(
+                    self.status_code,
+                    reason=self.status_details.get("reason"),
+                    retry_after_s=self.status_details.get("retry_after_s"),
+                )
+            except Exception as exc:  # noqa: BLE001 - Cleanup must continue.
+                logger.warning("visit %s: status retry failed: %s", self.visit_id[:6], type(exc).__name__)
+                return
+        if delivered:
+            self._status_published = True
 
     # -- Startup --
 
@@ -881,7 +955,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _register(self)
         register_transport_session(self.transport)
         self._pump_task = asyncio.ensure_future(self._pump_loop())
-        self.spawn(self.push(PHASE_PENDING, transport=None))
+        self.spawn(self.push(
+            PHASE_PENDING,
+            transport=None,
+            target_user_id=self.target_user_id if self.direct else None,
+        ))
 
     # -- Capability gates and credentials --
 
@@ -952,8 +1030,31 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def _credentials_message(self, *, refresh: bool) -> dict:
         creds = self.grant.current  # type: ignore[union-attr]
         peer_vid = self.peer.vid if self.peer is not None else None
+        audio = self._voice_gate()
         return build_credentials_message(creds, side=self.side, crop=self.crop, codec=self._codec(),
-                                         peer_vid=peer_vid, refresh=refresh)
+                                         peer_vid=peer_vid, refresh=refresh, audio=audio)
+
+    def _voice_gate(self) -> bool:
+        """Servers' voice gate for this visit, latched (OD-15 v4).
+
+        The first credentials decide. A renewal answering ``publish.audio``
+        anything but true while it was on is Servers' emergency stop: the
+        gate stays off for the rest of the visit and a fresh ``media``
+        snapshot stops sending and playing voice at once. Off to on is
+        ignored (it takes effect next visit).
+        """
+        creds = self.creds
+        if creds is None:
+            return False
+        on = creds.audio is True
+        if self._audio_gate is None:
+            self._audio_gate = on
+        elif self._audio_gate and not on:
+            self._audio_gate = False
+            logger.info("visit %s: Servers turned the voice tracks off", self.visit_id[:6])
+            if self.ready_exchanged:
+                self.spawn(self.send_media(), name="voice-revoked")
+        return bool(self._audio_gate)
 
     async def _obtain_credentials(self) -> bool:
         """Main turn interrupt → Servers credentials → takeover (§3.2.1 steps 4–6)."""
@@ -976,6 +1077,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
             tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
             invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
+            direct=self.direct,
             expect_account=self.admitted_account,
         ))
         _credential_requests.add(request)
@@ -989,8 +1092,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: credentials failed: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("servers_unreachable")
             return False
-        self.grant = cr.VisitGrant(creds, display_name=self.lanlan_name,
-                                   invite_code=self.invite_code if self.side == "guest" else None)
+        self.grant = cr.VisitGrant(
+            creds,
+            display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
+            direct=self.direct,
+        )
         try:
             # Bound local file-lock/disk accounting so pending visits cannot hold routing forever.
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
@@ -1004,7 +1112,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("busy")
             self._cancel_room_once()
             return False
-        if self.side == "host" and not creds.invite_code:
+        if self.side == "host" and not self.direct and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
             return False
@@ -1043,6 +1151,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             reason = "banned"
         elif isinstance(exc, cr.VisitQuotaExceeded):
             reason = "quota_exceeded"
+        elif isinstance(exc, cr.VisitConcurrencyLimit):
+            reason = "concurrency_limit"
         elif isinstance(exc, cr.VisitTierNotEntitled):
             reason = "tier_not_entitled"
         elif isinstance(exc, cr.VisitCrossRegionUnsupported):
@@ -1191,8 +1301,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
             self.liveness.wait_deadline = now + VISIT_INVITE_WAIT_S
             self._set_phase(PHASE_INVITE_READY)
-            await self.push(PHASE_INVITE_READY, invite_code=creds.invite_code,
-                            invite_expires_at=creds.invite_expires_at, transport=creds.transport)
+            invite_frame = {
+                "invite_expires_at": creds.invite_expires_at,
+                "transport": creds.transport,
+            }
+            if not self.direct:
+                invite_frame["invite_code"] = creds.invite_code
+            else:
+                invite_frame["target_user_id"] = self.target_user_id
+            await self.push(PHASE_INVITE_READY, **invite_frame)
         else:
             from config.visit_settings import VISIT_PEER_LOST_S
 
@@ -1322,10 +1439,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         creds = self.creds
         frames: list[dict] = []
         if self.side == "host" and self.phase == PHASE_INVITE_READY and creds is not None:
-            frames.append({"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
-                           "visit_id": self.visit_id, "invite_code": creds.invite_code,
-                           "invite_expires_at": creds.invite_expires_at, "transport": creds.transport,
-                           "ts": self.wall()})
+            frame = {"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
+                     "visit_id": self.visit_id, "invite_expires_at": creds.invite_expires_at,
+                     "transport": creds.transport, "ts": self.wall()}
+            if self.direct:
+                frame["target_user_id"] = self.target_user_id
+            else:
+                frame["invite_code"] = creds.invite_code
+            frames.append(frame)
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
@@ -1343,8 +1464,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     # -- Media --
 
     def media_snapshot(self) -> dict:
-        """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``)."""
-        snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder}
+        """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``).
+
+        Voice is symmetric (OD-15 v4): both sides publish their own TTS output
+        and play the peer's, only after ``ready``, only while
+        ``visitVoiceEnabled`` is on and only when the current credentials carry
+        Servers' ``publish.audio`` as a literal true (latched, see
+        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays catgirl audio. A
+        TTS fallback keeps the track published but silent. Voice is off from
+        the moment the visit starts ending: the tap carries the shared TTS
+        chain, so once private chat is back nothing more may reach the room.
+        """
+        voice = bool(self.ready_exchanged and not self.finalizing and self.voice.enabled and self._voice_gate())
+        snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
             snap["publish"] = bool(self.ready_exchanged and self.video_ok)
         else:
@@ -1612,7 +1744,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         from main_logic.visit.room import VisitRoom
         from main_logic.visit.sanitize import neutralize_display_name
         from main_logic.visit.subjects import derive_short_code, resolve_visit_recall_subjects
-        from main_routers.visit_router.local_context import prompt_lang, protected_display_names
+        from main_routers.visit_router.local_context import (
+            prompt_lang,
+            protected_display_names,
+            protected_live_display_names,
+        )
 
         peer = self.peer
         creds = self.creds
@@ -1629,11 +1765,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.family_names = tuple(getattr(ctx, "family_names", ()) or ())
         self.char_names = tuple(getattr(ctx, "char_names", ()) or ())
-        protected = protected_display_names(self.lang, self.family_names, self.char_names)
+        protected = protected_live_display_names(self.lang, self.family_names)
         peer.display = neutralize_display_name(
             peer.raw_display, protected_names=protected,
             generic_label=self.speaker_label("peer_cat"), short_code=derive_short_code(peer.uid),
         )
+        memory_protected = protected_display_names(self.lang, self.family_names, self.char_names)
         subjects = resolve_visit_recall_subjects({
             "own_uid": creds.visit_uid, "peer_uid": peer.uid, "peer_char_tag": peer.char_tag,
         })
@@ -1643,7 +1780,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self.lanlan_name, own_uid=creds.visit_uid, own_char=self.lanlan_name, peer_uid=peer.uid,
                 peer_display=peer.raw_display, subjects=subjects, lang=self.lang,
                 own_char_uid=self.character_uid, config_dir=self.config_dir,
-                handoff=self._summary_handoff, protected_names=protected,
+                handoff=self._summary_handoff, protected_names=memory_protected,
                 generic_label=self.speaker_label("peer_cat"),
             )
         except Exception as exc:  # noqa: BLE001 - Missing memory blocks mean empty opening context.
@@ -1860,6 +1997,27 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _exit_steps(self, reason: str) -> None:
         # 1. Finish current local line first, placing text{final} before leave and into this transcript.
         await self.close_current_line("visit_end")
+        # 1b. Voice off before private chat gets the TTS chain back (OD-15 v4): the page taps the shared assistant
+        # output. Two writes, both before the takeover is released:
+        #   - ``visit_state_change{voice_off}`` straight on the display socket (not via the queue): private replies'
+        #     TTS audio reaches the page over this same connection afterwards, so the page drops the tap before any
+        #     private audio can arrive (one connection keeps order). It is bounded by the frame write timeout; if it
+        #     failed, that connection cannot carry private audio either.
+        #   - the voice-off ``media`` snapshot (finalizing is already true), so the iframe unpublishes as well.
+        # Writes are awaited, never cancelled (a cut-off frame is worse than a late one).
+        if self.ready_exchanged and self._audio_gate:
+            page_off = self.spawn(self.host.send_frame({
+                "type": "visit_state_change", "action": "voice_off", "side": self.side,
+                "visit_id": self.visit_id, "ts": self.wall(),
+            }), name="voice-off-page")
+            media_off = self.spawn(self.send_media(), name="voice-off") if self.transport_alive() else None
+            await asyncio.wait([page_off], timeout=_VOICE_OFF_PAGE_S)
+            if media_off is not None:
+                await asyncio.wait([media_off], timeout=_VOICE_OFF_SEND_S)
+            confirmed = page_off.done() and not page_off.cancelled() and page_off.exception() is None and page_off.result()
+            if not confirmed:
+                logger.warning("visit %s: voice-off frame not confirmed on the page before takeover release",
+                               self.visit_id[:6])
         # 2. Close data channels in background: drain -> leave -> retransmission grace, blocking no later steps.
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # 3. Retain callbacks temporarily, immediately release takeover so family resumes ordinary chat.
@@ -1881,7 +2039,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # Push ending only after takeover release, because the page restores ordinary input immediately and visit routing must not block it;
         # before release, finalizing rejects visit submissions with request_id for undelivered marking/text restoration.
         if input_released:
-            await self.push(PHASE_ENDING, reason=reason)
+            if self.activated:
+                await self.push(PHASE_ENDING, reason=reason)
+            else:
+                # Admission failures never became a visit. Surface the existing status banner immediately and keep
+                # the frontend out of the misleading "ending" phase; ended below releases the temporary slot.
+                await self._publish_final_status()
         # Release failed: do not push ending; remain visit UI, rejecting/finalizing submissions until teardown retries then sends ended.
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
@@ -1924,9 +2087,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             else:
                 self.takeover_token = None
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
-        if self.status_code is not None:
-            await self.status(self.status_code, reason=self.status_details.get("reason"),
-                              retry_after_s=self.status_details.get("retry_after_s"))
+        await self._publish_final_status()
         self._set_phase(PHASE_ENDED)
         # 6/7. Seal transcript .upload.json first -> spool finalize -> background digest/last-summary work.
         await self._finish_files(reason)
@@ -2740,6 +2901,8 @@ async def start_visit(
     *,
     crop: str = VISIT_CROP_DEFAULT,
     invite_code: Optional[str] = None,
+    target_user_id: Optional[str] = None,
+    direct: bool = False,
     visit_id: Optional[str] = None,
     host: Optional[VisitHost] = None,
     deps: Optional[RuntimeDeps] = None,
@@ -2820,7 +2983,8 @@ async def start_visit(
             raise VisitRefused(403, {"code": "VISIT_BANNED"})
         rt = VisitRuntime(
             lanlan_name=name, side=side, visit_id=vid, host=host, character_uid=gate.character_uid or "",
-            persona_text=gate.text or "", crop=crop, invite_code=invite_code, deps=deps,
+            persona_text=gate.text or "", crop=crop, invite_code=invite_code,
+            target_user_id=target_user_id, direct=direct, deps=deps,
             clock=clock, wall=wall,
         )
     except BaseException:
@@ -3174,5 +3338,5 @@ __all__ = [
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
     "hold_character_lifecycle", "hold_account_for_push", "end_visits_for_account_change", "account_change",
-    "cancel_background_writes",
+    "cancel_background_writes", "reset_pending_host_invites_for_desktop_restart",
 ]

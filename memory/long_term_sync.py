@@ -8,9 +8,10 @@ import json
 import re
 from pathlib import Path
 import sys
+from uuid import uuid4
 
 from utils.long_term_memory_protocol import document, head
-from services.chat_sync.recent_protocol import canonical
+from utils.recent_memory_protocol import canonical
 
 
 SUBJECTS = ('master', 'neko', 'relationship')
@@ -35,24 +36,28 @@ def require_consistent_views(directory):
         raise LongTermMemoryRecoveryRequired()
 
 
-def _view_identity(path):
+def _view_generation(directory):
     try:
-        stat = Path(path).stat()
+        return (Path(directory) / '.long_term_generation').read_text(encoding='utf-8')
     except FileNotFoundError:
         return None
-    return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+
+def advance_view_generation(directory):
+    """Only snapshot commit and recovery advance this durable read fence."""
+    from utils.file_utils import atomic_write_text
+    atomic_write_text(Path(directory) / '.long_term_generation', uuid4().hex)
 
 
 @contextmanager
 def consistent_view_read(path):
-    """Reject reads spanning a commit or rollback, including a removed journal."""
-    path = Path(path)
-    require_consistent_views(path.parent)
-    before = _view_identity(path)
-    directory_before = _view_identity(path.parent) if before is None else None
+    """Reject reads spanning a snapshot commit or rollback, even after journal removal."""
+    directory = Path(path).parent
+    require_consistent_views(directory)
+    before = _view_generation(directory)
     def validate():
-        require_consistent_views(path.parent)
-        if before != _view_identity(path) or before is None and directory_before != _view_identity(path.parent):
+        require_consistent_views(directory)
+        if before != _view_generation(directory):
             raise LongTermMemoryRecoveryRequired()
     try:
         yield
@@ -419,6 +424,10 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                           importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')), signal_processed=True,
                           hash=hashlib.sha256(row['text'].encode()).hexdigest()[:16])
             previous = local_facts.get((subject, row['id']), {})
+            if previous.get('text') == native['text'] and previous.get('external_import'):
+                native['external_import'] = deepcopy(previous['external_import'])
+                if previous.get('hash'):
+                    native['hash'] = previous['hash']
             if (previous.get('text') == native['text'] and previous.get('source_message_ids')
                     and (previous.get('source', 'user_observation') == 'ai_disclosure') == (native['source'] == 'ai_disclosure')):
                 proof = merge_fact_source_evidence(previous, native)
@@ -549,7 +558,8 @@ def original_message_source(stored, session_id, stored_at):
     return identity, at
 
 
-async def resolve_retirement_cutoffs(directory, retirements, messages, lookup=None, *, config_manager):
+async def resolve_retirement_cutoffs(retirements, messages, lookup=None):
+    """Resolve correction clocks without writing; the caller rechecks under its persist lock."""
     unresolved = [row for row in retirements if row.get('retiredThroughAt') is None and row.get('retiredBySourceMessageIds')]
     if not unresolved:
         return retirements
@@ -578,23 +588,8 @@ async def resolve_retirement_cutoffs(directory, retirements, messages, lookup=No
     if not updates:
         return retirements
 
-    def save():
-        from utils.file_utils import atomic_write_json
-        from utils.cloudsave_runtime import cloudsave_writable_transaction
-        with cloudsave_writable_transaction(config_manager, operation='save', target=str(Path(directory) / FILES['sync'])):
-            state = json.loads((Path(directory) / FILES['sync']).read_text(encoding='utf-8'))
-            expected = {row['id']: row['retiredBySourceMessageIds'] for row in unresolved}
-            for row in state['evidence']['retirements']:
-                cutoff = updates.get(row['id'])
-                if cutoff is not None and row.get('retiredBySourceMessageIds') == expected[row['id']]:
-                    row['retiredThroughAt'] = max(row.get('retiredThroughAt') or cutoff, cutoff)
-                    row['retiredThroughAtFromCorrection'] = True
-            atomic_write_json(Path(directory) / FILES['sync'], state, ensure_ascii=False, indent=2)
-            return retirement_evidence(directory)
-
-    # Only the evidence repair commits here; no fact or scoring receipt is claimed.
-    from memory.recent import _await_recent_mutation_to_completion
-    return await _await_recent_mutation_to_completion(save)
+    return [{**row, **({'retiredThroughAt': updates[row['id']], 'retiredThroughAtFromCorrection': True}
+                     if row['id'] in updates else {})} for row in retirements]
 
 
 def _assertion_text(text):
@@ -644,6 +639,8 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
             continue
         source = fact.get('source', default_source)
         proof = fact_source_evidence([], fact, fact.get('entity', 'master'), messages, source=source)
+        if proof is None:
+            continue
         ids = set(proof.get('source_message_ids', []))
         latest = timestamp(proof['source_created_at']) if proof.get('source_created_at') is not None else None
         for row in retirements:
@@ -686,7 +683,7 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
     if matching and not proofs:
         raise FactExtractionFailed('retired_assertion_source_unavailable')
     if not proofs and any(trusted_message_source(message)[0] for message in source_messages or []):
-        raise FactExtractionFailed('fact_source_unavailable')
+        return None
     if not proofs:
         return {}
     ids = [identity for identity, _ in proofs]

@@ -156,3 +156,61 @@ def test_invalid_packages_never_install_or_overwrite_a_working_model(tmp_path, m
         install_model(bad, binding, tmp_path / "installed")
     assert installed.read_bytes() == before
     assert not (tmp_path / "outside.model3.json").exists()
+
+
+def test_sync_model_resolver_rejects_absolute_drives_and_escaped_root(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from main_routers import live2d_router
+    root = tmp_path / 'models'; root.mkdir()
+    outside = tmp_path / 'outside.model3.json'; outside.write_text('{}')
+    (root / 'escape.model3.json').symlink_to(outside)
+    config = SimpleNamespace(live2d_dir=root)
+    for path in ['user_live2d/C:/outside.model3.json', '/user_live2d/model.model3.json',
+                 'user_live2d/%43%3A/outside.model3.json', 'user_live2d/escape.model3.json']:
+        assert live2d_router._resolve_sync_model_file(path, config) is None
+    (root / 'safe.model3.json').write_text('{}')
+    assert live2d_router._resolve_sync_model_file('user_live2d/safe.model3.json', config) == root / 'safe.model3.json'
+
+
+@pytest.mark.parametrize('prefix', ['user_live2d', 'user_live2d_local', 'static', 'workshop'])
+def test_sync_resolves_root_relative_model_urls_inside_their_allowed_root(tmp_path, monkeypatch, prefix):
+    from types import SimpleNamespace
+    from main_routers import live2d_router
+    from services.chat_sync.model_sync import DesktopModelAdapter
+
+    root = tmp_path / prefix
+    source = root / 'cloud-sync' / 'model folder' / 'model.model3.json'
+    source.parent.mkdir(parents=True)
+    source.write_text('{"Version":3}')
+    if prefix == 'static':
+        monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(live2d_router, 'get_workshop_path', lambda: str(root))
+    config = SimpleNamespace(live2d_dir=root, readable_live2d_dir=root)
+    adapter = DesktopModelAdapter(config)
+    path = f'/{prefix}/cloud-sync/model%20folder/model.model3.json'
+    assert adapter.source(path) == source
+    assert adapter.source(path[1:]) == source
+    assert adapter.source('/' + path) is None
+    outside = tmp_path / 'outside.model3.json'
+    outside.write_text('{}')
+    (root / 'escape.model3.json').symlink_to(outside)
+    assert adapter.source(f'/{prefix}/escape.model3.json') is None
+    assert adapter.source(f'/{prefix}/../outside.model3.json') is None
+    assert adapter.source(str(outside)) is None
+
+
+def test_concurrent_model_install_reuses_verified_winner_and_removes_own_stage(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+    _, model = model_fixture(tmp_path)
+    binding, artifact = package_model(model, tmp_path / 'packages')
+    original = Path.rename
+    def raced(source, target):
+        if source.name.endswith('.part'):
+            shutil.copytree(source, target)
+            raise FileExistsError('another installer completed first')
+        return original(source, target)
+    monkeypatch.setattr(Path, 'rename', raced)
+    installed = install_model(artifact['path'], binding, tmp_path / 'installed')
+    assert installed.is_file()
+    assert list((tmp_path / 'installed').glob('*.part')) == []

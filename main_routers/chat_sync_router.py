@@ -131,10 +131,13 @@ async def status(runtime: Runtime):
     choices = state.pop("syncChoices", {})
     pending_choices = state.pop("syncPendingChoices", {})
     setup_errors = state.pop("syncSetupErrors", {})
+    setup_diagnostics = state.pop("syncSetupDiagnostics", {})
     characters = await _characters()
     for character in characters:
         if character["characterSyncId"] in setup_errors:
             character["syncSetupError"] = setup_errors[character["characterSyncId"]]
+        if character["characterSyncId"] in setup_diagnostics:
+            character["syncSetupDiagnostic"] = setup_diagnostics[character["characterSyncId"]]
         binding = bindings.get(character["characterSyncId"])
         paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
         # Pending On is the saved user choice even before online owner checks
@@ -285,14 +288,11 @@ async def recent_display(character_uid: str, runtime: Runtime):
 @router.get("/characters/{character_uid}/local-media/{message_id}/{attachment_id}/{purpose}")
 async def local_media_image(character_uid: str, message_id: str, attachment_id: str, purpose: str, runtime: Runtime):
     from fastapi.responses import FileResponse
-    from PIL import Image
+    from services.chat_sync.media_files import checked_image_type
     await _character(character_uid)
     try:
         path = await runtime.media.local_image_path(character_uid, message_id, attachment_id, purpose)
-        with Image.open(path) as image:
-            if image.width * image.height > 50_000_000:
-                raise ValueError("chat_media_image_too_large")
-            media_type = Image.MIME.get(image.format, "application/octet-stream")
+        media_type = await asyncio.to_thread(checked_image_type, path)
     except (ValueError, OSError):
         raise HTTPException(404, "chat_media_resource_unavailable") from None
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
@@ -307,12 +307,9 @@ async def media_resource(character_uid: str, resource_id: str, runtime: Runtime)
         path = await runtime.media.resource(character_uid, resource_id)
     except (ValueError, OSError):
         raise HTTPException(404, "chat_media_resource_unavailable") from None
-    from PIL import Image
+    from services.chat_sync.media_files import checked_image_type
     try:
-        with Image.open(path) as image:
-            if image.width * image.height > 50_000_000:
-                raise ValueError("chat_media_image_too_large")
-            media_type = Image.MIME.get(image.format, "application/octet-stream")
+        media_type = await asyncio.to_thread(checked_image_type, path)
     except (OSError, ValueError):
         raise HTTPException(404, "chat_media_resource_unavailable") from None
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})

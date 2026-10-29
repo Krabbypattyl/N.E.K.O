@@ -229,7 +229,8 @@
             try { await refreshStatus(); } catch (error) { statusNode.textContent = describeError(error); }
         },
         describeError: describeError,
-        notifyMediaChanged: refreshReadyModel
+        notifyMediaChanged: refreshReadyModel,
+        requestMemoryRefresh: requestMemoryRefresh
     };
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -274,6 +275,8 @@
         if (role && characterName() === name) await applyReadyModel(role.characterSyncId, name);
     }
 
+    var pendingMemoryName = null;
+    var memoryRefreshFlight = false;
     var displayFlight = false;
     var displayPending = false;
     var displayPrefix = 'sync-recent-';
@@ -286,8 +289,11 @@
         var state = window.appState || {};
         var completed = new Set([state.assistantTurnCompletedId, state.assistantTurnSettledId]);
         return !!state.assistantTurnAwaitingBubble || !!window._isProcessingRealisticQueue
+            || !!state.isPlaying || !!(window.NekoSpeechPlaybackState && window.NekoSpeechPlaybackState.active)
+            || !!(state.assistantTurnId && !completed.has(state.assistantTurnId))
+            || !!(state.isRecording && state.userRecentSpeechTime && Date.now() - state.userRecentSpeechTime < 700)
             || (state.pendingTextTurnSubmitAt && Date.now() - state.pendingTextTurnSubmitAt < 15000)
-            || (host.getState().messages || []).some(function (message) {
+            || ((host && host.getState().messages) || []).some(function (message) {
                 return message.status === 'sending' || (message.status === 'streaming' && !completed.has(message.turnId));
             });
     }
@@ -358,12 +364,36 @@
         }
     }
 
+    function requestMemoryRefresh(name) {
+        if (typeof name !== 'string' || name !== liveCharacterName()) return;
+        pendingMemoryName = name;
+        flushMemoryRefresh();
+    }
+
+    function flushMemoryRefresh() {
+        var state = window.appState || {};
+        // Sync must not restart an open voice session or cancel microphone startup.
+        if (state.isRecording || state.voiceChatActive || state.voiceStartPending || window.isMicStarting) return;
+        if (!pendingMemoryName || memoryRefreshFlight || liveChatBusy(window.reactChatWindowHost)) return;
+        var name = pendingMemoryName;
+        if (name !== liveCharacterName()) { pendingMemoryName = null; return; }
+        if (!window.appInterpage || typeof window.appInterpage.handleMemoryEdited !== 'function') return;
+        pendingMemoryName = null;
+        memoryRefreshFlight = true;
+        Promise.resolve(window.appInterpage.handleMemoryEdited(name, { silent: true })).catch(function () {
+            if (liveCharacterName() === name && !pendingMemoryName) pendingMemoryName = name;
+        }).finally(function () { memoryRefreshFlight = false; });
+    }
+
     function refreshReceived() {
+        flushMemoryRefresh();
         refreshRecentDisplay().catch(function () { /* The next committed hint or local poll retries. */ });
     }
     window.addEventListener('voice-input-socket-open', refreshReceived);
     window.addEventListener('neko-assistant-turn-end', refreshReceived);
     window.addEventListener('neko-realistic-queue-idle', refreshReceived);
+    window.addEventListener('neko-speech-playback-state', refreshReceived);
+    window.addEventListener('voice-input-lifecycle-changed', refreshReceived);
 
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground

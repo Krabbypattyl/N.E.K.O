@@ -1427,6 +1427,8 @@ async def test_inflight_reflection_read_cannot_return_uncommitted_view(tmp_path,
         await release.wait()
         data = await original(target,*args,**kwargs)
         if finish == 'rolled-back':
+            from memory.long_term_sync import advance_view_generation
+            advance_view_generation(directory)
             atomic_write_json(path, [{'id':'before','entity':'master','text':'committed reflection','status':'pending'}])
             (directory/JOURNAL).unlink()
         return data
@@ -1456,6 +1458,8 @@ async def test_full_fact_pool_does_not_mix_versions_across_completed_replacement
     atomic_write_json(directory/'facts_archive.json', [{'id':'old-archive','entity':'master','text':'old archive'}])
     original = fs._facts_archive_path
     def replaced(name):
+        from memory.long_term_sync import advance_view_generation
+        advance_view_generation(directory)
         atomic_write_json(directory/'facts.json', [{'id':'new-active','entity':'master','text':'new active'}])
         atomic_write_json(directory/'facts_archive.json', [{'id':'new-archive','entity':'master','text':'new archive'}])
         fs._facts.pop(name, None)
@@ -1480,3 +1484,37 @@ async def test_read_error_during_pending_snapshot_cannot_become_legal_empty_refl
     monkeypatch.setattr(persistence, 'read_json_async', unavailable)
     with pytest.raises(LongTermMemoryRecoveryRequired):
         await engine.aget_pending_reflections('小天')
+
+
+@pytest.mark.asyncio
+async def test_no_inbox_or_journal_does_not_wait_for_global_reload(owner, monkeypatch):
+    def unexpected_uid(_name):
+        raise AssertionError('idle conversation must not load character files')
+    monkeypatch.setattr(owner.native, '_uid', unexpected_uid)
+    async with owner.native.runtime._reload_lock:
+        assert await asyncio.wait_for(owner.native.consume_for_name('Neko'), 1) is False
+
+
+def test_ordinary_save_and_unrelated_directory_change_do_not_require_recovery(tmp_path):
+    from memory.long_term_sync import consistent_view_read
+    path = tmp_path / 'facts.json'
+    atomic_write_json(path, [])
+    with consistent_view_read(path):
+        atomic_write_json(path, [{'id': 'local'}])
+    with consistent_view_read(tmp_path / 'missing.json'):
+        atomic_write_json(tmp_path / 'unrelated.json', [])
+
+
+def test_snapshot_keeps_matching_local_diary_import_identity():
+    native = {'persona': {}, 'facts': [{'id': 'diary', 'entity': 'master', 'text': 'Walked the dog',
+        'hash': 'date-sensitive-hash', 'external_import': {'event_date': '2026-10-20', 'file_path': '/private/diary'},
+        'source': 'user_observation'}], 'archive': [], 'reflections': []}
+    snapshot = export_document(native, 3000)
+    assert '/private/diary' not in json.dumps(snapshot)
+    row = import_document(snapshot, native)['facts'][0]
+    assert row['hash'] == 'date-sensitive-hash'
+    assert row['external_import'] == native['facts'][0]['external_import']
+    foreign = import_document(snapshot, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})['facts'][0]
+    assert 'external_import' not in foreign
+    snapshot['entries'][0]['text'] = 'Changed assertion'
+    assert 'external_import' not in import_document(snapshot, native)['facts'][0]

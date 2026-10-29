@@ -138,7 +138,7 @@ def test_current_socket_refreshes_recent_memory_without_backfilling_capsule_hist
         const calls=[], broadcasts=[], socket={}, S={socket}, _thisSocket=socket;
         window.appInterpage={handleMemoryEdited:async (name,options)=>{calls.push({name,options});}};
         global.BroadcastChannel=class {postMessage(data){broadcasts.push(data);}close(){}};
-        window.reactChatWindowHost={setMessages(){throw new Error('Capsule history must remain unchanged');}};
+        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages(){throw new Error('Capsule history must remain unchanged');}};
         function onmessage(event){BODY}
         const hint={type:'chat_sync_history_changed',characterSyncId:original.characterSyncId,memoryEditedName:'Neko'};
         onmessage({data:JSON.stringify(hint)});
@@ -581,3 +581,55 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             assert modal.locator('[data-sync-action="recover"]').is_disabled()
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('busy', ['text', 'queue', 'audio'])
+def test_received_memory_refresh_waits_for_existing_turn_and_playback(busy):
+    run_script(r"""(async()=>{
+        let refreshed=0;
+        window.appState={assistantTurnId:'turn',assistantTurnCompletedId:'turn'};
+        window.appInterpage={handleMemoryEdited:async(name,options)=>{
+            assert.equal(name,'Neko');assert.equal(options.silent,true);refreshed++;
+        }};
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        if(BUSY==='text')window.appState.assistantTurnAwaitingBubble=true;
+        if(BUSY==='queue')window._isProcessingRealisticQueue=true;
+        if(BUSY==='audio')window.NekoSpeechPlaybackState={active:true};
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        assert.equal(refreshed,0);
+        windowEvents['neko-assistant-turn-end']();
+        assert.equal(refreshed,0);
+        window.appState.assistantTurnAwaitingBubble=false;
+        window._isProcessingRealisticQueue=false;
+        window.NekoSpeechPlaybackState={active:false};
+        windowEvents[BUSY==='audio'?'neko-speech-playback-state':'neko-realistic-queue-idle']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(refreshed,1);
+        window.nekoChatSync.requestMemoryRefresh('Other');
+        assert.equal(refreshed,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('BUSY', json.dumps(busy)))
+
+
+@pytest.mark.parametrize('busy', ['isRecording', 'voiceChatActive', 'voiceStartPending', 'isMicStarting'])
+def test_received_memory_refresh_waits_for_the_voice_session_to_end(busy):
+    run_script(r"""(async()=>{
+        let refreshed=0;
+        window.appState={userRecentSpeechTime:Date.now()-800};
+        if(BUSY==='isMicStarting')window.isMicStarting=true;
+        else window.appState[BUSY]=true;
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        window.appInterpage={handleMemoryEdited:async()=>{refreshed++;}};
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        windowEvents['voice-input-lifecycle-changed']();
+        assert.equal(refreshed,0);
+        window.isMicStarting=false;
+        window.appState.isRecording=false;
+        window.appState.voiceChatActive=false;
+        window.appState.voiceStartPending=false;
+        windowEvents['voice-input-lifecycle-changed']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(refreshed,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('BUSY', json.dumps(busy)))

@@ -977,12 +977,15 @@ def _write_recent_browser_payload(
         current_rows = json.loads(current_text)
         if not isinstance(current_rows, list):
             current_rows = []
+        used_sources = set()
         for item, edit in zip(payload, browser_chat or []):
             source = edit.get("source_index") if isinstance(edit, dict) else None
-            if type(source) is int and 0 <= source < len(current_rows):
+            if (type(source) is int and 0 <= source < len(current_rows)
+                    and source not in used_sources and isinstance(current_rows[source], dict)):
                 key = message_metadata(current_rows[source]).get(ID_KEY)
                 source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
                 if key and item.get("type") == source_type:
+                    used_sources.add(source)
                     item["data"].setdefault("metadata", {})[ID_KEY] = key
                     item["data"]["metadata"][TIME_KEY] = message_metadata(current_rows[source]).get(TIME_KEY)
         # Maintain theater capsules only through /cache and /theater/forget; browser saves preserve them unchanged.
@@ -1528,6 +1531,23 @@ def _load_memory_toggle_enabled(config_manager, key):
     if not isinstance(enabled, bool):
         raise _InvalidMemoryToggleValue('Invalid memory setting value')
     return enabled
+
+
+@router.get('/farewell-summary')
+async def get_farewell_summary():
+    """Read-only memory summary of the active character for the desktop exit farewell card.
+
+    ``memory_count`` / ``conversation_count`` / ``flashback``; a field that
+    cannot be read is omitted (``flashback`` is ``null``). No LLM, sync or
+    writes: the desktop waits at most 1.2 s for this during quit.
+    """
+    try:
+        from main_logic.farewell_summary import build_farewell_summary
+
+        return await build_farewell_summary()
+    except Exception as exc:
+        logger.warning("farewell-summary unavailable: %s", type(exc).__name__)
+        return {"flashback": None}
 
 
 @router.get('/review_config')

@@ -15,6 +15,8 @@ async def forward_recent_memory_changes():
     loop = asyncio.get_running_loop()
     changed = asyncio.Event()
     unsubscribe = subscribe_recent_changes(lambda path: loop.call_soon_threadsafe(changed.set))
+    from services.chat_sync.long_term_events import subscribe
+    unsubscribe_long_term = subscribe(lambda: loop.call_soon_threadsafe(changed.set))
     try:
         while True:
             await changed.wait()
@@ -29,3 +31,4 @@ async def forward_recent_memory_changes():
                 pass
     finally:
         unsubscribe()
+        unsubscribe_long_term()

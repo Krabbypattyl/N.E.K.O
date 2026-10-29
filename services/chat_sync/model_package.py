@@ -158,14 +158,23 @@ def install_model(package, binding, destination):
                     raise ValueError("invalid_cloud_model_cache")
         return root / model["modelFile"]
     stage = root.parent / (meta["sha256"] + "." + uuid4().hex + ".part")
-    stage.mkdir(parents=True)
-    for path, raw in raw_files.items():
-        target = stage / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(raw)
-    # This installation receipt reuses the received artifact on later round trips.
-    (stage / ".cloud-model.json").write_bytes(encode(binding, model=True))
     import shutil
-    shutil.copyfile(archive_path, stage / ".cloud-model.zip")
-    stage.rename(root)
+    try:
+        stage.mkdir(parents=True)
+        for path, raw in raw_files.items():
+            target = stage / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        # This installation receipt reuses the received artifact on later round trips.
+        (stage / ".cloud-model.json").write_bytes(encode(binding, model=True))
+        shutil.copyfile(archive_path, stage / ".cloud-model.zip")
+        try:
+            stage.rename(root)
+        except OSError:
+            if not root.is_dir():
+                raise
+            # Another installer won; validate its completed immutable directory.
+            return install_model(package, binding, destination)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
     return root / model["modelFile"]

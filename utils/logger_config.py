@@ -85,6 +85,25 @@ def _get_selected_storage_root_from_env() -> Path | None:
     return selected_root
 
 
+_LOG_CONTROL_CHARACTER_ESCAPES = str.maketrans({
+    code: f"\\x{code:02x}"
+    for code in (*range(32), *range(127, 160))
+    if code not in (9, 10)
+})
+
+
+class _SafeLogFormatter(logging.Formatter):
+    """Escape terminal controls after formatting messages, metadata and tracebacks.
+
+    Keep newlines and tabs for existing multiline logs and traceback indentation.
+    Escaping the final output also covers exception/stack text without replacing
+    the original message or arguments shared by other handlers.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return super().format(record).translate(_LOG_CONTROL_CHARACTER_ESCAPES)
+
+
 class RobustLoggerConfig:
     """Robust logging configuration class"""
     
@@ -420,7 +439,7 @@ class RobustLoggerConfig:
         # Log format.
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         date_format = '%Y-%m-%d %H:%M:%S'
-        formatter = logging.Formatter(log_format, date_format)
+        formatter = _SafeLogFormatter(log_format, date_format)
         
         # Console defaults to INFO: DEBUG floods terminals instantly; disk logging suffices.
         # Set NEKO_LOG_CONSOLE_LEVEL=DEBUG for rare local troubleshooting requiring console DEBUG.
@@ -838,6 +857,11 @@ HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS = [
     # Plugin Server -> Market update check; market_bridge logs its own
     # "[market-update-check]" line with the status, so the httpx line is a duplicate.
     "/api/v1/plugins/latest-versions",
+    # Main Server -> community: visit-hub poll (every ~5s) plus the bearer identity
+    # check in front of it. "/api/users/me" also covers "/api/users/me/presence".
+    "/api/users/me",
+    "/following?limit=",
+    "/api/notifications?unread=true",
 ]
 
 # HTTPX client rate limits (display once every N seconds).

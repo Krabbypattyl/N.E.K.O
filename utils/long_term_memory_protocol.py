@@ -164,7 +164,7 @@ def document(value):
 def mutation(value):
     if not isinstance(value, dict) or set(value) != {"operationId", "document"}:
         raise ValueError("invalid_long_term_memory")
-    from services.chat_sync.recent_protocol import identity
+    from utils.recent_memory_protocol import identity
     identity(value["operationId"])
     return {"operationId": value["operationId"], "document": document(value["document"])}
 

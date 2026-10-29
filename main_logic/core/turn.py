@@ -2651,15 +2651,16 @@ class TurnMixin:
         # Save accepted raw text independently, even if the reply later fails.
         if original_id and getattr(self, '_config_manager', None) is not None:
             try:
-                await save_original(
+                saved_id = await save_original(
                     self.lanlan_name, 'user',
                     chat_original_text if chat_original_text is not None else record_transcript_text,
                     record_id=original_id,
                     original_time=str(int(_transcript_arrival_ts * 1000)),
                     config_manager=self._config_manager,
                 )
-                from services.chat_sync.media_sync import capture_user_media
-                await capture_user_media(self, original_id, chat_request_id or self._active_text_request_id)
+                if saved_id:
+                    from services.chat_sync.media_sync import capture_user_media
+                    await capture_user_media(self, saved_id, chat_request_id or self._active_text_request_id)
             except Exception:
                 print('[chat-sync] original_save_failed')
         # The frontend matches its optimistic bubble using the frozen request ID.

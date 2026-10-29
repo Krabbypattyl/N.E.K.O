@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from memory.message_sources import is_theater_memory_message
-from services.chat_sync.recent_protocol import MEMO_ID, canonical, entries, identity
+from utils.recent_memory_protocol import MEMO_ID, canonical, entries, identity
 from utils.character_memory import list_character_recent_paths
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.llm_client import message_metadata, messages_to_dict

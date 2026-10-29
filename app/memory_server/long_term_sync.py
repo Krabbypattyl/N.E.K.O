@@ -10,7 +10,7 @@ import sqlite3
 import time
 from uuid import uuid4
 
-from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, managed_path, view_files, export_document, import_document, read_views
+from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -104,6 +104,7 @@ def _recover_snapshot(name):
             raise ValueError('invalid_long_term_journal')
         restore = {directory / key: value for key, value in before.items()}
         restore[DesktopLongTermAdapter(runtime._config_manager).directory / receipt['filename']] = receipt['before']
+        advance_view_generation(directory)
         errors = []
         for target, original in restore.items():
             try:
@@ -294,6 +295,7 @@ def _write_snapshot_locked(name, payload):
                                    'before': receipt_path.read_text(encoding='utf-8') if receipt_path.is_file() else None}}
             atomic_write_json(directory / JOURNAL, journal, ensure_ascii=False)
             try:
+                advance_view_generation(directory)
                 for relative, value in files.items():
                     atomic_write_json(directory / relative, value, ensure_ascii=False, indent=2)
                 atomic_write_json(adapter.local_path(binding), {
@@ -393,17 +395,27 @@ async def consume_for_name(name):
     try:
         if not getattr(runtime._config_manager, 'app_docs_dir', None):
             return False
-        async with _views_locked(name):
-            await _complete_file_commit(_recover_snapshot, name)
-        uid = _uid(name)
-        if uid and DesktopLongTermAdapter(runtime._config_manager).incoming_path(uid).is_file():
+        def pending():
+            journal = (Path(runtime._config_manager.memory_dir) / name / JOURNAL).is_file()
+            adapter = DesktopLongTermAdapter(runtime._config_manager)
+            # No character config read is needed for the ordinary, sync-free path.
+            if not journal and not any(adapter.directory.glob('*.incoming.json')):
+                return False, None
+            uid = _uid(name)
+            return journal, uid if uid and adapter.incoming_path(uid).is_file() else None
+        journal, uid = await asyncio.to_thread(pending)
+        if not journal and uid is None:
+            return False
+        if journal:
+            async with _views_locked(name):
+                await _complete_file_commit(_recover_snapshot, name)
+        if uid:
             return await consume(uid)
     except LongTermMemoryRecoveryRequired:
         raise
     except Exception:
-        # A write may have created a journal before raising. Do not expose it.
         from memory.long_term_sync import require_consistent_views
-        require_consistent_views(Path(runtime._config_manager.memory_dir) / name)
+        await asyncio.to_thread(require_consistent_views, Path(runtime._config_manager.memory_dir) / name)
         logger.warning('[LongTermSync] incoming snapshot deferred')
     return False
 

@@ -1,5 +1,37 @@
 import pytest
+from pathlib import Path
 from playwright.sync_api import Page, expect
+
+
+@pytest.mark.frontend
+def test_sync_memory_refresh_keeps_an_open_voice_session_running(mock_page: Page):
+    root = Path(__file__).resolve().parents[2]
+    mock_page.goto('about:blank')
+    mock_page.evaluate("""() => {
+        window.lanlan_config={lanlan_name:'Neko'};
+        window.syncProbe={stopped:0,cleared:0,sent:[]};
+        window.appState={isRecording:true,voiceChatActive:true,isTextSessionActive:true,
+            userRecentSpeechTime:Date.now()-800,
+            socket:{readyState:WebSocket.OPEN,send:raw=>window.syncProbe.sent.push(JSON.parse(raw))}};
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        window.stopMicCapture=()=>{window.syncProbe.stopped++;window.appState.isRecording=false;};
+        window.clearAudioQueue=async()=>{window.syncProbe.cleared++;};
+        window.t=key=>key;
+    }""")
+    mock_page.add_script_tag(path=str(root / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'))
+    mock_page.evaluate('() => { window.appInterpage.handleMemoryEdited=window.__appInterpageParts.handleMemoryEdited; }')
+    mock_page.add_script_tag(path=str(root / 'static/app/app-chat-sync.js'))
+    mock_page.evaluate("window.nekoChatSync.requestMemoryRefresh('Neko')")
+    assert mock_page.evaluate('window.syncProbe') == {'stopped': 0, 'cleared': 0, 'sent': []}
+    assert mock_page.evaluate('window.appState.isRecording') is True
+    mock_page.evaluate("""() => {
+        window.appState.isRecording=false;
+        window.appState.voiceChatActive=false;
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {detail:{state:'off'}}));
+    }""")
+    mock_page.wait_for_function('window.syncProbe.sent.length === 1 && window.syncProbe.cleared === 1')
+    assert mock_page.evaluate('window.syncProbe') == {'stopped': 0, 'cleared': 1, 'sent': [{'action': 'end_session'}]}
+    assert mock_page.evaluate('window.appState.isTextSessionActive') is False
 
 
 @pytest.mark.frontend
@@ -175,7 +207,7 @@ def _open_react_chat_page(mock_page: Page, running_server: str) -> None:
     mock_page.add_init_script(
         "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
     )
-    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost"
         " && window.appButtons"
@@ -183,7 +215,11 @@ def _open_react_chat_page(mock_page: Page, running_server: str) -> None:
         " && window.appState"
         " && typeof window.sendTextPayload === 'function'"
     )
-    mock_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.reactChatWindowHost.setChatSurfaceMode('full');
+        window.reactChatWindowHost.openWindow();
+    }""")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost.isMounted && window.reactChatWindowHost.isMounted()"
         " && !!document.querySelector('.composer-input')"
@@ -216,6 +252,7 @@ def _install_chat_send_harness(
             window.lanlan_config.master_name = 'Alice';
 
             window.showStatusToast = () => {};
+            window.isNekoHomeTutorialInteractionLocked = () => false;
             window.hideVoicePreparingToast = () => {};
             window.resetProactiveChatBackoff = () => {};
             window.hasAnyChatModeEnabled = () => false;
