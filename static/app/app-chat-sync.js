@@ -298,25 +298,10 @@
             });
     }
 
-    function resourceUrl(resource, uid) {
-        return resource && (resource.url || resource.resourceId && '/api/chat-sync/characters/' + uid + '/resources/' + resource.resourceId) || '';
-    }
-
-    function recentMessage(record, result, name, uid) {
+    function recentMessage(record, name, uid) {
         var body = record.role === 'assistant'
             ? record.text.replace(/^\[\d{8} [^\]\s]+ \d{2}:\d{2}\][ \t]*/, '') : record.text;
         var blocks = body ? [{ type: 'text', text: body }] : [];
-        var media = result.media && result.media[record.messageId];
-        (media && media.attachments || []).forEach(function (item) {
-            if (item.type === 'image') {
-                var cached = result.localMedia && result.localMedia[item.id];
-                var url = cached && cached.original || resourceUrl(item.original || item.thumbnail, uid);
-                if (url) blocks.push({ type: 'image', url: url, alt: item.title || '' });
-            } else if (item.url) {
-                blocks.push({ type: 'link', url: item.url, title: item.title || item.url,
-                    description: item.artist || undefined, thumbnailUrl: resourceUrl(item.cover, uid) || undefined });
-            }
-        });
         if (!blocks.length) return null;
         var timestamp = record.originalTime === null ? 0 : Number(record.originalTime);
         if (!Number.isSafeInteger(timestamp)) timestamp = 0;
@@ -347,7 +332,7 @@
             var uid = role.characterSyncId;
             var result = await api('/characters/' + uid + '/recent-display');
             if (liveCharacterName() !== name || window.reactChatWindowHost !== host || liveChatBusy(host)) return;
-            var received = result.originals.map(function (record) { return recentMessage(record, result, name, uid); }).filter(Boolean);
+            var received = result.originals.map(function (record) { return recentMessage(record, name, uid); }).filter(Boolean);
             // The endpoint supplies only received recent messages. Local split bubbles stay owned by the chat host.
             var current = host.getState().messages || [];
             var local = current.filter(function (message) { return !message.id.startsWith(displayPrefix); });

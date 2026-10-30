@@ -6,14 +6,19 @@ import asyncio
 from contextlib import closing
 import hashlib
 import json
+import logging
 from pathlib import Path
 from uuid import uuid4
 
 from services.chat_sync import host
-from services.chat_sync.media_protocol import encode, web_url
-from services.chat_sync.media_sync import canonical
+from services.chat_sync.model_protocol import canonical, encode, web_url
 from services.chat_sync.model_package import install_model, package_model
 from services.chat_sync.writer import store_connection
+
+
+class _PrivateModelLogFilter(logging.Filter):
+    def filter(self, record):
+        return "x-oss-signature=" not in record.getMessage()
 
 
 class ModelStore:
@@ -76,6 +81,9 @@ class DesktopModelSync:
     def __init__(self, runtime, path):
         self.runtime, self.store, self.adapter = runtime, ModelStore(path), None
         self.lock = asyncio.Lock()
+        logger = logging.getLogger("httpx")
+        if not any(isinstance(item, _PrivateModelLogFilter) for item in logger.filters):
+            logger.addFilter(_PrivateModelLogFilter())
 
     async def _head(self, domain, request):
         value = await request("GET", f"/v1/chat-sync/characters/{domain.character_uid}/model-binding", None)
@@ -86,7 +94,7 @@ class DesktopModelSync:
         if record is None:
             if value["revision"] != 0 or value.get("recordHash") is not None:
                 raise ValueError("invalid_model_response")
-        elif value["revision"] <= 0 or hashlib.sha256(encode(record, model=True)).hexdigest() != value.get("recordHash"):
+        elif value["revision"] <= 0 or hashlib.sha256(encode(record)).hexdigest() != value.get("recordHash"):
             raise ValueError("invalid_model_response")
         return value
 
@@ -116,7 +124,7 @@ class DesktopModelSync:
             binding = await asyncio.to_thread(runtime.state.binding, uid)
             async def guard():
                 await runtime._guard(binding, authenticated[1])
-            caps = await request("GET", "/v1/chat-sync/media/capabilities", None)
+            caps = await request("GET", "/v1/chat-sync/models/capabilities", None)
             if caps.get("schemaVersion") != 1 or caps.get("modelBinding") != 1:
                 return
             current = await adapter.read(uid)
@@ -135,7 +143,7 @@ class DesktopModelSync:
                 return
             candidate = state.get("candidate")
             if candidate and candidate["revision"] == head["revision"]:
-                if encode(candidate["record"], model=True) != encode(head["record"], model=True):
+                if encode(candidate["record"]) != encode(head["record"]):
                     raise ValueError("invalid_model_response")
                 if current["selection"] == canonical(["live2d", candidate["path"]]).decode():
                     state.update(revision=head["revision"], selection=current["selection"], remote=head["record"])
@@ -173,7 +181,7 @@ class DesktopModelSync:
             if pending:
                 if pending["file"] and not pending.get("uploaded"):
                     await guard()
-                    await runtime.media.upload_file(request, f"/v1/chat-sync/characters/{uid}", pending["file"], guard=guard)
+                    await self.upload_file(request, f"/v1/chat-sync/characters/{uid}", pending["file"], guard=guard)
                     pending["uploaded"] = True
                     await commit(self.store.put, key, state)
                 envelope = {field: pending[field] for field in ("operationId", "baseRevision", "record")}
@@ -194,7 +202,7 @@ class DesktopModelSync:
                     raise
                 if (receipt.get("ownerId") != domain.owner_id or receipt.get("characterSyncId") != uid
                         or receipt.get("operationId") != pending["operationId"] or receipt.get("revision") != pending["baseRevision"] + 1
-                        or receipt.get("recordHash") != hashlib.sha256(encode(pending["record"], model=True)).hexdigest()):
+                        or receipt.get("recordHash") != hashlib.sha256(encode(pending["record"])).hexdigest()):
                     raise ValueError("invalid_model_response")
                 state.update(revision=receipt["revision"], selection=pending["selection"], remote=pending["record"])
                 state.pop("pending")
@@ -313,3 +321,36 @@ class DesktopModelSync:
                 state["selection"] = "" if action == "local" else (await self.adapter.read(uid))["selection"]
             await commit(self.store.put, domain.key(), state)
             await commit(self.runtime.scheduler.retry_model, domain.key())
+
+    async def upload_file(self, request, base, file, guard=None):
+        import httpx
+        metadata = {key: file[key] for key in ("resourceId", "purpose", "size", "sha256", "contentType")}
+        if metadata["purpose"] != "model" or metadata["contentType"] != "application/zip":
+            raise ValueError("invalid_model_resource")
+        result = await request("POST", base + "/resources", canonical(metadata))
+        if result.get("resourceId") != file["resourceId"] or type(result.get("ready")) is not bool:
+            raise ValueError("invalid_cloud_model_response")
+        if result["ready"]:
+            return
+        signed = result["upload"]
+        if not web_url(signed["url"]).startswith("https://") or signed["method"] != "PUT" or any(
+                key.lower() not in {"content-type", "content-length"} for key in signed["headers"]):
+            raise ValueError("invalid_cloud_model_response")
+        raw = await asyncio.to_thread(Path(file["path"]).read_bytes)
+        if len(raw) != file["size"] or hashlib.sha256(raw).hexdigest() != file["sha256"]:
+            raise ValueError("invalid_cloud_model_resource")
+        async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
+            async def chunks():
+                for offset in range(0, len(raw), 65536):
+                    if guard:
+                        await guard()
+                    yield raw[offset:offset + 65536]
+            try:
+                response = await client.put(signed["url"], headers=signed["headers"], content=chunks())
+            except httpx.HTTPError:
+                raise OSError("cloud_model_upload_unavailable") from None
+            if response.status_code not in {200, 201, 204}:
+                raise OSError("cloud_model_upload_unavailable")
+        receipt = await request("POST", base + "/resources/" + file["resourceId"] + "/complete", None)
+        if receipt.get("resourceId") != file["resourceId"] or receipt.get("ready") is not True:
+            raise ValueError("invalid_cloud_model_response")

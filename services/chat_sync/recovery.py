@@ -187,15 +187,6 @@ def stage_authority(runtime):
         profiles.execute("UPDATE profile_outbox SET status='quarantined' WHERE status IN ('pending','conflict')")
         profiles.execute('UPDATE profile_state SET apply_pending=0,dirty=1')
         profiles.execute('UPDATE profile_imports SET completed=1')
-        # Copied display bytes remain local; copied upload operations lose authority.
-        if profiles.execute("SELECT 1 FROM sqlite_master WHERE name='media_state'").fetchone():
-            for domain, ref, raw_source in profiles.execute('SELECT domain,ref,source FROM media_state WHERE source IS NOT NULL').fetchall():
-                local_source = json.loads(raw_source)
-                local_source['uploadRevoked'] = True
-                profiles.execute('UPDATE media_state SET source=? WHERE domain=? AND ref=?',
-                                 (json.dumps(local_source), domain, ref))
-            profiles.execute('UPDATE media_state SET pending=NULL,remote=NULL,remote_revision=0')
-            profiles.execute('DELETE FROM media_checkpoint')
         if profiles.execute("SELECT 1 FROM sqlite_master WHERE name='model_state'").fetchone():
             profiles.execute('DELETE FROM model_state')
     with closing(store_connection(directory / 'scheduler.sqlite3')) as scheduler, scheduler:

@@ -1264,7 +1264,6 @@ class TurnMixin:
     def _discard_request_staged_images(self, request_id: object) -> None:
         """Remove attachments this request already staged; other requests' images stay."""
         request_id_str = str(request_id or "")
-        getattr(self, "_chat_shared_images", {}).pop(request_id_str, None)
         ledger = getattr(self, "_request_staged_images", None)
         if not request_id_str or not ledger:
             return
@@ -2651,16 +2650,13 @@ class TurnMixin:
         # Save accepted raw text independently, even if the reply later fails.
         if original_id and getattr(self, '_config_manager', None) is not None:
             try:
-                saved_id = await save_original(
+                await save_original(
                     self.lanlan_name, 'user',
                     chat_original_text if chat_original_text is not None else record_transcript_text,
                     record_id=original_id,
                     original_time=str(int(_transcript_arrival_ts * 1000)),
                     config_manager=self._config_manager,
                 )
-                if saved_id:
-                    from services.chat_sync.media_sync import capture_user_media
-                    await capture_user_media(self, saved_id, chat_request_id or self._active_text_request_id)
             except Exception:
                 print('[chat-sync] original_save_failed')
         # The frontend matches its optimistic bubble using the frozen request ID.

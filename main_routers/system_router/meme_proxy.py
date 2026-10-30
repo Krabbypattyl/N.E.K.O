@@ -35,17 +35,6 @@ MEME_PROXY_CACHE = TTLCache(
 )
 
 
-async def _shared_meme_bytes(url: str) -> bytes:
-    response = await fetch_meme_image_response(url, write_cache=True)
-    if response.status_code != 200 or not response.headers.get("content-type", "").startswith("image/"):
-        raise OSError("chat_media_image_unavailable")
-    return bytes(response.body)
-
-
-from services.chat_sync import host as _sync_host
-_sync_host.install_shared_meme_reader(lambda url: _shared_meme_bytes(url))
-
-
 @router.get('/meme/proxy-image')
 async def proxy_meme_image(url: str):
     return await fetch_meme_image_response(url, write_cache=True)

@@ -24,7 +24,6 @@ class SyntheticRuntime:
         self.originals = [{"messageId": "b" * 32, "text": "synthetic"}]
         self.local_reply_records = []
         self.state = SimpleNamespace(binding=lambda _uid: None)
-        self.media = SimpleNamespace(records=AsyncMock(return_value={}), local_images=AsyncMock(return_value={}))
 
     async def status(self):
         """Return a bound role and an unrelated stale role to check local projection."""
@@ -114,24 +113,10 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "localOnlyOriginals": 0,
-                    "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None,
-                    "mediaVersion": None},
+                    "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None},
     }]
 
 
-def test_status_exposes_media_revision_when_original_cursor_has_not_changed(local_client):
-    client, runtime = local_client
-    original = runtime.status
-
-    async def changed_media():
-        state = await original()
-        state['bindings'][0]['mediaVersion'] = '4:2:3:800'
-        return state
-
-    runtime.status = changed_media
-    binding = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
-    assert binding['cursor'] == 0
-    assert binding['mediaVersion'] == '4:2:3:800'
 
 
 @pytest.mark.parametrize('choices,expected', [({}, False), ({UID: False}, False), ({UID: True}, True)])
@@ -189,7 +174,7 @@ def test_history_keeps_local_only_replies_outside_canonical_originals(local_clie
     response = client.get(f"/api/chat-sync/characters/{UID}/history")
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
-    assert response.json() == {"characterSyncId": UID, "originals": runtime.originals, "localReplies": [local], "media": {}, "localMedia": {}}
+    assert response.json() == {"characterSyncId": UID, "originals": runtime.originals, "localReplies": [local]}
     assert runtime.calls == [("history", UID), ("local_replies", UID)]
     runtime.calls.clear()
     assert client.get(f"/api/chat-sync/characters/{'f' * 32}/history").status_code == 404
@@ -418,7 +403,7 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert runtime.calls == []
 
 
-def test_recent_display_excludes_local_sources_and_keeps_received_media(local_client, tmp_path, monkeypatch):
+def test_recent_display_excludes_local_sources(local_client, tmp_path, monkeypatch):
     from services.chat_sync import source
     client, runtime = local_client
     runtime.recent_memory = object()
@@ -427,11 +412,10 @@ def test_recent_display_excludes_local_sources_and_keeps_received_media(local_cl
     (tmp_path / 'sources.sqlite3').touch()
     monkeypatch.setattr(source, 'ChatOriginalSource', lambda path: SimpleNamespace(stored_ids=lambda uid: {'b' * 32}))
     runtime.originals = [{'messageId': 'b' * 32, 'text': 'local'}, {'messageId': 'c' * 32, 'text': 'phone'}]
-    runtime.media.records = AsyncMock(return_value={'c' * 32: {'attachments': []}})
     result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
     assert result.status_code == 200
     assert result.json()['originals'] == [{'messageId': 'c' * 32, 'text': 'phone'}]
-    assert result.json()['media'] == {'c' * 32: {'attachments': []}}
+    assert 'media' not in result.json() and 'localMedia' not in result.json()
 
 
 @pytest.mark.parametrize('recent,enabled', [(None, 1), (object(), 0)])

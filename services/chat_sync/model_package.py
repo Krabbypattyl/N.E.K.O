@@ -11,7 +11,7 @@ import zipfile
 
 from PIL import Image
 
-from services.chat_sync.media_protocol import MAX_RESOURCE_BYTES as MAX_MODEL_BYTES, decode, encode, relative_path
+from services.chat_sync.model_protocol import MAX_RESOURCE_BYTES as MAX_MODEL_BYTES, decode, encode, relative_path
 
 TEXTURE_MAX_EDGE = 2048
 
@@ -50,7 +50,7 @@ def package_model(model_file, destination):
         if receipt.is_file() and copy.is_file() and receipt.stat().st_size <= 131072:
             saved = json.loads(receipt.read_bytes())
             binding = saved if "schemaVersion" in saved else {"schemaVersion": 1, "model": saved}
-            model = decode(encode(binding, model=True), model=True)["model"]
+            model = decode(encode(binding))["model"]
             if model and source == ancestor / model["modelFile"]:
                 checked = install_model(copy, binding, ancestor.parent)
                 if checked.resolve() != source:
@@ -112,7 +112,7 @@ def package_model(model_file, destination):
                       "package": {"resource": {"resourceId": identity}, "size": package.stat().st_size,
                                   "sha256": package_hash},
                       "files": entries, "compression": {"version": 1, "format": "zip-deflate", "textureMaxEdge": TEXTURE_MAX_EDGE}}
-        binding = decode(encode({"schemaVersion": 1, "model": descriptor}, model=True), model=True)
+        binding = decode(encode({"schemaVersion": 1, "model": descriptor}))
         return binding, {"resourceId": identity, "purpose": "model", "path": str(package), "size": package.stat().st_size,
                          "sha256": descriptor["package"]["sha256"], "contentType": "application/zip"}
     except BaseException:
@@ -122,7 +122,7 @@ def package_model(model_file, destination):
 
 
 def install_model(package, binding, destination):
-    validated = decode(encode(binding, model=True), model=True)
+    validated = decode(encode(binding))
     model = validated["model"]
     if model is None:
         raise ValueError("invalid_cloud_model")
@@ -176,7 +176,7 @@ def install_model(package, binding, destination):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(raw)
         # This installation receipt reuses the received artifact on later round trips.
-        (stage / ".cloud-model.json").write_bytes(encode(binding, model=True))
+        (stage / ".cloud-model.json").write_bytes(encode(binding))
         shutil.copyfile(archive_path, stage / ".cloud-model.zip")
         try:
             stage.rename(root)

@@ -157,7 +157,6 @@ async def status(runtime: Runtime):
             "profile": binding.get("profile"),
             # Registration progress never represents cloud delivery or recovery.
             "historyBackfill": binding.get("historyBackfill"),
-            "mediaVersion": binding.get("mediaVersion"),
         }
     return {**state, "characters": characters}
 
@@ -251,18 +250,7 @@ async def history(character_uid: str, runtime: Runtime):
     """Return canonical originals and separate local-only replies for passive display."""
     await _character(character_uid)
     originals = await runtime.history(character_uid)
-    binding = await asyncio.to_thread(runtime.state.binding, character_uid)
-    from services.chat_sync.ledger import ChatDomain
-    domain = ChatDomain(binding["owner_id"], character_uid) if binding else None
-    media, local_images = {}, {}
-    try:
-        media = await runtime.media.records(character_uid, domain, {record["messageId"] for record in originals})
-        local_images = await runtime.media.local_images(character_uid, domain, {record["messageId"] for record in originals})
-    except (ValueError, OSError):
-        # Optional display data cannot hide the original text archive.
-        pass
-    return {"characterSyncId": character_uid, "originals": originals, "media": media,
-            "localMedia": local_images,
+    return {"characterSyncId": character_uid, "originals": originals,
             "localReplies": await runtime.local_replies(character_uid)}
 
 
@@ -272,7 +260,7 @@ async def recent_display(character_uid: str, runtime: Runtime):
     await _character(character_uid)
     binding = await asyncio.to_thread(runtime.state.binding, character_uid)
     if runtime.recent_memory is None or not binding or not binding["enabled"]:
-        return {"characterSyncId": character_uid, "originals": [], "media": {}, "localMedia": {}}
+        return {"characterSyncId": character_uid, "originals": []}
     result = await history(character_uid, runtime)
     from services.chat_sync.source import ChatOriginalSource
     source_path = runtime.state.path.parent / "sources.sqlite3"
@@ -285,34 +273,8 @@ async def recent_display(character_uid: str, runtime: Runtime):
     return result
 
 
-@router.get("/characters/{character_uid}/local-media/{message_id}/{attachment_id}/{purpose}")
-async def local_media_image(character_uid: str, message_id: str, attachment_id: str, purpose: str, runtime: Runtime):
-    from fastapi.responses import FileResponse
-    from services.chat_sync.media_files import checked_image_type
-    await _character(character_uid)
-    try:
-        path = await runtime.media.local_image_path(character_uid, message_id, attachment_id, purpose)
-        media_type = await asyncio.to_thread(checked_image_type, path)
-    except (ValueError, OSError):
-        raise HTTPException(404, "chat_media_resource_unavailable") from None
-    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
-@router.get("/characters/{character_uid}/resources/{resource_id}")
-async def media_resource(character_uid: str, resource_id: str, runtime: Runtime):
-    """Serve a verified local image; cloud credentials never reach the browser."""
-    from fastapi.responses import FileResponse
-    await _character(character_uid)
-    try:
-        path = await runtime.media.resource(character_uid, resource_id)
-    except (ValueError, OSError):
-        raise HTTPException(404, "chat_media_resource_unavailable") from None
-    from services.chat_sync.media_files import checked_image_type
-    try:
-        media_type = await asyncio.to_thread(checked_image_type, path)
-    except (OSError, ValueError):
-        raise HTTPException(404, "chat_media_resource_unavailable") from None
-    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/characters/{character_uid}/model-sync")

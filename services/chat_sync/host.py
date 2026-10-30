@@ -48,7 +48,6 @@ _get_init_one_catgirl: Callable[[], Callable[..., Awaitable[Any]]] | None = None
 _conversation_busy: Callable[[Any], bool] | None = None
 _rename_character: Callable[..., Awaitable[Any]] | None = None
 _delete_character: Callable[..., Awaitable[Any]] | None = None
-_shared_meme_bytes: Callable[[str], Awaitable[bytes]] | None = None
 _resolve_model_file: Callable[..., Any] | None = None
 
 
@@ -61,14 +60,8 @@ def resolve_model_file(path, config):
     return _installed(_resolve_model_file, "resolve_model_file")(path, config)
 
 
-def install_shared_meme_reader(reader) -> None:
-    """The existing allowlisted meme proxy owns public image access."""
-    global _shared_meme_bytes
-    _shared_meme_bytes = _callable(reader, "shared_meme_bytes")
 
 
-async def shared_meme_bytes(url: str) -> bytes:
-    return await _installed(_shared_meme_bytes, "shared_meme_bytes")(url)
 
 
 def _callable(value, name: str):

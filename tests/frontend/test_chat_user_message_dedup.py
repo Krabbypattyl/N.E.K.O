@@ -101,7 +101,7 @@ def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: 
     ('assistant', '[20261023 星期五 13:25]phone caption', 'phone caption'),
     ('user', '[20261023 Fri 13:25] phone caption', '[20261023 Fri 13:25] phone caption'),
 ])
-def test_received_recent_media_refreshes_without_replacing_local_bubbles(mock_page: Page, running_server: str, role, body, visible):
+def test_received_recent_text_ignores_media_without_replacing_local_bubbles(mock_page: Page, running_server: str, role, body, visible):
     role_name = ''
     uid, identity = 'c' * 32, 'a' * 32
     media = {}
@@ -142,8 +142,16 @@ def test_received_recent_media_refreshes_without_replacing_local_bubbles(mock_pa
     assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.filter(m => m.id === 'local-session').length") == 1
     media[identity] = {'attachments': [{'id': 'd' * 32, 'type': 'image', 'title': '',
         'original': {'url': 'https://images.example/sent.gif'}, 'thumbnail': None}]}
+    # Wait for refreshed text before checking that legacy media fields stay ignored.
+    originals[0]['text'] = body + ' refreshed'
     mock_page.evaluate("() => document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
-    mock_page.wait_for_function("() => window.reactChatWindowHost.getState().messages.some(m => m.blocks.some(b => b.type === 'image' && b.url.endsWith('sent.gif')))")
+    mock_page.wait_for_function("expected => window.reactChatWindowHost.getState().messages.some(m => m.blocks.some(b => b.text === expected))", arg=visible + ' refreshed')
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id.startsWith('sync-recent-')).blocks") == [
+        {'type': 'text', 'text': visible + ' refreshed'},
+    ]
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id === 'local-session').blocks") == [
+        {'type': 'text', 'text': 'existing local bubble'},
+    ]
     originals.clear()
     mock_page.evaluate("() => document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
     mock_page.wait_for_function("() => window.reactChatWindowHost.getState().messages.length === 1")
@@ -922,7 +930,7 @@ def test_high_entropy_image_uses_quality_ladder_before_resolution_downsampling(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('caption', ['', 'with caption'])
-def test_image_only_submission_marks_only_its_last_accepted_image(mock_page: Page, running_server: str, caption):
+def test_image_submissions_keep_the_request_identity_for_each_image(mock_page: Page, running_server: str, caption):
     _open_app_buttons_page(mock_page, running_server)
     _install_chat_send_harness(mock_page)
     result = mock_page.evaluate(
@@ -938,11 +946,11 @@ def test_image_only_submission_marks_only_its_last_accepted_image(mock_page: Pag
             });
             return {sent, images: window.__chatTest.sentPayloads.filter(
                 (item) => item.action === 'stream_data' && item.input_type === 'avatar_drop_image'
-            ).map((item) => ({requestId: item.request_id, final: item.chat_image_only_final}))};
+            ).map((item) => ({requestId: item.request_id}))};
         }""", caption)
     assert result == {'sent': True, 'images': [
-        {'requestId': 'image-submission', 'final': False},
-        {'requestId': 'image-submission', 'final': not bool(caption)},
+        {'requestId': 'image-submission'},
+        {'requestId': 'image-submission'},
     ]}
 
 

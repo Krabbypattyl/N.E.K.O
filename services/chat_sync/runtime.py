@@ -67,8 +67,6 @@ class ChatSyncServiceError(ValueError):
         # arbitrary response details remain inaccessible to UI/logging.
         self.profile_conflict = False
         self.character_deleted = False
-        self.media_conflict = False
-        self.media_deleted = False
 
 
 def _retry_after_ms(value: str | None) -> int | None:
@@ -393,8 +391,6 @@ class DesktopChatSyncRuntime:
             # the first raw producer creates a source object for this role.
             ChatOriginalSource(directory / "sources.sqlite3")
             self.profiles = DesktopProfileSync(self, directory / "profiles.sqlite3")
-            from services.chat_sync.media_sync import DesktopMediaSync
-            self.media = DesktopMediaSync(self, directory / "profiles.sqlite3")
             from services.chat_sync.model_sync import DesktopModelSync
             self.models = DesktopModelSync(self, directory / "profiles.sqlite3")
             from services.chat_sync.recent import RecentMemorySync
@@ -709,11 +705,6 @@ class DesktopChatSyncRuntime:
                 task = asyncio.create_task(self._automatic_profiles(bindings, presence))
                 self._flights["profile"] = task
                 self._track(task)
-        previous = self._flights.get("media")
-        if self.profiles.adapter is not None and (previous is None or previous.done()):
-            task = asyncio.create_task(self._automatic_media(bindings, presence))
-            self._flights["media"] = task
-            self._track(task)
         previous = self._flights.get("model")
         if self.models.adapter is not None and (previous is None or previous.done()):
             task = asyncio.create_task(self._automatic_models(bindings, presence))
@@ -737,23 +728,6 @@ class DesktopChatSyncRuntime:
                 else:
                     await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
 
-    async def _automatic_media(self, bindings, presence):
-        uid = await self._current_character_uid()
-        for binding in bindings:
-            if binding["character_uid"] != uid or not binding["enabled"] or not binding["binding_id"]:
-                continue
-            domain = ChatDomain(binding["owner_id"], uid).key()
-            if not await asyncio.to_thread(self.scheduler.claim, domain, "media", binding["generation"], presence):
-                continue
-            try:
-                await self.media.step(uid)
-                await asyncio.to_thread(self.scheduler.success, domain, "media")
-            except (AutomaticRoleInactive, OSError, ValueError, sqlite3.Error) as exc:
-                # Unsupported older servers retain normal text/profile synchronization.
-                if getattr(exc, "status_code", None) == 404:
-                    await asyncio.to_thread(self.scheduler.success, domain, "media")
-                else:
-                    await asyncio.to_thread(self.scheduler.failure, domain, "media", binding["generation"], presence, exc)
 
     @asynccontextmanager
     async def _connect_notifications(self, service_url):
@@ -811,10 +785,9 @@ class DesktopChatSyncRuntime:
                                 ChatDomain(binding["owner_id"], binding["character_uid"]).key(), channel,
                                 verified_login=(binding["generation"], presence) if login_verified else None,
                                 fingerprint=presence)
-        extension = "media" if channel == "pull" else "model"
-        if (extension == "media" and self.profiles.adapter is not None) or (extension == "model" and self.models.adapter is not None):
+        if channel == "profile" and self.models.adapter is not None:
             await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
-                                    ChatDomain(binding["owner_id"], binding["character_uid"]).key(), extension,
+                                    ChatDomain(binding["owner_id"], binding["character_uid"]).key(), "model",
                                     fingerprint=presence)
         if channel == 'pull' and self.long_term_memory is not None:
             await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
@@ -1012,14 +985,12 @@ class DesktopChatSyncRuntime:
                                       "chat_tombstones", "chat_cursors", "chat_deletions", "chat_lane_rotation",
                                       "chat_identity_backfills", "chat_oversized", "chat_recovery_deletion_pages",
                                       "chat_origin_identities", "chat_deleted_originals")),
-                ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports", "media_state", "media_checkpoint", "model_state")),
+                ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports", "model_state")),
                 ("scheduler.sqlite3", ("scheduler_tasks",)),
             ):
                 with closing(store_connection(directory / filename)) as conn, conn:
                     for table in tables:
                         conn.execute(f"DELETE FROM {table} WHERE domain=?", (domain,))
-                    if filename == "profiles.sqlite3":
-                        conn.execute("DELETE FROM media_state WHERE domain=?", ("local/" + uid,))
             outage = directory / "outage.sqlite3"
             if outage.exists():
                 with closing(sqlite3.connect(outage, timeout=10)) as conn, conn:
@@ -1162,7 +1133,7 @@ class DesktopChatSyncRuntime:
                 self.trace.emit("http_headers", status=response.status_code)
                 if response.status_code >= 300:
                     error = ChatSyncServiceError(response.status_code, _retry_after_ms(response.headers.get("Retry-After")))
-                    if response.status_code == 410 or (response.status_code == 409 and path.endswith(("/profile", "/media", "/model-binding"))):
+                    if response.status_code == 410 or (response.status_code == 409 and path.endswith(("/profile", "/model-binding"))):
                         # Bound and discard error bodies; an unrelated 409 must
                         # never authorize replacing a retained profile version.
                         detail = bytearray()
@@ -1176,8 +1147,6 @@ class DesktopChatSyncRuntime:
                             error.profile_conflict = response.status_code == 409 and parsed == {"detail": "profile_revision_conflict"}
                             error.character_deleted = response.status_code == 410 and parsed == {"detail": "character_deleted"}
                             error.media_resource_missing = response.status_code == 409 and parsed == {"detail": "media_resource_not_ready"}
-                            error.media_conflict = response.status_code == 409 and parsed == {"detail": "media_revision_conflict"}
-                            error.media_deleted = response.status_code == 410 and parsed == {"detail": "media_message_deleted"}
                         except (ValueError, UnicodeError, RecursionError):
                             pass
                     if response.status_code == 429:
@@ -1235,8 +1204,6 @@ class DesktopChatSyncRuntime:
                 key: profile[key] for key in ("local_hash", "head_revision", "head_hash", "dirty", "pending", "conflict", "renameRequired", "apply_pending")
             }
             binding["historyBackfill"] = await self._history_status(binding["character_uid"])
-            binding["mediaVersion"] = await asyncio.to_thread(self.media.store.version,
-                ChatDomain(binding["owner_id"], binding["character_uid"]).key(), binding["character_uid"])
         return {"serviceUrl": settings["service_url"], "deviceId": settings["device_id"], "bindings": bindings,
                 "syncSetupErrors": await asyncio.to_thread(self.state.new_role_errors),
                 "syncSetupDiagnostics": await asyncio.to_thread(self.state.new_role_diagnostics),

@@ -277,24 +277,6 @@ def test_review_compressed_prefix_cannot_resurrect_outdated_sources(review_ident
     assert messages_to_dict(original)[0]['data']['content'] == 'user-A'
 
 
-@pytest.mark.asyncio
-async def test_review_kept_message_still_resolves_its_image_attachment(review_identity_case, devices):
-    from utils.llm_client import HumanMessage, AIMessage
-    from services.chat_sync.media_sync import DesktopMediaSync, delivered_record
-
-    original = _identified_review_messages()
-    sync, _, _, _ = devices('review-media', [])
-    media = DesktopMediaSync(None, sync.path)
-    message_id = original[0].metadata['recent_memory_id']
-    record = delivered_record(message_id, [{'type': 'meme', 'url': 'https://images.example/sent.gif', 'title': 'Shared'}])
-    media.store.capture(UID, record)
-    status, _, entries = review_identity_case(original, [HumanMessage('user-A'), AIMessage('reply-A')])
-    assert status == 'patched'
-    attachments = await media.records(UID, None, {entry['id'] for entry in entries})
-    assert attachments == {message_id: record}
-    assert record['attachments'][0]['type'] == 'image'
-
-
 @pytest.mark.parametrize('time', [None, '1000'])
 def test_review_preserves_original_proof_without_recent_projection_metadata(review_identity_case, time):
     from utils.llm_client import HumanMessage

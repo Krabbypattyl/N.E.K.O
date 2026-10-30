@@ -1,4 +1,4 @@
-"""Versioned display attachments and model bindings, separate from original/persona bytes."""
+"""Portable Live2D model bindings and private model-package references."""
 
 import ipaddress
 import json
@@ -6,10 +6,8 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-MAX_MEDIA_BYTES = 131_072
+MAX_MODEL_BINDING_BYTES = 131_072
 MAX_RESOURCE_BYTES = 120 * 1024 * 1024
-MAX_THUMBNAIL_BYTES = 256 * 1024
-MAX_IMAGE_BYTES = 40 * 1024 * 1024
 MAX_MODEL_FILES = 512
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -17,7 +15,7 @@ _HASH = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _fail():
-    raise ValueError("invalid_media_record")
+    raise ValueError("invalid_model_binding")
 
 
 def obj(value, required, optional=()):
@@ -107,56 +105,6 @@ def relative_path(value):
     return value
 
 
-def validate_media_record(value):
-    obj(value, ("schemaVersion", "messageId", "messageOrigin", "proactive", "attachments"))
-    if type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1:
-        _fail()
-    identifier(value["messageId"])
-    if value["messageOrigin"] not in (None, "chat", "proactive"):
-        _fail()
-    if value["proactive"] is not None:
-        if value["messageOrigin"] != "proactive":
-            _fail()
-        proactive = obj(value["proactive"], ("deliveryId", "sourceMode", "triggerReason"))
-        text(proactive["deliveryId"], 128, required=True)
-        for key in ("sourceMode", "triggerReason"):
-            if proactive[key] is not None:
-                text(proactive[key], 200, required=True)
-    attachments = value["attachments"]
-    if not isinstance(attachments, list) or len(attachments) > 16:
-        _fail()
-    seen = set()
-    for item in attachments:
-        if not isinstance(item, dict):
-            _fail()
-        kind = item.get("type")
-        fields = {
-            "image": ("id", "type", "title", "source", "original", "thumbnail"),
-            "music": ("id", "type", "title", "source", "artist", "url", "cover"),
-            "link": ("id", "type", "title", "source", "url", "mode"),
-        }.get(kind)
-        if fields is None:
-            _fail()
-        obj(item, fields)
-        identifier(item["id"])
-        if item["id"] in seen:
-            _fail()
-        seen.add(item["id"])
-        text(item["title"], 1600)
-        text(item["source"], 400)
-        if kind == "image":
-            resource(item["original"], nullable=True)
-            resource(item["thumbnail"], nullable=True)
-            if item["original"] is not None and item["original"] == item["thumbnail"]:
-                _fail()
-        else:
-            web_url(item["url"])
-            if kind == "music":
-                text(item["artist"], 800)
-                resource(item["cover"], nullable=True)
-            elif item["mode"] is not None:
-                text(item["mode"], 200)
-    return value
 
 
 def validate_model_binding(value):
@@ -198,7 +146,7 @@ def validate_model_binding(value):
 
 
 def resource_ids(value):
-    """Collect exact resource-reference objects, not arbitrary strings from display text."""
+    """Collect exact resource-reference objects, not arbitrary strings from a model descriptor."""
     if isinstance(value, dict):
         if value.keys() == {"resourceId"}:
             yield value["resourceId"]
@@ -210,22 +158,26 @@ def resource_ids(value):
             yield from resource_ids(item)
 
 
-def encode(value, *, model=False):
-    """Canonical JSON uses ASCII keys and preserves user text and attachment order."""
-    (validate_model_binding if model else validate_media_record)(value)
+def encode(value):
+    """Canonical JSON keeps the existing model-binding wire format."""
+    validate_model_binding(value)
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    if len(raw) > MAX_MEDIA_BYTES:
+    if len(raw) > MAX_MODEL_BINDING_BYTES:
         _fail()
     return raw
 
 
-def decode(raw, *, model=False):
-    if not isinstance(raw, bytes) or len(raw) > MAX_MEDIA_BYTES:
+def decode(raw):
+    if not isinstance(raw, bytes) or len(raw) > MAX_MODEL_BINDING_BYTES:
         _fail()
     try:
         value = json.loads(raw)
-        if encode(value, model=model) != raw:
+        if encode(value) != raw:
             _fail()
     except (ValueError, TypeError, RecursionError, UnicodeError):
         _fail()
     return value
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
