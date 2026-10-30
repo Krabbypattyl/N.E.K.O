@@ -313,30 +313,42 @@ def test_sync_locale_namespace_is_complete(locale):
     assert "{{deletions}}" in actual["pending"]
 
 
-@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end'])
-def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger):
+@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end', 'history_changed',
+                                     'poll', 'queue_idle', 'playback', 'voice_end'])
+@pytest.mark.parametrize('cleared', [False, True])
+def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger, cleared):
     run_script(r"""(async()=>{
         const trigger=TRIGGER,requests=[];
-        const current=[{id:'live-user',role:'user',createdAt:3,blocks:[{type:'text',text:'same'}]},
-            {id:'live-assistant',role:'assistant',status:'streaming',turnId:'live-turn',createdAt:1,
+        const current=CLEARED?[]:[{id:'live-user',role:'user',createdAt:3,sortKey:0,blocks:[{type:'text',text:'same'}]},
+            {id:'live-assistant',role:'assistant',status:'sent',createdAt:1,sortKey:1,
                 blocks:[{type:'text',text:'split reply'},{type:'image',url:'local-image'}]}];
         const before=JSON.stringify(current);
+        let replacements=0;
+        document.visibilityState='visible';
         window.reactChatWindowHost={getState:()=>({messages:current}),
-            setMessages(){throw new Error('Sync cannot replace chat history');},
+            setMessages(){replacements++;},
             appendMessage(){throw new Error('Sync cannot replay chat bubbles');}};
         global.fetch=async(path,options)=>{
-            requests.push(path);assert.equal(path,'/api/chat-sync/wake');assert.equal(options.method,'POST');
-            return {ok:true,json:async()=>({scheduled:true})};
+            requests.push(path);
+            if(path.endsWith('/wake'))assert.equal(options.method,'POST');
+            return {ok:true,json:async()=>({scheduled:true,characters:[{displayName:'Neko',
+                characterSyncId:original.characterSyncId,binding:{enabled:true}}],originals:[original]})};
         };
         documentEvents.DOMContentLoaded();
+        await new Promise(resolve=>setImmediate(resolve));
         assert.deepEqual(intervals.map(item=>item.delay),[30000]);
-        if(trigger==='foreground')await windowEvents.pageshow();
-        else if(trigger==='connect'&&windowEvents['voice-input-socket-open'])await windowEvents['voice-input-socket-open']();
-        else if(trigger==='turn_end'&&windowEvents['neko-assistant-turn-end'])await windowEvents['neko-assistant-turn-end']({detail:{turnId:'live-turn'}});
+        const events={connect:'voice-input-socket-open',turn_end:'neko-assistant-turn-end',
+            queue_idle:'neko-realistic-queue-idle',playback:'neko-speech-playback-state',voice_end:'voice-input-lifecycle-changed'};
+        if(trigger==='foreground')await Promise.all([documentEvents.visibilitychange(),windowEvents.pageshow()]);
+        else if(trigger==='history_changed')await documentEvents['neko:chat-sync-history-changed']();
+        else if(trigger==='poll')intervals.forEach(item=>item.callback());
+        else await windowEvents[events[trigger]]();
+        await new Promise(resolve=>setImmediate(resolve));
         assert.deepEqual(requests,trigger==='foreground'?['/api/chat-sync/wake']:[]);
+        assert.equal(replacements,0);
         assert.equal(JSON.stringify(current),before);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('TRIGGER', json.dumps(trigger)))
+    """.replace('TRIGGER', json.dumps(trigger)).replace('CLEARED', json.dumps(cleared)))
 
 
 @pytest.mark.parametrize('original_id', [None, 'a' * 32])
