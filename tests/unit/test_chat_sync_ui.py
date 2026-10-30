@@ -62,6 +62,88 @@ def test_media_extension_does_not_restore_or_reorder_capsule_history():
     """)
 
 
+@pytest.mark.parametrize('received_count', [50, 200])
+def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedback(received_count):
+    """Comparing an uncropped batch must not replace the host's existing 50-message window."""
+    run_script(r"""(async()=>{
+        const I=window.__appReactChatWindowParts={_sortKeySeq:0,
+            state:{messages:[],_galgameRequestSeq:0},renderWindow(){}};
+        for(const name of ['geometry-and-messages.js','message-bundle-actions-and-prompts.js']){
+            vm.runInThisContext(fs.readFileSync(HOST_PARTS+'/'+name,'utf8'));
+        }
+        I.renderWindow=()=>{};
+        const host=window.reactChatWindowHost;
+        host.getState=()=>({messages:I.state.messages.map(I.cloneMessage)});
+        let updates=0,reads=0;
+        host.setMessages=messages=>{updates++;return I.setMessages(messages);};
+        const local=[
+            {id:'local-user',role:'user',author:'User',createdAt:5000,time:'10:00',status:'sent',
+                blocks:[{type:'text',text:'local question'}]},
+            {id:'local-split-1',role:'assistant',author:'Neko',createdAt:5001,time:'10:01',status:'sent',
+                blocks:[{type:'text',text:'first local bubble'}]},
+            {id:'local-split-2',role:'assistant',author:'Neko',createdAt:5002,time:'10:01',status:'sent',
+                blocks:[{type:'text',text:'second local bubble'}]},
+        ];
+        I.setMessages(local);
+        const originals=Array.from({length:RECEIVED_COUNT},(_,index)=>({...original,
+            messageId:String(index).padStart(32,'0'),text:'received '+index,originalTime:String(1000+index)}));
+        global.fetch=async path=>({ok:true,json:async()=>path.endsWith('/status')
+            ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
+            :(reads++,{originals})});
+        const flush=()=>new Promise(resolve=>setImmediate(resolve));
+        documentEvents.DOMContentLoaded();await flush();
+        assert.equal(reads,1);assert.equal(updates,1);
+        assert.equal(I.state.messages.length,50);
+        assert.equal(I.state.messages[0].blocks[0].text,'received '+(RECEIVED_COUNT-47));
+        assert.deepEqual(I.state.messages.slice(-3).map(message=>message.id),
+            ['local-user','local-split-1','local-split-2']);
+        window._lastSubmittedRequestId='pending-reaction';
+        I.updateMessage('local-user',{status:'sent'});
+        const target=window.captureMessageReactionTarget('pending-reaction');
+        assert.ok(target);
+        I.state.galgameOptions=[{id:'keep-options'}];
+        const sequence=I.state._galgameRequestSeq;
+        const poll=intervals.find(interval=>interval.delay===30000).callback;
+        poll();await flush();
+        assert.equal(reads,2);assert.equal(updates,1,'unchanged host window must not be replaced');
+        assert.equal(I.state._galgameRequestSeq,sequence);
+        assert.deepEqual(I.state.galgameOptions,[{id:'keep-options'}]);
+        window.applyMessageReactionFromEmotion(target,{reaction:{emoji:'😊',author:'Neko'}});
+        assert.equal(I.state.messages.find(message=>message.id==='local-user').reaction.emoji,'😊');
+        originals[0].text='changed outside the display window';poll();await flush();
+        assert.equal(updates,1);
+        originals[RECEIVED_COUNT-1].text='changed visible message';poll();await flush();
+        assert.equal(updates,2);
+        assert.equal(I.state.messages.at(-4).blocks[0].text,'changed visible message');
+        assert.deepEqual(I.state.messages.slice(-3).map(message=>message.blocks[0].text),
+            ['local question','first local bubble','second local bubble']);
+        const beforeAppend=updates;
+        window._lastSubmittedRequestId='new-local-pending';
+        I.appendMessage({id:'new-local-user',role:'user',author:'User',createdAt:6000,time:'10:02',status:'sent',
+            blocks:[{type:'text',text:'a new local question'}]});
+        const appendedTarget=window.captureMessageReactionTarget('new-local-pending');
+        assert.ok(appendedTarget);
+        I.state.galgameOptions=[{id:'local-post-turn-options'}];
+        const appendedSequence=I.state._galgameRequestSeq;
+        poll();await flush();
+        assert.equal(updates,beforeAppend,'appended local sort keys must not replace unchanged content');
+        assert.equal(I.state._galgameRequestSeq,appendedSequence);
+        assert.deepEqual(I.state.galgameOptions,[{id:'local-post-turn-options'}]);
+        window.applyMessageReactionFromEmotion(appendedTarget,{reaction:{emoji:'😊',author:'Neko'}});
+        assert.equal(I.state.messages.at(-1).reaction.emoji,'😊');
+        const reorderedId='sync-recent-'+original.characterSyncId+'-'+originals[RECEIVED_COUNT-1].messageId;
+        I.updateMessage(reorderedId,{sortKey:-1});
+        assert.equal(I.state.messages[0].id,reorderedId);
+        poll();await flush();
+        assert.equal(updates,beforeAppend+1,'an actual order change must still refresh');
+        assert.equal(I.state.messages.at(-5).id,reorderedId);
+        assert.deepEqual(I.state.messages.slice(-4).map(message=>message.blocks[0].text),
+            ['local question','first local bubble','second local bubble','a new local question']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('HOST_PARTS', json.dumps(str(ROOT / 'static/app/app-react-chat-window')))
+        .replace('RECEIVED_COUNT', str(received_count)))
+
+
 @pytest.mark.parametrize('code,key', [
     ('chat_sync_account_mismatch', 'errorAccountMismatch'),
     ('chat_sync_writer_recovery_required', 'errorWriterRecovery'),

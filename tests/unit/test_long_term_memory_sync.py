@@ -1030,6 +1030,84 @@ def test_v2_preserves_retired_entries_and_receiver_replay_fences():
     assert retired['metadata']['status'] == 'retracted' and retired['metadata']['eventStartAt'] == 0
 
 
+@pytest.mark.parametrize('kind,status', [('reflection', 'denied'), ('reflection', 'merged'), ('fact', 'retracted')])
+@pytest.mark.parametrize('remote_change', ['same', 'changed', 'absent'])
+def test_pending_dormant_history_survives_snapshot_without_receipt_baseline(kind, status, remote_change):
+    row = {'kind': kind, 'subject': 'master', 'id': 'history', 'text': 'local historical assertion',
+           'metadata': {'status': status, 'createdAt': 1000, 'updatedAt': 2000,
+                        'sourceFactIds' if kind == 'reflection' else 'sourceMessageIds': ['original-proof']}}
+    seed = {'schemaVersion': 2, 'completedAt': 2000, 'entries': [row],
+            'evidence': {'retirements': [], 'confirmations': []}}
+    existing = import_document(seed, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    before = deepcopy(existing)
+    incoming = export_document(existing, 3000)
+    if remote_change == 'changed': incoming['entries'][0]['text'] = 'remote historical assertion'
+    if remote_change == 'absent': incoming['entries'] = []
+
+    received = import_document(incoming, existing, baseline=[])
+    assert received['sync']['dormantEntries'] == [row]
+    assert existing == before
+    assert received['facts'] == received['archive'] == received['reflections'] == []
+    assert export_document(received, 4000)['entries'] == [row]
+    repeated = import_document(incoming, received, baseline=[])
+    assert repeated['sync']['dormantEntries'] == [row]
+    assert export_document(repeated, 5000)['entries'] == [row]
+
+
+@pytest.mark.parametrize('baseline_mode,expected_texts', [
+    ('none', ['remote revision', 'remote revision', 'remote revision', 'remote revision']),
+    ('empty', ['unpublished local history', 'local history', 'local history', 'local history']),
+    ('previous', ['unpublished local history', 'remote revision', 'remote revision', 'remote revision']),
+])
+def test_pending_dormant_history_respects_baseline_and_full_entry_identity(baseline_mode, expected_texts):
+    identities = [('reflection', 'master', 'shared'), ('reflection', 'neko', 'shared'),
+                  ('reflection', 'master', 'other'), ('persona', 'master', 'shared')]
+    seed = {'schemaVersion': 2, 'completedAt': 2000, 'evidence': {'retirements': [], 'confirmations': []},
+            'entries': [{'kind': kind, 'subject': subject, 'id': identity, 'text': 'local history',
+                         'metadata': {'status': 'denied'}} for kind, subject, identity in identities]}
+    existing = import_document(seed, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    previous = export_document(existing, 2000)['entries']
+    existing['sync']['dormantEntries'][0]['text'] = 'unpublished local history'
+    incoming = deepcopy(seed)
+    incoming['completedAt'] = 3000
+    for row in incoming['entries']:
+        row['text'] = 'remote revision'
+        row['metadata']['status'] = 'active' if row['kind'] == 'persona' else 'confirmed'
+    baseline = {'none': None, 'empty': [], 'previous': previous}[baseline_mode]
+
+    received = import_document(incoming, existing, baseline=baseline)
+    exported = export_document(received, 4000)['entries']
+    by_key = {(row['kind'], row['subject'], row['id']): row['text'] for row in exported}
+    assert len(exported) == 4
+    assert [by_key[key] for key in identities] == expected_texts
+    dormant = received['sync']['dormantEntries']
+    assert len(dormant) == {'none': 0, 'empty': 4, 'previous': 1}[baseline_mode]
+    assert all(row['metadata']['status'] == 'denied' for row in dormant)
+
+
+def test_pending_dormant_fact_keeps_retirement_assertion_after_reexport(tmp_path):
+    from memory.long_term_sync import fact_source_evidence, retirement_evidence
+    row = {'kind': 'fact', 'subject': 'master', 'id': 'retired', 'text': 'retired assertion',
+           'metadata': {'status': 'retracted', 'sourceMessageIds': ['old-source']}}
+    seed = {'schemaVersion': 2, 'completedAt': 2000, 'entries': [row], 'evidence': {
+        'retirements': [{'id': 'retired', 'subject': 'master', 'sourceMessageIds': ['old-source']}],
+        'confirmations': []}}
+    existing = import_document(seed, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    incoming = {'schemaVersion': 2, 'completedAt': 3000, 'entries': [],
+                'evidence': {'retirements': [], 'confirmations': []}}
+    received = import_document(incoming, existing, baseline=[])
+    received = import_document(export_document(received, 4000), received, baseline=[])
+    atomic_write_json(tmp_path / FILES['sync'], received['sync'])
+    retirements = retirement_evidence(tmp_path)
+    assert retirements == [{'id': 'retired', 'subject': 'master', 'text': 'retired assertion',
+                            'sourceMessageIds': ['old-source']}]
+    message = SimpleNamespace(type='human', additional_kwargs={
+        'memory_source_id': 'old-source', 'memory_source_created_at': 1000})
+    candidate = {'text': 'retired assertion', 'source_indices': [1]}
+    assert fact_source_evidence(retirements, candidate, 'master', [message]) is None
+    assert fact_source_evidence(retirements, candidate, 'neko', [message])['source_message_ids'] == ['old-source']
+
+
 @pytest.mark.parametrize('survivor', [None, 'survivor'])
 def test_arbitrated_fact_roundtrip_preserves_recall_exclusion_and_manual_restore(survivor):
     from memory.long_term_sync import timestamp

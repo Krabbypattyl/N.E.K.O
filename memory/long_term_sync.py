@@ -357,6 +357,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
         current = {(row['kind'], row['subject'], row['id']): row
                    for row in export_document(existing, incoming['completedAt'], source_evidence=source_evidence)['entries']}
         pending = {key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)}
+    result['sync']['dormantEntries'] = [deepcopy(row) for row in existing.get('sync', {}).get('dormantEntries', [])
+                                      if (row['kind'], row['subject'], row['id']) in pending]
 
     def retained(kind, subject, value):
         native = value if isinstance(value, dict) else {'text': str(value)}

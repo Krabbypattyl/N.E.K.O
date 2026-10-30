@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import pytest
 from utils.long_term_memory_protocol import document, head
-FIXTURE = json.loads((Path(__file__).parents[1] / 'fixtures/long_term_memory_v2.json').read_text())
+FIXTURE = json.loads((Path(__file__).parents[1] / 'fixtures/long_term_memory_v2.json').read_text(encoding='utf-8'))
 def test_shared_v2_contract():
     assert document(FIXTURE['valid']) == FIXTURE['valid']
 @pytest.mark.parametrize('value', FIXTURE['invalid'])

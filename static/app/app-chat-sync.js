@@ -312,9 +312,10 @@
     }
 
     function displaySnapshot(messages) {
+        // Array order captures display ordering; append sort keys are internal bookkeeping.
         return JSON.stringify(messages.map(function (message) {
             return [message.id, message.role, message.author, message.time, message.createdAt,
-                message.status, message.blocks, message.sortKey];
+                message.status, message.blocks];
         }));
     }
 
@@ -338,7 +339,7 @@
             var local = current.filter(function (message) { return !message.id.startsWith(displayPrefix); });
             var merged = local.concat(received).sort(function (a, b) {
                 return (typeof a.createdAt === 'number' ? a.createdAt : Infinity) - (typeof b.createdAt === 'number' ? b.createdAt : Infinity);
-            }).map(function (message, index) {
+            }).slice(-host.maxMessages).map(function (message, index) {
                 // The host sorts by explicit keys, including keys retained by local split bubbles.
                 return Object.assign({}, message, { sortKey: index });
             });

@@ -8,7 +8,7 @@ import pytest
 
 from services.chat_sync.model_protocol import decode, encode, resource_ids, web_url
 
-FIXTURES = json.loads((Path(__file__).parents[1] / "fixtures/cloud_model_v1.json").read_text())
+FIXTURES = json.loads((Path(__file__).parents[1] / "fixtures/cloud_model_v1.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("item", FIXTURES["valid"], ids=lambda item: item["name"])
