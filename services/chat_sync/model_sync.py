@@ -21,6 +21,10 @@ class _PrivateModelLogFilter(logging.Filter):
         return "x-oss-signature=" not in record.getMessage()
 
 
+class _ModelSelectionChanged(Exception):
+    pass
+
+
 class ModelStore:
     def __init__(self, path):
         self.path = Path(path)
@@ -97,6 +101,25 @@ class DesktopModelSync:
         elif value["revision"] <= 0 or hashlib.sha256(encode(record)).hexdigest() != value.get("recordHash"):
             raise ValueError("invalid_model_response")
         return value
+
+    async def _supersede_pending(self, domain, request, commit, state):
+        pending = state["pending"]
+        latest = await self._head(domain, request)
+        if latest["revision"] < max(state["revision"], state.get("seen_revision", 0)):
+            raise ValueError("invalid_model_response")
+        state["seen_revision"] = latest["revision"]
+        if latest["revision"] > pending["baseRevision"]:
+            # A lost acknowledgement may already have committed this pending record.
+            # Any other cloud advance retains the existing explicit conflict policy.
+            if (latest["revision"] == pending["baseRevision"] + 1
+                    and latest["recordHash"] == hashlib.sha256(encode(pending["record"])).hexdigest()):
+                state.update(revision=latest["revision"], selection=pending["selection"], remote=latest["record"])
+            else:
+                state["conflict"] = latest
+        state.pop("pending")
+        await commit(self.store.put, domain.key(), state)
+        if not state.get("conflict"):
+            await commit(self.runtime.scheduler.retry_model, domain.key())
 
     async def step(self, uid, *, manual=False):
         try:
@@ -179,14 +202,22 @@ class DesktopModelSync:
                 await commit(self.store.put, key, state)
             pending = state.get("pending")
             if pending:
-                if pending["file"] and not pending.get("uploaded"):
+                async def pending_guard():
                     await guard()
-                    await self.upload_file(request, f"/v1/chat-sync/characters/{uid}", pending["file"], guard=guard)
-                    pending["uploaded"] = True
-                    await commit(self.store.put, key, state)
-                envelope = {field: pending[field] for field in ("operationId", "baseRevision", "record")}
+                    if (await adapter.read(uid))["selection"] != pending["selection"]:
+                        raise _ModelSelectionChanged()
                 try:
+                    await pending_guard()
+                    if pending["file"] and not pending.get("uploaded"):
+                        await self.upload_file(request, f"/v1/chat-sync/characters/{uid}", pending["file"], guard=pending_guard)
+                        pending["uploaded"] = True
+                        await commit(self.store.put, key, state)
+                    envelope = {field: pending[field] for field in ("operationId", "baseRevision", "record")}
+                    await pending_guard()
                     receipt = await request("PUT", f"/v1/chat-sync/characters/{uid}/model-binding", canonical(envelope))
+                except _ModelSelectionChanged:
+                    await self._supersede_pending(domain, request, commit, state)
+                    return
                 except ValueError as exc:
                     if getattr(exc, 'media_resource_missing', False) and pending.get('file'):
                         pending['uploaded'] = False
@@ -207,6 +238,8 @@ class DesktopModelSync:
                 state.update(revision=receipt["revision"], selection=pending["selection"], remote=pending["record"])
                 state.pop("pending")
                 await commit(self.store.put, key, state)
+                if (await adapter.read(uid))["selection"] != pending["selection"]:
+                    await commit(runtime.scheduler.retry_model, key)
                 return
             if head["revision"] > state["revision"] and head["record"] and state.get("failed") != head["revision"]:
                 record = head["record"]
@@ -327,9 +360,13 @@ class DesktopModelSync:
         metadata = {key: file[key] for key in ("resourceId", "purpose", "size", "sha256", "contentType")}
         if metadata["purpose"] != "model" or metadata["contentType"] != "application/zip":
             raise ValueError("invalid_model_resource")
+        if guard:
+            await guard()
         result = await request("POST", base + "/resources", canonical(metadata))
         if result.get("resourceId") != file["resourceId"] or type(result.get("ready")) is not bool:
             raise ValueError("invalid_cloud_model_response")
+        if guard:
+            await guard()
         if result["ready"]:
             return
         signed = result["upload"]
@@ -351,6 +388,10 @@ class DesktopModelSync:
                 raise OSError("cloud_model_upload_unavailable") from None
             if response.status_code not in {200, 201, 204}:
                 raise OSError("cloud_model_upload_unavailable")
+        if guard:
+            await guard()
         receipt = await request("POST", base + "/resources/" + file["resourceId"] + "/complete", None)
         if receipt.get("resourceId") != file["resourceId"] or receipt.get("ready") is not True:
             raise ValueError("invalid_cloud_model_response")
+        if guard:
+            await guard()
