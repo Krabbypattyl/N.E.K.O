@@ -54,7 +54,7 @@ class SyntheticService:
         if self.on_request is not None:
             await self.on_request(request)
         path = request.url.path
-        if path == "/v1/chat-sync/media/capabilities":
+        if path == "/v1/chat-sync/models/capabilities":
             # Historical synthetic services model an older text/profile-only deployment.
             return httpx.Response(404, json={"detail": "Not Found"})
         if path == "/v1/chat-sync/identity":

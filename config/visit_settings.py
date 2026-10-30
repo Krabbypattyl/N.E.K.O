@@ -503,6 +503,12 @@ VISIT_OWN_LINES_PER_MINUTE = 6
 VISIT_REPLY_GAP_S = (1.0, 2.5)
 """Uniform random reply gap added after the peer's ``tail_ms``."""
 
+VISIT_HUMAN_REPLY_GRACE_S = 5.0
+"""Extra wait before this side's cat picks up a peer cat line that answered a human.
+
+The human gets this long to answer first; any human line cancels the pick-up.
+"""
+
 VISIT_WRAP_UP_STEP_S = 15
 """From ``begin`` until the peer's goodbye starts (first ``wu`` delta or ``wrap_up{speaking}``)."""
 
@@ -552,7 +558,10 @@ VISIT_RECALL_TOOL_ENABLED = False
 """Whether the isolated session gets a recall tool (off)."""
 
 VISIT_TTS_START_TIMEOUT_S = 4
-"""No first ``visit_speech_progress`` this long after the first push → estimate fallback."""
+"""No first ``visit_speech_progress`` this long after the first push → this line paces by estimate."""
+
+VISIT_TTS_START_FAILURES_LATCH = 2
+"""Start failures with no line playing in between before the visit stops using TTS (one-way)."""
 
 VISIT_SPEECH_PROGRESS_STALL_S = 3
 """Playback started but no progress for this long → abort the line, finish by estimate."""

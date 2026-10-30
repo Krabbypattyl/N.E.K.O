@@ -926,6 +926,10 @@ async def visit_state(request: Request, catgirl: str = ""):
         # Shared computer changed community account: report visiting only, never peer/room/dialogue of that visit.
         return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"],
                              **release_info()})
+    # The owner needs the friend identity to restore the invitation's cancel control after reload.
+    # Keep it out of the redacted response above and never include a redeemable invite code.
+    if rt.side == "host" and rt.target_user_id:
+        snapshot["target_user_id"] = rt.target_user_id
     return JSONResponse({**snapshot, **release_info()})
 
 
