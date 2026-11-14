@@ -75,6 +75,47 @@ def test_import_rejects_hash_revision_and_identity_changes_before_writing(setup,
     assert not target.exists()
 
 
+def test_preview_only_refresh_imports_the_same_market_story(setup):
+    client, root, value, raw, descriptor = setup
+    story = json.loads(raw)
+    invitation = "旧车站的灯还亮着，你要不要进来看看？"
+    story["intro"]["invitation"] = invitation
+    refreshed_raw = json.dumps(story, ensure_ascii=False).encode()
+    descriptor.update(file_sha256=hashlib.sha256(refreshed_raw).hexdigest(),
+                      byte_size=len(refreshed_raw),
+                      background="公开前情。", invitation="")
+    # The launch froze the same identity and an older preview (no invitation).
+    value["selection"] = deepcopy(descriptor)
+    descriptor["invitation"] = invitation
+    target = root / "theater/numeric_v2/packages/market_new_story.json"
+    with client:
+        imported = import_package(client, refreshed_raw, descriptor)
+        assert imported.status_code == 200, imported.text
+        assert imported.json()["phase"] == "imported"
+        assert value["phase"] == "imported"
+        assert target.exists()
+
+
+@pytest.mark.parametrize("field", ["id", "revision", "file_sha256", "byte_size"])
+def test_frozen_selection_identity_change_still_rejects_import(setup, field):
+    client, root, value, raw, descriptor = setup
+    value["selection"] = deepcopy(descriptor)
+    if field == "id":
+        value["selection"]["id"] += 1
+    elif field == "revision":
+        value["selection"]["revision"] += 1
+    elif field == "file_sha256":
+        value["selection"]["file_sha256"] = "c" * 64
+    else:
+        value["selection"]["byte_size"] += 1
+    target = root / "theater/numeric_v2/packages/market_new_story.json"
+    with client:
+        response = import_package(client, raw, descriptor)
+        assert response.status_code == 409, response.text
+        assert response.json()["reason"] == "theater_market_selection_changed"
+        assert not target.exists()
+
+
 @pytest.mark.parametrize("raw", [b"{", b"\xff", b"[" * 1100 + b"]" * 1100], ids=["syntax", "encoding", "nesting"])
 def test_invalid_market_json_returns_stable_error_without_writing(setup, raw):
     client, root, value, _, descriptor = setup

@@ -42,10 +42,18 @@ def _launch(request_id):
     return value
 
 
+_SELECTION_IDENTITY_FIELDS = ("id", "revision", "file_sha256", "byte_size")
+
+
 def _public(value):
     return {key: value.get(key) for key in (
         "request_id", "phase", "reason", "story_id", "character_id",
     )}
+
+
+def _selection_identity(selection):
+    """Only the frozen source identity; preview text may refresh independently."""
+    return {field: selection.get(field) for field in _SELECTION_IDENTITY_FIELDS}
 
 
 def _mutation(request, payload=None):
@@ -136,7 +144,7 @@ async def import_market_story(request_id: str, request: Request, share_id: int, 
             return theater._error("theater_market_file_changed", 409)
         async with value["lock"]:
             _launch(request_id)
-            if value["selection"] and value["selection"] != selected:
+            if value["selection"] and _selection_identity(value["selection"]) != _selection_identity(selected):
                 return theater._error("theater_market_selection_changed", 409)
             if value["phase"] != "browsing":
                 return {"ok": True, **_public(value)}
